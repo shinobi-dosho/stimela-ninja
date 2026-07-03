@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from shinobi.exceptions import ParameterError
+from shinobi.exceptions import ParameterError, UnsupportedFlavourError
 from shinobi.schema import CabDef
+
+# Flavours whose `command` is a real executable name, safe to hand to
+# subprocess as argv[0]. Everything else (cult-cargo's "python-code",
+# "casa-task", etc.) has a `command` that's inline source or a dotted
+# reference to a function -- not something to run, let alone eval()/exec().
+_EXECUTABLE_FLAVOURS = {"binary"}
 
 
 def resolve_params(cab: CabDef, params: dict[str, Any]) -> dict[str, Any]:
@@ -46,6 +52,13 @@ def build_argv(cab: CabDef, resolved: dict[str, Any]) -> list[str]:
     """Build a full argv (starting with the cab's command) from an already
     resolve_params()-ed parameter dict, according to the cab's policies.
     """
+    if cab.flavour not in _EXECUTABLE_FLAVOURS:
+        raise UnsupportedFlavourError(
+            f"cab '{cab.name}' has flavour '{cab.flavour}', which shinobi doesn't "
+            f"execute (only {sorted(_EXECUTABLE_FLAVOURS)} today) -- its `command` "
+            f"is not an executable name and must not be run as one"
+        )
+
     argv: list[str] = [cab.command]
     policies = cab.policies
 

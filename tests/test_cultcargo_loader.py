@@ -163,3 +163,31 @@ def test_package_scoped_include_is_skipped_with_warning(tmp_path):
     with pytest.warns(UserWarning, match="package-scoped"):
         cabs = load_file(main)
     assert cabs["plain"].command == "echo"
+
+
+def test_dynamic_schema_warns_but_still_loads_static_inputs():
+    text = """
+    cabs:
+      tool:
+        command: tool
+        dynamic_schema: some.module.make_schema
+        inputs:
+          size:
+            dtype: int
+    """
+    with pytest.warns(UserWarning, match="dynamic_schema"):
+        cabs = loads(text)
+    assert "size" in cabs["tool"].inputs
+
+
+def test_nested_package_scoped_include_inside_inputs_raises_clear_error():
+    # real cult-cargo's cubical.yml does this: `inputs: {_include: (pkg)file}`
+    text = """
+    cabs:
+      cubical:
+        command: gocubical
+        inputs:
+          _include: (cultcargo.genesis.cubical)schema.yaml
+    """
+    with pytest.raises(CabLoadError, match="param spec mapping"):
+        loads(text)

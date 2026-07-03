@@ -20,15 +20,28 @@ loader implements a deliberately minimal version of:
   small things (``image: {_use: vars.cult-cargo.images, name: breizorro}``)
   and to inherit a cab's entire command/flavour block.
 
-Deliberately NOT implemented (this is the boundary -- see AGENTS.md): the
-``=config.x.y``/``${...}`` expression language cult-cargo values can
-contain, and the package-scoped include form
-``_include: [{(cultcargo): [file, ...]}]`` (which searches an installed
-package's data directory rather than a relative path). Both are left as
-literal strings / a skipped-with-warning include respectively. Building
-those out would mean re-deriving stimela2's config engine, just relocated
-from recipes to cabs -- exactly what this project exists to avoid unless a
-real cab actually needs it.
+Deliberately NOT implemented (this is the boundary -- see AGENTS.md):
+
+* The ``=config.x.y``/``${...}`` expression language cult-cargo values
+  can contain -- left as literal strings.
+* The package-scoped include form ``_include: [{(cultcargo): [file,
+  ...]}]`` (searches an installed package's data directory rather than a
+  relative path), whether at the top level or nested inside ``inputs:``
+  (as real cult-cargo's own ``cubical.yml`` does) -- skipped with a
+  warning at the top level, raised as a clear CabLoadError if nested
+  inside ``inputs:`` (since there's no sensible per-param schema to fall
+  back to there).
+* ``dynamic_schema: dotted.path`` -- a reference to a Python function
+  that would need importing and *calling* to get a cab's real schema
+  (real cult-cargo's ``wsclean.yml`` uses this). Resolving it is not just
+  a parsing gap like the above: it means executing arbitrary code named
+  by a cab file at load time. Not implemented; a cab using only this
+  (no static ``inputs:``/``outputs:`` alongside it) loads with an empty
+  schema, silently wrong unless you notice the warning this emits.
+
+Building any of these out would mean re-deriving stimela2's config
+engine, just relocated from recipes to cabs -- exactly what this project
+exists to avoid unless a real cab actually needs it.
 """
 
 from __future__ import annotations
@@ -124,6 +137,16 @@ def _build_cabdef(name: str, spec: dict[str, Any]) -> CabDef:
     if "command" not in spec:
         raise CabLoadError(f"cab '{name}' has no 'command' (check its _use references)")
 
+    if spec.get("dynamic_schema"):
+        warnings.warn(
+            f"cab '{name}' uses dynamic_schema ({spec['dynamic_schema']!r}), which "
+            "shinobi doesn't resolve -- it's a dotted reference to a Python function "
+            "that would need importing and calling to get the real schema. Any static "
+            "'inputs:'/'outputs:' present are used as-is, but may be incomplete "
+            "relative to the tool's actual interface.",
+            stacklevel=2,
+        )
+
     policies_spec = spec.get("policies") or {}
     wranglers = ((spec.get("management") or {}).get("wranglers")) or {}
 
@@ -141,6 +164,12 @@ def _build_cabdef(name: str, spec: dict[str, Any]) -> CabDef:
 
 
 def _build_param(spec: dict[str, Any] | None) -> ParamSchema:
+    if spec is not None and not isinstance(spec, dict):
+        raise CabLoadError(
+            f"expected a param spec mapping, got {spec!r} -- this usually means an "
+            "unsupported nested _include (e.g. 'inputs: {_include: (pkg)file}'), which "
+            "shinobi doesn't resolve (see this module's docstring)"
+        )
     spec = spec or {}
     return ParamSchema(
         dtype=str(spec.get("dtype", "str")),

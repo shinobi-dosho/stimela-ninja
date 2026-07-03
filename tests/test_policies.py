@@ -1,7 +1,7 @@
 import pytest
 
-from shinobi.exceptions import ParameterError
-from shinobi.policies import build_args
+from shinobi.exceptions import ParameterError, UnsupportedFlavourError
+from shinobi.policies import build_args, build_argv, resolve_params
 from shinobi.schema import CabDef, ParamSchema
 
 
@@ -47,3 +47,12 @@ def test_implicit_cannot_be_overridden():
 def test_nom_de_guerre_used_as_flag_name():
     cab = make_cab(ms=ParamSchema(dtype="MS", nom_de_guerre="vis", required=True))
     assert build_args(cab, {"ms": "foo.ms"}) == ["tool", "--vis", "foo.ms"]
+
+
+def test_non_binary_flavour_rejected_before_building_argv():
+    # a "python-code"/"casa-task" cab's `command` is inline source or a
+    # dotted function reference, not an executable name -- must never
+    # reach subprocess as argv[0]
+    cab = CabDef(name="tool", command="import os\nos.system('echo hi')", flavour="python-code")
+    with pytest.raises(UnsupportedFlavourError):
+        build_argv(cab, resolve_params(cab, {}))
