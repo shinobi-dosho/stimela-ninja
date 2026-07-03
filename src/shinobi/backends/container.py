@@ -1,9 +1,9 @@
 """Container backend: wraps a cab's argv in a container-runtime invocation.
 
-Shells out to the runtime binary (docker/podman/apptainer/singularity)
-rather than using each runtime's Python SDK -- one code path for all of
-them, no extra heavyweight client dependencies, and it works uniformly for
-runtimes (like apptainer) that don't have a good Python API to begin with.
+Shells out to the runtime binary (docker/podman/apptainer) rather than
+using each runtime's Python SDK -- one code path for all of them, no extra
+heavyweight client dependencies, and it works uniformly for runtimes (like
+apptainer) that don't have a good Python API to begin with.
 
 Volume mounts are derived from the cab's own schema: any resolved
 parameter whose declared dtype looks file-like (``File``, ``MS``,
@@ -28,7 +28,7 @@ from shinobi.schema import CabDef
 from shinobi.wranglers import apply_wranglers
 
 _DOCKER_LIKE = {"docker", "podman"}
-_SINGULARITY_LIKE = {"apptainer", "singularity"}
+_APPTAINER_LIKE = {"apptainer"}
 
 _FILE_LIKE_MARKERS = ("file", "ms")
 
@@ -66,8 +66,8 @@ def build_container_argv(
     runtime: str, cab: CabDef, argv: list[str], params: dict[str, Any], workdir: str
 ) -> list[str]:
     """Wrap argv in a container-runtime invocation. Shared with the Slurm
-    backend, which runs cabs under apptainer/singularity the same way a
-    plain ContainerBackend would, just inside a batch job.
+    backend, which runs cabs under apptainer the same way a plain
+    ContainerBackend would, just inside a batch job.
     """
     if not cab.image:
         raise BackendError(f"cab '{cab.name}' has no image, cannot run under {runtime}")
@@ -78,14 +78,14 @@ def build_container_argv(
         mounts = [flag for d in dirs for flag in ("-v", f"{d}:{d}")]
         return [runtime, "run", "--rm", *mounts, "-w", workdir, cab.image, *argv]
 
-    # apptainer/singularity
+    # apptainer
     binds = [flag for d in dirs for flag in ("--bind", f"{d}:{d}")]
     return [runtime, "exec", *binds, "--pwd", workdir, cab.image, *argv]
 
 
 class ContainerBackend(Backend):
     def __init__(self, runtime: str, workdir: str | None = None):
-        if runtime not in _DOCKER_LIKE | _SINGULARITY_LIKE:
+        if runtime not in _DOCKER_LIKE | _APPTAINER_LIKE:
             raise ValueError(f"unsupported container runtime '{runtime}'")
         self.runtime = runtime
         self.workdir = workdir or os.getcwd()
