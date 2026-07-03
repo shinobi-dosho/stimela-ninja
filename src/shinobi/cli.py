@@ -19,7 +19,7 @@ from shinobi.schema import CabDef, ParamSchema, is_file_like_dtype
 @click.option("--backend", "backend", default=None, help="Override the default backend.")
 @click.pass_context
 def main(ctx: click.Context, config_file: str | None, backend: str | None) -> None:
-    """shinobi -- Stimela 3.0."""
+    """ninja -- the shinobi (Stimela 3.0) CLI."""
     overrides: dict = {}
     if backend:
         overrides["backend"] = {"default": backend}

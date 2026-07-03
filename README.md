@@ -41,7 +41,7 @@ ninja run cabs.py:breizorro --restored-image out-image.fits --threshold 7
 ninja run myrecipes.py:selfcal --ms data.ms --threshold 6.5
 ```
 
-`ninja` and `shinobi` are the same entrypoint. `ninja run <target>` resolves `<target>` (`path/to/file.py:name` or a dotted module path) and dispatches to `shinobi.recipe.call()` for a bare `@cab`, or calls a `@recipe`-decorated function directly with the parsed options.
+`ninja run <target>` resolves `<target>` (`path/to/file.py:name` or a dotted module path) and dispatches to `shinobi.recipe.call()` for a bare `@cab`, or calls a `@recipe`-decorated function directly with the parsed options.
 
 See `AGENTS.md` for design conventions and what's deliberately left out.
 
