@@ -52,7 +52,7 @@ Early scaffolding. Interfaces above are real and tested (`pytest`), but this is 
 ## Development
 
 ```bash
-uv venv .venv && uv pip install -e ".[dev]"
+uv venv .venv && uv pip install -e . --group dev
 .venv/bin/pytest
 .venv/bin/ruff check src tests
 ```
