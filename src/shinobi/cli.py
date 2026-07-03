@@ -109,6 +109,8 @@ def _build_options(inputs: dict[str, ParamSchema]) -> list[click.Option]:
     # dynamically-built inner command below to handle -- the outer
     # command doesn't know TARGET's options yet, so it can't usefully
     # show its own --help either.
+    no_args_is_help=True,  # `ninja run` with nothing at all shows this
+    # command's help instead of a bare "Missing argument 'TARGET'".
 )
 @click.argument("target")
 @click.option(
@@ -123,6 +125,18 @@ def run(ctx: click.Context, target: str, dryrun: bool) -> None:
     [OPTIONS] are derived from the target's own parameters -- run
     `ninja run TARGET --help` to see them.
     """
+    if target in ("-h", "--help"):
+        # add_help_option=False above is what lets `ninja run TARGET
+        # --help` fall through to ctx.args for the dynamically-built
+        # per-target command to handle -- but that also means click
+        # itself never intercepts a bare `ninja run --help` (no target),
+        # since with ignore_unknown_options=True it just treats "--help"
+        # as the value for the required TARGET argument. Handle that
+        # case explicitly instead of trying to resolve "--help" as a
+        # target.
+        click.echo(ctx.get_help())
+        ctx.exit()
+
     obj = _resolve_target(target)
 
     if isinstance(obj, CabDef):

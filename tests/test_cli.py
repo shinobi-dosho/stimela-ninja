@@ -34,6 +34,21 @@ def test_run_help_shows_dynamic_options():
     assert "--n" in result.output
 
 
+def test_run_bare_help_shows_run_commands_own_help():
+    # regression: `ninja run --help` (no target) used to try to resolve
+    # "--help" itself as a target, instead of showing run's own help.
+    result = CliRunner().invoke(main, ["run", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "TARGET" in result.output
+    assert "--dryrun" in result.output
+
+
+def test_run_with_no_args_shows_help():
+    result = CliRunner().invoke(main, ["run"])
+    assert "TARGET" in result.output
+    assert "--dryrun" in result.output
+
+
 def test_option_flag_name_roundtrips_underscore():
     result = CliRunner().invoke(
         main, ["run", f"{FIXTURES}:greet_image", "--restored-image", "/data/img.fits"]
