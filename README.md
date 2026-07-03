@@ -28,7 +28,7 @@ call(cabs["breizorro"], backend, restored_image=result.image)
     def breizorro(restored_image: str, threshold: float = 6.5):
         """Mask creation and manipulation for radio astronomy images."""
     ```
-- **Backends** (`shinobi.backends`) -- pluggable executors: `native` (subprocess) and `docker`/`podman`/`apptainer` (shells out to the runtime binary) ship today; Slurm/Kubernetes are a later milestone. Container backends derive bind mounts from the cab's own schema (File/MS-dtype params get their parent dir mounted), verified against a real `quay.io/stimela/wsclean` image.
+- **Backends** (`shinobi.backends`) -- pluggable executors, all shelling out to the relevant CLI rather than a Python SDK: `native` (subprocess), `docker`/`podman`/`apptainer`, `slurm` (`sbatch`/`sacct`), `kubernetes` (`kubectl`, batch `Job`s). Every backend blocks until the job finishes and returns a `Result` -- no async mode, recipes are plain Python. Container/cluster backends derive bind mounts from the cab's own schema (File/MS-dtype params get their parent dir mounted). `native`/container backends were verified against a real `quay.io/stimela/wsclean` image; `slurm`/`kubernetes` were not live-verified against a real cluster (none was available in the dev environment) -- see `AGENTS.md` for what that means in practice.
 - **Recipes** (`shinobi.recipe.call`) -- just Python. No separate recipe schema.
 - **Config** (`shinobi.config.AppConfig`) -- layered settings via pydantic-settings: built-in defaults < config file < env vars (`SHINOBI_*`) < explicit overrides.
 

@@ -47,3 +47,12 @@ def get_backend(name: str, **opts) -> Backend:
             f"unknown backend '{name}' (available: {sorted(_REGISTRY)})"
         ) from None
     return backend_cls(**opts)
+
+
+# Import submodules for their @register side effects, so get_backend() finds
+# every built-in backend without the caller having to import that specific
+# backend module first.
+from shinobi.backends import container as _container  # noqa: E402,F401
+from shinobi.backends import kubernetes as _kubernetes  # noqa: E402,F401
+from shinobi.backends import native as _native  # noqa: E402,F401
+from shinobi.backends import slurm as _slurm  # noqa: E402,F401

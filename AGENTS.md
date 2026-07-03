@@ -17,7 +17,9 @@ Do not add:
 - **cult-cargo YAML compatibility** (`shinobi.loaders.cultcargo`): the cab schema format itself isn't the problem -- only the recipe layer built on top of it is. Loading existing cult-cargo cab defs unlocks the whole existing radio-astronomy tool library instead of requiring a rewrite.
 - **Python-native cab definitions** (`shinobi.decorators.cab`): a decorated function's signature *is* the input schema (type hint -> dtype, presence of a default -> required), producing the exact same `CabDef` the YAML loader does -- the two are fully interchangeable, `shinobi.recipe.call()` can't tell them apart. The function body is never called for a binary-flavour cab; only its signature and docstring (-> `info`) are read, at decoration time. Per-param detail a signature can't express (a `nom_de_guerre`, `info` text, ...) goes through the `inputs=` override kwarg rather than growing annotation syntax to express it -- don't invent an `Annotated[...]`-based mini-language here for the same reason we don't want one in recipes.
 - **Output wranglers** (`shinobi.wranglers`): regex-based extraction of structured outputs from a cab's console output. Only `PARSE_OUTPUT` is implemented; add other actions (`HIGHLIGHT`, `SUPPRESS`, ...) only when a real cab needs them, not speculatively.
-- **Backend abstraction** (`shinobi.backends`): a cab doesn't know if it's running natively, in a container, or on a cluster. Backends shell out to the runtime binary (`docker`/`podman`/`apptainer` CLI) rather than using each runtime's Python SDK -- one code path, no heavyweight client dependencies, and it's the only option for runtimes like apptainer that don't have a good Python API anyway. `Backend.run(cab, argv, params)` is handed the *resolved* params dict alongside argv specifically so container backends can derive bind mounts from the cab's own schema: any resolved param whose `dtype` looks file-like (`File`, `MS`, `list:File`, ...) gets its parent directory mounted at the same path in-container (`shinobi.backends.container._bind_dirs`). Verified against a real `quay.io/stimela/wsclean` image in `tests/test_docker_live.py` (skipped if docker/the image isn't available), not just mocked.
+- **Backend abstraction** (`shinobi.backends`): a cab doesn't know if it's running natively, in a container, or on a cluster. Backends shell out to the runtime CLI (`docker`/`podman`/`apptainer`/`sbatch`+`sacct`/`kubectl`) rather than using each system's Python SDK -- one code path per backend, no heavyweight client dependencies, and it's the only option for runtimes like apptainer that don't have a good Python API anyway. `Backend.run(cab, argv, params)` is handed the *resolved* params dict alongside argv specifically so container/cluster backends can derive bind mounts from the cab's own schema: any resolved param whose `dtype` looks file-like (`File`, `MS`, `list:File`, ...) gets its parent directory mounted at the same path (`shinobi.backends.container.bind_dirs`, shared with the Kubernetes backend). Every backend's `run()` blocks until the job/container/process is done and returns a `Result` -- there's no async/fire-and-forget mode, because recipes are plain Python and the next line usually needs this step's output.
+  - `native`/`docker`/`podman`/`apptainer` were verified against a real `quay.io/stimela/wsclean` image and a real bind-mounted host file in `tests/test_docker_live.py` (skipped if docker/the image isn't available) -- not just mocked.
+  - `slurm` (submits via `sbatch`, polls `sacct`, wraps the command in apptainer by default since Slurm schedules compute but doesn't run containers itself) and `kubernetes` (submits a batch `Job` via `kubectl apply`, polls `kubectl get job`, mounts File/MS params as `hostPath` volumes) were **not** live-verified -- no cluster was available in the dev environment they were built in. They're reviewed-by-construction and covered by tests that mock the CLI calls (`tests/test_slurm_backend.py`, `tests/test_kubernetes_backend.py`), not proven against a real scheduler/cluster. Verify against a real one before relying on them. `hostPath` volumes on the Kubernetes backend also only work if the node actually running the pod has that path (fine for a single-node dev cluster or nodes sharing storage, not a general multi-node production cluster -- that needs PersistentVolumeClaims, deliberately not built).
 
 ## Config: one validation library, not five
 
@@ -36,13 +38,18 @@ src/shinobi/
   config.py             # AppConfig (pydantic-settings)
   cli.py                # click entrypoint
   backends/
-    __init__.py          # Backend ABC + registry (get_backend/register)
+    __init__.py          # Backend ABC + registry (get_backend/register); imports every
+                          # backend submodule so @register actually fires without the
+                          # caller having to import that specific backend module first
     native.py             # subprocess
     container.py          # docker/podman/apptainer, shells out to the runtime CLI, derives bind mounts from schema
+    slurm.py               # sbatch/sacct, not live-verified (no cluster in dev env)
+    kubernetes.py          # kubectl, not live-verified (no cluster in dev env)
   loaders/
     cultcargo.py          # cult-cargo YAML -> CabDef
 tests/                    # one test module per src module; run via `pytest`
                           # test_docker_live.py is a real (non-mocked) integration test, skipped without docker
+                          # test_slurm_backend.py / test_kubernetes_backend.py mock the CLI calls
 ```
 
 ## Before adding a feature

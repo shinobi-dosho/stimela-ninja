@@ -38,7 +38,7 @@ def _is_file_like(dtype: str) -> bool:
     return any(marker in dtype_lower for marker in _FILE_LIKE_MARKERS)
 
 
-def _bind_dirs(cab: CabDef, params: dict[str, Any], workdir: str) -> list[str]:
+def bind_dirs(cab: CabDef, params: dict[str, Any], workdir: str) -> list[str]:
     """Parent directories of every File/MS-valued resolved param, plus the
     working directory itself. Order-preserving, de-duplicated.
     """
@@ -62,6 +62,27 @@ def _bind_dirs(cab: CabDef, params: dict[str, Any], workdir: str) -> list[str]:
     return dirs
 
 
+def build_container_argv(
+    runtime: str, cab: CabDef, argv: list[str], params: dict[str, Any], workdir: str
+) -> list[str]:
+    """Wrap argv in a container-runtime invocation. Shared with the Slurm
+    backend, which runs cabs under apptainer/singularity the same way a
+    plain ContainerBackend would, just inside a batch job.
+    """
+    if not cab.image:
+        raise BackendError(f"cab '{cab.name}' has no image, cannot run under {runtime}")
+
+    dirs = bind_dirs(cab, params, workdir)
+
+    if runtime in _DOCKER_LIKE:
+        mounts = [flag for d in dirs for flag in ("-v", f"{d}:{d}")]
+        return [runtime, "run", "--rm", *mounts, "-w", workdir, cab.image, *argv]
+
+    # apptainer/singularity
+    binds = [flag for d in dirs for flag in ("--bind", f"{d}:{d}")]
+    return [runtime, "exec", *binds, "--pwd", workdir, cab.image, *argv]
+
+
 class ContainerBackend(Backend):
     def __init__(self, runtime: str, workdir: str | None = None):
         if runtime not in _DOCKER_LIKE | _SINGULARITY_LIKE:
@@ -70,18 +91,7 @@ class ContainerBackend(Backend):
         self.workdir = workdir or os.getcwd()
 
     def _wrap(self, cab: CabDef, argv: list[str], params: dict[str, Any]) -> list[str]:
-        if not cab.image:
-            raise BackendError(f"cab '{cab.name}' has no image, cannot run under {self.runtime}")
-
-        dirs = _bind_dirs(cab, params, self.workdir)
-
-        if self.runtime in _DOCKER_LIKE:
-            mounts = [flag for d in dirs for flag in ("-v", f"{d}:{d}")]
-            return [self.runtime, "run", "--rm", *mounts, "-w", self.workdir, cab.image, *argv]
-
-        # apptainer/singularity
-        binds = [flag for d in dirs for flag in ("--bind", f"{d}:{d}")]
-        return [self.runtime, "exec", *binds, "--pwd", self.workdir, cab.image, *argv]
+        return build_container_argv(self.runtime, cab, argv, params, self.workdir)
 
     def run(self, cab: CabDef, argv: list[str], params: dict[str, Any]) -> Result:
         full_argv = self._wrap(cab, argv, params)
