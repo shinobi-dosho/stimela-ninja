@@ -18,6 +18,35 @@ structural port of the mechanical conversion this replaced:
   not a specific run, so none of them bake in a run-specific MS name
   anymore; every step passes it explicitly from the recipe's own
   resolved `ms` variable (a required, no-default cab input instead).
+* `wsclean` is loaded from a real cult-cargo cab definition
+  (examples/cultcargo/wsclean.yml, vendored -- see that dir's README) --
+  its ~170 real parameters, instead of a hand-declared, easy-to-drift
+  subset. This is exactly what motivated the switch: a hand-declared
+  `cubical` schema was silently missing several real parameters until
+  `ninja run --dryrun` actually validated them for the first time (the
+  old fake DRYRUN print never called resolve_params()). Its real
+  parameter names differ from what this recipe used to assume:
+  `msname` -> `ms` (and it's a *list* of MS, `List[MS]`), `name` ->
+  `prefix`, `channels-out` -> `nchan`.
+
+  `breizorro`/`cubical`/the CASA tasks/`msutils` are still hand-declared,
+  each for a different, concrete reason found while checking:
+  - `breizorro`'s real cult-cargo schema treats the output mask filename
+    as *implicit* (an output the tool derives, not a settable input) --
+    doesn't fit this recipe's deterministic-path design (mask1/mask2/
+    mask3 are named up front and referenced by later steps) without
+    adding wrangler support to capture the real filename dynamically.
+  - `cubical`'s real schema uses ``inputs: {_include: (pkg)file}`` --
+    a package-scoped include *inside* the inputs mapping, which
+    shinobi.loaders.cultcargo doesn't support (see that module's
+    docstring on scope boundaries).
+  - The CASA tasks (mstransform/listobs/flagdata/flagmanager) use the
+    top-level package-scoped ``_include: [{(cultcargo): [...]}]`` form,
+    which is explicitly unsupported (skipped with a warning) for the
+    same reason.
+  - `msutils` has no cult-cargo cab matching what "fresid" needs
+    (subtracting one MS column from another) -- only copycol/addcol/
+    renamecol/summary exist there.
 
 Run it:
 
@@ -46,8 +75,11 @@ from typing import Any
 
 from shinobi.backends import get_backend
 from shinobi.decorators import cab, recipe
+from shinobi.loaders.cultcargo import load_file
 from shinobi.recipe import call
 from shinobi.schema import CabDef, ParamSchema
+
+_CULTCARGO_DIR = Path(__file__).parent / "cultcargo"
 
 # ------------------------------------------------------------------ cabs ---
 # Defined once, at module level: these describe *tasks*, not a specific
@@ -177,7 +209,7 @@ im_opts: dict[str, Any] = {
     "size": 6000,
     "scale": 1.3,
     "auto-threshold": 3,
-    "channels-out": 5,
+    "nchan": 5,
     "join-channels": True,
     "fit-spectral-pol": 1,
     "multiscale": True,
@@ -226,19 +258,11 @@ cubical = cab_from_defaults(
     },
 )
 
-wsclean = cab_from_defaults(
-    "wsclean",
-    "wsclean",
-    "quay.io/stimela/wsclean:1.8.0",
-    im_opts,
-    msname=ParamSchema(dtype="MS", required=True),
-    name=ParamSchema(dtype="str", required=True),
-    **{
-        "fits-mask": ParamSchema(dtype="File"),
-        "auto-mask": ParamSchema(dtype="float"),
-        "no-dirty": ParamSchema(dtype="bool"),
-    },
-)
+# Real cult-cargo schema (~170 params) instead of a hand-declared subset
+# -- see the module docstring for why, and examples/cultcargo/README.md
+# for provenance. Its real parameter names: `ms` (a List[MS], not
+# `msname`), `prefix` (not `name`), `nchan` (not `channels-out`).
+wsclean = load_file(_CULTCARGO_DIR / "wsclean.yml")["wsclean"]
 
 pybdsm = cab_from_defaults(
     "pybdsm",
@@ -449,8 +473,8 @@ initweights(vis=vis, wtmode='ones', dowtsp=True)
         **_update(
             im_opts,
             {
-                "msname": ms,
-                "name": get_name(0),
+                "ms": [ms],
+                "prefix": get_name(0),
                 "column": "DATA",
                 "fits-mask": indir("initalmask_t10_b125.fits"),
             },
@@ -497,8 +521,8 @@ initweights(vis=vis, wtmode='ones', dowtsp=True)
         **_update(
             im_opts,
             {
-                "msname": ms,
-                "name": get_name(1),
+                "ms": [ms],
+                "prefix": get_name(1),
                 "column": "CORRECTED_DATA",
                 "fits-mask": out(mask1),
                 "auto-threshold": 2,
@@ -545,7 +569,7 @@ initweights(vis=vis, wtmode='ones', dowtsp=True)
         "im2",
         "im2::Round 2 image",
         wsclean,
-        **_update(im_opts, {"msname": ms, "name": get_name(2), "fits-mask": out(mask2), "auto-threshold": 1}),
+        **_update(im_opts, {"ms": [ms], "prefix": get_name(2), "fits-mask": out(mask2), "auto-threshold": 1}),
     )
 
     model_points_prefix = f"{get_name(2)}-skymodel"
@@ -603,7 +627,7 @@ initweights(vis=vis, wtmode='ones', dowtsp=True)
         "im3",
         "im3::Round 3 image",
         wsclean,
-        **_update(im_opts, {"msname": ms, "name": get_name(3), "fits-mask": out(mask3), "auto-threshold": 1}),
+        **_update(im_opts, {"ms": [ms], "prefix": get_name(3), "fits-mask": out(mask3), "auto-threshold": 1}),
     )
 
     # model-list = MODEL_DATA plus the point-source sky model extracted from im2
@@ -674,9 +698,9 @@ initweights(vis=vis, wtmode='ones', dowtsp=True)
         **_update(
             im_opts,
             {
-                "msname": ms,
-                "name": get_name(4),
-                "channels-out": 3,
+                "ms": [ms],
+                "prefix": get_name(4),
+                "nchan": 3,
                 "auto-threshold": 1,
                 "auto-mask": 5,
                 "multiscale": False,
@@ -707,8 +731,8 @@ initweights(vis=vis, wtmode='ones', dowtsp=True)
             im_opts,
             {
                 "niter": 0,
-                "msname": ms,
-                "name": get_name(5),
+                "ms": [ms],
+                "prefix": get_name(5),
                 "auto-threshold": 0.5,
                 "auto-mask": 3,
                 "local-rms-window": 64,
