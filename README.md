@@ -43,6 +43,18 @@ ninja run myrecipes.py:selfcal --ms data.ms --threshold 6.5
 
 `ninja run <target>` resolves `<target>` (`path/to/file.py:name` or a dotted module path) and dispatches to `shinobi.recipe.call()` for a bare `@cab`, or calls a `@recipe`-decorated function directly with the parsed options.
 
+Add `--dryrun` to see the execution graph a target would produce, without running anything:
+
+```
+$ ninja run myrecipes.py:selfcal --ms data.ms --dryrun
+[ make_image ]
+      │
+      ▼
+[  breizorro  ]
+```
+
+This actually runs the recipe's real Python code (so its `if`/`for` do whatever they'd really do for the given options), just with every cab swapped for a no-op that records the call instead of executing it -- so it only ever shows the *one* path taken for these inputs, never an untaken branch. Fan-out/fan-in appear when the recipe genuinely threads one step's output into two later ones (or vice versa); see `AGENTS.md` for how that's detected and why `pipefunc` (a static, declared-pipeline library) wasn't a fit for this.
+
 See `AGENTS.md` for design conventions and what's deliberately left out.
 
 ## Status

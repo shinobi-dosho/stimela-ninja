@@ -9,7 +9,9 @@ import click
 
 import shinobi
 from shinobi.backends import get_backend
+from shinobi.backends.trace import TraceBackend, patch_all_backends
 from shinobi.config import AppConfig
+from shinobi.dag import render_dag
 from shinobi.recipe import call
 from shinobi.schema import CabDef, ParamSchema, is_file_like_dtype
 
@@ -109,8 +111,13 @@ def _build_options(inputs: dict[str, ParamSchema]) -> list[click.Option]:
     # show its own --help either.
 )
 @click.argument("target")
+@click.option(
+    "--dryrun",
+    is_flag=True,
+    help="Show what would run as a graph, without actually running it.",
+)
 @click.pass_context
-def run(ctx: click.Context, target: str) -> None:
+def run(ctx: click.Context, target: str, dryrun: bool) -> None:
     """Run a @cab or @recipe TARGET ('path/to/file.py:name' or 'pkg.mod:name').
 
     [OPTIONS] are derived from the target's own parameters -- run
@@ -127,13 +134,33 @@ def run(ctx: click.Context, target: str) -> None:
 
     def _callback(**kwargs):
         if isinstance(obj, CabDef):
-            backend = get_backend(ctx.obj.backend.default)
+            backend = TraceBackend() if dryrun else get_backend(ctx.obj.backend.default)
             result = call(obj, backend, **kwargs)
+            if dryrun:
+                click.echo(render_dag(backend.steps))
+                return
             click.echo(result.stdout)
             if result.stderr:
                 click.echo(result.stderr, err=True)
             if not result.success:
                 raise click.ClickException(f"cab '{obj.name}' exited with status {result.returncode}")
+        elif dryrun:
+            tracer = TraceBackend()
+            with patch_all_backends(tracer):
+                try:
+                    obj(**kwargs)
+                except Exception as exc:  # noqa: BLE001 -- deliberately broad: a
+                    # dry run substitutes placeholder values for real outputs, so
+                    # a recipe doing real work with them (arithmetic, real file
+                    # I/O, ...) can fail for reasons that have nothing to do with
+                    # whether the recipe itself is correct. Report it and still
+                    # show whatever was traced up to that point, rather than
+                    # crashing the CLI.
+                    click.echo(
+                        f"(recipe raised during dry run, showing the trace up to this point: {exc!r})",
+                        err=True,
+                    )
+            click.echo(render_dag(tracer.steps))
         else:
             obj(**kwargs)
 

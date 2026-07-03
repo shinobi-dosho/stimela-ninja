@@ -45,3 +45,21 @@ def test_option_flag_name_roundtrips_underscore():
 def test_run_failing_cab_reports_nonzero_exit():
     result = CliRunner().invoke(main, ["run", f"{FIXTURES}:fail"])
     assert result.exit_code != 0
+
+
+def test_run_cab_target_dryrun_shows_graph_and_does_not_execute():
+    result = CliRunner().invoke(
+        main, ["run", f"{FIXTURES}:greet", "--dryrun", "--text", "should not print"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "[ greet ]" in result.output
+    assert "should not print" not in result.output
+
+
+def test_run_recipe_target_dryrun_shows_both_steps_and_a_detected_dependency():
+    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:chained", "--dryrun"])
+    assert result.exit_code == 0, result.output
+    assert "[ make_file ]" in result.output
+    assert "[ use_file ]" in result.output
+    # a dependency edge was drawn between them, not just two disconnected boxes
+    assert "▼" in result.output

@@ -49,6 +49,17 @@ def get_backend(name: str, **opts) -> Backend:
     return backend_cls(**opts)
 
 
+def registered_backend_classes() -> list[type[Backend]]:
+    """Every concrete Backend subclass currently registered. Used by
+    `ninja run --dryrun` to patch *all* of them (regardless of which one
+    a recipe ends up constructing) so a recipe's own internal
+    get_backend()/call() usage is traced instead of actually executed --
+    see shinobi.cli for why patching by class, not by function, is the
+    only way to do that reliably.
+    """
+    return list(_REGISTRY.values())
+
+
 # Import submodules for their @register side effects, so get_backend() finds
 # every built-in backend without the caller having to import that specific
 # backend module first.
