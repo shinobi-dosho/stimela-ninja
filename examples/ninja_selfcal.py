@@ -28,16 +28,46 @@ structural port of the mechanical conversion this replaced:
   parameter names differ from what this recipe used to assume:
   `msname` -> `ms` (and it's a *list* of MS, `List[MS]`), `name` ->
   `prefix`, `channels-out` -> `nchan`.
+* The CASA tasks (`casa_mstransform`/`casa_listobs`/`casa_flagdata`/
+  `casa_flagmanager`) and `msutils` are loaded from real *stimela-classic*
+  `parameters.json` cab definitions (examples/stimela_classic/, vendored
+  -- see that dir's README), via `shinobi.loaders.stimela_classic`, for
+  the same reason wsclean moved off a hand-declared schema: cult-cargo
+  has no loadable definition for these at all (its versions use a
+  package-scoped `_include` form `shinobi.loaders.cultcargo` doesn't
+  support). Their real parameter names differ from what this recipe used
+  to assume: casa_mstransform/casa_listobs/casa_flagmanager's MS
+  parameter is `msname` (not `vis` -- `vis` is what the real CASA task
+  itself calls it, via `mapping`/`nom_de_guerre`, but the schema-facing
+  name is `msname`), and casa_mstransform's output MS parameter is
+  `output-msname` (not `outputvis`). `msutils`'s parameters already
+  matched what this recipe assumed (`msname`/`command`/`col1`/`col2`/
+  `subtract`/... unchanged).
 
-  `breizorro`/`cubical`/the CASA tasks/`msutils` are still hand-declared,
-  each for a different, concrete reason found while checking:
+  One real consequence of loading these for real: stimela-classic's own
+  CASA-task cabs aren't standalone executables -- `casa_mstransform`'s
+  `binary` is the CASA task name `mstransform`, invoked by wrapping it in
+  a CASA script, not `subprocess.run(["mstransform", ...])` -- so they
+  load with `flavour="casa-task"`, not `"binary"` (see AGENTS.md's "Never
+  eval()/exec() a cab's `command`"). The hand-declared versions this
+  replaced were incorrectly `flavour="binary"` (the decorator's default)
+  even though a bare `mstransform`/`listobs`/`flagdata`/`flagmanager`
+  binary was never really invocable that way either -- this is a
+  correction, not a new gap. It does mean any step actually reaching the
+  backend for one of these four cabs (not just dry-run's schema
+  validation) raises `UnsupportedFlavourError`, same as `casa_script`
+  below always has. `msutils` is a real, standalone binary and loads as
+  `flavour="binary"` as before -- unaffected.
+
+  `breizorro`/`cubical` are still hand-declared, each for a different,
+  concrete reason found while checking:
   - `breizorro`'s real cult-cargo schema treats the output mask filename
     as *implicit* (an output the tool derives, not a settable input) --
     doesn't fit this recipe's deterministic-path design (mask1/mask2/
     mask3 are named up front and referenced by later steps) without
     adding wrangler support to capture the real filename dynamically.
-  - `cubical`'s real schema uses ``inputs: {_include: (pkg)file}`` --
-    a package-scoped include *inside* the inputs mapping, which
+  - `cubical`'s real cult-cargo schema uses ``inputs: {_include: (pkg)file}``
+    -- a package-scoped include *inside* the inputs mapping, which
     shinobi.loaders.cultcargo doesn't support (see that module's
     docstring on scope boundaries). Its per-Jones-term parameters
     (`g1-solvable`, `g-time-int`, ...) are declared here via
@@ -45,13 +75,6 @@ structural port of the mechanical conversion this replaced:
     literal name -- the term names ("g1", "g") are chosen per call, not
     fixed by the tool, so no static `inputs` dict could ever enumerate
     every possible one (see shinobi.schema.ParamPattern).
-  - The CASA tasks (mstransform/listobs/flagdata/flagmanager) use the
-    top-level package-scoped ``_include: [{(cultcargo): [...]}]`` form,
-    which is explicitly unsupported (skipped with a warning) for the
-    same reason.
-  - `msutils` has no cult-cargo cab matching what "fresid" needs
-    (subtracting one MS column from another) -- only copycol/addcol/
-    renamecol/summary exist there.
 
 Run it:
 
@@ -66,9 +89,13 @@ per-cab io context); double-check those against the original cab
 definitions before relying on this for a real run.
 
 Known gap, unchanged: "init_ws" wraps an inline CASA python snippet
-(stimela2's "casa-task"/"python-code" flavour). shinobi's backends only
-execute "binary"-flavour cabs today -- this step is schema-complete but
-will misbehave if actually run through a backend; see AGENTS.md.
+(stimela2's "casa-task"/"python-code" flavour), and now every other CASA
+task cab in this recipe (split/info1/flag_pp/uflag_spw/flag_MW/unflag/
+leg-flags/restore-flags) shares the same "casa-task" flavour for the same
+reason -- see the module-level cabs section above. shinobi's backends
+only execute "binary"-flavour cabs today -- these steps are schema-
+complete but will raise `UnsupportedFlavourError` if actually run through
+a backend; see AGENTS.md.
 """
 
 from __future__ import annotations
@@ -81,10 +108,12 @@ from typing import Any
 from shinobi.backends import get_backend
 from shinobi.decorators import cab, recipe
 from shinobi.loaders.cultcargo import load_file
+from shinobi.loaders.stimela_classic import load_file as load_classic_cab
 from shinobi.recipe import call
 from shinobi.schema import CabDef, ParamPattern, ParamSchema
 
 _CULTCARGO_DIR = Path(__file__).parent / "cultcargo"
+_STIMELA_CLASSIC_DIR = Path(__file__).parent / "stimela_classic"
 
 # ------------------------------------------------------------------ cabs ---
 # Defined once, at module level: these describe *tasks*, not a specific
@@ -126,56 +155,16 @@ def cab_from_defaults(
     )
 
 
-@cab("mstransform", image="quay.io/stimela/casa:1.7.1")
-def casa_mstransform(
-    vis: str,
-    outputvis: str,
-    datacolumn: str = "corrected",
-    field: str = "",
-    correlation: str = "",
-    spw: str = "",
-    usewtspectrum: bool = False,
-    keepflags: bool = True,
-    nthreads: int = 1,
-    docallib: bool = False,
-    callib: str = "",
-):
-    """CASA mstransform task."""
-
-
-@cab("listobs", image="quay.io/stimela/casa:1.7.1")
-def casa_listobs(vis: str, listfile: str, overwrite: bool = False):
-    """CASA listobs task."""
-
-
-@cab("msutils", image="quay.io/stimela/base:1.2.4")
-def msutils(
-    msname: str,
-    command: str,
-    display: bool = True,
-    outfile: str = "",
-    col1: str = "",
-    col2: str = "",
-    subtract: bool = False,
-):
-    """msutils -- summary/sumcols commands."""
-
-
-@cab("flagdata", image="quay.io/stimela/casa:1.7.1")
-def casa_flagdata(
-    mode: str,
-    msname: str = "",
-    vis: str = "",  # this cab is called with either msname= or vis= below
-    autocorr: bool = False,
-    flagbackup: bool = True,
-    spw: str = "",
-):
-    """CASA flagdata task."""
-
-
-@cab("flagmanager", image="quay.io/stimela/casa:1.7.1")
-def casa_flagmanager(vis: str, mode: str, versionname: str = "", merge: str = ""):
-    """CASA flagmanager task."""
+# Real stimela-classic schemas (examples/stimela_classic/, vendored) --
+# see the module docstring for why, and that dir's README for provenance.
+# These load with flavour="casa-task" (mstransform/listobs/flagdata/
+# flagmanager) except msutils, which is a real standalone binary and
+# loads as flavour="binary" -- see the module docstring.
+casa_mstransform = load_classic_cab(_STIMELA_CLASSIC_DIR / "casa_mstransform" / "parameters.json")
+casa_listobs = load_classic_cab(_STIMELA_CLASSIC_DIR / "casa_listobs" / "parameters.json")
+casa_flagdata = load_classic_cab(_STIMELA_CLASSIC_DIR / "casa_flagdata" / "parameters.json")
+casa_flagmanager = load_classic_cab(_STIMELA_CLASSIC_DIR / "casa_flagmanager" / "parameters.json")
+msutils = load_classic_cab(_STIMELA_CLASSIC_DIR / "msutils" / "parameters.json")
 
 
 @cab("python", image="quay.io/stimela/casa:1.7.1", flavour="casa-task")
@@ -402,22 +391,27 @@ def selfcal(
         run(
             "split:: Split data for selfcal",
             casa_mstransform,
-            vis=os.path.join(rawmsdir, ms0),
-            outputvis=msdir_path(ms),
-            datacolumn="corrected",
-            field=target,
-            correlation="XX,YY",
-            spw="*:1.418734071768GHz~1.422077431768GHz",
-            usewtspectrum=True,
-            keepflags=True,
-            nthreads=32,
-            docallib=True,
-            callib=os.path.join(gaindir, applyspec),
+            **{
+                # "output-msname" is hyphenated -- not a valid Python
+                # keyword-argument name, so this step alone unpacks a
+                # dict instead of using literal name=value kwargs.
+                "msname": os.path.join(rawmsdir, ms0),
+                "output-msname": msdir_path(ms),
+                "datacolumn": "corrected",
+                "field": target,
+                "correlation": "XX,YY",
+                "spw": "*:1.418734071768GHz~1.422077431768GHz",
+                "usewtspectrum": True,
+                "keepflags": True,
+                "nthreads": 32,
+                "docallib": True,
+                "callib": os.path.join(gaindir, applyspec),
+            },
         )
         run(
             "info1:: Get observation info",
             casa_listobs,
-            vis=msdir_path(ms),
+            msname=msdir_path(ms),
             listfile=obsinfo(f"{prefix}-obsinfo.txt"),
             overwrite=True,
         )
@@ -450,7 +444,7 @@ def selfcal(
         run(
             "leg-flags:: Save incoming flags",
             casa_flagmanager,
-            vis=msdir_path(ms),
+            msname=msdir_path(ms),
             mode="save",
             versionname=legacy_flags,
             merge="replace",
@@ -680,7 +674,7 @@ initweights(vis=vis, wtmode='ones', dowtsp=True)
         "restore-flags",
         "restore-flags:: Restore incoming flags",
         casa_flagmanager,
-        vis=msdir_path(ms),
+        msname=msdir_path(ms),
         mode="restore",
         versionname=legacy_flags,
         merge="replace",
@@ -767,7 +761,7 @@ initweights(vis=vis, wtmode='ones', dowtsp=True)
         "unflag",
         "unflag:: Unflag all channels",
         casa_flagdata,
-        vis=msdir_path(ms),
+        msname=msdir_path(ms),
         mode="unflag",
         spw="*",
         flagbackup=False,
