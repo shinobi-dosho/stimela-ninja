@@ -63,3 +63,31 @@ class CabDef(BaseModel):
 
     def param_name(self, schema_name: str, schema: ParamSchema) -> str:
         return schema.nom_de_guerre or schema_name
+
+
+class RecipeInfo(BaseModel):
+    """Metadata for a @recipe-decorated function: name, docstring, and its
+    derived input schema. Exists purely so tooling (e.g. the `ninja run`
+    CLI) can build --options from a recipe's signature without calling it.
+
+    Unlike CabDef, there's no command/image/policies/outputs/wranglers --
+    a recipe's body is its own orchestration logic and manages whatever
+    backend/execution it needs itself; it has no single command of its own.
+    """
+
+    name: str
+    info: str | None = None
+    inputs: dict[str, ParamSchema] = Field(default_factory=dict)
+
+
+_FILE_LIKE_MARKERS = ("file", "ms")
+
+
+def is_file_like_dtype(dtype: str) -> bool:
+    """True if a dtype string (e.g. "File", "MS", "list:File") looks like
+    it refers to a filesystem path. Shared by the container/kubernetes
+    backends (to decide what to bind-mount) and the CLI (to map a param
+    to a click.Path() option).
+    """
+    dtype_lower = dtype.lower()
+    return any(marker in dtype_lower for marker in _FILE_LIKE_MARKERS)

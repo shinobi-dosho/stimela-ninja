@@ -1,6 +1,6 @@
-from shinobi.decorators import cab
+from shinobi.decorators import cab, recipe
 from shinobi.recipe import call
-from shinobi.schema import CabDef, ParamSchema
+from shinobi.schema import CabDef, ParamSchema, RecipeInfo
 
 
 def test_cab_decorator_produces_a_cabdef():
@@ -79,3 +79,57 @@ def test_decorated_cab_is_interchangeable_with_call(native):
     result = call(greet, native)
     assert result.success
     assert "hello from a python-native cab" in result.stdout
+
+
+# -- @recipe: unlike @cab, must stay a directly-callable plain function --
+
+
+def test_recipe_decorator_does_not_replace_function():
+    @recipe()
+    def selfcal(ms: str, threshold: float = 6.5):
+        """Run selfcal."""
+        return (ms, threshold)
+
+    assert callable(selfcal)
+    assert selfcal("data.ms") == ("data.ms", 6.5)
+    assert selfcal("data.ms", threshold=7.0) == ("data.ms", 7.0)
+
+
+def test_recipe_metadata_attached():
+    @recipe(name="my-recipe")
+    def foo(ms: str, threshold: float = 6.5):
+        """Docs here."""
+
+    info = foo.__shinobi_recipe__
+    assert isinstance(info, RecipeInfo)
+    assert info.name == "my-recipe"
+    assert info.info == "Docs here."
+    assert info.inputs["ms"].required is True
+    assert info.inputs["threshold"].default == 6.5
+
+
+def test_recipe_name_defaults_to_function_name():
+    @recipe()
+    def selfcal():
+        pass
+
+    assert selfcal.__shinobi_recipe__.name == "selfcal"
+
+
+def test_recipe_dtype_inferred_from_annotations():
+    @recipe()
+    def tool(name: str, size: int, scales: list[int]):
+        pass
+
+    inputs = tool.__shinobi_recipe__.inputs
+    assert inputs["name"].dtype == "str"
+    assert inputs["size"].dtype == "int"
+    assert inputs["scales"].dtype == "list:int"
+
+
+def test_recipe_inputs_override_replaces_derived_entry():
+    @recipe(inputs={"ms": ParamSchema(dtype="MS", required=True)})
+    def tool(ms: str = "unused"):
+        pass
+
+    assert tool.__shinobi_recipe__.inputs["ms"].dtype == "MS"

@@ -28,9 +28,20 @@ call(cabs["breizorro"], backend, restored_image=result.image)
     def breizorro(restored_image: str, threshold: float = 6.5):
         """Mask creation and manipulation for radio astronomy images."""
     ```
-- **Backends** (`shinobi.backends`) -- pluggable executors, all shelling out to the relevant CLI rather than a Python SDK: `native` (subprocess), `docker`/`podman`/`apptainer`, `slurm` (`sbatch`/`sacct`), `kubernetes` (`kubectl`, batch `Job`s). Every backend blocks until the job finishes and returns a `Result` -- no async mode, recipes are plain Python. Container/cluster backends derive bind mounts from the cab's own schema (File/MS-dtype params get their parent dir mounted). `native`/container backends were verified against a real `quay.io/stimela/wsclean` image; `slurm`/`kubernetes` were not live-verified against a real cluster (none was available in the dev environment) -- see `AGENTS.md` for what that means in practice.
-- **Recipes** (`shinobi.recipe.call`) -- just Python. No separate recipe schema.
+- **Backends** (`shinobi.backends`) -- pluggable executors, all shelling out to the relevant CLI rather than a Python SDK: `native` (subprocess), `docker`/`podman`/`apptainer`, `slurm` (`sbatch`/`sacct`), `kubernetes` (`kubectl`, batch `Job`s). Every backend blocks until the job finishes and returns a `Result` -- no async mode, recipes are plain Python. Container/cluster backends derive bind mounts from the cab's own schema (File/MS-dtype params get their parent dir mounted). `native`/container backends were verified against a real `quay.io/stimela/wsclean` image; `kubernetes` against a real `kind` cluster; `slurm` was not live-verified (no cluster was available in the dev environment) -- see `AGENTS.md` for what that means in practice.
+- **Recipes** (`shinobi.recipe.call`, `shinobi.decorators.recipe`) -- just Python. `@recipe` optionally attaches schema metadata (derived the same way `@cab` does) so the CLI can expose a recipe's parameters as options, but it never replaces the function -- the body is the orchestration and stays directly callable.
 - **Config** (`shinobi.config.AppConfig`) -- layered settings via pydantic-settings: built-in defaults < config file < env vars (`SHINOBI_*`) < explicit overrides.
+
+## CLI
+
+Every `@cab` or `@recipe`-decorated function can be run directly, without writing a Python entrypoint script -- its signature/schema becomes CLI options automatically:
+
+```bash
+ninja run cabs.py:breizorro --restored-image out-image.fits --threshold 7
+ninja run myrecipes.py:selfcal --ms data.ms --threshold 6.5
+```
+
+`ninja` and `shinobi` are the same entrypoint. `ninja run <target>` resolves `<target>` (`path/to/file.py:name` or a dotted module path) and dispatches to `shinobi.recipe.call()` for a bare `@cab`, or calls a `@recipe`-decorated function directly with the parsed options.
 
 See `AGENTS.md` for design conventions and what's deliberately left out.
 

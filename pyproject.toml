@@ -28,6 +28,7 @@ dev = [
 
 [project.scripts]
 shinobi = "shinobi.cli:main"
+ninja = "shinobi.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/shinobi"]

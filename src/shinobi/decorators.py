@@ -22,6 +22,15 @@ Per-parameter detail a bare signature can't express (info text, a
 nom_de_guerre, an implicit value, ...) can be layered on top via the
 `inputs=` kwarg: entries there replace the auto-derived ParamSchema for
 that name outright, rather than being merged field-by-field.
+
+@recipe is the recipe-side counterpart, for a plain Python function that
+*is* a pipeline (like examples/ninja_recipe.py's logic could be, wrapped
+in a function). Unlike @cab, it does not replace the function -- a
+recipe's body is the orchestration itself and must stay directly callable
+exactly as if undecorated. It only attaches a RecipeInfo (derived the same
+way @cab derives a CabDef's inputs) as `func.__shinobi_recipe__`, so
+tooling such as the `ninja run` CLI can build --options from a recipe's
+signature without calling it.
 """
 
 from __future__ import annotations
@@ -29,7 +38,7 @@ from __future__ import annotations
 import inspect
 from typing import Any, Callable, get_args, get_origin
 
-from shinobi.schema import CabDef, ParamSchema, Policies
+from shinobi.schema import CabDef, ParamSchema, Policies, RecipeInfo
 
 _DTYPE_NAMES: dict[Any, str] = {
     str: "str",
@@ -96,5 +105,25 @@ def cab(
             outputs=outputs or {},
             wranglers=wranglers or {},
         )
+
+    return decorator
+
+
+def recipe(
+    *, name: str | None = None, inputs: dict[str, ParamSchema] | None = None
+) -> Callable[[Callable], Callable]:
+    """Attach schema metadata to a plain function, without replacing it.
+    See module docstring.
+    """
+
+    def decorator(func: Callable) -> Callable:
+        derived = _inputs_from_signature(func)
+        derived.update(inputs or {})
+        func.__shinobi_recipe__ = RecipeInfo(
+            name=name or func.__name__,
+            info=inspect.getdoc(func),
+            inputs=derived,
+        )
+        return func
 
     return decorator

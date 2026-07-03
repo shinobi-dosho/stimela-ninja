@@ -24,18 +24,11 @@ from typing import Any
 from shinobi.backends import Backend, register
 from shinobi.exceptions import BackendError
 from shinobi.results import Result
-from shinobi.schema import CabDef
+from shinobi.schema import CabDef, is_file_like_dtype
 from shinobi.wranglers import apply_wranglers
 
 _DOCKER_LIKE = {"docker", "podman"}
 _APPTAINER_LIKE = {"apptainer"}
-
-_FILE_LIKE_MARKERS = ("file", "ms")
-
-
-def _is_file_like(dtype: str) -> bool:
-    dtype_lower = dtype.lower()
-    return any(marker in dtype_lower for marker in _FILE_LIKE_MARKERS)
 
 
 def bind_dirs(cab: CabDef, params: dict[str, Any], workdir: str) -> list[str]:
@@ -47,7 +40,7 @@ def bind_dirs(cab: CabDef, params: dict[str, Any], workdir: str) -> list[str]:
 
     for name, value in params.items():
         schema = cab.inputs.get(name)
-        if schema is None or value is None or not _is_file_like(schema.dtype):
+        if schema is None or value is None or not is_file_like_dtype(schema.dtype):
             continue
 
         for item in value if isinstance(value, (list, tuple)) else [value]:

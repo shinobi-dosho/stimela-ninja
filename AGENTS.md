@@ -19,7 +19,9 @@ Do not add:
 - **Output wranglers** (`shinobi.wranglers`): regex-based extraction of structured outputs from a cab's console output. Only `PARSE_OUTPUT` is implemented; add other actions (`HIGHLIGHT`, `SUPPRESS`, ...) only when a real cab needs them, not speculatively.
 - **Backend abstraction** (`shinobi.backends`): a cab doesn't know if it's running natively, in a container, or on a cluster. Backends shell out to the runtime CLI (`docker`/`podman`/`apptainer`/`sbatch`+`sacct`/`kubectl`) rather than using each system's Python SDK -- one code path per backend, no heavyweight client dependencies, and it's the only option for runtimes like apptainer that don't have a good Python API anyway. `Backend.run(cab, argv, params)` is handed the *resolved* params dict alongside argv specifically so container/cluster backends can derive bind mounts from the cab's own schema: any resolved param whose `dtype` looks file-like (`File`, `MS`, `list:File`, ...) gets its parent directory mounted at the same path (`shinobi.backends.container.bind_dirs`, shared with the Kubernetes backend). Every backend's `run()` blocks until the job/container/process is done and returns a `Result` -- there's no async/fire-and-forget mode, because recipes are plain Python and the next line usually needs this step's output.
   - `native`/`docker`/`podman`/`apptainer` were verified against a real `quay.io/stimela/wsclean` image and a real bind-mounted host file in `tests/test_docker_live.py` (skipped if docker/the image isn't available) -- not just mocked.
-  - `slurm` (submits via `sbatch`, polls `sacct`, wraps the command in apptainer by default since Slurm schedules compute but doesn't run containers itself) and `kubernetes` (submits a batch `Job` via `kubectl apply`, polls `kubectl get job`, mounts File/MS params as `hostPath` volumes) were **not** live-verified -- no cluster was available in the dev environment they were built in. They're reviewed-by-construction and covered by tests that mock the CLI calls (`tests/test_slurm_backend.py`, `tests/test_kubernetes_backend.py`), not proven against a real scheduler/cluster. Verify against a real one before relying on them. `hostPath` volumes on the Kubernetes backend also only work if the node actually running the pod has that path (fine for a single-node dev cluster or nodes sharing storage, not a general multi-node production cluster -- that needs PersistentVolumeClaims, deliberately not built).
+  - `slurm` (submits via `sbatch`, polls `sacct`, wraps the command in apptainer by default since Slurm schedules compute but doesn't run containers itself) and `kubernetes` (submits a batch `Job` via `kubectl apply`, polls `kubectl get job`, mounts File/MS params as `hostPath` volumes) were live-verified against a real `kind` cluster (`tests/test_kubernetes_live.py`, skipped without a reachable cluster) -- proven, not just reviewed-by-construction. `slurm` has no equivalent live test yet (no cluster was available to verify against); it's covered by tests that mock the CLI calls (`tests/test_slurm_backend.py`), not proven against a real scheduler. Verify against a real one before relying on it. `hostPath` volumes on the Kubernetes backend also only work if the node actually running the pod has that path (fine for a single-node dev cluster, or nodes sharing storage -- confirmed on `kind` via `extraMounts` -- not a general multi-node production cluster without shared storage, which needs PersistentVolumeClaims instead, deliberately not built).
+- **`@recipe` decorator** (`shinobi.decorators.recipe`): the recipe-side counterpart to `@cab` -- derives a `ParamSchema` dict from a function's signature (reusing the same `_inputs_from_signature` helper `@cab` uses), purely so tooling can see a recipe's parameters without executing it. Unlike `@cab`, it does **not** replace the function: the decorated name stays directly callable, because a recipe's body is the orchestration logic itself (see Core rule) and must run exactly as if undecorated. Metadata is attached as `func.__shinobi_recipe__: RecipeInfo` -- a new, deliberately minimal schema type with no `command`/`image`/`policies`/`outputs`/`wranglers`, since a recipe manages its own backend/execution in its body and has no single command of its own. This is unrelated to the earlier-deferred "recipe as cab" idea (making a recipe passable to `call()` with backend-dispatch parity to a `CabDef`) -- `@recipe` targets are always invoked as a plain Python function call, never through `Backend.run()`.
+- **`ninja run <target> [OPTIONS]` CLI** (`shinobi.cli`): a thin argv-to-kwargs translator for both `@cab` and `@recipe` targets, nothing more. `<target>` is `path/to/file.py:name` or `dotted.module:name`, resolved via `importlib`; the target's existing schema (`CabDef.inputs`, or a `@recipe`'s derived `ParamSchema` dict) is turned into `click.Option`s *at runtime* (the target isn't known until the CLI parses it -- this needs the underlying `click.Command`/`click.Option` object API directly, since declarative `@click.option` is fixed at import time), then dispatched to exactly the call either would already get from Python: `shinobi.recipe.call(cab, backend, **kwargs)` for a cab, or a direct function call for a recipe. This is not a second orchestration language -- there's no new expression syntax, no step-referencing, no control flow beyond "parse flags, call the one function/cab named"; every recipe's actual pipeline logic still lives entirely in its Python body. The CLI is a caller, not an interpreter. Both `shinobi` and `ninja` console scripts point at the same click app.
 
 ## Config: one validation library, not five
 
@@ -29,14 +31,15 @@ Stimela 2.0 stacks `omegaconf` + its own `scabha.configuratt` + `munch` + `pytho
 
 ```
 src/shinobi/
-  schema.py            # ParamSchema, Policies, CabDef
-  decorators.py         # @cab -- Python-native cab definitions
+  schema.py            # ParamSchema, Policies, CabDef, RecipeInfo, is_file_like_dtype
+  decorators.py         # @cab, @recipe -- Python-native cab/recipe definitions
   policies.py           # resolve_params / build_argv / build_args
   wranglers.py          # stdout/stderr -> structured outputs
   results.py            # Result (what call() returns)
   recipe.py             # call() -- the entire "recipe" API
   config.py             # AppConfig (pydantic-settings)
-  cli.py                # click entrypoint
+  cli.py                # click entrypoint (shinobi/ninja); `run` dynamically builds
+                         # --options from a target's CabDef/RecipeInfo schema
   backends/
     __init__.py          # Backend ABC + registry (get_backend/register); imports every
                           # backend submodule so @register actually fires without the
@@ -44,12 +47,15 @@ src/shinobi/
     native.py             # subprocess
     container.py          # docker/podman/apptainer, shells out to the runtime CLI, derives bind mounts from schema
     slurm.py               # sbatch/sacct, not live-verified (no cluster in dev env)
-    kubernetes.py          # kubectl, not live-verified (no cluster in dev env)
+    kubernetes.py          # kubectl, live-verified against a real kind cluster
   loaders/
     cultcargo.py          # cult-cargo YAML -> CabDef
 tests/                    # one test module per src module; run via `pytest`
-                          # test_docker_live.py is a real (non-mocked) integration test, skipped without docker
+  fixtures/sample_targets.py  # tiny @cab/@recipe targets used by test_cli.py
+                          # test_docker_live.py / test_kubernetes_live.py are real
+                          # (non-mocked) integration tests, skipped without docker/a cluster
                           # test_slurm_backend.py / test_kubernetes_backend.py mock the CLI calls
+                          # (kubernetes also has the above live test; slurm doesn't yet)
 ```
 
 ## Before adding a feature
