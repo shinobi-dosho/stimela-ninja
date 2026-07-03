@@ -51,6 +51,7 @@ class CabDef(BaseModel):
 
     name: str
     command: str
+    info: str | None = None
     image: str | None = None
     flavour: str = "binary"
     policies: Policies = Field(default_factory=Policies)

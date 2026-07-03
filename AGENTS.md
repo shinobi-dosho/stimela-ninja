@@ -15,6 +15,7 @@ Do not add:
 
 - **Typed cab schema** (`shinobi.schema.CabDef`, `ParamSchema`, `Policies`): declarative inputs/outputs with `dtype`/`required`/`default`, and policies that auto-generate CLI args. This is genuinely better than Stimela classic, which required a hand-written `run.py` per cab to build argv imperatively.
 - **cult-cargo YAML compatibility** (`shinobi.loaders.cultcargo`): the cab schema format itself isn't the problem -- only the recipe layer built on top of it is. Loading existing cult-cargo cab defs unlocks the whole existing radio-astronomy tool library instead of requiring a rewrite.
+- **Python-native cab definitions** (`shinobi.decorators.cab`): a decorated function's signature *is* the input schema (type hint -> dtype, presence of a default -> required), producing the exact same `CabDef` the YAML loader does -- the two are fully interchangeable, `shinobi.recipe.call()` can't tell them apart. The function body is never called for a binary-flavour cab; only its signature and docstring (-> `info`) are read, at decoration time. Per-param detail a signature can't express (a `nom_de_guerre`, `info` text, ...) goes through the `inputs=` override kwarg rather than growing annotation syntax to express it -- don't invent an `Annotated[...]`-based mini-language here for the same reason we don't want one in recipes.
 - **Output wranglers** (`shinobi.wranglers`): regex-based extraction of structured outputs from a cab's console output. Only `PARSE_OUTPUT` is implemented; add other actions (`HIGHLIGHT`, `SUPPRESS`, ...) only when a real cab needs them, not speculatively.
 - **Backend abstraction** (`shinobi.backends`): a cab doesn't know if it's running natively, in a container, or on a cluster. Backends shell out to the runtime binary (`docker`/`podman`/`apptainer` CLI) rather than using each runtime's Python SDK -- one code path, no heavyweight client dependencies, and it's the only option for runtimes like apptainer that don't have a good Python API anyway. `Backend.run(cab, argv, params)` is handed the *resolved* params dict alongside argv specifically so container backends can derive bind mounts from the cab's own schema: any resolved param whose `dtype` looks file-like (`File`, `MS`, `list:File`, ...) gets its parent directory mounted at the same path in-container (`shinobi.backends.container._bind_dirs`). Verified against a real `quay.io/stimela/wsclean` image in `tests/test_docker_live.py` (skipped if docker/the image isn't available), not just mocked.
 
@@ -27,6 +28,7 @@ Stimela 2.0 stacks `omegaconf` + its own `scabha.configuratt` + `munch` + `pytho
 ```
 src/shinobi/
   schema.py            # ParamSchema, Policies, CabDef
+  decorators.py         # @cab -- Python-native cab definitions
   policies.py           # resolve_params / build_argv / build_args
   wranglers.py          # stdout/stderr -> structured outputs
   results.py            # Result (what call() returns)

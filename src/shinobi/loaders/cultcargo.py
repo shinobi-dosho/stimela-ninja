@@ -130,6 +130,7 @@ def _build_cabdef(name: str, spec: dict[str, Any]) -> CabDef:
     return CabDef(
         name=name,
         command=spec["command"],
+        info=spec.get("info"),
         image=image,
         flavour=flavour,
         policies=Policies(**policies_spec),
