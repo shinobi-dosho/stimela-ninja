@@ -24,7 +24,7 @@ nom_de_guerre, an implicit value, ...) can be layered on top via the
 that name outright, rather than being merged field-by-field.
 
 @recipe is the recipe-side counterpart, for a plain Python function that
-*is* a pipeline (like examples/ninja_recipe.py's logic could be, wrapped
+*is* a pipeline (like examples/ninja_selfcal.py's logic could be, wrapped
 in a function). Unlike @cab, it does not replace the function -- a
 recipe's body is the orchestration itself and must stay directly callable
 exactly as if undecorated. It only attaches a RecipeInfo (derived the same

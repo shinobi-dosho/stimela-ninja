@@ -8,7 +8,7 @@ def test_placeholder_is_found_as_exact_value():
 
 def test_placeholder_is_found_inside_a_concatenated_string():
     # recipes often combine a prior output into a bigger string, e.g.
-    # f"MODEL_DATA+{result.image}" in examples/ninja_recipe.py
+    # f"MODEL_DATA+{result.image}" in examples/ninja_selfcal.py
     deps = find_dependencies({"model": f"MODEL_DATA+{placeholder(2, 'lsm')}"})
     assert deps == {2}
 
