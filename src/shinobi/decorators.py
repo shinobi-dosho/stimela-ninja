@@ -23,6 +23,14 @@ nom_de_guerre, an implicit value, ...) can be layered on top via the
 `inputs=` kwarg: entries there replace the auto-derived ParamSchema for
 that name outright, rather than being merged field-by-field.
 
+Some tools (QuartiCal's `solver.terms=[K,G]` making `K.type`/`G.type`/...
+valid) have parameter names that depend on another parameter's *value*,
+which no signature -- or fixed `inputs` dict -- can ever enumerate. For
+those, pass `input_patterns=[ParamPattern(...)]` (see shinobi.schema);
+matched dynamically-named params flow straight to the underlying
+command, validated against the pattern's declared attrs instead of a
+fixed name.
+
 @recipe is the recipe-side counterpart, for a plain Python function that
 *is* a pipeline (like examples/ninja_selfcal.py's logic could be, wrapped
 in a function). Unlike @cab, it does not replace the function -- a
@@ -38,7 +46,7 @@ from __future__ import annotations
 import inspect
 from typing import Any, Callable, get_args, get_origin
 
-from shinobi.schema import CabDef, ParamSchema, Policies, RecipeInfo
+from shinobi.schema import CabDef, ParamPattern, ParamSchema, Policies, RecipeInfo
 
 _DTYPE_NAMES: dict[Any, str] = {
     str: "str",
@@ -88,6 +96,7 @@ def cab(
     inputs: dict[str, ParamSchema] | None = None,
     outputs: dict[str, ParamSchema] | None = None,
     wranglers: dict[str, list[str]] | None = None,
+    input_patterns: list[ParamPattern] | None = None,
 ) -> Callable[[Callable], CabDef]:
     """Decorate a function to produce a CabDef. See module docstring."""
 
@@ -104,6 +113,7 @@ def cab(
             inputs=derived,
             outputs=outputs or {},
             wranglers=wranglers or {},
+            input_patterns=input_patterns or [],
         )
 
     return decorator

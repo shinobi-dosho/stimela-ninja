@@ -39,7 +39,12 @@ structural port of the mechanical conversion this replaced:
   - `cubical`'s real schema uses ``inputs: {_include: (pkg)file}`` --
     a package-scoped include *inside* the inputs mapping, which
     shinobi.loaders.cultcargo doesn't support (see that module's
-    docstring on scope boundaries).
+    docstring on scope boundaries). Its per-Jones-term parameters
+    (`g1-solvable`, `g-time-int`, ...) are declared here via
+    `input_patterns=[ParamPattern(...)]` instead of one entry per
+    literal name -- the term names ("g1", "g") are chosen per call, not
+    fixed by the tool, so no static `inputs` dict could ever enumerate
+    every possible one (see shinobi.schema.ParamPattern).
   - The CASA tasks (mstransform/listobs/flagdata/flagmanager) use the
     top-level package-scoped ``_include: [{(cultcargo): [...]}]`` form,
     which is explicitly unsupported (skipped with a warning) for the
@@ -77,7 +82,7 @@ from shinobi.backends import get_backend
 from shinobi.decorators import cab, recipe
 from shinobi.loaders.cultcargo import load_file
 from shinobi.recipe import call
-from shinobi.schema import CabDef, ParamSchema
+from shinobi.schema import CabDef, ParamPattern, ParamSchema
 
 _CULTCARGO_DIR = Path(__file__).parent / "cultcargo"
 
@@ -103,11 +108,22 @@ def _infer_dtype(value: Any) -> str:
 
 
 def cab_from_defaults(
-    cab_name: str, command: str, cab_image: str, defaults: dict[str, Any], **extra_inputs: ParamSchema
+    cab_name: str,
+    command: str,
+    cab_image: str,
+    defaults: dict[str, Any],
+    input_patterns: list[ParamPattern] | None = None,
+    **extra_inputs: ParamSchema,
 ) -> CabDef:
     inputs = {k: ParamSchema(dtype=_infer_dtype(v), default=v) for k, v in defaults.items()}
     inputs.update(extra_inputs)
-    return CabDef(name=cab_name, command=command, image=cab_image, inputs=inputs)
+    return CabDef(
+        name=cab_name,
+        command=command,
+        image=cab_image,
+        inputs=inputs,
+        input_patterns=input_patterns or [],
+    )
 
 
 @cab("mstransform", image="quay.io/stimela/casa:1.7.1")
@@ -233,6 +249,25 @@ cubical = cab_from_defaults(
     "cubical",
     "quay.io/stimela2/cubical:latest",
     cal_opts,
+    input_patterns=[
+        # cubical accepts one family of these per solvable Jones term
+        # (g1-*, g-*, dE-*, ...) -- the term names (here "g1", "g") are
+        # chosen per recipe/call, not fixed by the tool, so no static
+        # `inputs` dict could ever enumerate every possible one. A
+        # pattern says "any prefix, as long as the suffix is one of
+        # these known attrs" -- see shinobi.schema.ParamPattern.
+        ParamPattern(
+            separator="-",
+            attrs={
+                "solvable": ParamSchema(dtype="bool"),
+                "type": ParamSchema(dtype="str"),
+                "time-int": ParamSchema(dtype="int"),
+                "freq-int": ParamSchema(dtype="int"),
+                "update-type": ParamSchema(dtype="str"),
+                "xfer-from": ParamSchema(dtype="File"),
+            },
+        )
+    ],
     **{
         "data-ms": ParamSchema(dtype="MS", required=True),
         "out-name": ParamSchema(dtype="str", required=True),
@@ -242,19 +277,6 @@ cubical = cab_from_defaults(
         "out-apply-solver-flags": ParamSchema(dtype="bool"),
         "flags-save": ParamSchema(dtype="str"),
         "flags-apply": ParamSchema(dtype="str"),
-        # per-Jones-term params -- cubical accepts one family of these per
-        # solvable term (g1-*, g-*, ...), so the exact set can't be fully
-        # enumerated ahead of time; these are just the ones this recipe uses.
-        "g1-solvable": ParamSchema(dtype="bool"),
-        "g1-type": ParamSchema(dtype="str"),
-        "g1-time-int": ParamSchema(dtype="int"),
-        "g1-freq-int": ParamSchema(dtype="int"),
-        "g-solvable": ParamSchema(dtype="bool"),
-        "g-type": ParamSchema(dtype="str"),
-        "g-time-int": ParamSchema(dtype="int"),
-        "g-freq-int": ParamSchema(dtype="int"),
-        "g-update-type": ParamSchema(dtype="str"),
-        "g-xfer-from": ParamSchema(dtype="File"),
     },
 )
 

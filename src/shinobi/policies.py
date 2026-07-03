@@ -33,7 +33,16 @@ def resolve_params(cab: CabDef, params: dict[str, Any]) -> dict[str, Any]:
         elif schema.required:
             raise ParameterError(f"{cab.name}: missing required parameter '{name}'")
 
-    unknown = set(params) - set(cab.inputs)
+    # anything not a declared input might still be a dynamically-named
+    # one (see ParamSchema/CabDef.input_patterns) -- e.g. QuartiCal's
+    # solver.terms=[K,G] making K.type/G.type valid, where no fixed
+    # `inputs` dict could ever enumerate every possible term name
+    unknown = []
+    for name in set(params) - set(cab.inputs):
+        if cab.match_pattern(name) is not None:
+            resolved[name] = params[name]
+        else:
+            unknown.append(name)
     if unknown:
         raise ParameterError(f"{cab.name}: unknown parameter(s) {sorted(unknown)}")
 
@@ -46,6 +55,22 @@ def _format_value(value: Any, policies) -> str | None:
     if isinstance(value, (list, tuple)):
         return policies.list_sep.join(str(v) for v in value)
     return str(value)
+
+
+def _emit_arg(argv: list[str], policies, arg_name: str, value: Any) -> None:
+    if isinstance(value, bool):
+        if value:
+            argv.append(arg_name)
+        return
+
+    if isinstance(value, (list, tuple)) and policies.repeat_list:
+        for item in value:
+            argv.append(arg_name)
+            argv.append(str(item))
+        return
+
+    argv.append(arg_name)
+    argv.append(_format_value(value, policies))
 
 
 def build_argv(cab: CabDef, resolved: dict[str, Any]) -> list[str]:
@@ -63,27 +88,18 @@ def build_argv(cab: CabDef, resolved: dict[str, Any]) -> list[str]:
     policies = cab.policies
 
     for name, schema in cab.inputs.items():
-        if name not in resolved:
+        if name not in resolved or resolved[name] is None:
             continue
-        value = resolved[name]
-        if value is None:
-            continue
-
         arg_name = policies.arg_name(cab.param_name(name, schema))
+        _emit_arg(argv, policies, arg_name, resolved[name])
 
-        if isinstance(value, bool):
-            if value:
-                argv.append(arg_name)
+    # pattern-matched (dynamically-named) params, e.g. K.type/G.type
+    for name, value in resolved.items():
+        if name in cab.inputs or value is None:
             continue
-
-        if isinstance(value, (list, tuple)) and policies.repeat_list:
-            for item in value:
-                argv.append(arg_name)
-                argv.append(str(item))
-            continue
-
-        argv.append(arg_name)
-        argv.append(_format_value(value, policies))
+        schema = cab.match_pattern(name)
+        arg_name = policies.arg_name(cab.param_name(name, schema))
+        _emit_arg(argv, policies, arg_name, value)
 
     return argv
 

@@ -2,7 +2,7 @@ import pytest
 
 from shinobi.backends.container import ApptainerBackend, DockerBackend
 from shinobi.exceptions import BackendError
-from shinobi.schema import CabDef, ParamSchema
+from shinobi.schema import CabDef, ParamPattern, ParamSchema
 
 
 def make_cab(**inputs: ParamSchema) -> CabDef:
@@ -86,3 +86,18 @@ def test_apptainer_uses_bind_and_exec():
     pwd_index = argv.index("--pwd")
     assert argv[pwd_index + 1] == "/work"
     assert argv[pwd_index + 2] == "tool:latest"
+
+
+def test_docker_wrap_mounts_pattern_matched_file_param():
+    cab = CabDef(
+        name="quartical",
+        command="quartical",
+        image="tool:latest",
+        input_patterns=[ParamPattern(attrs={"model_column": ParamSchema(dtype="File")})],
+    )
+    backend = DockerBackend(workdir="/work")
+    argv = backend._wrap(
+        cab, ["quartical", "--K.model_column", "/data/model.fits"], {"K.model_column": "/data/model.fits"}
+    )
+    mounts = {argv[i + 1] for i, a in enumerate(argv) if a == "-v"}
+    assert mounts == {"/work:/work", "/data:/data"}

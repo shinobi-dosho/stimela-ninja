@@ -39,7 +39,7 @@ def bind_dirs(cab: CabDef, params: dict[str, Any], workdir: str) -> list[str]:
     seen = {workdir}
 
     for name, value in params.items():
-        schema = cab.inputs.get(name)
+        schema = cab.inputs.get(name) or cab.match_pattern(name)
         if schema is None or value is None or not is_file_like_dtype(schema.dtype):
             continue
 

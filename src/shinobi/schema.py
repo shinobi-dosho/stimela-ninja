@@ -46,6 +46,39 @@ class Policies(BaseModel):
         return f"{self.prefix}{name}"
 
 
+class ParamPattern(BaseModel):
+    """A family of inputs whose names are ``<prefix><separator><attr>``,
+    where `prefix` is any string (not enumerable at cab-authoring time)
+    and `attr` must be one of `attrs`.
+
+    Some real tools have parameter names that depend on the *value* of
+    another parameter -- e.g. QuartiCal's ``solver.terms=[K,G]`` makes
+    `K.type`/`G.type`/`K.time_interval`/... valid, but the term names
+    (`K`, `G`, ...) are chosen by the user, not fixed by the tool. A
+    static `inputs` dict can never enumerate that; a pattern says "any
+    prefix is fine, as long as the suffix is one of these known attrs."
+    """
+
+    separator: str = "."
+    attrs: dict[str, ParamSchema] = Field(default_factory=dict)
+
+    def matches(self, name: str) -> ParamSchema | None:
+        # Checked against each declared attr as a candidate suffix, not
+        # split on the *last* separator: an attr itself can contain the
+        # separator character (e.g. "time-int" with separator "-"), which
+        # would make a blind rpartition() split inside the attr instead of
+        # between prefix and attr. Prefers the longest matching attr, in
+        # case one declared attr is itself a suffix of another.
+        best_attr: str | None = None
+        for attr in self.attrs:
+            suffix = f"{self.separator}{attr}"
+            if name.endswith(suffix) and len(name) > len(suffix) and (
+                best_attr is None or len(attr) > len(best_attr)
+            ):
+                best_attr = attr
+        return self.attrs.get(best_attr) if best_attr is not None else None
+
+
 class CabDef(BaseModel):
     """A cab definition: an atomic, backend-agnostic task."""
 
@@ -60,9 +93,19 @@ class CabDef(BaseModel):
     # regex -> list of wrangler action strings, e.g.
     # {"Flagged: (?P<percentage>[\\d.]+)%": ["PARSE_OUTPUT:percentage:float"]}
     wranglers: dict[str, list[str]] = Field(default_factory=dict)
+    # families of dynamically-named inputs a fixed `inputs` dict can't
+    # express -- see ParamPattern
+    input_patterns: list[ParamPattern] = Field(default_factory=list)
 
     def param_name(self, schema_name: str, schema: ParamSchema) -> str:
         return schema.nom_de_guerre or schema_name
+
+    def match_pattern(self, name: str) -> ParamSchema | None:
+        for pattern in self.input_patterns:
+            schema = pattern.matches(name)
+            if schema is not None:
+                return schema
+        return None
 
 
 class RecipeInfo(BaseModel):

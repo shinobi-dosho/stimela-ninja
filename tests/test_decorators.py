@@ -1,6 +1,6 @@
 from shinobi.decorators import cab, recipe
 from shinobi.recipe import call
-from shinobi.schema import CabDef, ParamSchema, RecipeInfo
+from shinobi.schema import CabDef, ParamPattern, ParamSchema, RecipeInfo
 
 
 def test_cab_decorator_produces_a_cabdef():
@@ -133,3 +133,15 @@ def test_recipe_inputs_override_replaces_derived_entry():
         pass
 
     assert tool.__shinobi_recipe__.inputs["ms"].dtype == "MS"
+
+
+def test_cab_input_patterns_passthrough():
+    @cab(
+        "goquartical",
+        input_patterns=[ParamPattern(attrs={"type": ParamSchema(dtype="str")})],
+    )
+    def quartical(input_ms: str):
+        pass
+
+    assert quartical.match_pattern("K.type") is not None
+    assert quartical.match_pattern("K.bogus") is None
