@@ -18,7 +18,7 @@ from typing import Any
 
 from shinobi.backends import Backend
 from shinobi.exceptions import CabRunError
-from shinobi.policies import build_args
+from shinobi.policies import build_argv, resolve_params
 from shinobi.results import Result
 from shinobi.schema import CabDef
 
@@ -30,8 +30,9 @@ def call(cab: CabDef, backend: Backend, *, check: bool = True, **params: Any) ->
     mirroring subprocess.run's check= semantics, since that's exactly what
     this is doing under the hood.
     """
-    argv = build_args(cab, params)
-    result = backend.run(cab, argv)
+    resolved = resolve_params(cab, params)
+    argv = build_argv(cab, resolved)
+    result = backend.run(cab, argv, resolved)
 
     if check and not result.success:
         raise CabRunError(

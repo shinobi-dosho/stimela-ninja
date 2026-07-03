@@ -5,16 +5,21 @@ rather than using each runtime's Python SDK -- one code path for all of
 them, no extra heavyweight client dependencies, and it works uniformly for
 runtimes (like apptainer) that don't have a good Python API to begin with.
 
-This is a first-pass scaffold: it mounts the current working directory and
-nothing else. Real volume-mount policy (input/output dirs, MS dirs, etc.)
-is a follow-up -- deliberately not designed here until a real pipeline
-exercises the requirements.
+Volume mounts are derived from the cab's own schema: any resolved
+parameter whose declared dtype looks file-like (``File``, ``MS``,
+``list:File``, ...) has its parent directory bind-mounted at the same
+path inside the container, so the tool sees the same paths the caller
+used. This is why Backend.run() is handed the resolved params dict, not
+just argv -- argv is just strings by that point, with no memory of which
+of them are paths.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
+from typing import Any
 
 from shinobi.backends import Backend, register
 from shinobi.exceptions import BackendError
@@ -25,6 +30,37 @@ from shinobi.wranglers import apply_wranglers
 _DOCKER_LIKE = {"docker", "podman"}
 _SINGULARITY_LIKE = {"apptainer", "singularity"}
 
+_FILE_LIKE_MARKERS = ("file", "ms")
+
+
+def _is_file_like(dtype: str) -> bool:
+    dtype_lower = dtype.lower()
+    return any(marker in dtype_lower for marker in _FILE_LIKE_MARKERS)
+
+
+def _bind_dirs(cab: CabDef, params: dict[str, Any], workdir: str) -> list[str]:
+    """Parent directories of every File/MS-valued resolved param, plus the
+    working directory itself. Order-preserving, de-duplicated.
+    """
+    dirs = [workdir]
+    seen = {workdir}
+
+    for name, value in params.items():
+        schema = cab.inputs.get(name)
+        if schema is None or value is None or not _is_file_like(schema.dtype):
+            continue
+
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            path = Path(str(item))
+            if not path.is_absolute():
+                path = Path(workdir) / path
+            parent = str(path.parent)
+            if parent not in seen:
+                seen.add(parent)
+                dirs.append(parent)
+
+    return dirs
+
 
 class ContainerBackend(Backend):
     def __init__(self, runtime: str, workdir: str | None = None):
@@ -33,37 +69,22 @@ class ContainerBackend(Backend):
         self.runtime = runtime
         self.workdir = workdir or os.getcwd()
 
-    def _wrap(self, cab: CabDef, argv: list[str]) -> list[str]:
+    def _wrap(self, cab: CabDef, argv: list[str], params: dict[str, Any]) -> list[str]:
         if not cab.image:
             raise BackendError(f"cab '{cab.name}' has no image, cannot run under {self.runtime}")
 
+        dirs = _bind_dirs(cab, params, self.workdir)
+
         if self.runtime in _DOCKER_LIKE:
-            return [
-                self.runtime,
-                "run",
-                "--rm",
-                "-v",
-                f"{self.workdir}:{self.workdir}",
-                "-w",
-                self.workdir,
-                cab.image,
-                *argv,
-            ]
+            mounts = [flag for d in dirs for flag in ("-v", f"{d}:{d}")]
+            return [self.runtime, "run", "--rm", *mounts, "-w", self.workdir, cab.image, *argv]
 
         # apptainer/singularity
-        return [
-            self.runtime,
-            "exec",
-            "--bind",
-            f"{self.workdir}:{self.workdir}",
-            "--pwd",
-            self.workdir,
-            cab.image,
-            *argv,
-        ]
+        binds = [flag for d in dirs for flag in ("--bind", f"{d}:{d}")]
+        return [self.runtime, "exec", *binds, "--pwd", self.workdir, cab.image, *argv]
 
-    def run(self, cab: CabDef, argv: list[str]) -> Result:
-        full_argv = self._wrap(cab, argv)
+    def run(self, cab: CabDef, argv: list[str], params: dict[str, Any]) -> Result:
+        full_argv = self._wrap(cab, argv, params)
         proc = subprocess.run(full_argv, capture_output=True, text=True)
         lines = proc.stdout.splitlines() + proc.stderr.splitlines()
         outputs = apply_wranglers(cab.wranglers, lines)

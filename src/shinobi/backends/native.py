@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from typing import Any
 
 from shinobi.backends import Backend, register
 from shinobi.results import Result
@@ -14,7 +15,7 @@ class NativeBackend(Backend):
 
     name = "native"
 
-    def run(self, cab: CabDef, argv: list[str]) -> Result:
+    def run(self, cab: CabDef, argv: list[str], params: dict[str, Any]) -> Result:
         proc = subprocess.run(argv, capture_output=True, text=True)
         lines = proc.stdout.splitlines() + proc.stderr.splitlines()
         outputs = apply_wranglers(cab.wranglers, lines)

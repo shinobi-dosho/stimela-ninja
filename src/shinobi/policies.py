@@ -42,11 +42,10 @@ def _format_value(value: Any, policies) -> str | None:
     return str(value)
 
 
-def build_args(cab: CabDef, params: dict[str, Any]) -> list[str]:
-    """Build a full argv (starting with the cab's command) from resolved
-    parameter values, according to the cab's policies.
+def build_argv(cab: CabDef, resolved: dict[str, Any]) -> list[str]:
+    """Build a full argv (starting with the cab's command) from an already
+    resolve_params()-ed parameter dict, according to the cab's policies.
     """
-    resolved = resolve_params(cab, params)
     argv: list[str] = [cab.command]
     policies = cab.policies
 
@@ -74,3 +73,8 @@ def build_args(cab: CabDef, params: dict[str, Any]) -> list[str]:
         argv.append(_format_value(value, policies))
 
     return argv
+
+
+def build_args(cab: CabDef, params: dict[str, Any]) -> list[str]:
+    """Convenience wrapper: resolve_params() + build_argv() in one call."""
+    return build_argv(cab, resolve_params(cab, params))

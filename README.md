@@ -19,7 +19,7 @@ call(cabs["breizorro"], backend, restored_image=result.image)
 ## Architecture
 
 - **Cabs** (`shinobi.schema.CabDef`) -- a typed, backend-agnostic description of an atomic task: inputs/outputs schema, and *policies* for turning parameters into a CLI invocation. Cab definitions can be loaded from existing [cult-cargo](https://github.com/caracal-pipeline/cult-cargo) YAML (`shinobi.loaders.cultcargo`) -- that schema format is good design and is reused as-is, including its `_include` (file composition) and `_use` (dotted-path deep-merge) mechanisms, verified against real upstream cab files. The `=config.x.y` expression language and package-scoped includes are deliberately not implemented -- see the module docstring and `AGENTS.md`.
-- **Backends** (`shinobi.backends`) -- pluggable executors: `native` (subprocess) and `docker`/`podman`/`apptainer` (shells out to the runtime binary) ship today; Slurm/Kubernetes are a later milestone.
+- **Backends** (`shinobi.backends`) -- pluggable executors: `native` (subprocess) and `docker`/`podman`/`apptainer` (shells out to the runtime binary) ship today; Slurm/Kubernetes are a later milestone. Container backends derive bind mounts from the cab's own schema (File/MS-dtype params get their parent dir mounted), verified against a real `quay.io/stimela/wsclean` image.
 - **Recipes** (`shinobi.recipe.call`) -- just Python. No separate recipe schema.
 - **Config** (`shinobi.config.AppConfig`) -- layered settings via pydantic-settings: built-in defaults < config file < env vars (`SHINOBI_*`) < explicit overrides.
 

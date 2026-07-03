@@ -9,6 +9,7 @@ execute and how to capture output.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from shinobi.results import Result
 from shinobi.schema import CabDef
@@ -18,10 +19,15 @@ class Backend(ABC):
     name: str
 
     @abstractmethod
-    def run(self, cab: CabDef, argv: list[str]) -> Result:
-        """Execute argv (as built by shinobi.policies.build_args) and
+    def run(self, cab: CabDef, argv: list[str], params: dict[str, Any]) -> Result:
+        """Execute argv (as built by shinobi.policies.build_argv) and
         return a Result. Must not raise on a non-zero exit -- that's
         reported via Result.returncode / Result.success.
+
+        ``params`` is the fully resolved (defaults/implicit applied)
+        parameter dict argv was built from. Most backends ignore it, but
+        container backends need it to know which File/MS-valued params
+        have to be bind-mounted.
         """
 
 
