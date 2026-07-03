@@ -87,7 +87,7 @@ def _blank(width: int) -> list[str]:
     return [" "] * width
 
 
-def _ticks(width: int, cols: list[str] | list[int], ch: str = "│") -> str:
+def _ticks(width: int, cols: list[str] | list[int], ch: str = "|") -> str:
     line = _blank(width)
     for c in cols:
         line[c] = ch
@@ -99,7 +99,7 @@ def _bracket(
 ) -> str:
     """A horizontal bar spanning cols, with `junction` at the given
     column (or the bar's own midpoint if not given) and the corner
-    characters at the two ends (a no-op, single '│', if there's only one
+    characters at the two ends (a no-op, single '|', if there's only one
     column).
     """
     if len(cols) == 1:
@@ -108,7 +108,7 @@ def _bracket(
     mid = junction_col if junction_col is not None else (lo + hi) // 2
     line = _blank(width)
     for col in range(lo, hi + 1):
-        line[col] = "─"
+        line[col] = "-"
     line[lo], line[hi] = left_corner, right_corner
     line[mid] = junction
     return "".join(line)
@@ -117,7 +117,7 @@ def _bracket(
 def _arrows(width: int, cols: list[int]) -> str:
     line = _blank(width)
     for c in cols:
-        line[c] = "▼"
+        line[c] = "v"
     return "".join(line)
 
 
@@ -134,7 +134,7 @@ def _connector(
         # rather than implying a fan structure we can't back up.
         mid_prev = prev_centers[len(prev_centers) // 2]
         mid_next = centers[len(centers) // 2]
-        return [_ticks(width, [mid_prev]), _ticks(width, [mid_next], "▼")]
+        return [_ticks(width, [mid_prev]), _ticks(width, [mid_next], "v")]
 
     lines = [_ticks(width, prev_centers)]
 
@@ -142,7 +142,7 @@ def _connector(
         # fan-in bracket: lines come UP from parents, and a single line
         # continues DOWN from the junction -- corners curve up-to-across,
         # junction points down.
-        lines.append(_bracket(width, prev_centers, junction="┬", left_corner="└", right_corner="┘"))
+        lines.append(_bracket(width, prev_centers, junction="+", left_corner="+", right_corner="+"))
         spine = (min(prev_centers) + max(prev_centers)) // 2
     else:
         spine = prev_centers[0]
@@ -159,11 +159,11 @@ def _connector(
         if len(prev_centers) > 1:
             lines.append(_ticks(width, [spine]))
         lines.append(
-            _bracket(width, centers, junction="┴", left_corner="┌", right_corner="┐", junction_col=spine)
+            _bracket(width, centers, junction="+", left_corner="+", right_corner="+", junction_col=spine)
         )
         lines.append(_arrows(width, centers))
     else:
-        lines.append(_ticks(width, [spine], "▼"))
+        lines.append(_ticks(width, [spine], "v"))
 
     return lines
 

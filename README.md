@@ -48,8 +48,8 @@ Add `--dryrun` to see the execution graph a target would produce, without runnin
 ```
 $ ninja run myrecipes.py:selfcal --ms data.ms --dryrun
 [ make_image ]
-      │
-      ▼
+      |
+      v
 [  breizorro  ]
 ```
 

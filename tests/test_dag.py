@@ -39,7 +39,7 @@ def test_render_linear_chain():
     out = render_dag(steps)
     assert "[ Commit ]" in out
     assert "[ Build App ]" in out
-    assert "▼" in out
+    assert "v" in out
     # Commit's line comes before Build App's in the rendered text
     assert out.index("Commit") < out.index("Build App")
 
@@ -58,10 +58,12 @@ def test_render_fan_out_and_fan_in_diamond():
     sibling_line = next(ln for ln in lines if "Build App" in ln and "Run Tests" in ln)
     assert sibling_line
 
-    # a fan-out bracket (single parent -> two children) appears
-    assert any("┌" in ln and "┐" in ln and "┴" in ln for ln in lines)
-    # a fan-in bracket (two parents -> single child) appears
-    assert any("└" in ln and "┘" in ln and "┬" in ln for ln in lines)
+    # a horizontal bracket line (single parent -> two children, and two
+    # parents -> single child) appears -- ASCII '+'/'-' can't distinguish
+    # corner direction the way Unicode box-drawing could, so this just
+    # checks two bracket lines are present, not which is which
+    bracket_lines = [ln for ln in lines if "-" in ln and ln.count("+") == 3]
+    assert len(bracket_lines) == 2
 
     assert out.index("Commit") < out.index("Build App") < out.index("Deploy to QA")
 
@@ -87,12 +89,12 @@ def test_render_chained_diamonds_matches_mockup_shape():
         "Deploy to Production",
     ):
         assert f"[ {name} ]" in out
-    # two independent diamonds -> two fan-out and two fan-in brackets
+    # two independent diamonds -> two fan-out and two fan-in brackets, i.e.
+    # four horizontal bracket lines total (ASCII '+'/'-' can't distinguish
+    # corner direction the way Unicode box-drawing could)
     lines = out.splitlines()
-    fan_outs = [ln for ln in lines if "┌" in ln and "┐" in ln and "┴" in ln]
-    fan_ins = [ln for ln in lines if "└" in ln and "┘" in ln and "┬" in ln]
-    assert len(fan_outs) == 2
-    assert len(fan_ins) == 2
+    bracket_lines = [ln for ln in lines if "-" in ln and ln.count("+") == 3]
+    assert len(bracket_lines) == 4
 
 
 def test_render_falls_back_to_plain_chain_without_false_fan_structure():
@@ -107,5 +109,6 @@ def test_render_falls_back_to_plain_chain_without_false_fan_structure():
     ]
     out = render_dag(steps)
     lines = out.splitlines()
-    # no fan-in bracket for the B/C -> D transition (D isn't a clean merge of {1, 2})
-    assert not any("└" in ln and "┘" in ln for ln in lines[-4:])
+    # no fan-in bracket for the B/C -> D transition (D isn't a clean merge
+    # of {1, 2}) -- just a plain '|'/'v' connector, no horizontal bar
+    assert not any("-" in ln for ln in lines[-4:])

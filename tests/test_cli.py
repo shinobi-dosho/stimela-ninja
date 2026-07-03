@@ -62,4 +62,4 @@ def test_run_recipe_target_dryrun_shows_both_steps_and_a_detected_dependency():
     assert "[ make_file ]" in result.output
     assert "[ use_file ]" in result.output
     # a dependency edge was drawn between them, not just two disconnected boxes
-    assert "▼" in result.output
+    assert "v" in result.output
