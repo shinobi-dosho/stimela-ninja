@@ -1,0 +1,5 @@
+#!/bin/sh
+# Forward this Slurm client call into the test cluster container. The test
+# workdir is bind-mounted at the identical absolute path, so script/log
+# paths passed here resolve the same inside the container.
+exec docker exec "${SHINOBI_SLURM_CONTAINER:-shinobi-slurm}" squeue "$@"

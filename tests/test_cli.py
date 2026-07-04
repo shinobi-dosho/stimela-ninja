@@ -5,6 +5,41 @@ from shinobi.cli import main
 FIXTURES = "tests/fixtures/sample_targets.py"
 
 
+# -- ninja compile (offload) --
+
+
+def test_compile_recipe_prints_dependency_chained_scripts():
+    result = CliRunner().invoke(
+        main,
+        ["compile", f"{FIXTURES}:path_pipe", "--ms", "/scratch/obs.ms", "--container-runtime", "none"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "===== ms_make =====" in result.output
+    assert "===== ms_use  (afterok: ms_make) =====" in result.output
+    # the input path flows statically from ms_make's output into ms_use's argv
+    assert "use --ms /scratch/obs.ms" in result.output
+
+
+def test_compile_rejects_non_offloadable_recipe_cleanly():
+    # `chained` wires a str (non-path) output between steps -> not offloadable
+    result = CliRunner().invoke(main, ["compile", f"{FIXTURES}:chained", "--name", "obs"])
+    assert result.exit_code != 0
+    assert "cannot be offloaded" in result.output
+    assert "non-path output" in result.output
+
+
+def test_compile_rejects_non_recipe_target():
+    result = CliRunner().invoke(main, ["compile", f"{FIXTURES}:greet", "--text", "hi"])
+    assert result.exit_code != 0
+    assert "not a Recipe" in result.output
+
+
+def test_compile_rejects_unknown_engine():
+    result = CliRunner().invoke(main, ["compile", f"{FIXTURES}:path_pipe", "--engine", "argo"])
+    assert result.exit_code != 0
+    assert "unknown engine" in result.output
+
+
 def test_run_cab_target():
     result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet", "--text", "hello there"])
     assert result.exit_code == 0, result.output

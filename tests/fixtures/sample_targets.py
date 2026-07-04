@@ -5,6 +5,8 @@ expects.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import BaseModel
 
 from shinobi.steps import Cab, InputRef, OutputRef, Recipe, StepRef, step
@@ -83,4 +85,39 @@ chained = Recipe(
         StepRef(name="use_file", step=use_file, wiring={"path": OutputRef(step="make_file", field="path")}),
     ],
     output_wiring={"ok": OutputRef(step="use_file", field="ok")},
+)
+
+
+# -- offloadable recipe target for `ninja compile` (Path-typed data flow) --
+
+
+class MSRecipeInputs(BaseModel):
+    ms: Path = Path("data.ms")
+
+
+class MSMakeInputs(BaseModel):
+    ms: Path  # the tool writes here; passthrough to its output
+
+
+class MSOutputs(BaseModel):
+    ms: Path | None = None
+
+
+class MSUseInputs(BaseModel):
+    ms: Path | None = None
+
+
+ms_make = Cab(name="ms_make", command="mk", inputs_model=MSMakeInputs, outputs_model=MSOutputs)
+ms_use = Cab(name="ms_use", command="use", inputs_model=MSUseInputs, outputs_model=OkOutputs)
+
+
+path_pipe = Recipe(
+    name="path_pipe",
+    inputs_model=MSRecipeInputs,
+    outputs_model=OkOutputs,
+    steps=[
+        StepRef(name="ms_make", step=ms_make, wiring={"ms": InputRef(field="ms")}),
+        StepRef(name="ms_use", step=ms_use, wiring={"ms": OutputRef(step="ms_make", field="ms")}),
+    ],
+    output_wiring={"ok": OutputRef(step="ms_use", field="ok")},
 )

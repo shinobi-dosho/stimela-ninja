@@ -1,0 +1,22 @@
+# Single-node all-in-one Slurm controller (munge + mysql + slurmdbd +
+# slurmctld + slurmd) for the live offload test (tests/test_slurm_live.py).
+#
+# Zero build: pulls a ready image. The host workdir is bind-mounted at the
+# IDENTICAL absolute path inside the container, so the sbatch scripts our
+# code writes (and the job stdout/err + data files) resolve the same on
+# both sides. Our code runs on the host and reaches this controller via the
+# sbatch/sacct PATH-shims in ./bin (which `docker exec` into it).
+#
+# Usage (see README.md):
+#   export SHINOBI_SLURM_WORKDIR="$PWD/tests/.slurmwork"; mkdir -p "$SHINOBI_SLURM_WORKDIR"
+#   docker compose -f tests/slurm_live/docker-compose.yml up -d
+#   SHINOBI_SLURM_LIVE=1 uv run pytest tests/test_slurm_live.py
+
+services:
+  slurm:
+    image: giovtorres/docker-centos7-slurm:latest
+    container_name: shinobi-slurm
+    hostname: slurmctl          # slurm.conf's control host name; must resolve to self
+    command: sleep infinity     # keep the container alive after the entrypoint boots daemons
+    volumes:
+      - ${SHINOBI_SLURM_WORKDIR:?set SHINOBI_SLURM_WORKDIR to an absolute path}:${SHINOBI_SLURM_WORKDIR}
