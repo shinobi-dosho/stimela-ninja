@@ -1,5 +1,5 @@
 """Load stimela-classic style `parameters.json` cab definitions into
-shinobi `CabDef` objects. This is a *different* cab schema format from
+shinobi `Cab` objects. This is a *different* cab schema format from
 cult-cargo's YAML (see `shinobi.loaders.cultcargo`) -- useful for exactly
 the tools cult-cargo doesn't have a loadable definition for (several CASA
 tasks, msutils -- see AGENTS.md/examples/ninja_selfcal.py for which ones
@@ -11,21 +11,21 @@ Classic's format: one JSON file per cab (e.g.
 unlike cult-cargo, there's no `_include`/`_use` composition to resolve;
 each file is fully self-contained.
 
-Field mapping to shinobi's `ParamSchema`:
-* `name` -> the schema key, unchanged.
-* `dtype` -> lowercased dtype string. A param can declare `dtype` as a
-  *list* of alternatives (e.g. `["int", "str"]`) for a genuine type
-  union; shinobi's `ParamSchema` has one dtype string, so the first
-  alternative is used and the rest are dropped -- narrowing a real union
-  to shinobi's simpler model, not a bug to fix.
+Field mapping (into a generated `inputs_model` + `field_meta`):
+* `name` -> the model field name, sanitised to a valid identifier if
+  needed (the original kept as a `nom_de_guerre`).
+* `dtype` -> a Python type on the generated model. A param can declare
+  `dtype` as a *list* of alternatives (e.g. `["int", "str"]`) for a
+  genuine type union; the first alternative is used and the rest are
+  dropped -- narrowing a real union to shinobi's simpler model, not a bug.
 * `io: "msfile"` forces dtype to `"MS"` (matching shinobi/cult-cargo
   convention for the main measurement-set parameter), regardless of
   whatever the raw `dtype` said (almost always `"file"` anyway). `io:
-  "input"/"output"` have no separate shinobi concept -- dtype alone
-  already drives bind-mounting via `is_file_like_dtype` -- so they're
+  "input"/"output"` have no separate shinobi concept -- a file-like type
+  alone already drives bind-mounting via `path_fields` -- so they're
   otherwise dropped.
-* `required`, `default`, `info` -> direct mapping.
-* `mapping` -> shinobi's `nom_de_guerre` (classic's own name for the same
+* `required`, `default`, `info` -> the model field / its `ParamMeta`.
+* `mapping` -> `ParamMeta.nom_de_guerre` (classic's own name for the same
   concept: what the underlying tool actually calls this parameter).
 * `choices` -> shinobi has no enum/choices concept; appended to `info`
   as a parenthetical instead of inventing new schema machinery for one
@@ -46,7 +46,7 @@ as `flavour="binary"`.
 *family* name, not a concrete pullable reference -- the real tag/version
 lives in separate `tag`/`version` fields (arrays of compatible versions,
 no single "the" version). `base` is used as a best-effort `image`
-default; override it on the loaded `CabDef` if you need a specific real
+default; override it on the loaded `Cab` if you need a specific real
 image.
 """
 
@@ -56,34 +56,48 @@ import json
 from pathlib import Path
 from typing import Any
 
-from shinobi.schema import CabDef, ParamSchema
+from shinobi.loaders._modelgen import build_model, sanitize_unique
+from shinobi.steps.schema import Cab, ParamMeta
 
 
-def load_file(path: str | Path) -> CabDef:
+def load_file(path: str | Path) -> Cab:
     return loads(Path(path).read_text())
 
 
-def loads(text: str) -> CabDef:
+def loads(text: str) -> Cab:
     return _build_cabdef(json.loads(text))
 
 
-def _build_cabdef(spec: dict[str, Any]) -> CabDef:
+def _build_cabdef(spec: dict[str, Any]) -> Cab:
     base = spec.get("base") or ""
     flavour = "casa-task" if "casa" in base else "binary"
 
-    inputs = {param["name"]: _build_param(param) for param in spec.get("parameters", [])}
+    name = spec["task"]
+    fields: dict[str, tuple[str, bool, Any]] = {}
+    metas: dict[str, ParamMeta] = {}
+    seen: dict[str, str] = {}
+    for param in spec.get("parameters", []):
+        field = sanitize_unique(param["name"], seen)
+        dtype, meta = _build_param(param, original=param["name"], field=field)
+        fields[field] = dtype
+        if meta is not None:
+            metas[field] = meta
 
-    return CabDef(
-        name=spec["task"],
-        command=spec.get("binary", spec["task"]),
+    return Cab(
+        name=name,
+        command=spec.get("binary", name),
         info=spec.get("description"),
         image=base or None,
         flavour=flavour,
-        inputs=inputs,
+        inputs_model=build_model(f"{name}_Inputs", fields),
+        outputs_model=build_model(f"{name}_Outputs", {}),
+        field_meta=metas,
     )
 
 
-def _build_param(param: dict[str, Any]) -> ParamSchema:
+def _build_param(
+    param: dict[str, Any], *, original: str, field: str
+) -> tuple[tuple[str, bool, Any], ParamMeta | None]:
     dtype = param.get("dtype", "str")
     if isinstance(dtype, list):
         dtype = dtype[0] if dtype else "str"
@@ -98,10 +112,9 @@ def _build_param(param: dict[str, Any]) -> ParamSchema:
         choices_text = f"choices: {', '.join(str(c) for c in choices)}"
         info = f"{info} ({choices_text})" if info else choices_text
 
-    return ParamSchema(
-        dtype=dtype,
-        required=bool(param.get("required", False)),
-        default=param.get("default"),
-        info=info,
-        nom_de_guerre=param.get("mapping"),
-    )
+    # the tool's real flag name: classic's `mapping`, else the original
+    # param name if sanitising the field name changed it.
+    nom = param.get("mapping") or (original if original != field else None)
+    field_spec = (dtype, bool(param.get("required", False)), param.get("default"))
+    meta = ParamMeta(nom_de_guerre=nom, info=info) if (nom or info) else None
+    return field_spec, meta

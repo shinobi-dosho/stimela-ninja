@@ -5,13 +5,12 @@ using each runtime's Python SDK -- one code path for all of them, no extra
 heavyweight client dependencies, and it works uniformly for runtimes (like
 apptainer) that don't have a good Python API to begin with.
 
-Volume mounts are derived from the cab's own schema: any resolved
-parameter whose declared dtype looks file-like (``File``, ``MS``,
-``list:File``, ...) has its parent directory bind-mounted at the same
-path inside the container, so the tool sees the same paths the caller
-used. This is why Backend.run() is handed the resolved params dict, not
-just argv -- argv is just strings by that point, with no memory of which
-of them are paths.
+Volume mounts are derived from the cab's own schema: any input field whose
+type is file-like (``pathlib.Path`` -- see ``path_fields``) has its parent
+directory bind-mounted at the same path inside the container, so the tool
+sees the same paths the caller used. This is why Backend.run() is handed
+the validated inputs model, not just argv -- argv is just strings by that
+point, with no memory of which of them are paths.
 """
 
 from __future__ import annotations
@@ -23,26 +22,34 @@ from typing import Any
 
 from shinobi.backends import Backend, register
 from shinobi.exceptions import BackendError
-from shinobi.results import Result
-from shinobi.schema import CabDef, is_file_like_dtype
-from shinobi.wranglers import apply_wranglers
+from shinobi.loaders._modelgen import is_file_dtype
+from shinobi.results import BackendRun
+from shinobi.steps.schema import Cab, path_fields
 
 _DOCKER_LIKE = {"docker", "podman"}
 _APPTAINER_LIKE = {"apptainer"}
 
 
-def bind_dirs(cab: CabDef, params: dict[str, Any], workdir: str) -> list[str]:
-    """Parent directories of every File/MS-valued resolved param, plus the
-    working directory itself. Order-preserving, de-duplicated.
+def bind_dirs(cab: Cab, inputs: dict[str, Any], workdir: str) -> list[str]:
+    """Parent directories of every File/MS-valued input, plus the working
+    directory itself. Order-preserving, de-duplicated.
+
+    Covers both declared fields (via `path_fields`, which inspects the
+    type annotation) and dynamically-named `ParamPattern` inputs (which
+    have no declared field/annotation -- `cab.match_pattern` and
+    `ParamMeta.dtype` are the only way to tell those are file-like).
     """
     dirs = [workdir]
     seen = {workdir}
+    declared = path_fields(cab.inputs_model)
 
-    for name, value in params.items():
-        schema = cab.inputs.get(name) or cab.match_pattern(name)
-        if schema is None or value is None or not is_file_like_dtype(schema.dtype):
+    for name, value in inputs.items():
+        if name not in declared:
+            meta = cab.match_pattern(name)
+            if meta is None or meta.dtype is None or not is_file_dtype(meta.dtype):
+                continue
+        if value is None:
             continue
-
         for item in value if isinstance(value, (list, tuple)) else [value]:
             path = Path(str(item))
             if not path.is_absolute():
@@ -56,7 +63,7 @@ def bind_dirs(cab: CabDef, params: dict[str, Any], workdir: str) -> list[str]:
 
 
 def build_container_argv(
-    runtime: str, cab: CabDef, argv: list[str], params: dict[str, Any], workdir: str
+    runtime: str, cab: Cab, argv: list[str], inputs: dict[str, Any], workdir: str
 ) -> list[str]:
     """Wrap argv in a container-runtime invocation. Shared with the Slurm
     backend, which runs cabs under apptainer the same way a plain
@@ -65,7 +72,7 @@ def build_container_argv(
     if not cab.image:
         raise BackendError(f"cab '{cab.name}' has no image, cannot run under {runtime}")
 
-    dirs = bind_dirs(cab, params, workdir)
+    dirs = bind_dirs(cab, inputs, workdir)
 
     if runtime in _DOCKER_LIKE:
         mounts = [flag for d in dirs for flag in ("-v", f"{d}:{d}")]
@@ -83,21 +90,13 @@ class ContainerBackend(Backend):
         self.runtime = runtime
         self.workdir = workdir or os.getcwd()
 
-    def _wrap(self, cab: CabDef, argv: list[str], params: dict[str, Any]) -> list[str]:
-        return build_container_argv(self.runtime, cab, argv, params, self.workdir)
+    def _wrap(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> list[str]:
+        return build_container_argv(self.runtime, cab, argv, inputs, self.workdir)
 
-    def run(self, cab: CabDef, argv: list[str], params: dict[str, Any]) -> Result:
-        full_argv = self._wrap(cab, argv, params)
+    def run(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> BackendRun:
+        full_argv = self._wrap(cab, argv, inputs)
         proc = subprocess.run(full_argv, capture_output=True, text=True)
-        lines = proc.stdout.splitlines() + proc.stderr.splitlines()
-        outputs = apply_wranglers(cab.wranglers, lines)
-        return Result(
-            cab_name=cab.name,
-            returncode=proc.returncode,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
-            outputs=outputs,
-        )
+        return BackendRun(returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
 
 
 @register

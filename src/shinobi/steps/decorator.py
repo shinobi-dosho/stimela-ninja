@@ -1,51 +1,36 @@
-"""`@shinobi.step`: wrap an existing CabDef/RecipeDef around a function.
+"""`@shinobi.step`: bind an orchestration function to a Scope.
 
-Unlike the old `@cab` (shinobi.decorators), there is no signature-inference
-fallback -- `defn.inputs_model`/`outputs_model` are the schema, full stop;
-the decorated function's own signature is never introspected. The function
-receives (mutability-processed) inputs as ordinary keyword arguments, and
-its return value carries any transform: `None` means "use inputs
-unchanged" (the common case -- a near-empty step body, mirroring the old
-`@cab`'s near-empty stub functions); a returned `dict[str, Any]` is merged
-over the resolved inputs as overrides before the command/sub-steps run.
+Returns a `StepRef` (the same type `@recipe.step` produces) -- the single
+carrier of the orchestration function. There is no global function
+registry: `func` travels on the StepRef itself, so two functions over one
+Scope, or same-named functions in different recipes, never collide.
 
-(Python gives no way to observe a callee's local-variable reassignments
-after it returns without frame/exec tricks -- which this project's own
-"never eval()/exec()" stance rules out anyway -- so ordinary
-arguments-in/return-value-out is the mechanism, not literal namespace
-injection.)
+The decorated name is callable and dispatches with `ctx` passed as the
+first positional argument; the function returns either the `StepResult`
+from `ctx.run()` or `None` (auto-run). The function's own signature is
+never introspected -- `scope.inputs_model` is the schema authority.
 """
 
 from __future__ import annotations
 
-import functools
 from typing import Any, Callable
 
-from shinobi.steps.dispatch import run_step
-from shinobi.steps.schema import CabDef, RecipeDef
+from shinobi.steps.schema import Scope, StepRef
 
 
-class Step:
-    """The callable produced by @step: a thin, named wrapper around a
-    CabDef/RecipeDef plus the orchestration function that runs between
-    resolving inputs and dispatching to the command/sub-steps.
+def step(
+    *,
+    scope: Scope,
+    backend: str | None = None,
+    name: str | None = None,
+    **params: Any,
+) -> Callable[[Callable], StepRef]:
+    """Decorate a function with an existing Scope (Cab or Recipe). See the
+    module docstring.
     """
 
-    def __init__(self, defn: CabDef | RecipeDef, func: Callable[..., dict[str, Any] | None]):
-        self.defn = defn
-        self.func = func
-        functools.update_wrapper(self, func)
-
-    def __call__(self, **kwargs: Any) -> Any:
-        return run_step(self.defn, self.func, **kwargs)
-
-
-def step(defn: CabDef | RecipeDef) -> Callable[[Callable[..., dict[str, Any] | None]], Step]:
-    """Decorate a function with an existing CabDef/RecipeDef. See module
-    docstring.
-    """
-
-    def decorator(func: Callable[..., dict[str, Any] | None]) -> Step:
-        return Step(defn, func)
+    def decorator(func: Callable) -> StepRef:
+        bound_scope = scope.with_backend(backend)
+        return StepRef(name=name or func.__name__, step=bound_scope, func=func, params=params)
 
     return decorator

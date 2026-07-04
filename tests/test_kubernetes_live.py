@@ -18,7 +18,8 @@ import subprocess
 import pytest
 
 from shinobi.backends.kubernetes import KubernetesBackend
-from shinobi.schema import CabDef, ParamSchema
+from shinobi.loaders._modelgen import build_model
+from shinobi.steps.schema import Cab
 
 WSCLEAN_IMAGE = "quay.io/stimela/wsclean:1.8.0"
 
@@ -43,11 +44,12 @@ requires_k8s_and_wsclean_image = pytest.mark.skipif(
 
 @requires_k8s_and_wsclean_image
 def test_real_tool_runs_as_a_job():
-    cab = CabDef(
+    cab = Cab(
         name="wsclean",
         command="wsclean",
         image=WSCLEAN_IMAGE,
-        inputs={"version": ParamSchema(dtype="bool")},
+        inputs_model=build_model("In", {"version": ("bool", False, None)}),
+        outputs_model=build_model("Out", {}),
     )
     backend = KubernetesBackend()
     result = backend.run(cab, ["wsclean", "--version"], {"version": True})
@@ -61,11 +63,12 @@ def test_host_file_visible_via_hostpath_mount(tmp_path):
     host_file = tmp_path / "hello.txt"
     host_file.write_text("hello from the host, via kind\n")
 
-    cab = CabDef(
+    cab = Cab(
         name="probe",
         command="/bin/cat",
         image=WSCLEAN_IMAGE,
-        inputs={"path": ParamSchema(dtype="File", required=True)},
+        inputs_model=build_model("In", {"path": ("File", True, None)}),
+        outputs_model=build_model("Out", {}),
     )
     backend = KubernetesBackend()
     result = backend.run(cab, ["/bin/cat", str(host_file)], {"path": str(host_file)})
@@ -76,7 +79,7 @@ def test_host_file_visible_via_hostpath_mount(tmp_path):
 
 @requires_k8s_and_wsclean_image
 def test_failing_job_reports_real_container_exit_code():
-    cab = CabDef(name="fail", command="/bin/sh", image=WSCLEAN_IMAGE)
+    cab = Cab(name="fail", command="/bin/sh", image=WSCLEAN_IMAGE, inputs_model=build_model("In", {}), outputs_model=build_model("Out", {}))
     backend = KubernetesBackend()
     result = backend.run(cab, ["/bin/sh", "-c", "exit 17"], {})
 
@@ -86,7 +89,7 @@ def test_failing_job_reports_real_container_exit_code():
 
 @requires_k8s_and_wsclean_image
 def test_job_cleaned_up_after_run():
-    cab = CabDef(name="cleanup-check", command="/bin/echo", image=WSCLEAN_IMAGE)
+    cab = Cab(name="cleanup-check", command="/bin/echo", image=WSCLEAN_IMAGE, inputs_model=build_model("In", {}), outputs_model=build_model("Out", {}))
     backend = KubernetesBackend(namespace="default")
     backend.run(cab, ["/bin/echo", "hi"], {})
 

@@ -1,9 +1,11 @@
 """Backend abstraction: a backend takes a cab and a resolved argv and runs
 it somewhere -- natively, in a container, on Slurm, on Kubernetes, ...
 
-A backend knows nothing about recipes or schemas beyond the argv it's
-handed and the cab's ``image``/``command`` metadata; it only knows how to
-execute and how to capture output.
+A backend knows nothing about recipes or output schemas beyond the argv
+it's handed and the cab's ``image``/``command`` metadata; it only knows
+how to execute and how to capture output. Wrangling that output into
+structured results is the dispatch layer's job, so a backend returns a
+raw ``BackendRun`` (returncode/stdout/stderr), nothing schema-aware.
 """
 
 from __future__ import annotations
@@ -11,23 +13,23 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from shinobi.results import Result
-from shinobi.schema import CabDef
+from shinobi.results import BackendRun
+from shinobi.steps.schema import Cab
 
 
 class Backend(ABC):
     name: str
 
     @abstractmethod
-    def run(self, cab: CabDef, argv: list[str], params: dict[str, Any]) -> Result:
+    def run(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> BackendRun:
         """Execute argv (as built by shinobi.policies.build_argv) and
-        return a Result. Must not raise on a non-zero exit -- that's
-        reported via Result.returncode / Result.success.
+        return a BackendRun. Must not raise on a non-zero exit -- that's
+        reported via BackendRun.returncode / BackendRun.success.
 
-        ``params`` is the fully resolved (defaults/implicit applied)
-        parameter dict argv was built from. Most backends ignore it, but
-        container backends need it to know which File/MS-valued params
-        have to be bind-mounted.
+        ``inputs`` is the *prepared* inputs dict argv was built from (the
+        one `_prepare_inputs` produces, so MUTABLE fields are the caller's
+        own objects by reference). Most backends ignore it, but container
+        backends need it to know which File/MS-valued params to bind-mount.
         """
 
 
@@ -50,20 +52,12 @@ def get_backend(name: str, **opts) -> Backend:
 
 
 def registered_backend_classes() -> list[type[Backend]]:
-    """Every concrete Backend subclass currently registered. Used by
-    `ninja run --dryrun` to patch *all* of them (regardless of which one
-    a recipe ends up constructing) so a recipe's own internal
-    get_backend()/call() usage is traced instead of actually executed --
-    see shinobi.cli for why patching by class, not by function, is the
-    only way to do that reliably.
-    """
     return list(_REGISTRY.values())
 
 
-# Import submodules for their @register side effects, so get_backend() finds
-# every built-in backend without the caller having to import that specific
-# backend module first.
+# Import submodules for their @register side effects.
 from shinobi.backends import container as _container  # noqa: E402,F401
 from shinobi.backends import kubernetes as _kubernetes  # noqa: E402,F401
 from shinobi.backends import native as _native  # noqa: E402,F401
+from shinobi.backends import recording as _recording  # noqa: E402,F401
 from shinobi.backends import slurm as _slurm  # noqa: E402,F401

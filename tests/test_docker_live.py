@@ -15,7 +15,8 @@ import subprocess
 import pytest
 
 from shinobi.backends.container import DockerBackend
-from shinobi.schema import CabDef, ParamSchema
+from shinobi.loaders._modelgen import build_model
+from shinobi.steps.schema import Cab
 
 WSCLEAN_IMAGE = "quay.io/stimela/wsclean:1.8.0"
 
@@ -41,11 +42,12 @@ requires_wsclean_image = pytest.mark.skipif(
 @requires_wsclean_image
 def test_real_tool_runs_inside_container():
     """wsclean --version, for real, inside the real image."""
-    cab = CabDef(
+    cab = Cab(
         name="wsclean",
         command="wsclean",
         image=WSCLEAN_IMAGE,
-        inputs={"version": ParamSchema(dtype="bool")},
+        inputs_model=build_model("In", {"version": ("bool", False, None)}),
+        outputs_model=build_model("Out", {}),
     )
     backend = DockerBackend()
     result = backend.run(cab, ["wsclean", "--version"], {"version": True})
@@ -63,11 +65,12 @@ def test_host_file_visible_at_same_path_via_bind_mount(tmp_path):
     host_file = tmp_path / "hello.txt"
     host_file.write_text("hello from the host\n")
 
-    cab = CabDef(
+    cab = Cab(
         name="probe",
         command="/bin/cat",
         image=WSCLEAN_IMAGE,
-        inputs={"path": ParamSchema(dtype="File", required=True)},
+        inputs_model=build_model("In", {"path": ("File", True, None)}),
+        outputs_model=build_model("Out", {}),
     )
     backend = DockerBackend()
     # hand-built argv (positional, not --flag-style) -- this test is about

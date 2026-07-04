@@ -31,9 +31,8 @@ from typing import Any
 from shinobi.backends import Backend, register
 from shinobi.backends.container import build_container_argv
 from shinobi.exceptions import BackendError
-from shinobi.results import Result
-from shinobi.schema import CabDef
-from shinobi.wranglers import apply_wranglers
+from shinobi.results import BackendRun
+from shinobi.steps.schema import Cab
 
 # sacct job states that mean the job is done and won't change again.
 # ExitCode is only meaningful once a job reaches one of these.
@@ -66,16 +65,16 @@ class SlurmBackend(Backend):
         self.sbatch_opts = sbatch_opts or {}
         self.poll_interval = poll_interval
 
-    def _inner_argv(self, cab: CabDef, argv: list[str], params: dict[str, Any]) -> list[str]:
+    def _inner_argv(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> list[str]:
         if cab.image and self.container_runtime:
-            return build_container_argv(self.container_runtime, cab, argv, params, self.workdir)
+            return build_container_argv(self.container_runtime, cab, argv, inputs, self.workdir)
         return argv
 
     def _script(
         self,
-        cab: CabDef,
+        cab: Cab,
         argv: list[str],
-        params: dict[str, Any],
+        inputs: dict[str, Any],
         stdout_path: Path,
         stderr_path: Path,
     ) -> str:
@@ -89,7 +88,7 @@ class SlurmBackend(Backend):
         for key, value in self.sbatch_opts.items():
             lines.append(f"#SBATCH --{key}={value}")
         lines.append("")
-        lines.append(shlex.join(self._inner_argv(cab, argv, params)))
+        lines.append(shlex.join(self._inner_argv(cab, argv, inputs)))
         return "\n".join(lines) + "\n"
 
     def _submit(self, script_path: Path) -> str:
@@ -119,13 +118,13 @@ class SlurmBackend(Backend):
                     return int(exit_code.split(":")[0])
             time.sleep(self.poll_interval)
 
-    def run(self, cab: CabDef, argv: list[str], params: dict[str, Any]) -> Result:
+    def run(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> BackendRun:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             script_path = tmp_path / "job.sh"
             stdout_path = tmp_path / "stdout.log"
             stderr_path = tmp_path / "stderr.log"
-            script_path.write_text(self._script(cab, argv, params, stdout_path, stderr_path))
+            script_path.write_text(self._script(cab, argv, inputs, stdout_path, stderr_path))
 
             job_id = self._submit(script_path)
             returncode = self._wait(job_id)
@@ -133,6 +132,4 @@ class SlurmBackend(Backend):
             stdout = stdout_path.read_text() if stdout_path.exists() else ""
             stderr = stderr_path.read_text() if stderr_path.exists() else ""
 
-        lines = stdout.splitlines() + stderr.splitlines()
-        outputs = apply_wranglers(cab.wranglers, lines)
-        return Result(cab_name=cab.name, returncode=returncode, stdout=stdout, stderr=stderr, outputs=outputs)
+        return BackendRun(returncode=returncode, stdout=stdout, stderr=stderr)

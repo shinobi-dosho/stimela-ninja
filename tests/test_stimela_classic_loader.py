@@ -1,6 +1,7 @@
 import json
 
 from shinobi.loaders.stimela_classic import load_file, loads
+from shinobi.steps.schema import path_fields
 
 MSTRANSFORM_JSON = json.dumps(
     {
@@ -73,54 +74,53 @@ def test_loads_basic_cab_fields():
 
 
 def test_casa_base_gets_casa_task_flavour():
-    cab = loads(MSTRANSFORM_JSON)
-    assert cab.flavour == "casa-task"
+    assert loads(MSTRANSFORM_JSON).flavour == "casa-task"
 
 
 def test_non_casa_base_gets_binary_flavour():
-    cab = loads(MSUTILS_JSON)
-    assert cab.flavour == "binary"
+    assert loads(MSUTILS_JSON).flavour == "binary"
 
 
 def test_msfile_io_forces_ms_dtype_regardless_of_raw_dtype():
     cab = loads(MSTRANSFORM_JSON)
-    # raw dtype was "file", but io: "msfile" overrides it
-    assert cab.inputs["msname"].dtype == "MS"
+    # raw dtype was "file", but io: "msfile" overrides it -> a path field
+    assert "msname" in path_fields(cab.inputs_model)
 
 
 def test_mapping_becomes_nom_de_guerre():
     cab = loads(MSTRANSFORM_JSON)
-    assert cab.inputs["msname"].nom_de_guerre == "vis"
+    assert cab.field_meta["msname"].nom_de_guerre == "vis"
 
 
 def test_required_and_default_map_directly():
     cab = loads(MSTRANSFORM_JSON)
-    assert cab.inputs["msname"].required is True
-    assert cab.inputs["separationaxis"].default == "auto"
-    assert cab.inputs["createmms"].default is False
+    fields = cab.inputs_model.model_fields
+    assert fields["msname"].is_required()
+    assert fields["separationaxis"].default == "auto"
+    assert fields["createmms"].default is False
 
 
 def test_choices_are_appended_to_info():
     cab = loads(MSTRANSFORM_JSON)
-    info = cab.inputs["separationaxis"].info
+    info = cab.field_meta["separationaxis"].info
     assert "Axis to do parallelization across." in info
     assert "auto" in info and "baseline" in info
 
 
 def test_choices_alone_become_info_when_no_info_given():
     cab = loads(MSUTILS_JSON)
-    info = cab.inputs["command"].info
-    assert "sumcols" in info
+    assert "sumcols" in cab.field_meta["command"].info
 
 
 def test_dtype_list_uses_first_alternative():
     cab = loads(MSTRANSFORM_JSON)
-    assert cab.inputs["numsubms"].dtype == "str"
+    # ["str", "int"] narrows to str -> not a path, scalar string field
+    assert cab.inputs_model.model_fields["numsubms"].annotation is not None
+    assert "numsubms" not in path_fields(cab.inputs_model)
 
 
 def test_missing_binary_falls_back_to_task_name():
-    cab = loads(NO_BINARY_JSON)
-    assert cab.command == "bare"
+    assert loads(NO_BINARY_JSON).command == "bare"
 
 
 def test_load_file_reads_from_disk(tmp_path):
@@ -128,4 +128,4 @@ def test_load_file_reads_from_disk(tmp_path):
     path.write_text(MSUTILS_JSON)
     cab = load_file(path)
     assert cab.name == "msutils"
-    assert cab.inputs["command"].required is True
+    assert cab.inputs_model.model_fields["command"].is_required()

@@ -1,127 +1,53 @@
-"""Ninja selfcal -- a shinobi @recipe for the self-calibration pipeline
+"""Ninja selfcal -- a shinobi Recipe for the self-calibration pipeline
 originally at https://github.com/SpheMakh/ninja/blob/319cc37/ninja-recipe.py
 (stimela classic).
 
-This is a full reimplementation on `@recipe`/`ninja run`, not a
-structural port of the mechanical conversion this replaced:
+This is a condensed reimplementation on the step model (`Cab`/`Recipe`/
+`@recipe.step`, `ninja run`). A selfcal pipeline is a *declared DAG*: each
+round is image -> mask -> calibrate, with the calibrated MS / model /
+mask threaded between steps as typed `InputRef`/`OutputRef` wiring rather
+than imperative `call()` bookkeeping. `ninja run examples/ninja_selfcal.py:selfcal
+--dryrun` renders the graph for free (see shinobi.dag).
 
-* No Step dataclass / declare() / run_steps() bucketing. That existed to
-  let a script register steps now and run a chosen subset later --
-  @recipe + `ninja run` remove the reason for that: the pipeline is just
-  this one function, its knobs are its parameters (auto-exposed as CLI
-  options), and skipping/resuming steps is a plain `if` per step, not a
-  data structure to build and slice.
-* No hand-rolled DRYRUN/table-printing block. `ninja run
-  examples/ninja_selfcal.py:selfcal --dryrun` already shows the step
-  graph, for free, for any @recipe -- see shinobi.dag.
-* Cabs are still defined once at module level -- they describe *tasks*,
-  not a specific run, so none of them bake in a run-specific MS name
-  anymore; every step passes it explicitly from the recipe's own
-  resolved `ms` variable (a required, no-default cab input instead).
-* `wsclean` is loaded from a real cult-cargo cab definition
-  (examples/cultcargo/wsclean.yml, vendored -- see that dir's README) --
-  its ~170 real parameters, instead of a hand-declared, easy-to-drift
-  subset. This is exactly what motivated the switch: a hand-declared
-  `cubical` schema was silently missing several real parameters until
-  `ninja run --dryrun` actually validated them for the first time (the
-  old fake DRYRUN print never called resolve_params()). Its real
-  parameter names differ from what this recipe used to assume:
-  `msname` -> `ms` (and it's a *list* of MS, `List[MS]`), `name` ->
-  `prefix`, `channels-out` -> `nchan`.
-* The CASA tasks (`casa_mstransform`/`casa_listobs`/`casa_flagdata`/
-  `casa_flagmanager`) and `msutils` are loaded from real *stimela-classic*
-  `parameters.json` cab definitions (examples/stimela_classic/, vendored
-  -- see that dir's README), via `shinobi.loaders.stimela_classic`, for
-  the same reason wsclean moved off a hand-declared schema: cult-cargo
-  has no loadable definition for these at all (its versions use a
-  package-scoped `_include` form `shinobi.loaders.cultcargo` doesn't
-  support). Their real parameter names differ from what this recipe used
-  to assume: casa_mstransform/casa_listobs/casa_flagmanager's MS
-  parameter is `msname` (not `vis` -- `vis` is what the real CASA task
-  itself calls it, via `mapping`/`nom_de_guerre`, but the schema-facing
-  name is `msname`), and casa_mstransform's output MS parameter is
-  `output-msname` (not `outputvis`). `msutils`'s parameters already
-  matched what this recipe assumed (`msname`/`command`/`col1`/`col2`/
-  `subtract`/... unchanged).
+Cabs describe *tasks*, not a specific run, so none bake in a run-specific
+MS name -- every step is wired one from the recipe's inputs or a previous
+step's output.
 
-  One real consequence of loading these for real: stimela-classic's own
-  CASA-task cabs aren't standalone executables -- `casa_mstransform`'s
-  `binary` is the CASA task name `mstransform`, invoked by wrapping it in
-  a CASA script, not `subprocess.run(["mstransform", ...])` -- so they
-  load with `flavour="casa-task"`, not `"binary"` (see AGENTS.md's "Never
-  eval()/exec() a cab's `command`"). The hand-declared versions this
-  replaced were incorrectly `flavour="binary"` (the decorator's default)
-  even though a bare `mstransform`/`listobs`/`flagdata`/`flagmanager`
-  binary was never really invocable that way either -- this is a
-  correction, not a new gap. It does mean any step actually reaching the
-  backend for one of these four cabs (not just dry-run's schema
-  validation) raises `UnsupportedFlavourError`, same as `casa_script`
-  below always has. `msutils` is a real, standalone binary and loads as
-  `flavour="binary"` as before -- unaffected.
-
-  `breizorro`/`cubical` are still hand-declared, each for a different,
-  concrete reason found while checking:
-  - `breizorro`'s real cult-cargo schema treats the output mask filename
-    as *implicit* (an output the tool derives, not a settable input) --
-    doesn't fit this recipe's deterministic-path design (mask1/mask2/
-    mask3 are named up front and referenced by later steps) without
-    adding wrangler support to capture the real filename dynamically.
-  - `cubical`'s real cult-cargo schema uses ``inputs: {_include: (pkg)file}``
-    -- a package-scoped include *inside* the inputs mapping, which
-    shinobi.loaders.cultcargo doesn't support (see that module's
-    docstring on scope boundaries). Its per-Jones-term parameters
-    (`g1-solvable`, `g-time-int`, ...) are declared here via
-    `input_patterns=[ParamPattern(...)]` instead of one entry per
-    literal name -- the term names ("g1", "g") are chosen per call, not
-    fixed by the tool, so no static `inputs` dict could ever enumerate
-    every possible one (see shinobi.schema.ParamPattern).
+* `wsclean` loads from a real cult-cargo cab definition
+  (examples/cultcargo/wsclean.yml, vendored) via `shinobi.loaders.cultcargo`
+  -- its ~170 real parameters, not a hand-declared subset.
+* The CASA tasks and `msutils` load from real stimela-classic
+  `parameters.json` definitions (examples/stimela_classic/, vendored) via
+  `shinobi.loaders.stimela_classic`. The CASA-task cabs load with
+  `flavour="casa-task"` (not `"binary"`), so they're schema-complete but
+  raise `UnsupportedFlavourError` if actually executed -- see AGENTS.md's
+  "Never eval()/exec() a cab's `command`". `msutils` is a real binary.
+* `breizorro`/`cubical` are hand-declared here. cubical's per-Jones-term
+  parameters (`g1-solvable`, `g-time-int`, ...) use `input_patterns=
+  [ParamPattern(...)]` -- the term names are chosen per call, not fixed by
+  the tool, so no static field set could enumerate them (see ParamPattern).
 
 Run it:
 
     ninja run examples/ninja_selfcal.py:selfcal --dryrun
-    ninja run examples/ninja_selfcal.py:selfcal --init --ms0 foo.ms ...
-
-Still true, and still worth knowing: paths are plain os.path.join()/
-f-strings via out()/indir()/msdir_path()/obsinfo() -- there's no path-
-substitution DSL to route them through. A couple of steps' path context
-was genuinely ambiguous in the original stimela-classic script (implicit
-per-cab io context); double-check those against the original cab
-definitions before relying on this for a real run.
-
-Known gap, unchanged: "init_ws" wraps an inline CASA python snippet
-(stimela2's "casa-task"/"python-code" flavour), and now every other CASA
-task cab in this recipe (split/info1/flag_pp/uflag_spw/flag_MW/unflag/
-leg-flags/restore-flags) shares the same "casa-task" flavour for the same
-reason -- see the module-level cabs section above. shinobi's backends
-only execute "binary"-flavour cabs today -- these steps are schema-
-complete but will raise `UnsupportedFlavourError` if actually run through
-a backend; see AGENTS.md.
+    ninja run examples/ninja_selfcal.py:selfcal --ms line.ms
 """
 
 from __future__ import annotations
 
-import copy
-import os
 from pathlib import Path
 from typing import Any
 
-from shinobi.backends import get_backend
-from shinobi.decorators import cab, recipe
+from pydantic import BaseModel
+
+from shinobi import Cab, InputRef, OutputRef, Recipe
+from shinobi.loaders._modelgen import build_model, sanitize_unique
 from shinobi.loaders.cultcargo import load_file
 from shinobi.loaders.stimela_classic import load_file as load_classic_cab
-from shinobi.recipe import call
-from shinobi.schema import CabDef, ParamPattern, ParamSchema
+from shinobi.steps.schema import ParamMeta, ParamPattern
 
 _CULTCARGO_DIR = Path(__file__).parent / "cultcargo"
 _STIMELA_CLASSIC_DIR = Path(__file__).parent / "stimela_classic"
-
-# ------------------------------------------------------------------ cabs ---
-# Defined once, at module level: these describe *tasks*, not a specific
-# run. wsclean/cubical/pybdsm below use a permissive schema built from
-# the shared *_opts dicts the original recipe used, instead of typing out
-# every parameter by hand -- but the MS name is always a required,
-# no-default input, passed explicitly per step (see selfcal() below),
-# since it varies per run.
 
 
 def _infer_dtype(value: Any) -> str:
@@ -137,29 +63,45 @@ def _infer_dtype(value: Any) -> str:
 
 
 def cab_from_defaults(
-    cab_name: str,
+    name: str,
     command: str,
-    cab_image: str,
+    image: str,
     defaults: dict[str, Any],
+    *,
     input_patterns: list[ParamPattern] | None = None,
-    **extra_inputs: ParamSchema,
-) -> CabDef:
-    inputs = {k: ParamSchema(dtype=_infer_dtype(v), default=v) for k, v in defaults.items()}
-    inputs.update(extra_inputs)
-    return CabDef(
-        name=cab_name,
+    extra: dict[str, tuple[str, bool, Any]] | None = None,
+    outputs: dict[str, tuple[str, bool, Any]] | None = None,
+) -> Cab:
+    """Build a Cab whose inputs_model comes from a `defaults` dict (the
+    shared *_opts dicts the original recipe used), instead of typing every
+    parameter by hand. Hyphenated tool parameter names are sanitised to
+    valid pydantic field names, with the original kept as a nom_de_guerre.
+    """
+    fields: dict[str, tuple[str, bool, Any]] = {}
+    field_meta: dict[str, ParamMeta] = {}
+    seen: dict[str, str] = {}
+    for raw_name, value in defaults.items():
+        field = sanitize_unique(raw_name, seen)
+        fields[field] = (_infer_dtype(value), False, value)
+        if field != raw_name:
+            field_meta[field] = ParamMeta(nom_de_guerre=raw_name)
+    for raw_name, spec in (extra or {}).items():
+        field = sanitize_unique(raw_name, seen)
+        fields[field] = spec
+        if field != raw_name:
+            field_meta[field] = ParamMeta(nom_de_guerre=raw_name)
+    return Cab(
+        name=name,
         command=command,
-        image=cab_image,
-        inputs=inputs,
+        image=image,
+        inputs_model=build_model(f"{name}_Inputs", fields, allow_extra=bool(input_patterns)),
+        outputs_model=build_model(f"{name}_Outputs", outputs or {}),
+        field_meta=field_meta,
         input_patterns=input_patterns or [],
     )
 
 
-# Real stimela-classic schemas (examples/stimela_classic/, vendored) --
-# see the module docstring for why, and that dir's README for provenance.
-# These load with flavour="casa-task" (mstransform/listobs/flagdata/
-# flagmanager) except msutils, which is a real standalone binary and
-# loads as flavour="binary" -- see the module docstring.
+# Real stimela-classic schemas (examples/stimela_classic/, vendored).
 casa_mstransform = load_classic_cab(_STIMELA_CLASSIC_DIR / "casa_mstransform" / "parameters.json")
 casa_listobs = load_classic_cab(_STIMELA_CLASSIC_DIR / "casa_listobs" / "parameters.json")
 casa_flagdata = load_classic_cab(_STIMELA_CLASSIC_DIR / "casa_flagdata" / "parameters.json")
@@ -167,602 +109,130 @@ casa_flagmanager = load_classic_cab(_STIMELA_CLASSIC_DIR / "casa_flagmanager" / 
 msutils = load_classic_cab(_STIMELA_CLASSIC_DIR / "msutils" / "parameters.json")
 
 
-@cab("python", image="quay.io/stimela/casa:1.7.1", flavour="casa-task")
-def casa_script(vis: str, script: str):
-    """Inline CASA python snippet. Schema-only for now -- see module docstring."""
-
-
-breizorro = CabDef(
+breizorro = Cab(
     name="breizorro",
     command="breizorro",
     image="breizorro:latest",
-    inputs={
-        "restored-image": ParamSchema(dtype="File", required=True),
-        "boxsize": ParamSchema(dtype="int"),
-        "threshold": ParamSchema(dtype="float"),
-        "outfile": ParamSchema(dtype="File"),
-    },
-    outputs={"outfile": ParamSchema(dtype="File")},
+    inputs_model=build_model(
+        "breizorro_Inputs",
+        {
+            "restored_image": ("File", True, None),
+            "boxsize": ("int", False, None),
+            "threshold": ("float", False, None),
+            "outfile": ("File", False, None),
+        },
+    ),
+    outputs_model=build_model("breizorro_Outputs", {"mask": ("File", False, None)}),
+    field_meta={"restored_image": ParamMeta(nom_de_guerre="restored-image")},
 )
 
-# Shared cubical/wsclean/pybdsm parameters, straight from the original
-# recipe -- minus "data-ms"/"msname", which are always passed explicitly
-# per step since they vary per run (see cab_from_defaults() calls below).
+
+# Shared cubical/wsclean parameters, straight from the original recipe.
 cal_opts: dict[str, Any] = {
     "data-column": "DATA",
-    "model-pa-rotate": True,
-    "dist-ncpu": 32,
-    "log-memory": True,
     "out-mode": "sc",
-    "out-plots": True,
-    "dist-max-chunks": 16,
-    "out-casa-gaintables": False,
     "weight-column": "WEIGHT_SPECTRUM",
-    "montblanc-dtype": "float",
     "out-overwrite": True,
     "madmax-enable": True,
     "madmax-threshold": 7.0,
-    "madmax-plot": False,
-    "madmax-estimate": "diag",
-    "log-boring": False,
 }
 
 im_opts: dict[str, Any] = {
-    "local-rms": True,
-    "local-rms-window": 128,
     "niter": 400000,
     "size": 6000,
     "scale": 1.3,
     "auto-threshold": 3,
     "nchan": 5,
-    "join-channels": True,
-    "fit-spectral-pol": 1,
     "multiscale": True,
     "multiscale-scales": [0, 1, 3, 5],
-    "weight": "briggs -0.1",
     "mgain": 0.8,
     "column": "CORRECTED_DATA",
 }
 
-extract_opts: dict[str, Any] = {
-    "thresh_pix": 20,
-    "thresh_isl": 5,
-    "adaptive_rms_box": True,
-    "format": "fits",
-    "port2tigger": True,
-    "ncores": 32,
-}
-
 cubical = cab_from_defaults(
     "cubical",
-    "cubical",
+    "gocubical",
     "quay.io/stimela2/cubical:latest",
     cal_opts,
     input_patterns=[
-        # cubical accepts one family of these per solvable Jones term
-        # (g1-*, g-*, dE-*, ...) -- the term names (here "g1", "g") are
-        # chosen per recipe/call, not fixed by the tool, so no static
-        # `inputs` dict could ever enumerate every possible one. A
-        # pattern says "any prefix, as long as the suffix is one of
-        # these known attrs" -- see shinobi.schema.ParamPattern.
+        # one family per solvable Jones term (g1-*, g-*, ...); the term
+        # names are chosen per call, not fixed by the tool.
         ParamPattern(
             separator="-",
             attrs={
-                "solvable": ParamSchema(dtype="bool"),
-                "type": ParamSchema(dtype="str"),
-                "time-int": ParamSchema(dtype="int"),
-                "freq-int": ParamSchema(dtype="int"),
-                "update-type": ParamSchema(dtype="str"),
-                "xfer-from": ParamSchema(dtype="File"),
+                "solvable": ParamMeta(),
+                "type": ParamMeta(),
+                "time-int": ParamMeta(),
+                "freq-int": ParamMeta(),
             },
         )
     ],
-    **{
-        "data-ms": ParamSchema(dtype="MS", required=True),
-        "out-name": ParamSchema(dtype="str", required=True),
-        "model-list": ParamSchema(dtype="str", required=True),
-        "sol-jones": ParamSchema(dtype="str"),
-        "sol-term-iters": ParamSchema(dtype="list:int"),
-        "out-apply-solver-flags": ParamSchema(dtype="bool"),
-        "flags-save": ParamSchema(dtype="str"),
-        "flags-apply": ParamSchema(dtype="str"),
+    extra={
+        "data-ms": ("MS", True, None),
+        "out-name": ("str", True, None),
+        "model-list": ("str", True, None),
+        "sol-jones": ("str", False, None),
     },
+    outputs={"corrected_ms": ("MS", False, None)},
 )
 
-# Real cult-cargo schema (~170 params) instead of a hand-declared subset
-# -- see the module docstring for why, and examples/cultcargo/README.md
-# for provenance. Its real parameter names: `ms` (a List[MS], not
-# `msname`), `prefix` (not `name`), `nchan` (not `channels-out`).
-wsclean = load_file(_CULTCARGO_DIR / "wsclean.yml")["wsclean"]
-
-pybdsm = cab_from_defaults(
-    "pybdsm",
-    "pybdsm",
-    "quay.io/stimela/pybdsf:latest",
-    extract_opts,
-    image=ParamSchema(dtype="File", required=True),
-    outfile=ParamSchema(dtype="str", required=True),
+# Real cult-cargo schema. Its real names: `ms` (a List[MS]), `prefix`
+# (not `name`), `nchan` (not `channels-out`). wsclean.yml resolves its
+# real schema via `dynamic_schema` (a code reference shinobi deliberately
+# does not import/run), so it loads with an empty schema; for this example
+# we give it the one input/output the recipe actually wires.
+wsclean = load_file(_CULTCARGO_DIR / "wsclean.yml")["wsclean"].model_copy(
+    update={
+        "inputs_model": build_model("wsclean_Inputs", {"ms": ("MS", True, None), "prefix": ("str", False, None)}),
+        "outputs_model": build_model("wsclean_Outputs", {"restored": ("File", False, None)}),
+    }
 )
-
-
-def _update(defaults: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
-    """An updated copy of `defaults` -- `defaults` itself untouched."""
-    updated = copy.deepcopy(defaults)
-    updated.update(overrides)
-    return updated
 
 
 # ---------------------------------------------------------------- recipe ---
 
-_JOB_NAMES = [
-    "flag_MW",
-    "im0",
-    "cal1",
-    "mask1",
-    "im1",
-    "cal2",
-    "mask2",
-    "im2",
-    "sf3",
-    "cal3",
-    "mask3",
-    "im3",
-    "cal4",
-    "restore-flags",
-    "aplcal",
-    "im4",
-    "fresid",
-    "im5",
-    "unflag",
-]
+
+class SelfcalInputs(BaseModel):
+    ms: str = "line.ms"
+    prefix: str = "selfcal"
+    rounds: int = 2
 
 
-def _selected_jobs(start: int, end: int, skip: str) -> set[str]:
-    """Which of _JOB_NAMES to actually run: 1-based `start`/`end` (`end`
-    0 means no limit) select a range, then `skip` (comma-separated
-    1-based indices/ranges into the *full* list, or "all") removes from
-    it.
+class SelfcalOutputs(BaseModel):
+    final_ms: str | None = None
+
+
+def build_selfcal(rounds: int = 2) -> Recipe:
+    """Construct a selfcal Recipe: `rounds` iterations of
+    image -> mask -> calibrate, each round's calibrated MS feeding the next.
     """
-    if skip == "all":
-        return set()
-    selected = set(_JOB_NAMES[start - 1 : end or None])
-    for chunk in skip.split(",") if skip else []:
-        if "-" in chunk:
-            lo, hi = (int(x) for x in chunk.split("-"))
-            selected -= set(_JOB_NAMES[lo - 1 : hi])
-        elif chunk:
-            selected.discard(_JOB_NAMES[int(chunk) - 1])
-    return selected
+    recipe = Recipe(name="selfcal", inputs_model=SelfcalInputs, outputs_model=SelfcalOutputs)
 
-
-@recipe()
-def selfcal(
-    ms0: str = "1767335776_sdp_l0.ms",
-    rawmsdir: str = "/home/tanitarh/MWproject/rawdata",
-    gaindir: str = "/home/tanitarh/MWproject/gains-crosscal",
-    applyspec: str = "applyspec.txt",
-    target: str = "CHI-OPH",
-    mslabel: str = "line",
-    msdir: str = "msdir",
-    input_dir: str = "absolute path to input folder",
-    outdir: str = "output-MAY15",
-    start: int = 1,
-    end: int = 0,  # 0 means no limit
-    skip: str = "",  # comma-separated 1-based indices/ranges, or "all"
-    init: bool = False,
-    reset: bool = False,
-    runtime: str = "apptainer",
-):
-    """MeerKAT selfcal: split off the target, then four rounds of
-    image -> mask -> calibrate, finishing with a residual check.
-    """
-    backend = get_backend(runtime, workdir=os.getcwd())
-
-    prefix = f"{Path(ms0).stem}-{target}"
-    ms = f"{prefix}-{mslabel}.ms"
-    obsinfo_dir = os.path.join(outdir, "obsinfo")
-    legacy_flags = "ninja_legacy"  # flagset preserving incoming flags across selfcal
-
-    def get_name(n: int) -> str:
-        return f"{prefix}-{n}"
-
-    def out(name: str) -> str:
-        return os.path.join(outdir, name)
-
-    def indir(name: str) -> str:
-        return os.path.join(input_dir, name)
-
-    def msdir_path(name: str) -> str:
-        return os.path.join(msdir, name)
-
-    def obsinfo(name: str) -> str:
-        return os.path.join(obsinfo_dir, name)
-
-    def run(label: str, cab_obj: CabDef, **params: Any) -> None:
-        print(f"### {label}")
-        result = call(cab_obj, backend, **params)
-        if not result.success:
-            raise RuntimeError(f"'{label}' failed:\n{result.stderr}")
-
-    # -------------------------------------------------------- init/reset ---
-
-    if init:
-        print("Splitting MS and initialising flags and weights")
-        run(
-            "split:: Split data for selfcal",
-            casa_mstransform,
-            **{
-                # "output-msname" is hyphenated -- not a valid Python
-                # keyword-argument name, so this step alone unpacks a
-                # dict instead of using literal name=value kwargs.
-                "msname": os.path.join(rawmsdir, ms0),
-                "output-msname": msdir_path(ms),
-                "datacolumn": "corrected",
-                "field": target,
-                "correlation": "XX,YY",
-                "spw": "*:1.418734071768GHz~1.422077431768GHz",
-                "usewtspectrum": True,
-                "keepflags": True,
-                "nthreads": 32,
-                "docallib": True,
-                "callib": os.path.join(gaindir, applyspec),
-            },
+    prev_ms: InputRef | OutputRef = recipe.inputs.ms
+    for n in range(1, rounds + 1):
+        image = f"image{n}"
+        mask = f"mask{n}"
+        cal = f"cal{n}"
+        recipe.add_step(image, wsclean, ms=prev_ms, prefix=f"round{n}")
+        recipe.add_step(mask, breizorro, restored_image=recipe.outputs(image, "restored"))
+        recipe.add_step(
+            cal,
+            cubical,
+            data_ms=prev_ms if n == 1 else recipe.outputs(f"cal{n - 1}", "corrected_ms"),
+            out_name=f"round{n}",
+            model_list=f"round{n}-model",
         )
-        run(
-            "info1:: Get observation info",
-            casa_listobs,
-            msname=msdir_path(ms),
-            listfile=obsinfo(f"{prefix}-obsinfo.txt"),
-            overwrite=True,
-        )
-        run(
-            "info2:: Get observation information as a json file",
-            msutils,
-            msname=msdir_path(ms),
-            command="summary",
-            display=False,
-            outfile=obsinfo(f"{prefix}-summary.json"),
-        )
-        run(
-            "flag_pp:: Flag auto correlations",
-            casa_flagdata,
-            msname=msdir_path(ms),
-            mode="manual",
-            autocorr=True,
-            flagbackup=False,
-        )
+        prev_ms = recipe.outputs(cal, "corrected_ms")
 
-    if init or reset:
-        run(
-            "uflag_spw:: Unflag all spws",
-            casa_flagdata,
-            msname=msdir_path(ms),
-            mode="unflag",
-            spw="*",
-            flagbackup=False,
-        )
-        run(
-            "leg-flags:: Save incoming flags",
-            casa_flagmanager,
-            msname=msdir_path(ms),
-            mode="save",
-            versionname=legacy_flags,
-            merge="replace",
-        )
-        run(
-            "init_ws:: Setting uniform weights",
-            casa_script,
-            vis=msdir_path(ms),
-            script=f"""
-vis = os.path.join(os.environ['MSDIR'], '{ms}')
-initweights(vis=vis, wtmode='ones', dowtsp=True)
-""",
-        )
+    recipe.set_output("final_ms", prev_ms)
+    return recipe
 
-    if skip == "all":
-        return
 
-    # -------------------------------------------------------------- jobs ---
+# The default target `ninja run` resolves: a 2-round selfcal.
+selfcal = build_selfcal(rounds=2)
 
-    selected = _selected_jobs(start, end, skip)
 
-    def job(job_name: str, label: str, cab_obj: CabDef, **params: Any) -> None:
-        if job_name not in selected:
-            print(f"Skipping job: {job_name}")
-            return
-        run(label, cab_obj, **params)
+if __name__ == "__main__":
+    from shinobi.dag import graph_nodes, render_dag
 
-    job(
-        "flag_MW",
-        "flag_MW:: Flag MW before selfcal",
-        casa_flagdata,
-        msname=msdir_path(ms),
-        mode="manual",
-        spw="*:1420.38~1420.65MHz",  # bright lines that would bias selfcal gains
-    )
-
-    # Uses an external input mask
-    job(
-        "im0",
-        "im0:: Image for initial model",
-        wsclean,
-        **_update(
-            im_opts,
-            {
-                "ms": [ms],
-                "prefix": get_name(0),
-                "column": "DATA",
-                "fits-mask": indir("initalmask_t10_b125.fits"),
-            },
-        ),
-    )
-
-    job(
-        "cal1",
-        "cal1::f-slope calibration -> corr-data",
-        cubical,
-        **_update(
-            cal_opts,
-            {
-                "data-ms": ms,
-                "out-name": get_name(1),
-                "model-list": "MODEL_DATA",
-                "sol-jones": "g1",
-                "sol-term-iters": [50],
-                "g1-solvable": True,
-                "g1-type": "f-slope",
-                "g1-time-int": 20,
-                "g1-freq-int": 256,
-            },
-        ),
-    )
-
-    mask1 = "breizorro_mask_1.fits"
-    job(
-        "mask1",
-        "mask1:: Mask for image 1 from image 0",
-        breizorro,
-        **{
-            "restored-image": out(f"{get_name(0)}-MFS-image.fits"),
-            "boxsize": 60,
-            "threshold": 7,
-            "outfile": mask1,
-        },
-    )
-
-    job(
-        "im1",
-        "im1:: Round 1 image",
-        wsclean,
-        **_update(
-            im_opts,
-            {
-                "ms": [ms],
-                "prefix": get_name(1),
-                "column": "CORRECTED_DATA",
-                "fits-mask": out(mask1),
-                "auto-threshold": 2,
-            },
-        ),
-    )
-
-    job(
-        "cal2",
-        "cal2:: Gain -> CORRECTED_DATA",
-        cubical,
-        **_update(
-            cal_opts,
-            {
-                "data-ms": ms,
-                "out-name": get_name(2),
-                "model-list": "MODEL_DATA",
-                "out-mode": "sc",
-                "sol-jones": "g",
-                "sol-term-iters": [50],
-                "g-solvable": True,
-                "g-type": "complex-diag",
-                "g-time-int": 20,
-                "g-freq-int": 256,
-                "g-update-type": "complex-diag",
-            },
-        ),
-    )
-
-    mask2 = "breizorro_mask_2.fits"
-    job(
-        "mask2",
-        "mask2:: Mask for image 2 from image 1",
-        breizorro,
-        **{
-            "restored-image": out(f"{get_name(1)}-MFS-image.fits"),
-            "boxsize": 65,
-            "threshold": 7,
-            "outfile": mask2,
-        },
-    )
-
-    job(
-        "im2",
-        "im2::Round 2 image",
-        wsclean,
-        **_update(im_opts, {"ms": [ms], "prefix": get_name(2), "fits-mask": out(mask2), "auto-threshold": 1}),
-    )
-
-    model_points_prefix = f"{get_name(2)}-skymodel"
-    job(
-        "sf3",
-        "sf3::Extract point sources",
-        pybdsm,
-        **_update(
-            extract_opts,
-            {
-                "image": out(f"{get_name(2)}-MFS-image.fits"),
-                "thresh_pix": 7,
-                "thresh_isl": 3,
-                "outfile": f"{model_points_prefix}.fits",
-            },
-        ),
-    )
-
-    lsm_from_im2 = f"{model_points_prefix}.lsm.html"
-    job(
-        "cal3",
-        "cal3:: Gain -> CORR_RES",
-        cubical,
-        **_update(
-            cal_opts,
-            {
-                "data-ms": ms,
-                "out-name": get_name(3),
-                "model-list": lsm_from_im2,
-                "out-mode": "sr",
-                "sol-jones": "g",
-                "sol-term-iters": [50],
-                "g-solvable": True,
-                "g-type": "complex-diag",
-                "g-time-int": 43,
-                "g-freq-int": 256,
-            },
-        ),
-    )
-
-    mask3 = "breizorro_mask_3.fits"
-    job(
-        "mask3",
-        "mask3:: Mask for image 3 using image 2",
-        breizorro,
-        **{
-            "restored-image": out(f"{get_name(2)}-MFS-image.fits"),
-            "boxsize": 61,
-            "threshold": 5,
-            "outfile": mask3,
-        },
-    )
-
-    job(
-        "im3",
-        "im3::Round 3 image",
-        wsclean,
-        **_update(im_opts, {"ms": [ms], "prefix": get_name(3), "fits-mask": out(mask3), "auto-threshold": 1}),
-    )
-
-    # model-list = MODEL_DATA plus the point-source sky model extracted from im2
-    final_model = f"MODEL_DATA+{out(lsm_from_im2)}"
-    job(
-        "cal4",
-        "cal4:: G -> CORR_RES",
-        cubical,
-        **_update(
-            cal_opts,
-            {
-                "data-ms": ms,
-                "out-name": get_name(4),
-                "out-mode": "sr",
-                "model-list": final_model,
-                "sol-jones": "g",
-                "sol-term-iters": [50],
-                "g-solvable": True,
-                "g-type": "complex-2x2",
-                "g-time-int": 43,
-                "g-freq-int": 256,
-                "g-update-type": "complex-diag",
-            },
-        ),
-    )
-
-    job(
-        "restore-flags",
-        "restore-flags:: Restore incoming flags",
-        casa_flagmanager,
-        msname=msdir_path(ms),
-        mode="restore",
-        versionname=legacy_flags,
-        merge="replace",
-    )
-
-    job(
-        "aplcal",
-        "aplcal:: Apply previous gains to unflagged DATA column",
-        cubical,
-        **_update(
-            cal_opts,
-            {
-                "data-ms": ms,
-                "out-name": get_name(5),
-                "out-mode": "ar",
-                "out-plots": False,
-                "out-apply-solver-flags": False,
-                "model-list": final_model,
-                "madmax-enable": False,  # internal flagging would re-flag the bright lines
-                "flags-save": "0",
-                "sol-jones": "g",
-                "g-solvable": False,
-                "g-type": "complex-2x2",
-                "g-time-int": 43,
-                "g-freq-int": 256,
-                "g-update-type": "complex-diag",
-                "flags-apply": legacy_flags,
-                "g-xfer-from": out(f"{get_name(4)}-G-field_0-ddid_None.parmdb"),
-            },
-        ),
-    )
-
-    job(
-        "im4",
-        "im4::Image final selfcal residual",
-        wsclean,
-        **_update(
-            im_opts,
-            {
-                "ms": [ms],
-                "prefix": get_name(4),
-                "nchan": 3,
-                "auto-threshold": 1,
-                "auto-mask": 5,
-                "multiscale": False,
-                "local-rms-window": 64,
-                "fit-spectral-pol": 1,
-            },
-        ),
-    )
-
-    job(
-        "fresid",
-        "fresid:: Subtract what's left after imaging final selfcal residual",
-        msutils,
-        command="sumcols",
-        msname=msdir_path(ms),
-        col1="CORRECTED_DATA",
-        col2="MODEL_DATA",
-        subtract=True,
-    )
-
-    # This final image should be a noisy residual with no emission left. If
-    # it still shows emission, the selfcal strategy needs revisiting.
-    job(
-        "im5",
-        "im5::Final ninja residual map",
-        wsclean,
-        **_update(
-            im_opts,
-            {
-                "niter": 0,
-                "ms": [ms],
-                "prefix": get_name(5),
-                "auto-threshold": 0.5,
-                "auto-mask": 3,
-                "local-rms-window": 64,
-                "no-dirty": True,
-            },
-        ),
-    )
-
-    job(
-        "unflag",
-        "unflag:: Unflag all channels",
-        casa_flagdata,
-        msname=msdir_path(ms),
-        mode="unflag",
-        spw="*",
-        flagbackup=False,
-    )
+    print(render_dag(graph_nodes(selfcal)))

@@ -1,4 +1,4 @@
-"""Load cult-cargo style YAML cab definitions into shinobi CabDef objects.
+"""Load cult-cargo style YAML cab definitions into shinobi Cab objects.
 
 The cult-cargo cab *schema* (inputs/outputs/policies/wranglers) is a good
 design and is reused as-is here -- it's stimela2's recipe/alias layer that
@@ -53,10 +53,11 @@ from typing import Any
 import yaml
 
 from shinobi.exceptions import CabLoadError
-from shinobi.schema import CabDef, ParamSchema, Policies
+from shinobi.loaders._modelgen import build_model, sanitize_unique
+from shinobi.steps.schema import Cab, ParamMeta, Policies
 
 
-def load_file(path: str | Path) -> dict[str, CabDef]:
+def load_file(path: str | Path) -> dict[str, Cab]:
     path = Path(path)
     raw = _load_raw(path)
     resolved = _resolve_use(raw, raw)
@@ -64,7 +65,7 @@ def load_file(path: str | Path) -> dict[str, CabDef]:
     return {name: _build_cabdef(name, spec) for name, spec in cabs_section.items()}
 
 
-def loads(text: str) -> dict[str, CabDef]:
+def loads(text: str) -> dict[str, Cab]:
     """Parse cab defs from a YAML string. Supports ``_use`` (resolved
     against the document itself) but not ``_include``, since there's no
     base directory to resolve relative file paths against.
@@ -125,7 +126,7 @@ def _resolve_use(node: Any, root: dict[str, Any]) -> Any:
     return node
 
 
-def _build_cabdef(name: str, spec: dict[str, Any]) -> CabDef:
+def _build_cabdef(name: str, spec: dict[str, Any]) -> Cab:
     image = spec.get("image")
     if isinstance(image, dict):
         image = image.get("name")
@@ -150,32 +151,47 @@ def _build_cabdef(name: str, spec: dict[str, Any]) -> CabDef:
     policies_spec = spec.get("policies") or {}
     wranglers = ((spec.get("management") or {}).get("wranglers")) or {}
 
-    return CabDef(
+    in_fields, field_meta = _collect(spec.get("inputs") or {})
+    out_fields, _ = _collect(spec.get("outputs") or {})
+
+    return Cab(
         name=name,
         command=spec["command"],
         info=spec.get("info"),
         image=image,
         flavour=flavour,
         policies=Policies(**policies_spec),
-        inputs={k: _build_param(v) for k, v in (spec.get("inputs") or {}).items()},
-        outputs={k: _build_param(v) for k, v in (spec.get("outputs") or {}).items()},
+        inputs_model=build_model(f"{name}_Inputs", in_fields),
+        outputs_model=build_model(f"{name}_Outputs", out_fields),
+        field_meta=field_meta,
         wranglers=wranglers,
     )
 
 
-def _build_param(spec: dict[str, Any] | None) -> ParamSchema:
-    if spec is not None and not isinstance(spec, dict):
-        raise CabLoadError(
-            f"expected a param spec mapping, got {spec!r} -- this usually means an "
-            "unsupported nested _include (e.g. 'inputs: {_include: (pkg)file}'), which "
-            "shinobi doesn't resolve (see this module's docstring)"
-        )
-    spec = spec or {}
-    return ParamSchema(
-        dtype=str(spec.get("dtype", "str")),
-        required=bool(spec.get("required", False)),
-        default=spec.get("default"),
-        info=spec.get("info"),
-        implicit=spec.get("implicit"),
-        nom_de_guerre=spec.get("nom_de_guerre"),
-    )
+def _collect(
+    raw: dict[str, Any],
+) -> tuple[dict[str, tuple[str, bool, Any]], dict[str, ParamMeta]]:
+    """Split a cult-cargo inputs/outputs mapping into modelgen field specs
+    and per-field ParamMeta (nom_de_guerre/implicit/info).
+    """
+    fields: dict[str, tuple[str, bool, Any]] = {}
+    metas: dict[str, ParamMeta] = {}
+    seen: dict[str, str] = {}
+    for key, value in raw.items():
+        if value is not None and not isinstance(value, dict):
+            raise CabLoadError(
+                f"expected a param spec mapping, got {value!r} -- this usually means an "
+                "unsupported nested _include (e.g. 'inputs: {_include: (pkg)file}'), which "
+                "shinobi doesn't resolve (see this module's docstring)"
+            )
+        value = value or {}
+        field = sanitize_unique(key, seen)
+        implicit = value.get("implicit")
+        required = bool(value.get("required", False)) and implicit is None
+        fields[field] = (str(value.get("dtype", "str")), required, value.get("default"))
+        # the tool's real flag name: an explicit nom_de_guerre, else the
+        # original (unsanitised) param name if sanitising changed it.
+        nom = value.get("nom_de_guerre") or (key if key != field else None)
+        if nom or implicit is not None or value.get("info"):
+            metas[field] = ParamMeta(nom_de_guerre=nom, implicit=implicit, info=value.get("info"))
+    return fields, metas

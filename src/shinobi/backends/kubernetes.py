@@ -32,9 +32,8 @@ from typing import Any
 from shinobi.backends import Backend, register
 from shinobi.backends.container import bind_dirs
 from shinobi.exceptions import BackendError
-from shinobi.results import Result
-from shinobi.schema import CabDef
-from shinobi.wranglers import apply_wranglers
+from shinobi.results import BackendRun
+from shinobi.steps.schema import Cab
 
 _TERMINAL_CONDITIONS = {"Complete", "Failed"}
 
@@ -55,12 +54,12 @@ class KubernetesBackend(Backend):
         self.poll_interval = poll_interval
 
     def _manifest(
-        self, cab: CabDef, argv: list[str], params: dict[str, Any], job_name: str
+        self, cab: Cab, argv: list[str], inputs: dict[str, Any], job_name: str
     ) -> dict[str, Any]:
         if not cab.image:
             raise BackendError(f"cab '{cab.name}' has no image, cannot run on kubernetes")
 
-        dirs = bind_dirs(cab, params, self.workdir)
+        dirs = bind_dirs(cab, inputs, self.workdir)
         volumes = [{"name": f"vol{i}", "hostPath": {"path": d}} for i, d in enumerate(dirs)]
         mounts = [{"name": f"vol{i}", "mountPath": d} for i, d in enumerate(dirs)]
 
@@ -124,9 +123,9 @@ class KubernetesBackend(Backend):
             return int(proc.stdout.strip())
         return 1
 
-    def run(self, cab: CabDef, argv: list[str], params: dict[str, Any]) -> Result:
+    def run(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> BackendRun:
         job_name = f"shinobi-{cab.name}-{uuid.uuid4().hex[:8]}"
-        manifest = self._manifest(cab, argv, params, job_name)
+        manifest = self._manifest(cab, argv, inputs, job_name)
 
         apply = self._kubectl("apply", "-f", "-", input=json.dumps(manifest))
         if apply.returncode != 0:
@@ -140,5 +139,4 @@ class KubernetesBackend(Backend):
         finally:
             self._kubectl("delete", "job", job_name, "--ignore-not-found")
 
-        outputs = apply_wranglers(cab.wranglers, logs.splitlines())
-        return Result(cab_name=cab.name, returncode=returncode, stdout=logs, stderr="", outputs=outputs)
+        return BackendRun(returncode=returncode, stdout=logs, stderr="")

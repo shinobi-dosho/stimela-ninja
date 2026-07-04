@@ -1,31 +1,32 @@
-from shinobi.policies import build_args
-from shinobi.schema import CabDef, ParamSchema
+from shinobi.loaders._modelgen import build_model
+from shinobi.policies import build_argv
+from shinobi.steps.schema import Cab
 
 
-def test_echo_and_wrangler_extraction(native):
-    cab = CabDef(
-        name="flagsummary",
-        command="/bin/echo",
-        inputs={
-            "text": ParamSchema(
-                dtype="str", default="Total Flagged: 12.5% Total Counts: 100"
-            )
-        },
-        wranglers={
-            r"Total Flagged: (?P<percentage>[\d.]+)% Total Counts: .*": [
-                "PARSE_OUTPUT:percentage:float"
-            ]
-        },
-    )
-    argv = build_args(cab, {})
-    result = native.run(cab, argv, {})
+def make_cab(**kwargs) -> Cab:
+    kwargs.setdefault("command", "/bin/echo")
+    kwargs.setdefault("inputs_model", build_model("In", {}))
+    kwargs.setdefault("outputs_model", build_model("Out", {}))
+    return Cab(name="tool", **kwargs)
 
-    assert result.success
-    assert result.outputs["percentage"] == 12.5
+
+def test_native_backend_runs_and_captures_stdout(native):
+    cab = make_cab(inputs_model=build_model("In", {"text": ("str", False, "hello there")}))
+    run = native.run(cab, build_argv(cab, {"text": "hello there"}), {"text": "hello there"})
+    assert run.success
+    assert "hello there" in run.stdout
+
+
+def test_native_backend_returns_raw_backendrun_without_wrangling(native):
+    # wrangling is the dispatch layer's job now; the backend just runs.
+    cab = make_cab(inputs_model=build_model("In", {"text": ("str", False, "x")}))
+    run = native.run(cab, build_argv(cab, {"text": "x"}), {"text": "x"})
+    assert hasattr(run, "returncode")
+    assert not hasattr(run, "outputs")
 
 
 def test_failing_command_reports_nonzero(native):
-    cab = CabDef(name="fail", command="/bin/false")
-    result = native.run(cab, build_args(cab, {}), {})
-    assert not result.success
-    assert result.returncode != 0
+    cab = make_cab(command="/bin/false")
+    run = native.run(cab, build_argv(cab, {}), {})
+    assert not run.success
+    assert run.returncode != 0

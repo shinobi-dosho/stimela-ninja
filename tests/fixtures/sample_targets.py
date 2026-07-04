@@ -1,54 +1,86 @@
-"""Tiny @cab and @recipe targets used by tests/test_cli.py, and as a
+"""Tiny Cab / Recipe / StepRef targets used by tests/test_cli.py, and as a
 concrete example of the 'path/to/file.py:name' target syntax `ninja run`
 expects.
 """
 
-from shinobi.decorators import cab, recipe
-from shinobi.schema import ParamSchema
+from __future__ import annotations
+
+from pydantic import BaseModel
+
+from shinobi.steps import Cab, InputRef, OutputRef, Recipe, StepRef, step
 
 
-@cab("/bin/echo")
-def greet(text: str = "hi"):
-    """Echo TEXT back."""
+class GreetInputs(BaseModel):
+    text: str = "hi"
 
 
-@cab("/bin/echo")
-def greet_image(restored_image: str):
-    """A cab with an underscored param, to check CLI flag round-tripping."""
+class CommandOutputs(BaseModel):
+    returncode: int = 0
+    stdout: str = ""
+    stderr: str = ""
 
 
-@cab("/bin/false")
-def fail():
-    """A cab that always fails, for testing nonzero-exit propagation."""
+greet = Cab(name="greet", command="/bin/echo", info="Echo TEXT back.", inputs_model=GreetInputs,
+            outputs_model=CommandOutputs)
 
 
-@recipe()
-def double(n: int) -> int:
-    """Doubles n and prints it."""
-    print(n * 2)
-    return n * 2
+class GreetImageInputs(BaseModel):
+    restored_image: str  # required, and underscored to check CLI flag round-tripping
 
 
-@cab("/bin/echo", outputs={"path": ParamSchema(dtype="File")})
-def make_file(name: str = "out.txt"):
-    """Pretend to create a file, for --dryrun dependency-chain testing."""
+greet_image = Cab(
+    name="greet_image",
+    command="/bin/echo",
+    info="A cab with an underscored param, to check CLI flag round-tripping.",
+    inputs_model=GreetImageInputs,
+    outputs_model=CommandOutputs,
+)
 
 
-@cab("/bin/echo")
-def use_file(path: str):
-    """Consume a path from a previous step -- used to exercise real
-    dependency detection during --dryrun.
-    """
+class NoInputs(BaseModel):
+    pass
 
 
-@recipe()
-def chained():
-    """Calls make_file then use_file, threading the former's output into
-    the latter -- so --dryrun should detect a real dependency edge.
-    """
-    from shinobi.backends import get_backend
-    from shinobi.recipe import call
+fail = Cab(name="fail", command="/bin/false", info="Always fails.", inputs_model=NoInputs,
+           outputs_model=CommandOutputs)
 
-    backend = get_backend("native")
-    result = call(make_file, backend)
-    call(use_file, backend, path=result.path)
+
+@step(scope=greet)
+def greet_step(ctx):
+    """A decorated step target for the CLI."""
+    return ctx.run()
+
+
+# -- recipe target for --dryrun graph rendering --
+
+
+class MakeInputs(BaseModel):
+    name: str = "out.txt"
+
+
+class PathOutputs(BaseModel):
+    path: str | None = None
+
+
+class UseInputs(BaseModel):
+    path: str | None = None
+
+
+class OkOutputs(BaseModel):
+    ok: bool = True
+
+
+make_file = Cab(name="make_file", command="/bin/echo", inputs_model=MakeInputs, outputs_model=PathOutputs)
+use_file = Cab(name="use_file", command="/bin/echo", inputs_model=UseInputs, outputs_model=OkOutputs)
+
+
+chained = Recipe(
+    name="chained",
+    inputs_model=MakeInputs,
+    outputs_model=OkOutputs,
+    steps=[
+        StepRef(name="make_file", step=make_file, wiring={"name": InputRef(field="name")}),
+        StepRef(name="use_file", step=use_file, wiring={"path": OutputRef(step="make_file", field="path")}),
+    ],
+    output_wiring={"ok": OutputRef(step="use_file", field="ok")},
+)

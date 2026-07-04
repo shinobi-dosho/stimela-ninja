@@ -4,9 +4,8 @@ import subprocess
 from typing import Any
 
 from shinobi.backends import Backend, register
-from shinobi.results import Result
-from shinobi.schema import CabDef
-from shinobi.wranglers import apply_wranglers
+from shinobi.results import BackendRun
+from shinobi.steps.schema import Cab
 
 
 @register
@@ -15,14 +14,6 @@ class NativeBackend(Backend):
 
     name = "native"
 
-    def run(self, cab: CabDef, argv: list[str], params: dict[str, Any]) -> Result:
+    def run(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> BackendRun:
         proc = subprocess.run(argv, capture_output=True, text=True)
-        lines = proc.stdout.splitlines() + proc.stderr.splitlines()
-        outputs = apply_wranglers(cab.wranglers, lines)
-        return Result(
-            cab_name=cab.name,
-            returncode=proc.returncode,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
-            outputs=outputs,
-        )
+        return BackendRun(returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)

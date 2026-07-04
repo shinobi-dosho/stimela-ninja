@@ -3,17 +3,20 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import os
+import types
 from pathlib import Path
+from typing import Union, get_args, get_origin
 
 import click
+from pydantic import BaseModel
+from pydantic_core import PydanticUndefined
 
 import shinobi
-from shinobi.backends import get_backend
-from shinobi.backends.trace import TraceBackend, patch_all_backends
 from shinobi.config import AppConfig
-from shinobi.dag import render_dag
-from shinobi.recipe import call
-from shinobi.schema import CabDef, ParamSchema, is_file_like_dtype
+from shinobi.dag import graph_nodes, render_dag
+from shinobi.policies import build_argv
+from shinobi.steps.dispatch import _dispatch, _prepare_inputs
+from shinobi.steps.schema import Recipe, Scope, StepRef, _unwrap_annotation, path_fields
 
 
 @click.group()
@@ -26,6 +29,7 @@ def main(ctx: click.Context, config_file: str | None, backend: str | None) -> No
     if backend:
         overrides["backend"] = {"default": backend}
     ctx.obj = AppConfig.load(config_file=config_file, **overrides)
+    ctx.meta["backend_override"] = backend
 
 
 @main.command()
@@ -48,8 +52,8 @@ def show_cab(cab_file: str, cab_name: str) -> None:
 
 
 def _resolve_target(target: str):
-    """Resolve 'path/to/file.py:name' or 'dotted.module.path:name' into
-    the CabDef or @recipe-decorated function it names.
+    """Resolve 'path/to/file.py:name' or 'dotted.module.path:name' into the
+    Scope or StepRef it names.
     """
     if ":" not in target:
         raise click.ClickException(f"target must be 'path:name', got {target!r}")
@@ -68,49 +72,55 @@ def _resolve_target(target: str):
         raise click.ClickException(f"no '{attr}' in {location}") from None
 
 
-def _click_type_for_dtype(dtype: str):
-    base = dtype.split(":", 1)[-1] if dtype.startswith("list:") else dtype
-    if is_file_like_dtype(base):
+def _is_list(annotation) -> bool:
+    origin = get_origin(annotation)
+    if origin is Union or origin is types.UnionType:
+        return any(_is_list(arg) for arg in get_args(annotation))
+    return origin in (list, tuple)
+
+
+def _click_type(annotation, is_path: bool):
+    if is_path:
         return click.Path()
-    return {"int": click.INT, "float": click.FLOAT, "bool": click.BOOL}.get(base, click.STRING)
+    for leaf in _unwrap_annotation(annotation):
+        if leaf in (int, float, bool, str):
+            return {int: click.INT, float: click.FLOAT, bool: click.BOOL, str: click.STRING}[leaf]
+    return click.STRING
 
 
-def _option_flag(schema_name: str) -> str:
+def _option_flag(field_name: str) -> str:
     # ONLY a straight "_" -> "-" replace: click derives the callback kwarg
     # name from this flag string, and it must round-trip back to the exact
-    # schema key used to call() the cab / call the recipe function.
-    return "--" + schema_name.replace("_", "-")
+    # model field name used to dispatch.
+    return "--" + field_name.replace("_", "-")
 
 
-def _build_options(inputs: dict[str, ParamSchema]) -> list[click.Option]:
+def _build_options(model: type[BaseModel]) -> list[click.Option]:
+    paths = path_fields(model)
     options = []
-    for schema_name, schema in inputs.items():
-        kwargs: dict = {"required": schema.required, "help": schema.info}
-        if schema.dtype == "bool":
-            kwargs.update(is_flag=True, default=bool(schema.default))
+    for name, field in model.model_fields.items():
+        required = field.is_required()
+        default = None if field.default is PydanticUndefined else field.default
+        kwargs: dict = {"required": required, "help": field.description}
+        leaves = _unwrap_annotation(field.annotation)
+        is_list = _is_list(field.annotation)
+        if bool in leaves and not is_list:
+            kwargs.update(is_flag=True, default=bool(default))
         else:
-            # click.Option quirk: passing default=None explicitly (rather
-            # than omitting it) silently defeats required=True -- it'll
-            # invoke the callback with None instead of raising
-            # MissingParameter. Only set it when there's a real default.
-            if schema.default is not None:
-                kwargs["default"] = schema.default
-            kwargs["type"] = _click_type_for_dtype(schema.dtype)
-            if schema.dtype.startswith("list:"):
+            if default is not None:
+                kwargs["default"] = default
+            kwargs["type"] = _click_type(field.annotation, name in paths)
+            if is_list:
                 kwargs["multiple"] = True
-        options.append(click.Option([_option_flag(schema_name)], **kwargs))
+        options.append(click.Option([_option_flag(name)], **kwargs))
     return options
 
 
 @main.command(
     "run",
     context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
-    add_help_option=False,  # let --help fall through to ctx.args for the
-    # dynamically-built inner command below to handle -- the outer
-    # command doesn't know TARGET's options yet, so it can't usefully
-    # show its own --help either.
-    no_args_is_help=True,  # `ninja run` with nothing at all shows this
-    # command's help instead of a bare "Missing argument 'TARGET'".
+    add_help_option=False,
+    no_args_is_help=True,
 )
 @click.argument("target")
 @click.option(
@@ -120,65 +130,62 @@ def _build_options(inputs: dict[str, ParamSchema]) -> list[click.Option]:
 )
 @click.pass_context
 def run(ctx: click.Context, target: str, dryrun: bool) -> None:
-    """Run a @cab or @recipe TARGET ('path/to/file.py:name' or 'pkg.mod:name').
+    """Run a Cab, Recipe, or @shinobi.step TARGET ('path/to/file.py:name'
+    or 'pkg.mod:name').
 
     [OPTIONS] are derived from the target's own parameters -- run
     `ninja run TARGET --help` to see them.
     """
     if target in ("-h", "--help"):
-        # add_help_option=False above is what lets `ninja run TARGET
-        # --help` fall through to ctx.args for the dynamically-built
-        # per-target command to handle -- but that also means click
-        # itself never intercepts a bare `ninja run --help` (no target),
-        # since with ignore_unknown_options=True it just treats "--help"
-        # as the value for the required TARGET argument. Handle that
-        # case explicitly instead of trying to resolve "--help" as a
-        # target.
         click.echo(ctx.get_help())
         ctx.exit()
 
     obj = _resolve_target(target)
 
-    if isinstance(obj, CabDef):
-        inputs, help_text = obj.inputs, obj.info
-    elif hasattr(obj, "__shinobi_recipe__"):
-        inputs, help_text = obj.__shinobi_recipe__.inputs, obj.__shinobi_recipe__.info
+    if isinstance(obj, StepRef):
+        scope: Scope = obj.step
+        func = obj.func
+        params = obj.params
+    elif isinstance(obj, Scope):
+        scope, func, params = obj, None, {}
     else:
-        raise click.ClickException(f"{target!r} is neither a CabDef nor a @recipe function")
+        raise click.ClickException(
+            f"{target!r} is neither a Cab, Recipe, nor a @shinobi.step function"
+        )
 
     def _callback(**kwargs):
-        if isinstance(obj, CabDef):
-            backend = TraceBackend() if dryrun else get_backend(ctx.obj.backend.default)
-            result = call(obj, backend, **kwargs)
-            if dryrun:
-                click.echo(render_dag(backend.steps))
-                return
-            click.echo(result.stdout)
-            if result.stderr:
-                click.echo(result.stderr, err=True)
-            if not result.success:
-                raise click.ClickException(f"cab '{obj.name}' exited with status {result.returncode}")
-        elif dryrun:
-            tracer = TraceBackend()
-            with patch_all_backends(tracer):
-                try:
-                    obj(**kwargs)
-                except Exception as exc:  # noqa: BLE001 -- deliberately broad: a
-                    # dry run substitutes placeholder values for real outputs, so
-                    # a recipe doing real work with them (arithmetic, real file
-                    # I/O, ...) can fail for reasons that have nothing to do with
-                    # whether the recipe itself is correct. Report it and still
-                    # show whatever was traced up to that point, rather than
-                    # crashing the CLI.
-                    click.echo(
-                        f"(recipe raised during dry run, showing the trace up to this point: {exc!r})",
-                        err=True,
-                    )
-            click.echo(render_dag(tracer.steps))
-        else:
-            obj(**kwargs)
+        # Drop options the user didn't provide (None) so the inputs_model's
+        # own defaults apply; per-step constants from a StepRef go under them.
+        call_kwargs = {**params}
+        for name, value in kwargs.items():
+            if value is not None:
+                call_kwargs[name] = value
 
-    inner = click.Command(name=target, params=_build_options(inputs), callback=_callback, help=help_text)
+        if dryrun:
+            if isinstance(scope, Recipe):
+                click.echo(render_dag(graph_nodes(scope)))
+            else:
+                prepared = _prepare_inputs(scope, {**call_kwargs})
+                click.echo(" ".join(build_argv(scope, prepared)))
+            return
+
+        backend = ctx.meta.get("backend_override")
+        result = _dispatch(scope, func, backend=backend, _config=ctx.obj, **call_kwargs)
+        if result.stdout:
+            click.echo(result.stdout)
+        if result.stderr:
+            click.echo(result.stderr, err=True)
+        if not result.success:
+            raise click.ClickException(
+                f"'{scope.name}' exited with status {result.returncode}"
+            )
+
+    inner = click.Command(
+        name=target,
+        params=_build_options(scope.inputs_model),
+        callback=_callback,
+        help=scope.info,
+    )
     inner.main(args=ctx.args, prog_name=f"{ctx.info_name} {target}", standalone_mode=False)
 
 

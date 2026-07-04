@@ -1,29 +1,22 @@
-"""A simple execution-graph tracer + renderer for `ninja run --dryrun`.
+"""Static execution-graph builder + renderer for `ninja run --dryrun`.
 
-Since recipes are plain Python (see AGENTS.md), there's no declared graph
-anywhere to inspect -- the only honest way to show one is to actually run
-the recipe's real code, with cabs replaced by a no-op TraceBackend
-(shinobi.backends.trace) that records each call instead of executing it.
-This traces exactly the one path the recipe takes for the given inputs;
-a branch not taken (or a different number of loop iterations for
-different inputs) never appears -- that's an inherent property of
-tracing plain synchronous Python, not a bug.
-
-Dependency edges are detected, not assumed: each traced call is given a
-unique placeholder string per declared output (embedding its call id), so
-if a later call's params contain that placeholder, that's a genuine data
-dependency -- not just "happened after." When a call has no detected
-dependency, it's chained after the immediately preceding call instead, so
-unrelated calls still render in the order they actually ran rather than
-as a meaningless flat list.
+Recipes are declared DAGs (see AGENTS.md): a `Recipe`'s `steps` list plus
+its wiring already *is* the graph, so there's nothing to trace -- it's
+read directly. `graph_nodes(recipe)` turns the declared steps and their
+`OutputRef` wiring into `TraceStep` nodes with dependency edges; a step
+with no output-dependency is chained after the immediately preceding one,
+so unrelated steps still render in declaration order rather than as a
+meaningless flat list. `render_dag` (box-drawing, kept verbatim from the
+old model) draws them.
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-_PLACEHOLDER_RE = re.compile(r"<<trace:(\d+):[^>]*>>")
+if TYPE_CHECKING:
+    from shinobi.steps.schema import Recipe
 
 
 @dataclass
@@ -33,25 +26,27 @@ class TraceStep:
     depends_on: set[int] = field(default_factory=set)
 
 
-def placeholder(call_id: int, output_name: str) -> str:
-    return f"<<trace:{call_id}:{output_name}>>"
+def graph_nodes(recipe: "Recipe") -> list[TraceStep]:
+    """Build the declared dependency graph from a Recipe's steps + wiring.
 
+    A step depends on every other step whose output it wires in (via an
+    `OutputRef`); a step with no such dependency is chained after the
+    immediately preceding step so ordering is still visible.
+    """
+    from shinobi.steps.schema import OutputRef
 
-def find_dependencies(params: dict) -> set[int]:
-    """Scan resolved params for placeholders left by earlier traced calls."""
-    deps: set[int] = set()
-
-    def _scan(value: object) -> None:
-        if isinstance(value, (list, tuple)):
-            for item in value:
-                _scan(item)
-            return
-        for match in _PLACEHOLDER_RE.finditer(str(value)):
-            deps.add(int(match.group(1)))
-
-    for value in params.values():
-        _scan(value)
-    return deps
+    index = {ref.name: i for i, ref in enumerate(recipe.steps)}
+    nodes: list[TraceStep] = []
+    for i, ref in enumerate(recipe.steps):
+        depends_on = {
+            index[src.step]
+            for src in ref.wiring.values()
+            if isinstance(src, OutputRef) and src.step in index
+        }
+        if not depends_on and nodes:
+            depends_on = {nodes[-1].id}
+        nodes.append(TraceStep(id=i, name=ref.name, depends_on=depends_on))
+    return nodes
 
 
 def _group_into_batches(steps: list[TraceStep]) -> list[list[TraceStep]]:

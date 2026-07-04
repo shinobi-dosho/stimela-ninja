@@ -1,57 +1,27 @@
-"""Turn a cab's schema + user-supplied parameter values into a command line."""
+"""Turn a cab's schema + resolved parameter values into a command line.
+
+Operates on the step-model `Cab`: the parameter *values* come from an
+already-validated `inputs_model` instance (or the prepared dict dispatch
+builds from it), while per-field naming/implicit metadata comes from the
+cab's `field_meta`, dynamically-named params from `input_patterns`, and
+arg formatting from `policies`.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from shinobi.exceptions import ParameterError, UnsupportedFlavourError
-from shinobi.schema import CabDef
+from shinobi.exceptions import UnsupportedFlavourError
+from shinobi.steps.schema import Cab
 
 # Flavours whose `command` is a real executable name, safe to hand to
 # subprocess as argv[0]. Everything else (cult-cargo's "python-code",
-# "casa-task", etc.) has a `command` that's inline source or a dotted
-# reference to a function -- not something to run, let alone eval()/exec().
+# "casa-task", ...) has a `command` that is inline source or a dotted
+# function reference -- not something to run, let alone eval()/exec().
 _EXECUTABLE_FLAVOURS = {"binary"}
 
 
-def resolve_params(cab: CabDef, params: dict[str, Any]) -> dict[str, Any]:
-    """Merge user-supplied params with implicit values and defaults, and
-    check that all required inputs are present.
-    """
-    resolved: dict[str, Any] = {}
-    for name, schema in cab.inputs.items():
-        if schema.implicit is not None:
-            if name in params:
-                raise ParameterError(
-                    f"{cab.name}: '{name}' is implicit and cannot be set by the caller"
-                )
-            resolved[name] = schema.implicit
-        elif name in params:
-            resolved[name] = params[name]
-        elif schema.default is not None:
-            resolved[name] = schema.default
-        elif schema.required:
-            raise ParameterError(f"{cab.name}: missing required parameter '{name}'")
-
-    # anything not a declared input might still be a dynamically-named
-    # one (see ParamSchema/CabDef.input_patterns) -- e.g. QuartiCal's
-    # solver.terms=[K,G] making K.type/G.type valid, where no fixed
-    # `inputs` dict could ever enumerate every possible term name
-    unknown = []
-    for name in set(params) - set(cab.inputs):
-        if cab.match_pattern(name) is not None:
-            resolved[name] = params[name]
-        else:
-            unknown.append(name)
-    if unknown:
-        raise ParameterError(f"{cab.name}: unknown parameter(s) {sorted(unknown)}")
-
-    return resolved
-
-
-def _format_value(value: Any, policies) -> str | None:
-    if isinstance(value, bool):
-        raise TypeError("bool values are handled by the caller, not _format_value")
+def _format_value(value: Any, policies) -> str:
     if isinstance(value, (list, tuple)):
         return policies.list_sep.join(str(v) for v in value)
     return str(value)
@@ -73,9 +43,13 @@ def _emit_arg(argv: list[str], policies, arg_name: str, value: Any) -> None:
     argv.append(_format_value(value, policies))
 
 
-def build_argv(cab: CabDef, resolved: dict[str, Any]) -> list[str]:
-    """Build a full argv (starting with the cab's command) from an already
-    resolve_params()-ed parameter dict, according to the cab's policies.
+def build_argv(cab: Cab, resolved: dict[str, Any]) -> list[str]:
+    """Build a full argv (starting with the cab's command) from a resolved
+    parameter dict, according to the cab's policies and field metadata.
+
+    Rejects any non-"binary" flavour before building argv -- so a
+    non-executable `command` can never reach subprocess as argv[0] (see
+    AGENTS.md, "Never eval()/exec() a cab's command").
     """
     if cab.flavour not in _EXECUTABLE_FLAVOURS:
         raise UnsupportedFlavourError(
@@ -86,24 +60,28 @@ def build_argv(cab: CabDef, resolved: dict[str, Any]) -> list[str]:
 
     argv: list[str] = [cab.command]
     policies = cab.policies
+    declared = set(cab.inputs_model.model_fields)
 
-    for name, schema in cab.inputs.items():
-        if name not in resolved or resolved[name] is None:
+    for name in cab.inputs_model.model_fields:
+        meta = cab.field_meta.get(name)
+        if meta is not None and meta.implicit is not None:
+            value: Any = meta.implicit
+        elif name in resolved:
+            value = resolved[name]
+        else:
             continue
-        arg_name = policies.arg_name(cab.param_name(name, schema))
-        _emit_arg(argv, policies, arg_name, resolved[name])
+        if value is None:
+            continue
+        _emit_arg(argv, policies, policies.arg_name(cab.param_name(name)), value)
 
     # pattern-matched (dynamically-named) params, e.g. K.type/G.type
     for name, value in resolved.items():
-        if name in cab.inputs or value is None:
+        if name in declared or value is None:
             continue
-        schema = cab.match_pattern(name)
-        arg_name = policies.arg_name(cab.param_name(name, schema))
-        _emit_arg(argv, policies, arg_name, value)
+        meta = cab.match_pattern(name)
+        if meta is None:
+            continue
+        arg = meta.nom_de_guerre or name
+        _emit_arg(argv, policies, policies.arg_name(arg), value)
 
     return argv
-
-
-def build_args(cab: CabDef, params: dict[str, Any]) -> list[str]:
-    """Convenience wrapper: resolve_params() + build_argv() in one call."""
-    return build_argv(cab, resolve_params(cab, params))
