@@ -44,7 +44,7 @@ from shinobi import Cab, InputRef, OutputRef, Recipe
 from shinobi.loaders._modelgen import build_model, sanitize_unique
 from shinobi.loaders.cultcargo import load_file
 from shinobi.loaders.stimela_classic import load_file as load_classic_cab
-from shinobi.steps.schema import ParamMeta, ParamPattern
+from shinobi.steps.schema import ParamMeta, ParamPattern, ParamSegment
 
 _CULTCARGO_DIR = Path(__file__).parent / "cultcargo"
 _STIMELA_CLASSIC_DIR = Path(__file__).parent / "stimela_classic"
@@ -159,12 +159,17 @@ cubical = cab_from_defaults(
         # names are chosen per call, not fixed by the tool.
         ParamPattern(
             separator="-",
-            attrs={
-                "solvable": ParamMeta(),
-                "type": ParamMeta(),
-                "time-int": ParamMeta(),
-                "freq-int": ParamMeta(),
-            },
+            segments=[
+                ParamSegment(regex=r".+?"),  # term name, e.g. "g1"/"g" -- not enumerable
+                ParamSegment(
+                    attrs={
+                        "solvable": ParamMeta(),
+                        "type": ParamMeta(),
+                        "time-int": ParamMeta(),
+                        "freq-int": ParamMeta(),
+                    }
+                ),
+            ],
         )
     ],
     extra={

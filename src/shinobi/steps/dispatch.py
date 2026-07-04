@@ -14,6 +14,7 @@ Backend resolution priority: explicit `backend` arg > the scope's own
 from __future__ import annotations
 
 import copy
+import warnings
 from typing import Any, Callable
 
 from shinobi.config import AppConfig
@@ -79,7 +80,16 @@ def _prepare_inputs(
         prepared[name] = value
     # dynamically-named (pattern-matched) params land in model_extra when
     # the inputs_model allows extras; carry them through (immutable).
-    for name, value in (validated.model_extra or {}).items():
+    extras = validated.model_extra or {}
+    if extras:
+        warnings.warn(
+            f"'{scope.name}': parameter(s) {sorted(extras)} matched a dynamic "
+            "parameter pattern and are passed through to the tool as-is -- "
+            "shinobi has no declared field for them, so it cannot type/range-"
+            "check them the way it does for the cab's declared parameters.",
+            stacklevel=2,
+        )
+    for name, value in extras.items():
         prepared[name] = copy.deepcopy(value)
     return prepared
 

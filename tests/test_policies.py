@@ -3,7 +3,7 @@ import pytest
 from shinobi.exceptions import UnsupportedFlavourError
 from shinobi.loaders._modelgen import build_model
 from shinobi.policies import build_argv
-from shinobi.steps.schema import Cab, ParamMeta, ParamPattern
+from shinobi.steps.schema import Cab, ParamMeta, ParamPattern, ParamSegment
 
 
 def make_cab(model, **kwargs) -> Cab:
@@ -79,11 +79,16 @@ def make_quartical_like_cab() -> Cab:
         outputs_model=build_model("Out", {}),
         input_patterns=[
             ParamPattern(
-                attrs={
-                    "type": ParamMeta(),
-                    "time_interval": ParamMeta(),
-                    "solvable": ParamMeta(),
-                }
+                segments=[
+                    ParamSegment(regex=r".+?"),
+                    ParamSegment(
+                        attrs={
+                            "type": ParamMeta(),
+                            "time_interval": ParamMeta(),
+                            "solvable": ParamMeta(),
+                        }
+                    ),
+                ]
             )
         ],
     )

@@ -39,13 +39,13 @@ breizorro = Cab(
 )
 
 
-@step(scope=wsclean, backend="native")
+@step(wsclean, backend="native")
 def image(ctx):
     """Image the visibilities. A near-empty body auto-runs the cab."""
     return ctx.run()
 
 
-@step(scope=breizorro, backend="native")
+@step(breizorro, backend="native")
 def make_mask(ctx):
     return ctx.run()
 

@@ -3,7 +3,7 @@ import pytest
 from shinobi.backends.container import ApptainerBackend, DockerBackend
 from shinobi.exceptions import BackendError
 from shinobi.loaders._modelgen import build_model
-from shinobi.steps.schema import Cab, ParamMeta, ParamPattern
+from shinobi.steps.schema import Cab, ParamMeta, ParamPattern, ParamSegment
 
 OUT = build_model("Out", {})
 
@@ -56,7 +56,11 @@ def test_docker_wrap_mounts_pattern_matched_file_param():
         image="tool:latest",
         inputs_model=build_model("QC_In", {}, allow_extra=True),
         outputs_model=OUT,
-        input_patterns=[ParamPattern(attrs={"model_column": ParamMeta(dtype="File")})],
+        input_patterns=[
+            ParamPattern(
+                segments=[ParamSegment(regex=r".+?"), ParamSegment(attrs={"model_column": ParamMeta(dtype="File")})]
+            )
+        ],
     )
     argv = DockerBackend(workdir="/work")._wrap(
         cab,

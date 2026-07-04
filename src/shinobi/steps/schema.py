@@ -15,12 +15,13 @@ first execution.
 
 from __future__ import annotations
 
+import re
 import types
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Union, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 
 class Mutability(str, Enum):
@@ -63,32 +64,74 @@ class Policies(BaseModel):
         return f"{self.prefix}{name}"
 
 
+class ParamSegment(BaseModel):
+    """One level of a dotted/dashed dynamic-parameter name. A "shape"
+    segment carries only `regex` -- soft validation, no metadata, for a
+    level whose actual values can't be enumerated at cab-authoring time
+    (e.g. a solver term name like QuartiCal's `K`/`G`). The "meta" segment
+    -- always the last one in a `ParamPattern` -- carries `attrs`: the
+    known, enumerable part, each value with its own ParamMeta.
+    """
+
+    regex: str | None = None
+    attrs: dict[str, ParamMeta] | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> "ParamSegment":
+        if (self.regex is None) == (self.attrs is None):
+            raise ValueError("ParamSegment needs exactly one of `regex` or `attrs`")
+        return self
+
+
 class ParamPattern(BaseModel):
-    """A family of inputs whose names are ``<prefix><separator><attr>``,
-    where `prefix` is any string (not enumerable at cab-authoring time)
-    and `attr` must be one of `attrs`. See AGENTS.md for the motivating
-    tools (QuartiCal's ``solver.terms=[K,G]``, cubical's ``g-time-int``).
+    """A family of inputs whose names are `<segment><separator><segment>...`,
+    e.g. QuartiCal's `K.type`/`G.time_interval` or cubical's `g1-solvable`/
+    `g-time-int`. Matched as one anchored regex assembled from `segments`:
+    every segment but the last is a `regex` (soft shape-validation of a
+    level that can't be enumerated ahead of time); the last is `attrs` (the
+    known part, each value with its own ParamMeta -- dtype/nom_de_guerre/
+    info). See AGENTS.md for the motivating tools.
+
+    A segment regex that should behave as an unconstrained "match anything"
+    level (the old design's `prefix`) should be written lazily (`.+?`, not
+    `.+`): with more than one registered attr, an eager `.+` prefers the
+    *shortest* attr that completes an overall match, which is wrong when
+    one attr is itself a suffix of another (e.g. "int" vs "time-int" with
+    separator "-") -- `.+?` tries the shortest prefix first, which is
+    exactly "prefer the longest/most specific attr".
     """
 
     separator: str = "."
-    attrs: dict[str, ParamMeta] = Field(default_factory=dict)
+    segments: list[ParamSegment]
+
+    _compiled: re.Pattern = PrivateAttr()
+
+    @model_validator(mode="after")
+    def _compile(self) -> "ParamPattern":
+        if not self.segments or self.segments[-1].attrs is None:
+            raise ValueError("a ParamPattern's last segment must carry `attrs`")
+        if any(seg.attrs is not None for seg in self.segments[:-1]):
+            raise ValueError("only a ParamPattern's last segment may carry `attrs`")
+        parts: list[str] = []
+        for i, seg in enumerate(self.segments):
+            group = f"seg{i}"
+            if seg.attrs is not None:
+                # Longest-first: makes a longer attr win over a shorter one
+                # that's also a valid alternative at the same split point.
+                alt = "|".join(re.escape(a) for a in sorted(seg.attrs, key=len, reverse=True))
+                parts.append(f"(?P<{group}>{alt})")
+            else:
+                parts.append(f"(?P<{group}>{seg.regex})")
+        pattern = re.escape(self.separator).join(parts)
+        object.__setattr__(self, "_compiled", re.compile(f"^{pattern}$"))
+        return self
 
     def matches(self, name: str) -> ParamMeta | None:
-        # Checked against each declared attr as a candidate suffix, not
-        # split on the *last* separator: an attr itself can contain the
-        # separator character (e.g. "time-int" with separator "-"), which
-        # a blind rpartition() would split inside the attr. Prefers the
-        # longest matching attr, in case one is a suffix of another.
-        best_attr: str | None = None
-        for attr in self.attrs:
-            suffix = f"{self.separator}{attr}"
-            if (
-                name.endswith(suffix)
-                and len(name) > len(suffix)
-                and (best_attr is None or len(attr) > len(best_attr))
-            ):
-                best_attr = attr
-        return self.attrs.get(best_attr) if best_attr is not None else None
+        m = self._compiled.match(name)
+        if not m:
+            return None
+        last = len(self.segments) - 1
+        return self.segments[last].attrs[m.group(f"seg{last}")]
 
 
 def _unwrap_annotation(annotation: Any) -> list[Any]:
@@ -304,7 +347,7 @@ class Recipe(Scope):
         self.steps.append(StepRef(name=name, step=scope, wiring=wiring, params=params))
         return self
 
-    def step(self, *, scope: "Cab | Recipe", backend: str | None = None, **kwargs: Any):
+    def step(self, scope: "Cab | Recipe", *, backend: str | None = None, **kwargs: Any):
         def decorator(func: Callable) -> StepRef:
             bound = scope.with_backend(backend)
             wiring, params = self._split_kwargs(kwargs)

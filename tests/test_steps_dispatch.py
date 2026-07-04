@@ -66,6 +66,30 @@ def test_bad_override_raises_at_the_step_boundary():
     assert recorder.calls == []
 
 
+def test_dynamic_pattern_param_warns_it_is_unvalidated():
+    from shinobi.loaders._modelgen import build_model
+    from shinobi.steps.schema import ParamMeta, ParamPattern, ParamSegment
+
+    recorder = RecordingBackend()
+    register_step_backend("record", recorder)
+    cab = Cab(
+        name="tool",
+        command="tool",
+        inputs_model=build_model("In", {"x": ("int", True, None)}, allow_extra=True),
+        outputs_model=Outputs,
+        backend="record",
+        input_patterns=[
+            ParamPattern(segments=[ParamSegment(regex=r".+?"), ParamSegment(attrs={"solvable": ParamMeta()})])
+        ],
+    )
+
+    with pytest.warns(UserWarning, match=r"g1\.solvable"):
+        _dispatch(cab, None, x=1, **{"g1.solvable": True})
+
+    _, _, inputs = recorder.calls[0]
+    assert inputs["g1.solvable"] is True
+
+
 # -- auto-run + snapshot --
 
 

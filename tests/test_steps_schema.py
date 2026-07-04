@@ -6,6 +6,9 @@ from shinobi.steps import (
     InputRef,
     Mutability,
     OutputRef,
+    ParamMeta,
+    ParamPattern,
+    ParamSegment,
     Recipe,
     Scope,
     StepRef,
@@ -45,6 +48,63 @@ def test_explicit_mutable_entry_is_respected():
 def test_backends_default_to_none():
     assert make_cab().backend is None
     assert Recipe(name="r", inputs_model=Inputs, outputs_model=Outputs).backend is None
+
+
+# -- ParamPattern / ParamSegment --
+
+
+def test_paramsegment_requires_exactly_one_of_regex_or_attrs():
+    with pytest.raises(ValueError):
+        ParamSegment()
+    with pytest.raises(ValueError):
+        ParamSegment(regex=".+", attrs={"a": ParamMeta()})
+
+
+def test_parampattern_requires_last_segment_to_have_attrs():
+    with pytest.raises(ValueError):
+        ParamPattern(segments=[ParamSegment(regex=".+")])
+
+
+def test_parampattern_rejects_attrs_on_a_non_terminal_segment():
+    with pytest.raises(ValueError):
+        ParamPattern(
+            segments=[ParamSegment(attrs={"a": ParamMeta()}), ParamSegment(attrs={"b": ParamMeta()})]
+        )
+
+
+def test_parampattern_two_level_matches_and_returns_terminal_meta():
+    pattern = ParamPattern(
+        segments=[ParamSegment(regex=r".+?"), ParamSegment(attrs={"type": ParamMeta(dtype="str")})]
+    )
+    assert pattern.matches("K.type") is pattern.segments[-1].attrs["type"]
+    assert pattern.matches("no-separator-here") is None
+    assert pattern.matches(".type") is None  # prefix must be non-empty
+
+
+def test_parampattern_soft_validates_a_middle_segment_shape():
+    # term name must look like an identifier -- a genuinely dynamic,
+    # non-enumerable level, but not an "anything goes" free-for-all.
+    pattern = ParamPattern(
+        segments=[ParamSegment(regex=r"[A-Za-z_]\w*"), ParamSegment(attrs={"type": ParamMeta()})]
+    )
+    assert pattern.matches("K.type") is not None
+    assert pattern.matches("K1.type") is not None
+    assert pattern.matches("1K.type") is None  # leading digit -- not identifier-shaped
+
+
+def test_parampattern_prefers_the_longest_attr_when_one_is_a_suffix_of_another():
+    # separator "-" with an attr ("time-int") that itself contains "-":
+    # a lazy prefix must prefer "time-int" over "int" for "g1-time-int".
+    pattern = ParamPattern(
+        separator="-",
+        segments=[
+            ParamSegment(regex=r".+?"),
+            ParamSegment(attrs={"int": ParamMeta(info="wrong"), "time-int": ParamMeta(info="right")}),
+        ],
+    )
+    meta = pattern.matches("g1-time-int")
+    assert meta is not None
+    assert meta.info == "right"
 
 
 def test_recipe_steps_and_output_wiring_round_trip():

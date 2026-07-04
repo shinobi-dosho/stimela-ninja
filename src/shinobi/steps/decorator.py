@@ -19,8 +19,8 @@ from shinobi.steps.schema import Scope, StepRef
 
 
 def step(
-    *,
     scope: Scope,
+    *,
     backend: str | None = None,
     name: str | None = None,
     **params: Any,
