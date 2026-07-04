@@ -178,6 +178,13 @@ def path_fields(model: type[BaseModel]) -> set[str]:
 class Scope(BaseModel):
     """Definition: schema, metadata, backend config. Never carries
     inputs/outputs/func fields -- those live in ExecContext/StepRef.
+
+    `Cab`/`Recipe` are the two execution-aware subclasses `ExecContext.run()`
+    knows how to run. A bare `Scope` is also valid -- it's the manual
+    building block for a plain-Python-function step whose own function
+    returns its `StepResult` directly rather than calling `ctx.run()`; see
+    `StepRef`'s docstring and `steps/pyfunc.py`'s `@shinobi.pystep` (which
+    automates this pattern from a function's signature).
     """
 
     name: str
@@ -252,12 +259,24 @@ class StepRef(BaseModel):
     Returned by `@shinobi.step` (free-standing) and `@recipe.step`
     (appended to `recipe.steps`). `arbitrary_types_allowed` is needed
     only for `func`.
+
+    `step` is typed as the general `Scope` (not `Cab | Recipe`) so it can
+    also hold a bare `Scope` -- the manual, no-magic way to write a
+    plain-Python-function step: build `Scope(name=, inputs_model=,
+    outputs_model=)` yourself, write a function that always returns its
+    own `StepResult` (never calls `ctx.run()`, which only knows how to
+    execute a `Cab` or `Recipe`), and wrap it in a `StepRef` directly.
+    `@shinobi.pystep` (`steps/pyfunc.py`) automates exactly this pattern
+    by deriving the Scope's schema from the function's own signature.
+    Passing a `Cab`/`Recipe` instance here is unaffected -- pydantic's
+    default `revalidate_instances="never"` keeps an already-constructed
+    instance's real subtype, it does not downcast to bare `Scope`.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     name: str
-    step: "Cab | Recipe"
+    step: Scope
     func: Callable | None = None
     wiring: dict[str, "InputRef | OutputRef"] = Field(default_factory=dict)
     params: dict[str, Any] = Field(default_factory=dict)
@@ -352,12 +371,27 @@ class Recipe(Scope):
         params = {k: v for k, v in kwargs.items() if k not in wiring}
         return wiring, params
 
-    def add_step(self, name: str, scope: "Cab | Recipe", **kwargs: Any) -> "Recipe":
+    def add_step(self, name: str, scope: "Scope | StepRef", **kwargs: Any) -> "Recipe":
+        """Add a step. `scope` is usually a bare `Scope`/`Cab`/`Recipe`, but
+        can also be an already-built `StepRef` (e.g. from `@shinobi.pystep`
+        or `@shinobi.step`) -- its `func` is carried over so the step keeps
+        its orchestration function, not just its schema.
+        """
         wiring, params = self._split_kwargs(kwargs)
-        self.steps.append(StepRef(name=name, step=scope, wiring=wiring, params=params))
+        if isinstance(scope, StepRef):
+            ref = scope.model_copy(
+                update={
+                    "name": name,
+                    "wiring": {**scope.wiring, **wiring},
+                    "params": {**scope.params, **params},
+                }
+            )
+        else:
+            ref = StepRef(name=name, step=scope, wiring=wiring, params=params)
+        self.steps.append(ref)
         return self
 
-    def step(self, scope: "Cab | Recipe", *, backend: str | None = None, **kwargs: Any):
+    def step(self, scope: Scope, *, backend: str | None = None, **kwargs: Any):
         def decorator(func: Callable) -> StepRef:
             bound = scope.with_backend(backend)
             wiring, params = self._split_kwargs(kwargs)

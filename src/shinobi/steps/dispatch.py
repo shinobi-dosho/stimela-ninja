@@ -118,6 +118,15 @@ class ExecContext:
         self._recipe_backend = recipe_backend
         self._config = config
 
+    def prepare_inputs(self) -> dict[str, Any]:
+        """Validated + mutability-processed inputs, with no overrides applied
+        -- for a plain-function step's own function to call the underlying
+        function with (see `steps/pyfunc.py`'s adapter, and the manual
+        bare-`Scope` pattern documented on `Scope`/`StepRef`). Reuses the
+        already-validated `self.inputs` snapshot rather than re-validating.
+        """
+        return _prepare_inputs(self.scope, self._raw, validated=self.inputs)
+
     def run(self, *, backend: str | None = None, **overrides: Any) -> StepResult:
         raw = {**self._raw, **overrides}
         # No overrides -> `raw` is exactly what `self.inputs` already
@@ -133,8 +142,14 @@ class ExecContext:
         )
         if isinstance(self.scope, Cab):
             result = _run_cab(self.scope, prepared, backend_name)
-        else:
+        elif isinstance(self.scope, Recipe):
             result = _run_recipe(self.scope, prepared, backend_name, self._config)
+        else:
+            raise TypeError(
+                f"{type(self.scope).__name__} scope has no ctx.run() support -- a "
+                "plain-function step's own function must return its StepResult "
+                "directly instead of calling ctx.run() (see Scope's docstring)"
+            )
         self.outputs = result.outputs
         return result
 

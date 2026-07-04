@@ -11,6 +11,7 @@ from shinobi.steps.dispatch import (
     get_step_backend,
     register_step_backend,
 )
+from shinobi.steps.pyfunc import pystep
 from shinobi.steps.schema import (
     Cab,
     InputRef,
@@ -41,6 +42,7 @@ __all__ = [
     "StepRef",
     "get_step_backend",
     "path_fields",
+    "pystep",
     "register_step_backend",
     "step",
 ]

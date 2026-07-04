@@ -9,6 +9,7 @@ from shinobi.steps import (  # noqa: E402
     Recipe,
     Scope,
     StepRef,
+    pystep,
     step,
 )
 
@@ -21,6 +22,7 @@ __all__ = [
     "Recipe",
     "Scope",
     "StepRef",
+    "pystep",
     "step",
     "__version__",
 ]
