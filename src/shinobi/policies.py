@@ -58,9 +58,13 @@ def build_argv(cab: Cab, resolved: dict[str, Any]) -> list[str]:
             f"is not an executable name and must not be run as one"
         )
 
-    argv: list[str] = [cab.command]
+    # A subcommand-style command (e.g. "simms telsim") is more than one
+    # argv token -- split it so subprocess execs the real binary, not a
+    # literal (and nonexistent) file named "simms telsim".
+    argv: list[str] = cab.command.split()
     policies = cab.policies
     declared = set(cab.inputs_model.model_fields)
+    positionals: list[str] = []
 
     for name in cab.inputs_model.model_fields:
         meta = cab.field_meta.get(name)
@@ -71,6 +75,20 @@ def build_argv(cab: Cab, resolved: dict[str, Any]) -> list[str]:
         else:
             continue
         if value is None:
+            continue
+        repeat_as_tokens = meta is not None and meta.repeat_as_tokens and isinstance(value, (list, tuple))
+        if meta is not None and meta.positional:
+            if repeat_as_tokens:
+                positionals.extend(str(item) for item in value)
+            else:
+                positionals.append(_format_value(value, policies))
+            continue
+        if repeat_as_tokens:
+            # One flag occurrence, then each item as its own bare token --
+            # e.g. wsclean's "-size 4096 4096"/"-weight briggs 0", not
+            # "-size 4096,4096" (one token, which the tool can't parse).
+            argv.append(policies.arg_name(cab.param_name(name)))
+            argv.extend(str(item) for item in value)
             continue
         _emit_arg(argv, policies, policies.arg_name(cab.param_name(name)), value)
 
@@ -84,4 +102,8 @@ def build_argv(cab: Cab, resolved: dict[str, Any]) -> list[str]:
         arg = meta.nom_de_guerre or name
         _emit_arg(argv, policies, policies.arg_name(arg), value)
 
+    # Positional args (e.g. simms' "ms") come last, in field-declaration
+    # order -- matches how tools that mix flags with one positional arg
+    # are actually invoked (flags first, bare value last).
+    argv.extend(positionals)
     return argv

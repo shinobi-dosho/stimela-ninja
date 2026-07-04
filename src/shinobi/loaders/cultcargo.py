@@ -172,7 +172,8 @@ def _collect(
     raw: dict[str, Any],
 ) -> tuple[dict[str, tuple[str, bool, Any]], dict[str, ParamMeta]]:
     """Split a cult-cargo inputs/outputs mapping into modelgen field specs
-    and per-field ParamMeta (nom_de_guerre/implicit/info).
+    and per-field ParamMeta (nom_de_guerre/implicit/info/positional/
+    repeat_as_tokens).
     """
     fields: dict[str, tuple[str, bool, Any]] = {}
     metas: dict[str, ParamMeta] = {}
@@ -192,6 +193,15 @@ def _collect(
         # the tool's real flag name: an explicit nom_de_guerre, else the
         # original (unsanitised) param name if sanitising changed it.
         nom = value.get("nom_de_guerre") or (key if key != field else None)
-        if nom or implicit is not None or value.get("info"):
-            metas[field] = ParamMeta(nom_de_guerre=nom, implicit=implicit, info=value.get("info"))
+        param_policies = value.get("policies") or {}
+        positional = bool(param_policies.get("positional", False))
+        repeat_as_tokens = param_policies.get("repeat") == "list"
+        if nom or implicit is not None or value.get("info") or positional or repeat_as_tokens:
+            metas[field] = ParamMeta(
+                nom_de_guerre=nom,
+                implicit=implicit,
+                info=value.get("info"),
+                positional=positional,
+                repeat_as_tokens=repeat_as_tokens,
+            )
     return fields, metas

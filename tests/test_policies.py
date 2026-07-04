@@ -56,6 +56,100 @@ def test_nom_de_guerre_used_as_flag_name():
     assert build_argv(cab, {"ms": "foo.ms"}) == ["tool", "--vis", "foo.ms"]
 
 
+# -- command splitting / positional args (subcommand-style CLIs, e.g. `simms telsim`) --
+
+
+def test_single_word_command_unchanged():
+    cab = make_cab(build_model("In", {}))
+    assert build_argv(cab, {})[0:1] == ["tool"]
+
+
+def test_multiword_command_is_split_into_argv():
+    cab = Cab(
+        name="tool",
+        command="simms telsim",
+        inputs_model=build_model("In", {}),
+        outputs_model=build_model("Out", {}),
+    )
+    assert build_argv(cab, {})[:2] == ["simms", "telsim"]
+
+
+def test_positional_field_emitted_as_bare_value_last():
+    cab = make_cab(
+        build_model("In", {"vis": ("MS", True, None), "telescope": ("str", True, None)}),
+        field_meta={"vis": ParamMeta(positional=True)},
+    )
+    argv = build_argv(cab, {"vis": "foo.ms", "telescope": "meerkat"})
+    assert "--vis" not in argv
+    assert "--telescope" in argv
+    assert argv[-1] == "foo.ms"
+
+
+def test_positional_with_multiword_command_end_to_end():
+    cab = Cab(
+        name="telsim",
+        command="simms telsim",
+        inputs_model=build_model("In", {"ms": ("MS", True, None), "telescope": ("str", True, None)}),
+        outputs_model=build_model("Out", {}),
+        field_meta={"ms": ParamMeta(positional=True)},
+    )
+    argv = build_argv(cab, {"ms": "sim.ms", "telescope": "meerkat"})
+    assert argv[:2] == ["simms", "telsim"]
+    assert argv[-1] == "sim.ms"
+    assert "--ms" not in argv
+
+
+def test_multiple_positionals_keep_field_declaration_order():
+    cab = make_cab(
+        build_model("In", {"first": ("str", True, None), "second": ("str", True, None)}),
+        field_meta={"first": ParamMeta(positional=True), "second": ParamMeta(positional=True)},
+    )
+    argv = build_argv(cab, {"first": "a", "second": "b"})
+    assert argv[-2:] == ["a", "b"]
+
+
+# -- repeat_as_tokens (e.g. wsclean's "-size 4096 4096"/"-weight briggs 0") --
+
+
+def test_repeat_as_tokens_flagged_emits_flag_once_then_bare_items():
+    cab = make_cab(
+        build_model("In", {"size": ("list:int", True, None)}),
+        field_meta={"size": ParamMeta(repeat_as_tokens=True)},
+    )
+    argv = build_argv(cab, {"size": [4096, 4096]})
+    assert argv == ["tool", "--size", "4096", "4096"]
+
+
+def test_repeat_as_tokens_string_items():
+    cab = make_cab(
+        build_model("In", {"weight": ("list:str", True, None)}),
+        field_meta={"weight": ParamMeta(repeat_as_tokens=True)},
+    )
+    argv = build_argv(cab, {"weight": ["briggs", "0"]})
+    assert argv == ["tool", "--weight", "briggs", "0"]
+
+
+def test_repeat_as_tokens_positional_emits_bare_items_no_flag():
+    cab = make_cab(
+        build_model("In", {"ms": ("list:MS", True, None)}),
+        field_meta={"ms": ParamMeta(positional=True, repeat_as_tokens=True)},
+    )
+    argv = build_argv(cab, {"ms": ["a.ms", "b.ms"]})
+    assert argv == ["tool", "a.ms", "b.ms"]
+    assert "--ms" not in argv
+
+
+def test_repeat_as_tokens_ignored_for_a_scalar_value():
+    # repeat_as_tokens only kicks in for an actual list/tuple value --
+    # a scalar falls through to the ordinary single --flag value emission.
+    cab = make_cab(
+        build_model("In", {"weight": ("str", True, None)}),
+        field_meta={"weight": ParamMeta(repeat_as_tokens=True)},
+    )
+    argv = build_argv(cab, {"weight": "natural"})
+    assert argv == ["tool", "--weight", "natural"]
+
+
 def test_non_binary_flavour_rejected_before_building_argv():
     cab = Cab(
         name="tool",

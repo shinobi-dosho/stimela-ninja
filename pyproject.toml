@@ -25,6 +25,12 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.5",
 ]
+# Not installed by default `uv sync`/`uv run` -- only needed to actually
+# execute examples/meerkat_simulation.py for real (`uv sync --group examples`).
+# simms has no docker image yet, so it must be installed to run via NativeBackend.
+examples = [
+    "simms @ git+https://github.com/wits-cfa/simms.git@7511d435348d05b816d2ff4ec1f7bdd652dec6a1 ; python_version >= '3.11'",
+]
 
 [project.scripts]
 ninja = "shinobi.cli:main"

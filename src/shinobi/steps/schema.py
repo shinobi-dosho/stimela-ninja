@@ -38,15 +38,25 @@ class ParamMeta(BaseModel):
     """Per-field metadata a plain pydantic model can't express: the name
     the underlying tool actually expects (`nom_de_guerre`), a value always
     supplied by the cab itself rather than the caller (`implicit`),
-    human-facing help (`info`), and the cab dtype string (`dtype`, e.g.
+    human-facing help (`info`), the cab dtype string (`dtype`, e.g.
     "File"/"MS") for a `ParamPattern` attr -- since a dynamically-named
     param has no declared field/type annotation for `path_fields` to
-    inspect, this is how backends know to bind-mount its directory.
+    inspect, this is how backends know to bind-mount its directory --
+    `positional`: emitted as a bare value (no `--flag`), in
+    field-declaration order, after every flagged/pattern-matched arg -- and
+    `repeat_as_tokens`: a list/tuple value is emitted as separate bare argv
+    tokens (after the one flag occurrence, or as separate positional
+    tokens) instead of joined into one comma-separated token -- real
+    cult-cargo cabs express this as a per-field `policies: {repeat: list}`
+    (see e.g. wsclean's `-size <w> <h>`/`-weight briggs <n>`, which need
+    two separate argv tokens, not `"4096,4096"` as one).
     """
 
     nom_de_guerre: str | None = None
     implicit: Any = None
     info: str | None = None
+    positional: bool = False
+    repeat_as_tokens: bool = False
     dtype: str | None = None
 
 

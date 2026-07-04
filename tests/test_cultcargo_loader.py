@@ -70,6 +70,54 @@ def test_loads_flavour_and_wranglers():
     assert len(flagsummary.wranglers) == 1
 
 
+POSITIONAL_YAML = """
+cabs:
+    telsim:
+        command: simms telsim
+        inputs:
+            ms:
+                dtype: MS
+                required: true
+                policies:
+                    positional: true
+            telescope:
+                dtype: str
+                required: true
+"""
+
+
+def test_param_positional_policy_parsed_into_meta():
+    telsim = loads(POSITIONAL_YAML)["telsim"]
+    assert telsim.field_meta["ms"].positional is True
+    assert "telescope" not in telsim.field_meta or telsim.field_meta["telescope"].positional is False
+
+
+REPEAT_YAML = """
+cabs:
+    wsclean:
+        command: wsclean
+        inputs:
+            size:
+                dtype: list:int
+                required: true
+                policies:
+                    repeat: list
+            multiscale-scales:
+                dtype: list:int
+                required: false
+"""
+
+
+def test_param_repeat_list_policy_parsed_into_meta():
+    wsclean = loads(REPEAT_YAML)["wsclean"]
+    assert wsclean.field_meta["size"].repeat_as_tokens is True
+    # a field with no `policies.repeat: list` is unaffected (default comma-join)
+    assert (
+        "multiscale_scales" not in wsclean.field_meta
+        or wsclean.field_meta["multiscale_scales"].repeat_as_tokens is False
+    )
+
+
 # -- _use / _include resolution --
 
 USE_ON_IMAGE_YAML = """
