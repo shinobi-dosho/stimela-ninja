@@ -1,13 +1,14 @@
-"""Static execution-graph builder + renderer for `ninja run --dryrun`.
+"""Static execution-graph *renderer* for `ninja run --dryrun`.
 
 Recipes are declared DAGs (see AGENTS.md): a `Recipe`'s `steps` list plus
-its wiring already *is* the graph, so there's nothing to trace -- it's
-read directly. `graph_nodes(recipe)` turns the declared steps and their
-`OutputRef` wiring into `TraceStep` nodes with dependency edges; a step
-with no output-dependency is chained after the immediately preceding one,
-so unrelated steps still render in declaration order rather than as a
-meaningless flat list. `render_dag` (box-drawing, kept verbatim from the
-old model) draws them.
+its wiring already *is* the graph. The graph itself -- nodes, true
+dependency edges, cycle/wiring validation -- is built by
+`shinobi.graph.build_graph`, shared with the executor so the two can never
+disagree. `graph_nodes(recipe)` adapts that graph into `TraceStep` nodes
+for *display*: it re-adds a display-only edge chaining a step with no
+output-dependency after the immediately preceding one, so unrelated steps
+still render in declaration order rather than as a meaningless flat list.
+`render_dag` (box-drawing, kept verbatim from the old model) draws them.
 """
 
 from __future__ import annotations
@@ -27,25 +28,22 @@ class TraceStep:
 
 
 def graph_nodes(recipe: "Recipe") -> list[TraceStep]:
-    """Build the declared dependency graph from a Recipe's steps + wiring.
+    """Build the display graph from a Recipe's validated dependency graph.
 
-    A step depends on every other step whose output it wires in (via an
-    `OutputRef`); a step with no such dependency is chained after the
-    immediately preceding step so ordering is still visible.
+    Uses the shared `build_graph` (so a cyclic/mis-wired recipe raises here
+    exactly as it would at execution time), then adds a *display-only*
+    edge: a step with no real output-dependency is chained after the
+    immediately preceding step so ordering stays visible.
     """
-    from shinobi.steps.schema import OutputRef
+    from shinobi.graph import build_graph
 
-    index = {ref.name: i for i, ref in enumerate(recipe.steps)}
+    graph = build_graph(recipe)
     nodes: list[TraceStep] = []
-    for i, ref in enumerate(recipe.steps):
-        depends_on = {
-            index[src.step]
-            for src in ref.wiring.values()
-            if isinstance(src, OutputRef) and src.step in index
-        }
+    for i, name in enumerate(graph.names):
+        depends_on = set(graph.deps[i])
         if not depends_on and nodes:
             depends_on = {nodes[-1].id}
-        nodes.append(TraceStep(id=i, name=ref.name, depends_on=depends_on))
+        nodes.append(TraceStep(id=i, name=name, depends_on=depends_on))
     return nodes
 
 

@@ -1,6 +1,8 @@
+import pytest
 from pydantic import BaseModel
 
 from shinobi.dag import TraceStep, graph_nodes, render_dag
+from shinobi.graph import RecipeGraphError
 from shinobi.steps.schema import Cab, InputRef, OutputRef, Recipe, StepRef
 
 
@@ -59,6 +61,22 @@ def test_graph_nodes_chains_independent_steps_sequentially():
     nodes = graph_nodes(recipe)
     # b has no output dependency, so it's chained after a
     assert nodes[1].depends_on == {0}
+
+
+def test_graph_nodes_surfaces_a_cycle_like_the_executor_would():
+    a = _cab("a", UseIn, PathOut)
+    b = _cab("b", UseIn, PathOut)
+    recipe = Recipe(
+        name="r",
+        inputs_model=In,
+        outputs_model=OkOut,
+        steps=[
+            StepRef(name="a", step=a, wiring={"path": OutputRef(step="b", field="path")}),
+            StepRef(name="b", step=b, wiring={"path": OutputRef(step="a", field="path")}),
+        ],
+    )
+    with pytest.raises(RecipeGraphError, match="dependency cycle"):
+        graph_nodes(recipe)
 
 
 # -- render_dag (kept verbatim from the old model) --

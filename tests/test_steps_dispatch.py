@@ -1,8 +1,11 @@
+import threading
+import time
+
 import pytest
 from pydantic import BaseModel, ValidationError
 
 from shinobi.backends.recording import RecordingBackend
-from shinobi.config import AppConfig
+from shinobi.config import AppConfig, ExecutionConfig
 from shinobi.results import BackendRun
 from shinobi.steps import Cab, InputRef, OutputRef, Recipe, StepRef, register_step_backend
 from shinobi.steps.dispatch import _dispatch
@@ -356,3 +359,175 @@ def test_fixture_cabs_are_reused_by_chained_recipe():
     assert chained_recipe.steps[0].step is make_value_cab
     assert chained_recipe.steps[1].step is use_value_cab
     assert mutable_list_cab.mutability_of("items") is Mutability.MUTABLE
+
+
+# -- parallel DAG execution --
+
+
+def _two_independent_recipe(cab_a, cab_b, *, max_workers=None):
+    """A recipe of two steps that each wire only from the recipe's own input
+    -- no OutputRef between them, so they're independent and eligible to run
+    concurrently.
+    """
+    return Recipe(
+        name="r",
+        inputs_model=Inputs,
+        outputs_model=Outputs,
+        max_workers=max_workers,
+        steps=[
+            StepRef(name="a", step=cab_a, wiring={"x": InputRef(field="x")}),
+            StepRef(name="b", step=cab_b, wiring={"x": InputRef(field="x")}),
+        ],
+    )
+
+
+def _cab(name, backend):
+    return Cab(name=name, command="t", inputs_model=Inputs, outputs_model=Outputs, backend=backend)
+
+
+def test_independent_steps_run_concurrently_when_max_workers_allows():
+    barrier = threading.Barrier(2, timeout=5)
+
+    class BarrierBackend:
+        def run(self, cab, argv, inputs):
+            barrier.wait()  # only both return if two threads arrive together
+            return BackendRun(0, "", "")
+
+    register_step_backend("barrier", BarrierBackend())
+    cab = _cab("t", "barrier")
+    recipe = _two_independent_recipe(cab, cab, max_workers=2)
+    # completes only if both steps were in flight at once; otherwise the
+    # barrier times out and raises BrokenBarrierError out of the recipe.
+    _dispatch(recipe, None, x=1)
+
+
+def test_default_max_workers_is_sequential():
+    barrier = threading.Barrier(2, timeout=1)
+
+    class BarrierBackend:
+        def run(self, cab, argv, inputs):
+            barrier.wait()
+            return BackendRun(0, "", "")
+
+    register_step_backend("barrier", BarrierBackend())
+    cab = _cab("t", "barrier")
+    recipe = _two_independent_recipe(cab, cab)  # max_workers None -> config default 1
+    with pytest.raises(threading.BrokenBarrierError):
+        _dispatch(recipe, None, x=1)
+
+
+def test_aggregation_is_declaration_order_not_completion_order():
+    class SlowBackend:
+        def run(self, cab, argv, inputs):
+            time.sleep(0.15)
+            return BackendRun(0, "AAA", "errA")
+
+    class FastBackend:
+        def run(self, cab, argv, inputs):
+            return BackendRun(0, "BBB", "errB")
+
+    register_step_backend("slow", SlowBackend())
+    register_step_backend("fast", FastBackend())
+    # step 'a' (declared first) finishes LAST; 'b' finishes first.
+    recipe = _two_independent_recipe(_cab("a", "slow"), _cab("b", "fast"), max_workers=2)
+    result = _dispatch(recipe, None, x=1)
+    assert result.stdout == "AAA\nBBB"  # declaration order, not completion order
+    assert result.stderr == "errA\nerrB"
+
+
+def test_failure_stops_dependents_but_drains_independent_inflight():
+    class FailBackend:
+        def run(self, cab, argv, inputs):
+            return BackendRun(2, "", "boom")
+
+    ok_recorder = RecordingBackend()
+    down_recorder = RecordingBackend()
+    register_step_backend("fail", FailBackend())
+    register_step_backend("ok", ok_recorder)
+    register_step_backend("down", down_recorder)
+
+    fail_cab = _cab("fail", "fail")
+    ok_cab = _cab("ok", "ok")
+    down_cab = Cab(
+        name="down", command="t", inputs_model=Outputs, outputs_model=Outputs, backend="down"
+    )
+    recipe = Recipe(
+        name="r",
+        inputs_model=Inputs,
+        outputs_model=Outputs,
+        max_workers=2,
+        steps=[
+            StepRef(name="fail", step=fail_cab, wiring={"x": InputRef(field="x")}),
+            StepRef(name="ok", step=ok_cab, wiring={"x": InputRef(field="x")}),
+            # depends on 'fail' -> must never run once 'fail' fails
+            StepRef(name="down", step=down_cab, wiring={"y": OutputRef(step="fail", field="y")}),
+        ],
+    )
+    result = _dispatch(recipe, None, x=1)
+    assert result.returncode == 2
+    assert down_recorder.calls == []  # dependent of the failed step never ran
+
+
+def test_first_failure_by_declaration_order_wins():
+    class RC2Backend:
+        def run(self, cab, argv, inputs):
+            return BackendRun(2, "", "")
+
+    class RC3Backend:
+        def run(self, cab, argv, inputs):
+            return BackendRun(3, "", "")
+
+    register_step_backend("rc2", RC2Backend())
+    register_step_backend("rc3", RC3Backend())
+    recipe = _two_independent_recipe(_cab("a", "rc2"), _cab("b", "rc3"), max_workers=2)
+    result = _dispatch(recipe, None, x=1)
+    assert result.returncode == 2  # 'a' is declared first
+
+
+def test_worker_exception_propagates_out_of_recipe():
+    cab, _ = make_recording_cab()
+
+    def bad_override(ctx):
+        return ctx.run(x="not an int")
+
+    recipe = Recipe(
+        name="r",
+        inputs_model=Inputs,
+        outputs_model=Outputs,
+        max_workers=2,
+        steps=[StepRef(name="a", step=cab, func=bad_override, wiring={"x": InputRef(field="x")})],
+    )
+    with pytest.raises(ValidationError):
+        _dispatch(recipe, None, x=1)
+
+
+def test_recipe_max_workers_overrides_config_default():
+    barrier = threading.Barrier(2, timeout=5)
+
+    class BarrierBackend:
+        def run(self, cab, argv, inputs):
+            barrier.wait()
+            return BackendRun(0, "", "")
+
+    register_step_backend("barrier", BarrierBackend())
+    cab = _cab("t", "barrier")
+    recipe = _two_independent_recipe(cab, cab, max_workers=2)
+    # config says 1, but the recipe's own max_workers=2 must win
+    config = AppConfig(execution=ExecutionConfig(max_workers=1))
+    _dispatch(recipe, None, _config=config, x=1)
+
+
+def test_config_execution_max_workers_is_honoured(monkeypatch):
+    monkeypatch.delenv("SHINOBI_EXECUTION__MAX_WORKERS", raising=False)
+    barrier = threading.Barrier(2, timeout=5)
+
+    class BarrierBackend:
+        def run(self, cab, argv, inputs):
+            barrier.wait()
+            return BackendRun(0, "", "")
+
+    register_step_backend("barrier", BarrierBackend())
+    cab = _cab("t", "barrier")
+    recipe = _two_independent_recipe(cab, cab)  # no per-recipe override
+    config = AppConfig(execution=ExecutionConfig(max_workers=2))
+    _dispatch(recipe, None, _config=config, x=1)

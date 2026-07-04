@@ -14,10 +14,13 @@ Backend resolution priority: explicit `backend` arg > the scope's own
 from __future__ import annotations
 
 import copy
+import heapq
 import warnings
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Any, Callable
 
 from shinobi.config import AppConfig
+from shinobi.graph import build_graph
 from shinobi.policies import build_argv
 from shinobi.results import StepResult
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope
@@ -220,32 +223,98 @@ def _run_cab(cab: Cab, prepared: dict[str, Any], backend_name: str) -> StepResul
     )
 
 
+def _resolve_wiring(
+    ref, prepared: dict[str, Any], results: dict[str, StepResult]
+) -> dict[str, Any]:
+    """A sub-step's effective kwargs: its per-step `params`, with wiring
+    (recipe inputs via `InputRef`, upstream outputs via `OutputRef`) merged
+    on top. Every `OutputRef.step` here is guaranteed to be in `results`
+    already -- the scheduler only makes a step ready once all its upstream
+    dependencies have completed.
+    """
+    wired: dict[str, Any] = {}
+    for field, source in ref.wiring.items():
+        if isinstance(source, InputRef):
+            wired[field] = prepared[source.field]
+        elif isinstance(source, OutputRef):
+            wired[field] = getattr(results[source.step].outputs, source.field)
+    return {**ref.params, **wired}  # wiring overrides params
+
+
 def _run_recipe(
     recipe: Recipe, prepared: dict[str, Any], backend_name: str, config: AppConfig | None
 ) -> StepResult:
+    """Topological wavefront scheduler over the recipe's declared DAG.
+
+    Steps run on a `ThreadPoolExecutor` (threads park on the blocking
+    `Backend.run`); a step becomes ready only once every step it wires an
+    output from has completed. The ready set is drained lowest-declaration-
+    index first, so `max_workers=1` reproduces exact sequential declaration
+    order. On the first failure (non-zero returncode) or worker exception,
+    no further steps are submitted, but already-running steps drain (a
+    launched job can't be honestly cancelled). All aggregation -- stdout,
+    stderr, outputs, the winning returncode -- is done in declaration order
+    regardless of completion order, so results are deterministic.
+    """
+    config = config or AppConfig.load()  # resolve once; workers never call load()
+    graph = build_graph(recipe)
+    max_workers = recipe.max_workers or config.execution.max_workers
+
     results: dict[str, StepResult] = {}
-    stdouts: list[str] = []
-    stderrs: list[str] = []
-    returncode = 0
+    indeg = [len(graph.deps[i]) for i in range(len(graph.names))]
+    ready: list[int] = [i for i, d in enumerate(indeg) if d == 0]
+    heapq.heapify(ready)
+    failures: list[tuple[int, StepResult]] = []
+    errors: list[tuple[int, BaseException]] = []
+    stop = False
 
-    for ref in recipe.steps:
-        wired: dict[str, Any] = {}
-        for field, source in ref.wiring.items():
-            if isinstance(source, InputRef):
-                wired[field] = prepared[source.field]
-            elif isinstance(source, OutputRef):
-                wired[field] = getattr(results[source.step].outputs, source.field)
-        sub_kwargs = {**ref.params, **wired}  # wiring overrides params
-        res = _dispatch(
-            ref.step, ref.func, _recipe_backend=backend_name, _config=config, **sub_kwargs
-        )
-        results[ref.name] = res
-        stdouts.append(res.stdout)
-        stderrs.append(res.stderr)
-        if res.returncode != 0:
-            returncode = res.returncode
-            break
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures: dict[Future, int] = {}
 
+        def submit_ready() -> None:
+            while ready and not stop and len(futures) < max_workers:
+                i = heapq.heappop(ready)
+                ref = recipe.steps[i]
+                sub_kwargs = _resolve_wiring(ref, prepared, results)
+                fut = pool.submit(
+                    _dispatch,
+                    ref.step,
+                    ref.func,
+                    _recipe_backend=backend_name,
+                    _config=config,
+                    **sub_kwargs,
+                )
+                futures[fut] = i
+
+        submit_ready()
+        while futures:
+            done, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for fut in done:
+                i = futures.pop(fut)
+                try:
+                    res = fut.result()
+                except BaseException as exc:  # noqa: BLE001 -- re-raised below
+                    errors.append((i, exc))
+                    stop = True
+                    continue
+                results[recipe.steps[i].name] = res
+                if res.returncode != 0:
+                    failures.append((i, res))
+                    stop = True
+                    continue
+                for dependent in graph.dependents[i]:
+                    indeg[dependent] -= 1
+                    if indeg[dependent] == 0:
+                        heapq.heappush(ready, dependent)
+            submit_ready()
+
+    # A worker exception (e.g. a bad override's ValidationError) propagates
+    # out of the recipe, first-by-declaration if several occurred.
+    if errors:
+        raise min(errors, key=lambda e: e[0])[1]
+
+    returncode = min(failures, key=lambda f: f[0])[1].returncode if failures else 0
+    ordered = [ref.name for ref in recipe.steps if ref.name in results]
     outputs = {
         field: getattr(results[out_ref.step].outputs, out_ref.field)
         for field, out_ref in recipe.output_wiring.items()
@@ -256,6 +325,6 @@ def _run_recipe(
         returncode=returncode,
         outputs=recipe.outputs_model(**outputs),
         inputs=recipe.inputs_model(**prepared),
-        stdout="\n".join(s for s in stdouts if s),
-        stderr="\n".join(s for s in stderrs if s),
+        stdout="\n".join(s for name in ordered if (s := results[name].stdout)),
+        stderr="\n".join(s for name in ordered if (s := results[name].stderr)),
     )

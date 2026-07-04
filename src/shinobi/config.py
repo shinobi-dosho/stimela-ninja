@@ -21,6 +21,14 @@ class BackendConfig(BaseModel):
     default: str = "native"
 
 
+class ExecutionConfig(BaseModel):
+    # How many recipe steps may run concurrently. Default 1 (sequential) --
+    # parallelism is opt-in: at 1 the scheduler reproduces exact
+    # declaration-order execution, and no MUTABLE input can be shared across
+    # concurrently-running steps (see AGENTS.md's recipe-execution note).
+    max_workers: int = 1
+
+
 class LogConfig(BaseModel):
     dir: str = "."
     level: str = "INFO"
@@ -52,6 +60,7 @@ class AppConfig(BaseSettings):
     _config_file: ClassVar[Path] = DEFAULT_CONFIG_FILE
 
     backend: BackendConfig = Field(default_factory=BackendConfig)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     log: LogConfig = Field(default_factory=LogConfig)
 
     @classmethod

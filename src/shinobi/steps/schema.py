@@ -354,6 +354,14 @@ class Recipe(Scope):
 
     steps: list[StepRef] = Field(default_factory=list)
     output_wiring: dict[str, OutputRef] = Field(default_factory=dict)
+    # Per-recipe override for how many steps may run concurrently; falls
+    # back to AppConfig.execution.max_workers (default 1) when None. Same
+    # precedence shape as `backend`. WARNING: with max_workers > 1, two
+    # independent steps that wire in the *same* MUTABLE input run
+    # concurrently against that shared object -- a data race shinobi cannot
+    # detect. IMMUTABLE inputs (the default) are deep-copied per step and
+    # are safe.
+    max_workers: int | None = None
 
     @property
     def inputs(self) -> _InputsProxy:

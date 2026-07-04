@@ -14,6 +14,7 @@ from pydantic_core import PydanticUndefined
 import shinobi
 from shinobi.config import AppConfig
 from shinobi.dag import graph_nodes, render_dag
+from shinobi.graph import RecipeGraphError
 from shinobi.policies import build_argv
 from shinobi.steps.dispatch import _dispatch, _prepare_inputs
 from shinobi.steps.schema import Recipe, Scope, StepRef, _unwrap_annotation, path_fields
@@ -163,7 +164,10 @@ def run(ctx: click.Context, target: str, dryrun: bool) -> None:
 
         if dryrun:
             if isinstance(scope, Recipe):
-                click.echo(render_dag(graph_nodes(scope)))
+                try:
+                    click.echo(render_dag(graph_nodes(scope)))
+                except RecipeGraphError as exc:
+                    raise click.ClickException(str(exc)) from None
             else:
                 prepared = _prepare_inputs(scope, {**call_kwargs})
                 click.echo(" ".join(build_argv(scope, prepared)))
