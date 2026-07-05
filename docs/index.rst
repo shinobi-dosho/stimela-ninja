@@ -77,6 +77,12 @@ reinventing.
 
    api/index
 
+.. toctree::
+   :maxdepth: 2
+   :caption: Project
+
+   contributing
+
 
 Indices
 -------

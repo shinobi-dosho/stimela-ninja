@@ -50,26 +50,26 @@ options, no entrypoint script required::
 Architecture
 ------------
 
-- **Cabs** (:class:`shinobi.Cab`) -- a typed, backend-agnostic description of
+- **Cabs** (``shinobi.Cab``) -- a typed, backend-agnostic description of
   an atomic task: an inputs/outputs schema (pydantic models) plus *policies*
   for turning parameters into a CLI invocation. Define one directly in Python,
   or load one from existing `cult-cargo
   <https://github.com/caracal-pipeline/cult-cargo>`_ YAML
-  (:mod:`shinobi.loaders.cultcargo`) -- that schema format is good design and
+  (``shinobi.loaders.cultcargo``) -- that schema format is good design and
   is reused as-is, including its ``_include`` (file composition) and ``_use``
   (dotted-path deep-merge) mechanisms, verified against real upstream cab
   files. The ``=config.x.y`` expression language and package-scoped includes
   are deliberately not implemented -- see the module docstring and
   ``AGENTS.md``.
 
-- **Steps** (:func:`shinobi.step`, :func:`shinobi.pystep`) -- a step binds an
+- **Steps** (``shinobi.step``, ``shinobi.pystep``) -- a step binds an
   orchestration function to a scope. ``@shinobi.step`` decorates a function
   with an existing ``Cab``/``Recipe``; its body receives an ``ExecContext``
   (``ctx``) and calls ``ctx.run()`` to execute. ``@shinobi.pystep`` turns a
   plain, type-hinted Python function into a step, deriving its schema from the
   signature -- no external tool, no hand-written models.
 
-- **Backends** (:mod:`shinobi.backends`) -- pluggable executors, all shelling
+- **Backends** (``shinobi.backends``) -- pluggable executors, all shelling
   out to the relevant CLI rather than a Python SDK: ``native`` (subprocess),
   ``docker``/``podman``/``apptainer``, ``slurm`` (``sbatch``/``sacct``),
   ``kubernetes`` (``kubectl``, batch ``Job``\ s). Every backend blocks until
@@ -81,13 +81,13 @@ Architecture
   cluster; ``slurm`` was not live-verified (no cluster was available in the
   dev environment) -- see ``AGENTS.md`` for what that means in practice.
 
-- **Recipes** (:class:`shinobi.Recipe`) -- just Python. A ``Recipe`` composes
+- **Recipes** (``shinobi.Recipe``) -- just Python. A ``Recipe`` composes
   steps, wiring one step's output into the next either declaratively (via
   ``StepRef``/``InputRef``/``OutputRef``, or the ``recipe.inputs`` /
   ``recipe.outputs`` proxies and ``add_step``) or through an orchestration
   function whose body is ordinary Python.
 
-- **Config** (:class:`shinobi.config.AppConfig`) -- layered settings via
+- **Config** (``shinobi.config.AppConfig``) -- layered settings via
   pydantic-settings: built-in defaults < config file < env vars
   (``SHINOBI_*``) < explicit overrides.
 

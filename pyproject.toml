@@ -10,7 +10,7 @@ readme = "README.rst"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "Sphesihle Makhathini", email = "a0069067@wits.ac.za" },
+    { name = "Sphesihle Makhathini", email = "sphemakh@gmail.com" },
 ]
 dependencies = [
     "pydantic>=2.6",
@@ -39,6 +39,12 @@ docs = [
     "myst-parser>=2.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/SpheMakh/stimela-ninja"
+Repository = "https://github.com/SpheMakh/stimela-ninja"
+Documentation = "https://stimela-ninja.readthedocs.io"
+Issues = "https://github.com/SpheMakh/stimela-ninja/issues"
+
 [project.scripts]
 ninja = "shinobi.cli:main"
 
@@ -54,6 +60,10 @@ include = [
     "/README.rst",
     "/LICENSE",
     "/AGENTS.md",
+    "/CONTRIBUTING.md",
+    "/CODE_OF_CONDUCT.md",
+    "/SECURITY.md",
+    "/CITATION.cff",
     "/pyproject.toml",
 ]
 

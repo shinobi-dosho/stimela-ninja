@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using these metadata."
+title: "stimela-ninja"
+abstract: >-
+  Stimela 3.0 -- a functional, flexible, and simple framework for reproducible
+  radio astronomy pipelines.
+type: software
+authors:
+  - family-names: "Makhathini"
+    given-names: "Sphesihle"
+    email: "sphemakh@gmail.com"
+    orcid: "https://orcid.org/0000-0001-9565-9622"
+version: "0.1.0b1"
+license: MIT
+repository-code: "https://github.com/SpheMakh/stimela-ninja"
+url: "https://github.com/SpheMakh/stimela-ninja"
+keywords:
+  - radio astronomy
+  - pipelines
+  - reproducibility
+  - workflow
