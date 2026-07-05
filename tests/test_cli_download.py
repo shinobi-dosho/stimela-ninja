@@ -294,6 +294,120 @@ class TestDownloadCultcargo:
         assert result["version"] == "v0.2.1"
         assert result["file_count"] == 1
 
+    def test_download_preserves_nested_images_directory(self):
+        """Should only exclude the top-level images/ dir, not nested ones."""
+        mock_tarball = _create_mock_tarball(
+            version="v0.2.1",
+            files={
+                "wsclean.yml": "name: wsclean\n",
+                "somecab/images/icon.yml": "icon: true\n",
+            },
+            include_images=True,
+        )
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = mock_tarball
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                dest = Path(tmpdir) / "cabs"
+                result = download_cultcargo(dest_dir=dest, version="v0.2.1")
+
+                # Top-level images/ (from include_images=True) is excluded...
+                assert not (dest / "images").exists()
+                # ...but a nested dir that happens to be named images/ is not.
+                assert (dest / "somecab" / "images" / "icon.yml").exists()
+                assert result["file_count"] == 2
+
+    def test_download_rejects_symlink_escaping_destination(self):
+        """Should fail cleanly if the tarball contains a symlink pointing outside dest."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            base = "cult-cargo-v0.2.1/cultcargo"
+
+            info = tarfile.TarInfo(name=f"{base}/wsclean.yml")
+            data = b"name: wsclean\n"
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+            link_info = tarfile.TarInfo(name=f"{base}/escape.yml")
+            link_info.type = tarfile.SYMTYPE
+            link_info.linkname = "/etc/passwd"
+            tar.addfile(link_info)
+
+        mock_tarball = buf.getvalue()
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = mock_tarball
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                dest = Path(tmpdir) / "cabs"
+                with pytest.raises(RuntimeError, match="Failed to extract tarball"):
+                    download_cultcargo(dest_dir=dest, version="v0.2.1")
+
+    def test_download_rejects_path_traversal_entry(self):
+        """Should fail cleanly if a tarball entry tries to write outside the extraction dir."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            data = b"evil\n"
+            info = tarfile.TarInfo(name="../../evil.txt")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+        mock_tarball = buf.getvalue()
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = mock_tarball
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                dest = Path(tmpdir) / "cabs"
+                with pytest.raises(RuntimeError, match="Failed to extract tarball"):
+                    download_cultcargo(dest_dir=dest, version="v0.2.1")
+
+    def test_download_skips_in_tree_symlink(self):
+        """Should skip symlinks even when their target is inside the extracted tree."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            base = "cult-cargo-v0.2.1/cultcargo"
+
+            data = b"name: wsclean\n"
+            info = tarfile.TarInfo(name=f"{base}/wsclean.yml")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+            link_info = tarfile.TarInfo(name=f"{base}/alias.yml")
+            link_info.type = tarfile.SYMTYPE
+            link_info.linkname = "wsclean.yml"
+            tar.addfile(link_info)
+
+        mock_tarball = buf.getvalue()
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = mock_tarball
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                dest = Path(tmpdir) / "cabs"
+                result = download_cultcargo(dest_dir=dest, version="v0.2.1")
+
+                assert (dest / "wsclean.yml").exists()
+                assert not (dest / "alias.yml").exists()
+                assert result["file_count"] == 1
+
 
 class TestDownloadCLI:
     """Tests for the CLI download command."""
