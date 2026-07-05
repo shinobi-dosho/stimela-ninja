@@ -300,5 +300,55 @@ def show_status(handle_file: str) -> None:
         click.echo(f"{name}: {state}")
 
 
+@main.command("download")
+@click.option(
+    "--cult-cargo",
+    is_flag=True,
+    help="Download cult-cargo cab definitions from GitHub.",
+)
+@click.option(
+    "--dest-dir",
+    type=click.Path(),
+    default=".shinobi/cabs/cultcargo",
+    help="Destination directory for downloaded cabs (default: .shinobi/cabs/cultcargo).",
+)
+@click.option(
+    "--version",
+    default="latest",
+    help="Version to download: 'latest' (highest v* tag), tag name, branch name, or commit SHA.",
+)
+def download(cult_cargo: bool, dest_dir: str, version: str) -> None:
+    """Download cab definitions from external sources.
+
+    Currently supports:
+      --cult-cargo: Download from caracal-pipeline/cult-cargo on GitHub
+
+    Examples:
+      ninja download --cult-cargo                    # Download latest stable (v0.2.1)
+      ninja download --cult-cargo --version master   # Download from master branch
+      ninja download --cult-cargo --version v0.2.0   # Download specific tag
+      ninja download --cult-cargo --dest-dir ./my-cabs  # Custom destination
+    """
+    if not cult_cargo:
+        raise click.ClickException(
+            "No source specified. Use --cult-cargo to download cult-cargo cabs."
+        )
+
+    from shinobi.download import download_cultcargo
+
+    try:
+        result = download_cultcargo(
+            dest_dir=Path(dest_dir),
+            version=version,
+            exclude_images=True,
+        )
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from None
+
+    click.echo(f"Downloaded cult-cargo {result['version']}")
+    click.echo(f"  Files: {result['file_count']}")
+    click.echo(f"  Destination: {result['dest_dir']}")
+
+
 if __name__ == "__main__":
     main()

@@ -1969,6 +1969,7 @@ version = "0.1.0b1"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
+    { name = "packaging" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyyaml" },
@@ -1996,6 +1997,7 @@ examples = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1" },
+    { name = "packaging", specifier = ">=23" },
     { name = "pydantic", specifier = ">=2.6" },
     { name = "pydantic-settings", specifier = ">=2.2" },
     { name = "pyyaml", specifier = ">=6.0" },
