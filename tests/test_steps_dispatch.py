@@ -10,7 +10,7 @@ from shinobi.results import BackendRun
 from shinobi.steps import Cab, InputRef, OutputRef, Recipe, StepRef, register_step_backend
 from shinobi.steps.dispatch import _dispatch
 from shinobi.steps.schema import Mutability
-from tests.fixtures.sample_steps import (
+from .fixtures.sample_steps import (
     chained_recipe,
     immutable_list_cab,
     make_value_cab,

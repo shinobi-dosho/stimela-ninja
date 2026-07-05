@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from shinobi.backends.recording import RecordingBackend
 from shinobi.steps import InputRef, Recipe, StepRef, pystep, register_step_backend
 from shinobi.steps.dispatch import _dispatch
-from tests.fixtures.sample_steps import use_value_cab
+from .fixtures.sample_steps import use_value_cab
 
 # Module-level models -- required for typing.get_type_hints to resolve them.
 

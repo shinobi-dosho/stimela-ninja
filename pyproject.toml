@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stimela-ninja"
-version = "0.1.0.dev0"
+version = "0.1.0b1"
 description = "Stimela 3.0 -- a functional, flexible, and simple framework for reproducible radio astronomy pipelines"
 readme = "README.md"
 license = "MIT"
@@ -38,9 +38,25 @@ ninja = "shinobi.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/shinobi"]
 
+[tool.hatch.build.targets.sdist]
+# Anchor patterns to the repo root (leading "/"); unanchored names match at
+# any depth (gitignore semantics) and would drag in nested README/LICENSE files
+# from .opencode/node_modules, examples/, tests/, etc.
+include = [
+    "/src/shinobi",
+    "/README.md",
+    "/LICENSE",
+    "/AGENTS.md",
+    "/pyproject.toml",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = ["src"]
+# importlib mode + namespace packages lets test modules use relative imports
+# (e.g. `from .fixtures...`) without `tests/` being a package (no __init__.py).
+addopts = "--import-mode=importlib"
+consider_namespace_packages = true
 
 [tool.ruff]
 line-length = 100
