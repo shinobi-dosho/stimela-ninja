@@ -12,6 +12,7 @@ unlike cult-cargo, there's no `_include`/`_use` composition to resolve;
 each file is fully self-contained.
 
 Field mapping (into a generated `inputs_model` + `field_meta`):
+
 * `name` -> the model field name, sanitised to a valid identifier if
   needed (the original kept as a `nom_de_guerre`).
 * `dtype` -> a Python type on the generated model. A param can declare

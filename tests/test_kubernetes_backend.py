@@ -5,7 +5,7 @@ import pytest
 
 from shinobi.backends.kubernetes import KubernetesBackend
 from shinobi.exceptions import BackendError
-from shinobi.loaders._modelgen import build_model
+from shinobi.loaders import build_model
 from shinobi.steps.schema import Cab
 
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from shinobi import Cab, Recipe, step
-from shinobi.loaders._modelgen import build_model
+from shinobi.loaders import build_model
 
 
 class ImageInputs(BaseModel):

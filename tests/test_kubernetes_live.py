@@ -18,7 +18,7 @@ import subprocess
 import pytest
 
 from shinobi.backends.kubernetes import KubernetesBackend
-from shinobi.loaders._modelgen import build_model
+from shinobi.loaders import build_model
 from shinobi.steps.schema import Cab
 
 WSCLEAN_IMAGE = "quay.io/stimela/wsclean:1.8.0"
