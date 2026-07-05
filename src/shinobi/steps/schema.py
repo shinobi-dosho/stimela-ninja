@@ -184,7 +184,13 @@ class Scope(BaseModel):
     building block for a plain-Python-function step whose own function
     returns its `StepResult` directly rather than calling `ctx.run()`; see
     `StepRef`'s docstring and `steps/pyfunc.py`'s `@shinobi.pystep` (which
-    automates this pattern from a function's signature).
+    automates this pattern from a function's own signature).
+
+    `image` is optional: when set on a bare `Scope` (typically via
+    `@shinobi.pystep(image=...)`), the step's Python function can be
+    executed inside a container instead of in-process. `Cab` inherits
+    this field for the same purpose (container backends need it to wrap
+    argv in a runtime invocation).
     """
 
     name: str
@@ -192,6 +198,7 @@ class Scope(BaseModel):
     inputs_model: type[BaseModel]
     outputs_model: type[BaseModel]
     backend: str | None = None
+    image: str | None = None
     input_mutability: dict[str, Mutability] = Field(default_factory=dict)
 
     def __call__(self, *, backend: str | None = None, **kwargs: Any):
@@ -217,7 +224,6 @@ class Cab(Scope):
 
     command: str
     flavour: str = "binary"
-    image: str | None = None
     policies: Policies = Field(default_factory=Policies)
     field_meta: dict[str, ParamMeta] = Field(default_factory=dict)
     input_patterns: list[ParamPattern] = Field(default_factory=list)

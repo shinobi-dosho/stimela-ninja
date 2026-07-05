@@ -22,6 +22,24 @@ decorated function's signature at all -- `scope.inputs_model` is the schema
 authority there. Use `@shinobi.pystep` when you have a plain function and no
 external tool; use `@shinobi.step` when you have an existing `Cab`/`Recipe`.
 
+**Container execution**: when `image=` is set and a container backend is
+resolved, the function runs inside the container instead of in-process.
+The function's source module is mounted into the container via
+`inspect.getfile()`, and a generated runner script handles invocation.
+Native runs call the function in-process (the original behaviour).
+
+For container-only imports (e.g. CASA tasks that don't exist on the host),
+use `ctx.import_func()` to avoid linter warnings:
+
+    @shinobi.pystep(image="quay.io/stimela/casa:latest")
+    def flagdata(ctx, vis: Path, mode: str = "manual") -> FlagdataOutputs:
+        flagdata_fn = ctx.import_func("flagdata", "casatasks")
+        flagdata_fn(vis=str(vis), mode=mode)
+        return FlagdataOutputs(...)
+
+This is cleaner than `from casatasks import flagdata` which triggers linter
+errors when the module isn't installed on the host.
+
 Caveat: `typing.get_type_hints` resolves annotations against the function's
 own module globals, so any `BaseModel` used in the signature or return type
 must be defined at module level, not inside another function.
@@ -34,6 +52,11 @@ mutability override yet; add one if a real need surfaces.
 from __future__ import annotations
 
 import inspect
+import json
+import os
+import subprocess
+import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, get_type_hints
 
 from pydantic import BaseModel, create_model
@@ -92,10 +115,139 @@ def _outputs_model_from_return(func: Callable) -> tuple[type[BaseModel], bool]:
     )
 
 
+_RUNNER_TEMPLATE = '''\
+import json
+import sys
+
+sys.path.insert(0, {source_dir!r})
+
+from {module_path} import {func_name}
+
+with open("/shinobi_io/inputs.json") as f:
+    inputs = json.load(f)
+
+result = {func_name}(**inputs)
+
+if result is not None:
+    if hasattr(result, "model_dump"):
+        result = result.model_dump(mode="json")
+    print(json.dumps(result))
+'''
+
+
+def _run_pystep_container(
+    scope: Scope,
+    func: Callable,
+    outputs_model: type[BaseModel],
+    is_empty: bool,
+    ctx: ExecContext,
+    backend_name: str,
+) -> StepResult:
+    """Execute a pystep's function inside a container.
+
+    Mounts the function's source module directory and a temp directory
+    containing a runner script and serialized inputs. The runner imports
+    the function, calls it with the inputs, and prints JSON output.
+    """
+    from shinobi.backends.container import build_container_argv
+
+    source_file = Path(inspect.getfile(func))
+    source_dir = str(source_file.parent.resolve())
+
+    module_path = func.__module__
+    func_name = func.__qualname__
+
+    prepared = ctx.prepare_inputs()
+
+    inputs_json = ctx.inputs.model_dump(mode="json")
+
+    with tempfile.TemporaryDirectory(prefix="shinobi_pystep_") as tmpdir:
+        io_dir = Path(tmpdir) / "io"
+        io_dir.mkdir()
+
+        runner_path = io_dir / "runner.py"
+        runner_path.write_text(
+            _RUNNER_TEMPLATE.format(
+                source_dir=source_dir,
+                module_path=module_path,
+                func_name=func_name,
+            )
+        )
+
+        inputs_path = io_dir / "inputs.json"
+        inputs_path.write_text(json.dumps(inputs_json))
+
+        workdir = os.getcwd()
+        extra_dirs = [str(io_dir), source_dir]
+
+        inner_argv = ["python3", "/shinobi_io/runner.py"]
+
+        full_argv = build_container_argv(
+            backend_name,
+            ctx.scope,
+            inner_argv,
+            prepared,
+            workdir,
+            extra_dirs=extra_dirs,
+            image_override=ctx.scope.image,
+        )
+
+        proc = subprocess.run(
+            full_argv,
+            capture_output=True,
+            text=True,
+        )
+
+        if proc.returncode != 0:
+            try:
+                outputs: BaseModel = outputs_model()
+            except Exception:
+                outputs = outputs_model.model_construct()
+            return StepResult(
+                name=scope.name,
+                returncode=proc.returncode,
+                outputs=outputs,
+                inputs=ctx.inputs,
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+            )
+
+        if is_empty:
+            outputs: BaseModel = outputs_model()
+        else:
+            output_data = {}
+            if proc.stdout.strip():
+                try:
+                    output_data = json.loads(proc.stdout.strip().splitlines()[-1])
+                except json.JSONDecodeError:
+                    pass
+            try:
+                outputs = outputs_model(**output_data)
+            except Exception:
+                outputs = outputs_model.model_construct(**output_data)
+
+        return StepResult(
+            name=scope.name,
+            returncode=0,
+            outputs=outputs,
+            inputs=ctx.inputs,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+        )
+
+
 def _make_adapter(
     func: Callable, outputs_model: type[BaseModel], is_empty: bool
 ) -> Callable[[ExecContext], StepResult]:
     def _adapter(ctx: ExecContext) -> StepResult:
+        from shinobi.steps.dispatch import _CONTAINER_BACKENDS
+
+        backend_name = ctx.resolve_backend_name()
+        if ctx.scope.image and backend_name in _CONTAINER_BACKENDS:
+            return _run_pystep_container(
+                ctx.scope, func, outputs_model, is_empty, ctx, backend_name
+            )
+
         prepared = ctx.prepare_inputs()
         ret = func(**prepared)
         if is_empty:
@@ -126,16 +278,28 @@ def _make_adapter(
 
 
 def pystep(
-    *, name: str | None = None, info: str | None = None, **params: Any
+    *,
+    name: str | None = None,
+    info: str | None = None,
+    image: str | None = None,
+    backend: str | None = None,
+    **params: Any,
 ) -> Callable[[Callable], StepRef]:
     """Decorate (or directly call on an existing function, matching
     `@shinobi.step`'s precedent: `pystep()(existing_func)`) a plain,
     type-hinted function to turn it into a `StepRef`. See the module
     docstring for the schema-derivation and outputs rules.
 
-    No `backend` kwarg: a bare-`Scope` step never dispatches through a
-    backend (`ctx.run()` isn't called), so it would be dead, misleading API
-    surface. `**params` are per-call constants, same as `@shinobi.step`.
+    `image` enables container execution: when set and a container backend
+    is resolved, the function runs inside the specified container image
+    instead of in-process. The function's source module is mounted into
+    the container so it can be imported by the runner script.
+
+    `backend` sets the default backend for this step (same as on any
+    `Scope`). With `image`, this is typically a container backend name
+    like ``"docker"`` or ``"apptainer"``.
+
+    `**params` are per-call constants, same as `@shinobi.step`.
     """
 
     def decorator(func: Callable) -> StepRef:
@@ -148,6 +312,8 @@ def pystep(
             info=info if info is not None else inspect.getdoc(func),
             inputs_model=inputs_model,
             outputs_model=outputs_model,
+            image=image,
+            backend=backend,
         )
         return StepRef(name=step_name, step=scope, func=adapter, params=params)
 
