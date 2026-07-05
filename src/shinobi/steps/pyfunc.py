@@ -54,6 +54,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import pickle
 import subprocess
 import tempfile
 from pathlib import Path
@@ -127,44 +128,57 @@ def _outputs_model_from_return(func: Callable) -> tuple[type[BaseModel], bool]:
     )
 
 
-# A minimal, dependency-free stand-in for ExecContext, injected into the
-# runner when the function takes a leading `ctx`. Shinobi itself is not
-# assumed to be installed inside the container, so we cannot import the real
-# ExecContext; this shim provides just the container-relevant surface
-# (`import_func`), mirroring ExecContext.import_func.
-_CTX_SHIM = '''
-class _Ctx:
-    def import_func(self, func, module=None):
-        if module is None:
-            import builtins
-            return getattr(builtins, func)
-        import importlib
-        return getattr(importlib.import_module(module), func)
+def _ctx_shim() -> str:
+    """A minimal, dependency-free stand-in for ExecContext, injected into
+    the runner when the function takes a leading `ctx`. Shinobi itself is
+    not assumed to be installed inside the container, so we cannot import
+    the real ExecContext; instead the shim's `import_func` body is lifted
+    verbatim from the real method with `inspect.getsource`, so the two
+    cannot drift. The method body relies on the runner's module-level
+    `importlib` import plus the `builtins` import added here; its
+    annotations stay unevaluated thanks to the runner's
+    `from __future__ import annotations`.
+    """
+    from shinobi.steps.dispatch import ExecContext
+
+    return (
+        "import builtins\n\n\nclass _Ctx:\n"
+        + inspect.getsource(ExecContext.import_func)
+        + "\n\nctx = _Ctx()\n"
+    )
 
 
-ctx = _Ctx()
-'''
-
-# `inputs_path` and the script's own path are host paths that are
-# identity-bind-mounted into the container (see build_container_argv), so the
-# same absolute path is valid on both sides -- no fixed `/shinobi_io` mount.
+# All paths in the runner (`inputs_path`, `outputs_path`, the script's own
+# path) are host paths that are identity-bind-mounted into the container
+# (see build_container_argv), so the same absolute path is valid on both
+# sides -- no fixed `/shinobi_io` mount. Inputs travel as a pickle so
+# pydantic-coerced values (Path, datetime, ...) arrive in the container as
+# the same types the in-process path passes; the result is written to the
+# outputs file rather than stdout, so the function is free to print.
 _RUNNER_TEMPLATE = '''\
+from __future__ import annotations
+
+import importlib
 import json
+import pickle
 import sys
 
 sys.path.insert(0, {source_dir!r})
 
-from {module_path} import {func_name}
+_obj = importlib.import_module({module_path!r})
+for _part in {qualname_parts!r}:
+    _obj = getattr(_obj, _part)
+{func_name} = _obj
 
-with open({inputs_path!r}) as f:
-    inputs = json.load(f)
+with open({inputs_path!r}, "rb") as f:
+    inputs = pickle.load(f)
 {ctx_shim}
 result = {func_name}({ctx_arg}**inputs)
 
-if result is not None:
-    if hasattr(result, "model_dump"):
-        result = result.model_dump(mode="json")
-    print(json.dumps(result))
+if result is not None and hasattr(result, "model_dump"):
+    result = result.model_dump(mode="json")
+with open({outputs_path!r}, "w") as f:
+    json.dump(result, f)
 '''
 
 
@@ -180,46 +194,63 @@ def _run_pystep_container(
     """Execute a pystep's function inside a container.
 
     Mounts the function's source module directory and a temp directory
-    containing a runner script and serialized inputs. The runner imports
-    the function, calls it with the inputs, and prints JSON output. When
-    the function takes a leading `ctx`, a minimal context shim is injected.
+    containing a runner script, pickled inputs, and the outputs file. The
+    runner imports the function, calls it with the same objects the
+    in-process path would pass, and writes the JSON result to the outputs
+    file. When the function takes a leading `ctx`, a context shim is
+    injected.
     """
     from shinobi.backends.container import build_container_argv
 
+    if "<locals>" in func.__qualname__:
+        raise TypeError(
+            f"pystep {func.__name__!r}: a function defined inside another "
+            "function has no importable module path, so it cannot run in a "
+            "container"
+        )
+
     module_path = func.__module__
-    func_name = func.__qualname__
+    source_file = Path(inspect.getfile(func)).resolve()
+    # A function defined in a directly-run script has __module__ ==
+    # '__main__', which inside the container would name the runner itself;
+    # import it by its file name instead.
+    if module_path == "__main__":
+        module_path = source_file.stem
 
     # The runner imports `func` via its dotted module path, so the directory
     # put on sys.path must be the package *root*, not the file's own parent.
     # For a top-level module (no dots) that is the parent dir; for a package
     # module like `pkg.sub.mod` it is that many levels above the file.
-    source_file = Path(inspect.getfile(func)).resolve()
     source_root = source_file.parent
     for _ in range(module_path.count(".")):
         source_root = source_root.parent
     source_dir = str(source_root)
 
-    # Derive the container inputs the same way the in-process path does, so
-    # the two never diverge: prepare_inputs() applies mutability handling,
-    # and re-validating through the model yields a JSON-safe dump.
+    # Same objects the in-process path passes: prepare_inputs() applies
+    # mutability handling on top of pydantic-coerced values. They travel by
+    # pickle (protocol 4 for older container pythons) so e.g. Path-typed
+    # inputs stay Paths inside the container.
     prepared = ctx.prepare_inputs()
-    inputs_json = ctx.scope.inputs_model(**prepared).model_dump(mode="json")
 
     with tempfile.TemporaryDirectory(prefix="shinobi_pystep_") as tmpdir:
         io_dir = Path(tmpdir) / "io"
         io_dir.mkdir()
 
-        inputs_path = io_dir / "inputs.json"
-        inputs_path.write_text(json.dumps(inputs_json))
+        inputs_path = io_dir / "inputs.pkl"
+        inputs_path.write_bytes(pickle.dumps(prepared, protocol=4))
+
+        outputs_path = io_dir / "outputs.json"
 
         runner_path = io_dir / "runner.py"
         runner_path.write_text(
             _RUNNER_TEMPLATE.format(
                 source_dir=source_dir,
                 module_path=module_path,
-                func_name=func_name,
+                qualname_parts=func.__qualname__.split("."),
+                func_name=func.__name__,
                 inputs_path=str(inputs_path),
-                ctx_shim=_CTX_SHIM if wants_ctx else "",
+                outputs_path=str(outputs_path),
+                ctx_shim=_ctx_shim() if wants_ctx else "",
                 ctx_arg="ctx, " if wants_ctx else "",
             )
         )
@@ -236,7 +267,6 @@ def _run_pystep_container(
             prepared,
             workdir,
             extra_dirs=extra_dirs,
-            image_override=ctx.scope.image,
         )
 
         proc = subprocess.run(
@@ -259,19 +289,34 @@ def _run_pystep_container(
                 stderr=proc.stderr,
             )
 
+        # Exit 0 means the runner ran to completion, and it always writes
+        # the outputs file -- so a missing/unreadable one is a broken
+        # contract. Fail loudly (mirroring the TypeErrors the in-process
+        # adapter raises) rather than fabricating outputs.
+        try:
+            output_data = json.loads(outputs_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TypeError(
+                f"pystep {func.__name__!r}: container run exited 0 but left "
+                f"no readable outputs file ({exc})"
+            ) from exc
+
         if is_empty:
-            outputs: BaseModel = outputs_model()
+            if output_data is not None:
+                raise TypeError(
+                    f"pystep {func.__name__!r} has no declared outputs (no "
+                    "return annotation, or -> None) but returned "
+                    f"{type(output_data).__name__!r} instead of None"
+                )
+            outputs = outputs_model()
         else:
-            output_data = {}
-            if proc.stdout.strip():
-                try:
-                    output_data = json.loads(proc.stdout.strip().splitlines()[-1])
-                except json.JSONDecodeError:
-                    pass
-            try:
-                outputs = outputs_model(**output_data)
-            except Exception:
-                outputs = outputs_model.model_construct(**output_data)
+            if not isinstance(output_data, dict):
+                raise TypeError(
+                    f"pystep {func.__name__!r} must return "
+                    f"{outputs_model.__name__!r}, got "
+                    f"{type(output_data).__name__!r} from the container"
+                )
+            outputs = outputs_model(**output_data)
 
         return StepResult(
             name=scope.name,
@@ -287,13 +332,23 @@ def _make_adapter(
     func: Callable, outputs_model: type[BaseModel], is_empty: bool, wants_ctx: bool
 ) -> Callable[[ExecContext], StepResult]:
     def _adapter(ctx: ExecContext) -> StepResult:
-        from shinobi.steps.dispatch import _CONTAINER_BACKENDS
+        # Check the cheap field first: resolving the backend name can fall
+        # through to a config-file read, which image-less pysteps (the
+        # common case) should never pay on every call.
+        if ctx.scope.image:
+            from shinobi.backends.container import CONTAINER_RUNTIMES
 
-        backend_name = ctx.resolve_backend_name()
-        if ctx.scope.image and backend_name in _CONTAINER_BACKENDS:
-            return _run_pystep_container(
-                ctx.scope, func, outputs_model, is_empty, wants_ctx, ctx, backend_name
-            )
+            backend_name = ctx.resolve_backend_name()
+            if backend_name in CONTAINER_RUNTIMES:
+                return _run_pystep_container(
+                    ctx.scope,
+                    func,
+                    outputs_model,
+                    is_empty,
+                    wants_ctx,
+                    ctx,
+                    backend_name,
+                )
 
         prepared = ctx.prepare_inputs()
         ret = func(ctx, **prepared) if wants_ctx else func(**prepared)

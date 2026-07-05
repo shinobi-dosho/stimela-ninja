@@ -28,8 +28,6 @@ from shinobi.results import StepResult
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope
 from shinobi.wranglers import apply_wranglers
 
-_CONTAINER_BACKENDS = frozenset({"docker", "podman", "apptainer"})
-
 # Instance-override registry: lets tests register a specific backend
 # instance (e.g. a RecordingBackend) under a name. Anything not overridden
 # here is resolved through shinobi.backends.get_backend (the real,

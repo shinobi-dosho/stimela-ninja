@@ -8,11 +8,13 @@ execution when the backend is `native`.
 from __future__ import annotations
 
 import json
+import pickle
 import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from pydantic import BaseModel
 
 from shinobi import pystep
@@ -47,6 +49,15 @@ def ctx_func(ctx, a: str, b: str) -> CtxOutputs:
     return CtxOutputs(joined=join(a, b))
 
 
+class PathOutputs(BaseModel):
+    basename: str
+
+
+def path_func(vis: Path) -> PathOutputs:
+    """A pystep that relies on its input actually being a Path object."""
+    return PathOutputs(basename=vis.name)
+
+
 def _run_runner_on_host(argv, *args, **kwargs):
     """subprocess.run stand-in that simulates the container by executing the
     generated runner with the host interpreter. Because the runner and its
@@ -58,6 +69,31 @@ def _run_runner_on_host(argv, *args, **kwargs):
     return _REAL_SUBPROCESS_RUN(
         [sys.executable, runner], capture_output=True, text=True
     )
+
+
+def _fake_container_run(outputs_data, capture_inputs=None, stdout=""):
+    """Build a subprocess.run stand-in for mocked-argv tests: it mimics a
+    successful container run by writing `outputs_data` to the runner's
+    outputs.json (as the real runner would) before returning a zero-exit
+    stub. If `capture_inputs` is a dict, the pickled inputs are loaded into
+    it.
+    """
+
+    def fake_run(argv, *args, **kwargs):
+        runner = next(a for a in argv if a.endswith("runner.py"))
+        io_dir = Path(runner).parent
+        if capture_inputs is not None:
+            capture_inputs.update(
+                pickle.loads((io_dir / "inputs.pkl").read_bytes())
+            )
+        (io_dir / "outputs.json").write_text(json.dumps(outputs_data))
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stdout = stdout
+        proc.stderr = ""
+        return proc
+
+    return fake_run
 
 
 def test_scope_has_image_field():
@@ -122,12 +158,8 @@ def test_pystep_without_image_always_runs_in_process():
 def test_pystep_container_generates_correct_argv():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
-    mock_proc = MagicMock()
-    mock_proc.returncode = 0
-    mock_proc.stdout = json.dumps({"result": "test.ms:100"})
-    mock_proc.stderr = ""
-
-    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc) as mock_run:
+    fake = _fake_container_run({"result": "test.ms:100"})
+    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake) as mock_run:
         ref(ms="test.ms")
 
     mock_run.assert_called_once()
@@ -156,12 +188,8 @@ def test_pystep_container_generates_correct_argv():
 def test_pystep_container_mounts_source_and_io_dirs():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
-    mock_proc = MagicMock()
-    mock_proc.returncode = 0
-    mock_proc.stdout = json.dumps({"result": "test.ms:100"})
-    mock_proc.stderr = ""
-
-    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc) as mock_run:
+    fake = _fake_container_run({"result": "test.ms:100"})
+    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake) as mock_run:
         ref(ms="test.ms")
 
     argv = mock_run.call_args[0][0]
@@ -180,12 +208,8 @@ def test_pystep_container_mounts_source_and_io_dirs():
 def test_pystep_container_apptainer_argv():
     ref = pystep(image="casa:latest", backend="apptainer")(container_func)
 
-    mock_proc = MagicMock()
-    mock_proc.returncode = 0
-    mock_proc.stdout = json.dumps({"result": "test.ms:100"})
-    mock_proc.stderr = ""
-
-    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc) as mock_run:
+    fake = _fake_container_run({"result": "test.ms:100"})
+    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake) as mock_run:
         ref(ms="test.ms")
 
     argv = mock_run.call_args[0][0]
@@ -194,15 +218,11 @@ def test_pystep_container_apptainer_argv():
     assert "casa:latest" in argv
 
 
-def test_pystep_container_parses_json_output():
+def test_pystep_container_parses_outputs_file():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
-    mock_proc = MagicMock()
-    mock_proc.returncode = 0
-    mock_proc.stdout = json.dumps({"result": "parsed.ms:999"})
-    mock_proc.stderr = ""
-
-    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc):
+    fake = _fake_container_run({"result": "parsed.ms:999"})
+    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
         result = ref(ms="parsed.ms", niter=999)
 
     assert result.success
@@ -212,12 +232,9 @@ def test_pystep_container_parses_json_output():
 def test_pystep_container_handles_empty_outputs():
     ref = pystep(image="casa:latest", backend="docker")(no_output_func)
 
-    mock_proc = MagicMock()
-    mock_proc.returncode = 0
-    mock_proc.stdout = ""
-    mock_proc.stderr = ""
-
-    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc):
+    # The runner writes `null` for a -> None function that returned None.
+    fake = _fake_container_run(None)
+    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
         result = ref(ms="test.ms")
 
     assert result.success
@@ -240,38 +257,35 @@ def test_pystep_container_nonzero_exit_returns_failure():
     assert "something went wrong" in result.stderr
 
 
-def test_pystep_container_serializes_inputs_to_json():
+def test_pystep_container_pickles_inputs():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
-    mock_proc = MagicMock()
-    mock_proc.returncode = 0
-    mock_proc.stdout = json.dumps({"result": "ok"})
-    mock_proc.stderr = ""
-
     captured_inputs = {}
-
-    original_write_text = Path.write_text
-
-    def capture_write_text(self, content, *args, **kwargs):
-        if self.name == "inputs.json":
-            captured_inputs.update(json.loads(content))
-        return original_write_text(self, content, *args, **kwargs)
-
-    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc):
-        with patch.object(Path, "write_text", capture_write_text):
-            ref(ms="serialised.ms", niter=42)
+    fake = _fake_container_run({"result": "ok"}, capture_inputs=captured_inputs)
+    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
+        ref(ms="serialised.ms", niter=42)
 
     assert captured_inputs["ms"] == "serialised.ms"
     assert captured_inputs["niter"] == 42
 
 
+def test_pystep_container_path_inputs_stay_paths():
+    # Regression guard: the old JSON round-trip degraded Path-typed inputs
+    # to str inside the container, diverging from the in-process path.
+    ref = pystep(image="casa:latest", backend="docker")(path_func)
+
+    captured_inputs = {}
+    fake = _fake_container_run(
+        {"basename": "test.ms"}, capture_inputs=captured_inputs
+    )
+    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
+        ref(vis="/data/test.ms")
+
+    assert isinstance(captured_inputs["vis"], Path)
+
+
 def test_pystep_container_runner_script_content():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
-
-    mock_proc = MagicMock()
-    mock_proc.returncode = 0
-    mock_proc.stdout = json.dumps({"result": "ok"})
-    mock_proc.stderr = ""
 
     captured_runner = {}
 
@@ -282,7 +296,8 @@ def test_pystep_container_runner_script_content():
             captured_runner["content"] = content
         return original_write_text(self, content, *args, **kwargs)
 
-    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc):
+    fake = _fake_container_run({"result": "ok"})
+    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
         with patch.object(Path, "write_text", capture_write_text):
             ref(ms="test.ms")
 
@@ -290,53 +305,68 @@ def test_pystep_container_runner_script_content():
     assert "import json" in runner
     assert "sys.path.insert" in runner
     assert "container_func" in runner
-    assert "inputs.json" in runner
+    assert "inputs.pkl" in runner
+    assert "outputs.json" in runner
     assert "model_dump" in runner
 
 
 def test_pystep_container_backend_override_at_call_time():
     ref = pystep(image="casa:latest")(container_func)
 
-    mock_proc = MagicMock()
-    mock_proc.returncode = 0
-    mock_proc.stdout = json.dumps({"result": "ok"})
-    mock_proc.stderr = ""
-
-    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc) as mock_run:
+    fake = _fake_container_run({"result": "ok"})
+    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake) as mock_run:
         ref(ms="test.ms", backend="docker")
 
     argv = mock_run.call_args[0][0]
     assert argv[0] == "docker"
 
 
-def test_pystep_container_handles_multiline_stdout():
+def test_pystep_container_stdout_noise_does_not_corrupt_outputs():
+    # Outputs travel via the outputs file, so anything the function prints
+    # to stdout is irrelevant to output parsing.
+    ref = pystep(image="casa:latest", backend="docker")(container_func)
+
+    fake = _fake_container_run(
+        {"result": "from-file"}, stdout="some log line\nanother log\n"
+    )
+    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
+        result = ref(ms="test.ms")
+
+    assert result.success
+    assert result.outputs.result == "from-file"
+
+
+def test_pystep_container_missing_outputs_file_raises():
+    # Exit 0 without an outputs file is a broken contract: fail loudly
+    # instead of fabricating empty outputs and reporting success.
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
     mock_proc = MagicMock()
     mock_proc.returncode = 0
-    mock_proc.stdout = "some log line\nanother log\n" + json.dumps({"result": "last-line"})
+    mock_proc.stdout = ""
     mock_proc.stderr = ""
 
     with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc):
-        result = ref(ms="test.ms")
-
-    assert result.success
-    assert result.outputs.result == "last-line"
+        with pytest.raises(TypeError, match="no readable outputs file"):
+            ref(ms="test.ms")
 
 
-def test_pystep_container_handles_invalid_json_gracefully():
+def test_pystep_container_non_dict_output_raises():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
-    mock_proc = MagicMock()
-    mock_proc.returncode = 0
-    mock_proc.stdout = "not valid json"
-    mock_proc.stderr = ""
+    fake = _fake_container_run(42)
+    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
+        with pytest.raises(TypeError, match="must return"):
+            ref(ms="test.ms")
 
-    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc):
-        result = ref(ms="test.ms")
 
-    assert result.success
-    assert getattr(result.outputs, "result", None) is None
+def test_pystep_container_nested_function_raises():
+    def nested(ms: str) -> ContainerOutputs:
+        return ContainerOutputs(result="x")
+
+    ref = pystep(image="casa:latest", backend="docker")(nested)
+    with pytest.raises(TypeError, match="importable module path"):
+        ref(ms="test.ms")
 
 
 def test_exec_context_import_func_builtin():
@@ -395,11 +425,6 @@ def test_pystep_ctx_injected_in_process():
 def test_pystep_ctx_shim_in_container_runner():
     ref = pystep(image="casa:latest", backend="docker")(ctx_func)
 
-    mock_proc = MagicMock()
-    mock_proc.returncode = 0
-    mock_proc.stdout = json.dumps({"joined": "/x/y"})
-    mock_proc.stderr = ""
-
     captured_runner = {}
     original_write_text = Path.write_text
 
@@ -408,23 +433,22 @@ def test_pystep_ctx_shim_in_container_runner():
             captured_runner["content"] = content
         return original_write_text(self, content, *args, **kwargs)
 
-    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc):
+    fake = _fake_container_run({"joined": "/x/y"})
+    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
         with patch.object(Path, "write_text", capture_write_text):
             ref(a="/x", b="y")
 
     runner = captured_runner["content"]
     assert "class _Ctx" in runner
+    # The shim body is lifted from the real ExecContext.import_func, so the
+    # two cannot drift.
+    assert "def import_func" in runner
     assert "ctx_func(ctx, **inputs)" in runner
 
 
 def test_pystep_no_ctx_runner_has_no_shim():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
-    mock_proc = MagicMock()
-    mock_proc.returncode = 0
-    mock_proc.stdout = json.dumps({"result": "ok"})
-    mock_proc.stderr = ""
-
     captured_runner = {}
     original_write_text = Path.write_text
 
@@ -433,7 +457,8 @@ def test_pystep_no_ctx_runner_has_no_shim():
             captured_runner["content"] = content
         return original_write_text(self, content, *args, **kwargs)
 
-    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc):
+    fake = _fake_container_run({"result": "ok"})
+    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
         with patch.object(Path, "write_text", capture_write_text):
             ref(ms="test.ms")
 
@@ -442,13 +467,8 @@ def test_pystep_no_ctx_runner_has_no_shim():
     assert "container_func(**inputs)" in runner
 
 
-def test_pystep_runner_references_real_inputs_path_not_shinobi_io():
+def test_pystep_runner_references_real_io_paths_not_shinobi_io():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
-
-    mock_proc = MagicMock()
-    mock_proc.returncode = 0
-    mock_proc.stdout = json.dumps({"result": "ok"})
-    mock_proc.stderr = ""
 
     captured_runner = {}
     original_write_text = Path.write_text
@@ -458,14 +478,16 @@ def test_pystep_runner_references_real_inputs_path_not_shinobi_io():
             captured_runner["content"] = content
         return original_write_text(self, content, *args, **kwargs)
 
-    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc):
+    fake = _fake_container_run({"result": "ok"})
+    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
         with patch.object(Path, "write_text", capture_write_text):
             ref(ms="test.ms")
 
     runner = captured_runner["content"]
     assert "/shinobi_io" not in runner
     assert "shinobi_pystep_" in runner  # the real temp io dir path
-    assert "inputs.json" in runner
+    assert "inputs.pkl" in runner
+    assert "outputs.json" in runner
 
 
 # --- end-to-end: actually execute the generated runner ---------------------
@@ -498,3 +520,18 @@ def test_pystep_container_runner_executes_ctx_end_to_end():
 
     assert result.success, result.stderr
     assert result.outputs.joined == "/x/y"
+
+
+def test_pystep_container_runner_executes_path_inputs_end_to_end():
+    # Regression guard for the JSON round-trip that turned Path inputs into
+    # str inside the container: path_func calls vis.name, which only works
+    # if the runner hands it a real Path.
+    ref = pystep(image="casa:latest", backend="docker")(path_func)
+
+    with patch(
+        "shinobi.steps.pyfunc.subprocess.run", side_effect=_run_runner_on_host
+    ):
+        result = ref(vis="/data/real.ms")
+
+    assert result.success, result.stderr
+    assert result.outputs.basename == "real.ms"

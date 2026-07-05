@@ -29,6 +29,11 @@ from shinobi.steps.schema import Cab, Scope, path_fields
 _DOCKER_LIKE = {"docker", "podman"}
 _APPTAINER_LIKE = {"apptainer"}
 
+# The one authoritative set of container-runtime backend names; also
+# consumed by the pystep adapter (steps/pyfunc.py) to decide whether a
+# resolved backend means "run this function in a container".
+CONTAINER_RUNTIMES = frozenset(_DOCKER_LIKE | _APPTAINER_LIKE)
+
 
 def bind_dirs(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[str]:
     """Parent directories of every File/MS-valued input, plus the working
@@ -79,7 +84,6 @@ def build_container_argv(
     workdir: str,
     *,
     extra_dirs: list[str] | None = None,
-    image_override: str | None = None,
 ) -> list[str]:
     """Wrap argv in a container-runtime invocation. Shared with the Slurm
     backend, which runs cabs under apptainer the same way a plain
@@ -87,17 +91,14 @@ def build_container_argv(
 
     `scope` is the Cab or Scope being executed. For Cabs, bind mounts are
     derived from path-typed inputs. For bare Scopes (e.g. pysteps), all
-    inputs are declared so no pattern matching is needed.
+    inputs are declared so no pattern matching is needed. The container
+    image comes from `scope.image` in both cases.
 
     `extra_dirs` adds additional bind-mount directories beyond those
     derived from the scope's path-typed inputs (e.g. a pystep's runner
     script directory and source module directory).
-
-    `image_override` supplies the container image directly instead of
-    reading it from `scope.image` -- used by the pystep container path
-    where the Scope carries the image but there is no Cab.
     """
-    image = image_override or scope.image
+    image = scope.image
     if not image:
         name = getattr(scope, "name", "<scope>")
         raise BackendError(f"'{name}' has no image, cannot run under {runtime}")
@@ -121,7 +122,7 @@ def build_container_argv(
 
 class ContainerBackend(Backend):
     def __init__(self, runtime: str, workdir: str | None = None):
-        if runtime not in _DOCKER_LIKE | _APPTAINER_LIKE:
+        if runtime not in CONTAINER_RUNTIMES:
             raise ValueError(f"unsupported container runtime '{runtime}'")
         self.runtime = runtime
         self.workdir = workdir or os.getcwd()
