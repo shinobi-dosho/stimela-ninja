@@ -1,0 +1,745 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Lint (ruff)
+        run: uv run --python ${{ matrix.python-version }} --group dev ruff check src tests
+
+      - name: Run tests
+        run: uv run --python ${{ matrix.python-version }} --group dev pytest -q
+
+  review:
+    # Skip when the run was triggered by a bot push (e.g. github-actions[bot]
+    # pushing an auto-fix from a previous review run): the opencode action's
+    # assertPermissions gate rejects bot actors (collaborator API returns
+    # "none" for github-actions[bot]), which would fail the job and loop.
+    # test still runs on bot-pushed commits to verify the fix.
+    if: github.event_name == 'pull_request' && !endsWith(github.actor, '[bot]')
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+      issues: write
+    # Sequential fallback chain with a preflight probe per model. Each "Probe"
+    # step is a run step we fully control: it cheaply pings the model via the
+    # opencode CLI (wrapped in `timeout`, since `opencode run` hangs on API
+    # errors) and only skips the model when it positively sees a rate-limit or
+    # timeout - otherwise it fails open so we still attempt the review. The
+    # first model whose "Review" action succeeds writes review.done, and every
+    # later probe short-circuits on that marker. `timeout-minutes: 15` on each
+    # action is the backstop for a probe-passes-but-action-hangs case.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Install opencode CLI
+        id: install_opencode
+        continue-on-error: true
+        run: |
+          curl -fsSL https://opencode.ai/install | bash
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Phase 1 - second-best per family (workhorses, tried first)
+
+      - name: Probe (qwen3.7-plus)
+        id: p01
+        continue-on-error: true
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+          PREV_OUTCOME: ""
+        run: |
+          set +e
+          # Stop the chain once any earlier model has posted a review.
+          if [ -f review.done ]; then echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$PREV_OUTCOME" = "success" ]; then
+            touch review.done
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Fail open if the probe tool itself is unavailable.
+          if ! command -v opencode >/dev/null 2>&1; then
+            echo "opencode CLI unavailable; failing open (will attempt anyway)"
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Cheap preflight; timeout bounds the opencode hang-on-error bug (#8203).
+          timeout 90 opencode run --model opencode-go/qwen3.7-plus "Reply with the single word: ok" > probe.log 2>&1
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "probe ok for qwen3.7-plus"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 124 ]; then
+            echo "probe timed out (likely rate-limit hang); skipping qwen3.7-plus"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif grep -qiE 'rate.?limit|AI_APICallError|429|quota|exceeded' probe.log; then
+            echo "probe rate-limited; skipping qwen3.7-plus"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "probe failed for non-rate-limit reason; failing open for qwen3.7-plus"
+            cat probe.log || true
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review (qwen3.7-plus)
+        id: r01
+        if: steps.p01.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+        with:
+          use_github_token: true
+          model: opencode-go/qwen3.7-plus
+          variant: medium
+
+      - name: Probe (kimi-k2.6)
+        id: p02
+        continue-on-error: true
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+          PREV_OUTCOME: ${{ steps.r01.outcome }}
+        run: |
+          set +e
+          # Stop the chain once any earlier model has posted a review.
+          if [ -f review.done ]; then echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$PREV_OUTCOME" = "success" ]; then
+            touch review.done
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Fail open if the probe tool itself is unavailable.
+          if ! command -v opencode >/dev/null 2>&1; then
+            echo "opencode CLI unavailable; failing open (will attempt anyway)"
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Cheap preflight; timeout bounds the opencode hang-on-error bug (#8203).
+          timeout 90 opencode run --model opencode-go/kimi-k2.6 "Reply with the single word: ok" > probe.log 2>&1
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "probe ok for kimi-k2.6"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 124 ]; then
+            echo "probe timed out (likely rate-limit hang); skipping kimi-k2.6"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif grep -qiE 'rate.?limit|AI_APICallError|429|quota|exceeded' probe.log; then
+            echo "probe rate-limited; skipping kimi-k2.6"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "probe failed for non-rate-limit reason; failing open for kimi-k2.6"
+            cat probe.log || true
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review (kimi-k2.6)
+        id: r02
+        if: steps.p02.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+        with:
+          use_github_token: true
+          model: opencode-go/kimi-k2.6
+          variant: medium
+
+      - name: Probe (glm-5.1)
+        id: p03
+        continue-on-error: true
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+          PREV_OUTCOME: ${{ steps.r02.outcome }}
+        run: |
+          set +e
+          # Stop the chain once any earlier model has posted a review.
+          if [ -f review.done ]; then echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$PREV_OUTCOME" = "success" ]; then
+            touch review.done
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Fail open if the probe tool itself is unavailable.
+          if ! command -v opencode >/dev/null 2>&1; then
+            echo "opencode CLI unavailable; failing open (will attempt anyway)"
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Cheap preflight; timeout bounds the opencode hang-on-error bug (#8203).
+          timeout 90 opencode run --model opencode-go/glm-5.1 "Reply with the single word: ok" > probe.log 2>&1
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "probe ok for glm-5.1"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 124 ]; then
+            echo "probe timed out (likely rate-limit hang); skipping glm-5.1"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif grep -qiE 'rate.?limit|AI_APICallError|429|quota|exceeded' probe.log; then
+            echo "probe rate-limited; skipping glm-5.1"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "probe failed for non-rate-limit reason; failing open for glm-5.1"
+            cat probe.log || true
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review (glm-5.1)
+        id: r03
+        if: steps.p03.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+        with:
+          use_github_token: true
+          model: opencode-go/glm-5.1
+          variant: medium
+
+      - name: Probe (mimo-v2.5)
+        id: p04
+        continue-on-error: true
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+          PREV_OUTCOME: ${{ steps.r03.outcome }}
+        run: |
+          set +e
+          # Stop the chain once any earlier model has posted a review.
+          if [ -f review.done ]; then echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$PREV_OUTCOME" = "success" ]; then
+            touch review.done
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Fail open if the probe tool itself is unavailable.
+          if ! command -v opencode >/dev/null 2>&1; then
+            echo "opencode CLI unavailable; failing open (will attempt anyway)"
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Cheap preflight; timeout bounds the opencode hang-on-error bug (#8203).
+          timeout 90 opencode run --model opencode-go/mimo-v2.5 "Reply with the single word: ok" > probe.log 2>&1
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "probe ok for mimo-v2.5"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 124 ]; then
+            echo "probe timed out (likely rate-limit hang); skipping mimo-v2.5"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif grep -qiE 'rate.?limit|AI_APICallError|429|quota|exceeded' probe.log; then
+            echo "probe rate-limited; skipping mimo-v2.5"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "probe failed for non-rate-limit reason; failing open for mimo-v2.5"
+            cat probe.log || true
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review (mimo-v2.5)
+        id: r04
+        if: steps.p04.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+        with:
+          use_github_token: true
+          model: opencode-go/mimo-v2.5
+          variant: medium
+
+      - name: Probe (minimax-m2.7)
+        id: p05
+        continue-on-error: true
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+          PREV_OUTCOME: ${{ steps.r04.outcome }}
+        run: |
+          set +e
+          # Stop the chain once any earlier model has posted a review.
+          if [ -f review.done ]; then echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$PREV_OUTCOME" = "success" ]; then
+            touch review.done
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Fail open if the probe tool itself is unavailable.
+          if ! command -v opencode >/dev/null 2>&1; then
+            echo "opencode CLI unavailable; failing open (will attempt anyway)"
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Cheap preflight; timeout bounds the opencode hang-on-error bug (#8203).
+          timeout 90 opencode run --model opencode-go/minimax-m2.7 "Reply with the single word: ok" > probe.log 2>&1
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "probe ok for minimax-m2.7"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 124 ]; then
+            echo "probe timed out (likely rate-limit hang); skipping minimax-m2.7"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif grep -qiE 'rate.?limit|AI_APICallError|429|quota|exceeded' probe.log; then
+            echo "probe rate-limited; skipping minimax-m2.7"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "probe failed for non-rate-limit reason; failing open for minimax-m2.7"
+            cat probe.log || true
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review (minimax-m2.7)
+        id: r05
+        if: steps.p05.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+        with:
+          use_github_token: true
+          model: opencode-go/minimax-m2.7
+          variant: medium
+
+      # Phase 2 - best per family (flagships, reversed so the costliest is last)
+
+      - name: Probe (minimax-m3)
+        id: p06
+        continue-on-error: true
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+          PREV_OUTCOME: ${{ steps.r05.outcome }}
+        run: |
+          set +e
+          # Stop the chain once any earlier model has posted a review.
+          if [ -f review.done ]; then echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$PREV_OUTCOME" = "success" ]; then
+            touch review.done
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Fail open if the probe tool itself is unavailable.
+          if ! command -v opencode >/dev/null 2>&1; then
+            echo "opencode CLI unavailable; failing open (will attempt anyway)"
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Cheap preflight; timeout bounds the opencode hang-on-error bug (#8203).
+          timeout 90 opencode run --model opencode-go/minimax-m3 "Reply with the single word: ok" > probe.log 2>&1
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "probe ok for minimax-m3"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 124 ]; then
+            echo "probe timed out (likely rate-limit hang); skipping minimax-m3"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif grep -qiE 'rate.?limit|AI_APICallError|429|quota|exceeded' probe.log; then
+            echo "probe rate-limited; skipping minimax-m3"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "probe failed for non-rate-limit reason; failing open for minimax-m3"
+            cat probe.log || true
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review (minimax-m3)
+        id: r06
+        if: steps.p06.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+        with:
+          use_github_token: true
+          model: opencode-go/minimax-m3
+          variant: medium
+
+      - name: Probe (mimo-v2.5-pro)
+        id: p07
+        continue-on-error: true
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+          PREV_OUTCOME: ${{ steps.r06.outcome }}
+        run: |
+          set +e
+          # Stop the chain once any earlier model has posted a review.
+          if [ -f review.done ]; then echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$PREV_OUTCOME" = "success" ]; then
+            touch review.done
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Fail open if the probe tool itself is unavailable.
+          if ! command -v opencode >/dev/null 2>&1; then
+            echo "opencode CLI unavailable; failing open (will attempt anyway)"
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Cheap preflight; timeout bounds the opencode hang-on-error bug (#8203).
+          timeout 90 opencode run --model opencode-go/mimo-v2.5-pro "Reply with the single word: ok" > probe.log 2>&1
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "probe ok for mimo-v2.5-pro"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 124 ]; then
+            echo "probe timed out (likely rate-limit hang); skipping mimo-v2.5-pro"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif grep -qiE 'rate.?limit|AI_APICallError|429|quota|exceeded' probe.log; then
+            echo "probe rate-limited; skipping mimo-v2.5-pro"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "probe failed for non-rate-limit reason; failing open for mimo-v2.5-pro"
+            cat probe.log || true
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review (mimo-v2.5-pro)
+        id: r07
+        if: steps.p07.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+        with:
+          use_github_token: true
+          model: opencode-go/mimo-v2.5-pro
+          variant: medium
+
+      - name: Probe (kimi-k2.7-code)
+        id: p08
+        continue-on-error: true
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+          PREV_OUTCOME: ${{ steps.r07.outcome }}
+        run: |
+          set +e
+          # Stop the chain once any earlier model has posted a review.
+          if [ -f review.done ]; then echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$PREV_OUTCOME" = "success" ]; then
+            touch review.done
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Fail open if the probe tool itself is unavailable.
+          if ! command -v opencode >/dev/null 2>&1; then
+            echo "opencode CLI unavailable; failing open (will attempt anyway)"
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Cheap preflight; timeout bounds the opencode hang-on-error bug (#8203).
+          timeout 90 opencode run --model opencode-go/kimi-k2.7-code "Reply with the single word: ok" > probe.log 2>&1
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "probe ok for kimi-k2.7-code"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 124 ]; then
+            echo "probe timed out (likely rate-limit hang); skipping kimi-k2.7-code"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif grep -qiE 'rate.?limit|AI_APICallError|429|quota|exceeded' probe.log; then
+            echo "probe rate-limited; skipping kimi-k2.7-code"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "probe failed for non-rate-limit reason; failing open for kimi-k2.7-code"
+            cat probe.log || true
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review (kimi-k2.7-code)
+        id: r08
+        if: steps.p08.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+        with:
+          use_github_token: true
+          model: opencode-go/kimi-k2.7-code
+          variant: medium
+
+      - name: Probe (glm-5.2)
+        id: p09
+        continue-on-error: true
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+          PREV_OUTCOME: ${{ steps.r08.outcome }}
+        run: |
+          set +e
+          # Stop the chain once any earlier model has posted a review.
+          if [ -f review.done ]; then echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$PREV_OUTCOME" = "success" ]; then
+            touch review.done
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Fail open if the probe tool itself is unavailable.
+          if ! command -v opencode >/dev/null 2>&1; then
+            echo "opencode CLI unavailable; failing open (will attempt anyway)"
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Cheap preflight; timeout bounds the opencode hang-on-error bug (#8203).
+          timeout 90 opencode run --model opencode-go/glm-5.2 "Reply with the single word: ok" > probe.log 2>&1
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "probe ok for glm-5.2"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 124 ]; then
+            echo "probe timed out (likely rate-limit hang); skipping glm-5.2"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif grep -qiE 'rate.?limit|AI_APICallError|429|quota|exceeded' probe.log; then
+            echo "probe rate-limited; skipping glm-5.2"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "probe failed for non-rate-limit reason; failing open for glm-5.2"
+            cat probe.log || true
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review (glm-5.2)
+        id: r09
+        if: steps.p09.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+        with:
+          use_github_token: true
+          model: opencode-go/glm-5.2
+          variant: medium
+
+      - name: Probe (deepseek-v4-pro)
+        id: p10
+        continue-on-error: true
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+          PREV_OUTCOME: ${{ steps.r09.outcome }}
+        run: |
+          set +e
+          # Stop the chain once any earlier model has posted a review.
+          if [ -f review.done ]; then echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$PREV_OUTCOME" = "success" ]; then
+            touch review.done
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Fail open if the probe tool itself is unavailable.
+          if ! command -v opencode >/dev/null 2>&1; then
+            echo "opencode CLI unavailable; failing open (will attempt anyway)"
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Cheap preflight; timeout bounds the opencode hang-on-error bug (#8203).
+          timeout 90 opencode run --model opencode-go/deepseek-v4-pro "Reply with the single word: ok" > probe.log 2>&1
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "probe ok for deepseek-v4-pro"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 124 ]; then
+            echo "probe timed out (likely rate-limit hang); skipping deepseek-v4-pro"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif grep -qiE 'rate.?limit|AI_APICallError|429|quota|exceeded' probe.log; then
+            echo "probe rate-limited; skipping deepseek-v4-pro"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "probe failed for non-rate-limit reason; failing open for deepseek-v4-pro"
+            cat probe.log || true
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review (deepseek-v4-pro)
+        id: r10
+        if: steps.p10.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+        with:
+          use_github_token: true
+          model: opencode-go/deepseek-v4-pro
+          variant: medium
+
+      - name: Probe (qwen3.7-max)
+        id: p11
+        continue-on-error: true
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+          PREV_OUTCOME: ${{ steps.r10.outcome }}
+        run: |
+          set +e
+          # Stop the chain once any earlier model has posted a review.
+          if [ -f review.done ]; then echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$PREV_OUTCOME" = "success" ]; then
+            touch review.done
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Fail open if the probe tool itself is unavailable.
+          if ! command -v opencode >/dev/null 2>&1; then
+            echo "opencode CLI unavailable; failing open (will attempt anyway)"
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Cheap preflight; timeout bounds the opencode hang-on-error bug (#8203).
+          timeout 90 opencode run --model opencode-go/qwen3.7-max "Reply with the single word: ok" > probe.log 2>&1
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "probe ok for qwen3.7-max"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 124 ]; then
+            echo "probe timed out (likely rate-limit hang); skipping qwen3.7-max"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif grep -qiE 'rate.?limit|AI_APICallError|429|quota|exceeded' probe.log; then
+            echo "probe rate-limited; skipping qwen3.7-max"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "probe failed for non-rate-limit reason; failing open for qwen3.7-max"
+            cat probe.log || true
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review (qwen3.7-max)
+        id: r11
+        if: steps.p11.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+        with:
+          use_github_token: true
+          model: opencode-go/qwen3.7-max
+          variant: medium
+
+      # Phase 3 - lowest tier (last resort)
+
+      - name: Probe (qwen3.6-plus)
+        id: p12
+        continue-on-error: true
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+          PREV_OUTCOME: ${{ steps.r11.outcome }}
+        run: |
+          set +e
+          # Stop the chain once any earlier model has posted a review.
+          if [ -f review.done ]; then echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$PREV_OUTCOME" = "success" ]; then
+            touch review.done
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Fail open if the probe tool itself is unavailable.
+          if ! command -v opencode >/dev/null 2>&1; then
+            echo "opencode CLI unavailable; failing open (will attempt anyway)"
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Cheap preflight; timeout bounds the opencode hang-on-error bug (#8203).
+          timeout 90 opencode run --model opencode-go/qwen3.6-plus "Reply with the single word: ok" > probe.log 2>&1
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "probe ok for qwen3.6-plus"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 124 ]; then
+            echo "probe timed out (likely rate-limit hang); skipping qwen3.6-plus"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif grep -qiE 'rate.?limit|AI_APICallError|429|quota|exceeded' probe.log; then
+            echo "probe rate-limited; skipping qwen3.6-plus"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "probe failed for non-rate-limit reason; failing open for qwen3.6-plus"
+            cat probe.log || true
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review (qwen3.6-plus)
+        id: r12
+        if: steps.p12.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+        with:
+          use_github_token: true
+          model: opencode-go/qwen3.6-plus
+          variant: medium
+
+      - name: Probe (deepseek-v4-flash)
+        id: p13
+        continue-on-error: true
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+          PREV_OUTCOME: ${{ steps.r12.outcome }}
+        run: |
+          set +e
+          # Stop the chain once any earlier model has posted a review.
+          if [ -f review.done ]; then echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$PREV_OUTCOME" = "success" ]; then
+            touch review.done
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Fail open if the probe tool itself is unavailable.
+          if ! command -v opencode >/dev/null 2>&1; then
+            echo "opencode CLI unavailable; failing open (will attempt anyway)"
+            echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Cheap preflight; timeout bounds the opencode hang-on-error bug (#8203).
+          timeout 90 opencode run --model opencode-go/deepseek-v4-flash "Reply with the single word: ok" > probe.log 2>&1
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "probe ok for deepseek-v4-flash"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 124 ]; then
+            echo "probe timed out (likely rate-limit hang); skipping deepseek-v4-flash"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif grep -qiE 'rate.?limit|AI_APICallError|429|quota|exceeded' probe.log; then
+            echo "probe rate-limited; skipping deepseek-v4-flash"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "probe failed for non-rate-limit reason; failing open for deepseek-v4-flash"
+            cat probe.log || true
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Review (deepseek-v4-flash)
+        id: r13
+        if: steps.p13.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GO_TOKEN }}
+        with:
+          use_github_token: true
+          model: opencode-go/deepseek-v4-flash
+          variant: medium
