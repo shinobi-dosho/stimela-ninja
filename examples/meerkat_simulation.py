@@ -66,7 +66,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from shinobi import Cab, Recipe
-from shinobi.loaders._modelgen import build_model, sanitize_unique
+from shinobi.loaders import build_model, sanitize_unique
 from shinobi.loaders.cultcargo import load_file
 from shinobi.steps.schema import ParamMeta
 

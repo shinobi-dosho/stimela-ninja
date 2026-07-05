@@ -1,4 +1,4 @@
-from shinobi.loaders._modelgen import build_model
+from shinobi.loaders import build_model
 from shinobi.policies import build_argv
 from shinobi.steps.schema import Cab
 

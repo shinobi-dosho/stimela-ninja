@@ -1,0 +1,93 @@
+Command-line interface
+======================
+
+The ``ninja`` command is the primary way to run cabs and recipes. It takes
+global options followed by a subcommand:
+
+.. code-block:: console
+
+    $ ninja [--config FILE] [--backend NAME] COMMAND ...
+
+Global options
+--------------
+
+``--config FILE``
+    Path to a config file (default: ``~/.shinobi/config.yml``). See
+    :doc:`concepts/config`.
+
+``--backend NAME``
+    Override the default backend for this invocation.
+
+Targets
+-------
+
+Commands that act on a cab or recipe take a **target** of the form
+``path/to/file.py:name`` or ``dotted.module.path:name``. The name must resolve
+to a ``Cab``, ``Recipe``, or a ``@shinobi.step``-decorated function.
+
+``ninja run`` -- run a target
+-----------------------------
+
+Runs a ``Cab``, ``Recipe``, or step. The target's own parameters become the
+command's options -- run ``ninja run TARGET --help`` to see them.
+
+.. code-block:: console
+
+    $ ninja run myrecipe.py:image --ms data.ms --prefix out
+    $ ninja run myrecipe.py:selfcal --ms data.ms
+
+Add ``--dryrun`` to render the execution graph without running anything:
+
+.. code-block:: console
+
+    $ ninja run myrecipe.py:selfcal --ms data.ms --dryrun
+    [ image ]
+        |
+        v
+    [ mask ]
+
+The dry run executes the recipe's real Python control flow with every cab
+swapped for a no-op that records the call, so it shows the one path taken for
+the given inputs -- never an untaken branch.
+
+``ninja cab`` -- inspect a cab schema
+-------------------------------------
+
+Dumps a cab's resolved schema (as loaded from a cult-cargo style YAML file) as
+JSON:
+
+.. code-block:: console
+
+    $ ninja cab cabs.yml wsclean
+
+``ninja compile`` -- offload a recipe
+-------------------------------------
+
+Compiles a purely-declarative recipe into a cluster workflow and, with
+``--submit``, hands it off and detaches. See :doc:`offloading`.
+
+.. code-block:: console
+
+    $ ninja compile myrecipe.py:pipe --target /scratch/made.ms --container-runtime none
+    $ ninja compile myrecipe.py:pipe --target /scratch/made.ms --submit
+
+Options: ``--engine`` (workflow engine, ``slurm`` in v1), ``--workdir``
+(working directory for compiled jobs), ``--container-runtime`` (runtime to wrap
+imaged cabs in; ``none`` for bare argv), and ``--submit`` (submit and detach).
+
+``ninja status`` -- check a detached run
+----------------------------------------
+
+Reports a detached offloaded run's progress from the handle file written by
+``ninja compile --submit``, querying the engine fresh (no persistent process):
+
+.. code-block:: console
+
+    $ ninja status /scratch/.shinobi/pipe/handle.json
+
+``ninja version`` -- print the version
+--------------------------------------
+
+.. code-block:: console
+
+    $ ninja version

@@ -2,7 +2,7 @@ import pytest
 
 from shinobi.backends.container import ApptainerBackend, DockerBackend
 from shinobi.exceptions import BackendError
-from shinobi.loaders._modelgen import build_model
+from shinobi.loaders import build_model
 from shinobi.steps.schema import Cab, ParamMeta, ParamPattern, ParamSegment
 
 OUT = build_model("Out", {})

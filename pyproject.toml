@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "stimela-ninja"
 version = "0.1.0b1"
 description = "Stimela 3.0 -- a functional, flexible, and simple framework for reproducible radio astronomy pipelines"
-readme = "README.md"
+readme = "README.rst"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
@@ -31,6 +31,13 @@ dev = [
 examples = [
     "simms @ git+https://github.com/wits-cfa/simms.git@7511d435348d05b816d2ff4ec1f7bdd652dec6a1 ; python_version >= '3.11'",
 ]
+# Documentation build (Sphinx + Furo + autodoc). `uv sync --group docs`.
+docs = [
+    "sphinx>=7.2",
+    "furo>=2024.1",
+    "sphinx-copybutton>=0.5",
+    "myst-parser>=2.0",
+]
 
 [project.scripts]
 ninja = "shinobi.cli:main"
@@ -44,7 +51,7 @@ packages = ["src/shinobi"]
 # from .opencode/node_modules, examples/, tests/, etc.
 include = [
     "/src/shinobi",
-    "/README.md",
+    "/README.rst",
     "/LICENSE",
     "/AGENTS.md",
     "/pyproject.toml",

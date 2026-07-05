@@ -70,7 +70,7 @@ def test_bad_override_raises_at_the_step_boundary():
 
 
 def test_dynamic_pattern_param_warns_it_is_unvalidated():
-    from shinobi.loaders._modelgen import build_model
+    from shinobi.loaders import build_model
     from shinobi.steps.schema import ParamMeta, ParamPattern, ParamSegment
 
     recorder = RecordingBackend()
