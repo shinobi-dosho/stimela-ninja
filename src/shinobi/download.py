@@ -41,8 +41,8 @@ def resolve_latest_version() -> str:
     except urllib.error.HTTPError as e:
         if e.code in (403, 429):
             raise RuntimeError(
-                f"GitHub API rate limit exceeded. "
-                f"Try specifying --version <tag-or-branch> to skip the API call."
+                "GitHub API rate limit exceeded. "
+                "Try specifying --version <tag-or-branch> to skip the API call."
             ) from e
         raise RuntimeError(f"Failed to query GitHub tags: {e}") from e
     except urllib.error.URLError as e:

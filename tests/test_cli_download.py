@@ -211,7 +211,7 @@ class TestDownloadCultcargo:
                 dest = Path(tmpdir) / "nested" / "path" / "cabs"
                 assert not dest.exists()
 
-                result = download_cultcargo(dest_dir=dest, version="v0.2.1")
+                download_cultcargo(dest_dir=dest, version="v0.2.1")
 
                 assert dest.exists()
                 assert (dest / "wsclean.yml").exists()
@@ -237,7 +237,7 @@ class TestDownloadCultcargo:
                 mock_resp.__exit__ = MagicMock(return_value=False)
                 mock_urlopen.return_value = mock_resp
 
-                result = download_cultcargo(dest_dir=dest, version="v0.2.1")
+                download_cultcargo(dest_dir=dest, version="v0.2.1")
 
             # File should be overwritten with new content
             assert (dest / "wsclean.yml").read_text() == "name: wsclean\nversion: 2\n"
