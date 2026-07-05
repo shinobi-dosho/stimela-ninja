@@ -45,7 +45,10 @@ def bind_dirs(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[str]:
     dirs = [workdir]
     seen = {workdir}
     declared = path_fields(scope.inputs_model)
-    match_pattern = getattr(scope, "match_pattern", None)
+    # Only Cabs carry dynamically-named `ParamPattern` inputs; bare Scopes
+    # (e.g. from `@shinobi.pystep`) are fully typed, so every input is
+    # already in `declared`.
+    match_pattern = scope.match_pattern if isinstance(scope, Cab) else None
 
     for name, value in inputs.items():
         if name not in declared:

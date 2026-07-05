@@ -13,8 +13,10 @@ Backend resolution priority: explicit `backend` arg > the scope's own
 
 from __future__ import annotations
 
+import builtins
 import copy
 import heapq
+import importlib
 import warnings
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Any, Callable
@@ -157,9 +159,7 @@ class ExecContext:
         the host.
         """
         if module is None:
-            import builtins
             return getattr(builtins, func)
-        import importlib
         mod = importlib.import_module(module)
         return getattr(mod, func)
 

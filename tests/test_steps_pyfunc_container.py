@@ -8,6 +8,8 @@ execution when the backend is `native`.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +17,12 @@ from pydantic import BaseModel
 
 from shinobi import pystep
 from shinobi.steps.schema import Cab, Scope
+
+# Captured before any test patches subprocess.run -- patching
+# `shinobi.steps.pyfunc.subprocess.run` rebinds the shared subprocess module's
+# `run`, so the end-to-end helper needs the genuine implementation to avoid
+# recursing into its own patch.
+_REAL_SUBPROCESS_RUN = subprocess.run
 
 
 class ContainerOutputs(BaseModel):
@@ -27,6 +35,29 @@ def container_func(ms: str, niter: int = 100) -> ContainerOutputs:
 
 def no_output_func(ms: str) -> None:
     pass
+
+
+class CtxOutputs(BaseModel):
+    joined: str
+
+
+def ctx_func(ctx, a: str, b: str) -> CtxOutputs:
+    """A pystep whose body uses the injected ctx (the documented pattern)."""
+    join = ctx.import_func("join", "os.path")
+    return CtxOutputs(joined=join(a, b))
+
+
+def _run_runner_on_host(argv, *args, **kwargs):
+    """subprocess.run stand-in that simulates the container by executing the
+    generated runner with the host interpreter. Because the runner and its
+    inputs use identity-bind-mounted (host) paths, running it directly on the
+    host exercises the real generated script end-to-end -- catching any
+    path/import/ctx-shim breakage without needing a container runtime.
+    """
+    runner = next(a for a in argv if a.endswith("runner.py"))
+    return _REAL_SUBPROCESS_RUN(
+        [sys.executable, runner], capture_output=True, text=True
+    )
 
 
 def test_scope_has_image_field():
@@ -107,11 +138,19 @@ def test_pystep_container_generates_correct_argv():
     assert "--rm" in argv
     assert "casa:latest" in argv
     assert "python3" in argv
-    assert "/shinobi_io/runner.py" in argv
 
     image_idx = argv.index("casa:latest")
     inner_argv = argv[image_idx + 1:]
-    assert inner_argv == ["python3", "/shinobi_io/runner.py"]
+    assert inner_argv[0] == "python3"
+
+    # The runner path must be a real path that is identity-bind-mounted into
+    # the container (regression guard: a hardcoded /shinobi_io that is never
+    # mounted would not be reachable inside the container).
+    runner_path = inner_argv[1]
+    assert runner_path.endswith("runner.py")
+    assert "shinobi_pystep_" in runner_path
+    mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    assert any(runner_path.startswith(m.split(":")[0]) for m in mounts)
 
 
 def test_pystep_container_mounts_source_and_io_dirs():
@@ -131,8 +170,11 @@ def test_pystep_container_mounts_source_and_io_dirs():
     io_mounts = [m for m in mounts if "shinobi_pystep_" in m]
     assert len(io_mounts) >= 1
 
-    source_mounts = [m for m in mounts if "pyfunc" in m or "tests" in m]
-    assert len(source_mounts) >= 1
+    # The function's source file must live under some mounted directory so
+    # the runner can import it (the mounted dir is the package root put on
+    # sys.path, not necessarily the file's immediate parent).
+    source_file = str(Path(__file__).resolve())
+    assert any(source_file.startswith(m.split(":")[0]) for m in mounts)
 
 
 def test_pystep_container_apptainer_argv():
@@ -331,3 +373,128 @@ def test_exec_context_import_func_module():
 
     path_class = ctx.import_func("Path", "pathlib")
     assert path_class("/tmp") == Path("/tmp")
+
+
+# --- ctx injection (leading `ctx` parameter) -------------------------------
+
+
+def test_pystep_ctx_param_is_not_an_input_field():
+    ref = pystep()(ctx_func)
+    fields = set(ref.step.inputs_model.model_fields)
+    assert fields == {"a", "b"}
+    assert "ctx" not in fields
+
+
+def test_pystep_ctx_injected_in_process():
+    ref = pystep()(ctx_func)
+    result = ref(a="/x", b="y", backend="native")
+    assert result.success
+    assert result.outputs.joined == "/x/y"
+
+
+def test_pystep_ctx_shim_in_container_runner():
+    ref = pystep(image="casa:latest", backend="docker")(ctx_func)
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.stdout = json.dumps({"joined": "/x/y"})
+    mock_proc.stderr = ""
+
+    captured_runner = {}
+    original_write_text = Path.write_text
+
+    def capture_write_text(self, content, *args, **kwargs):
+        if self.name == "runner.py":
+            captured_runner["content"] = content
+        return original_write_text(self, content, *args, **kwargs)
+
+    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc):
+        with patch.object(Path, "write_text", capture_write_text):
+            ref(a="/x", b="y")
+
+    runner = captured_runner["content"]
+    assert "class _Ctx" in runner
+    assert "ctx_func(ctx, **inputs)" in runner
+
+
+def test_pystep_no_ctx_runner_has_no_shim():
+    ref = pystep(image="casa:latest", backend="docker")(container_func)
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.stdout = json.dumps({"result": "ok"})
+    mock_proc.stderr = ""
+
+    captured_runner = {}
+    original_write_text = Path.write_text
+
+    def capture_write_text(self, content, *args, **kwargs):
+        if self.name == "runner.py":
+            captured_runner["content"] = content
+        return original_write_text(self, content, *args, **kwargs)
+
+    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc):
+        with patch.object(Path, "write_text", capture_write_text):
+            ref(ms="test.ms")
+
+    runner = captured_runner["content"]
+    assert "class _Ctx" not in runner
+    assert "container_func(**inputs)" in runner
+
+
+def test_pystep_runner_references_real_inputs_path_not_shinobi_io():
+    ref = pystep(image="casa:latest", backend="docker")(container_func)
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.stdout = json.dumps({"result": "ok"})
+    mock_proc.stderr = ""
+
+    captured_runner = {}
+    original_write_text = Path.write_text
+
+    def capture_write_text(self, content, *args, **kwargs):
+        if self.name == "runner.py":
+            captured_runner["content"] = content
+        return original_write_text(self, content, *args, **kwargs)
+
+    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc):
+        with patch.object(Path, "write_text", capture_write_text):
+            ref(ms="test.ms")
+
+    runner = captured_runner["content"]
+    assert "/shinobi_io" not in runner
+    assert "shinobi_pystep_" in runner  # the real temp io dir path
+    assert "inputs.json" in runner
+
+
+# --- end-to-end: actually execute the generated runner ---------------------
+#
+# These run the generated runner with the host interpreter (see
+# _run_runner_on_host). Because the runner uses identity-mounted paths, this
+# reproduces exactly what happens inside the container -- a genuine
+# regression guard for the mount/path wiring that mocked argv checks miss.
+
+
+def test_pystep_container_runner_executes_end_to_end():
+    ref = pystep(image="casa:latest", backend="docker")(container_func)
+
+    with patch(
+        "shinobi.steps.pyfunc.subprocess.run", side_effect=_run_runner_on_host
+    ):
+        result = ref(ms="real.ms", niter=7)
+
+    assert result.success, result.stderr
+    assert result.outputs.result == "real.ms:7"
+
+
+def test_pystep_container_runner_executes_ctx_end_to_end():
+    ref = pystep(image="casa:latest", backend="docker")(ctx_func)
+
+    with patch(
+        "shinobi.steps.pyfunc.subprocess.run", side_effect=_run_runner_on_host
+    ):
+        result = ref(a="/x", b="y")
+
+    assert result.success, result.stderr
+    assert result.outputs.joined == "/x/y"

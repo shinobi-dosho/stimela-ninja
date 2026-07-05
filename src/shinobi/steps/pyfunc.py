@@ -78,11 +78,23 @@ def _pascal(func_name: str) -> str:
     return "".join(word.capitalize() for word in func_name.split("_") if word)
 
 
-def _inputs_model_from_signature(func: Callable) -> type[BaseModel]:
+def _inputs_model_from_signature(func: Callable) -> tuple[type[BaseModel], bool]:
+    """Derive the inputs model from `func`'s signature.
+
+    Returns `(inputs_model, wants_ctx)`. If the first parameter is named
+    `ctx` it is treated as the execution-context injection point (matching
+    `@shinobi.step`'s convention) rather than an input field: it is skipped
+    when building the model and needs no type hint. The adapter then calls
+    `func(ctx, **inputs)`.
+    """
     sig = inspect.signature(func)
+    params = list(sig.parameters.items())
+    wants_ctx = bool(params) and params[0][0] == "ctx"
+    if wants_ctx:
+        params = params[1:]
     hints = get_type_hints(func)
     fields: dict[str, tuple[Any, Any]] = {}
-    for pname, param in sig.parameters.items():
+    for pname, param in params:
         if param.kind in _UNSUPPORTED_KINDS:
             raise TypeError(
                 f"pystep {func.__name__!r}: parameter {pname!r} is "
@@ -97,7 +109,7 @@ def _inputs_model_from_signature(func: Callable) -> type[BaseModel]:
             )
         required = param.default is inspect.Parameter.empty
         fields[pname] = (hints[pname], ... if required else param.default)
-    return create_model(f"{_pascal(func.__name__)}Inputs", **fields)
+    return create_model(f"{_pascal(func.__name__)}Inputs", **fields), wants_ctx
 
 
 def _outputs_model_from_return(func: Callable) -> tuple[type[BaseModel], bool]:
@@ -115,6 +127,27 @@ def _outputs_model_from_return(func: Callable) -> tuple[type[BaseModel], bool]:
     )
 
 
+# A minimal, dependency-free stand-in for ExecContext, injected into the
+# runner when the function takes a leading `ctx`. Shinobi itself is not
+# assumed to be installed inside the container, so we cannot import the real
+# ExecContext; this shim provides just the container-relevant surface
+# (`import_func`), mirroring ExecContext.import_func.
+_CTX_SHIM = '''
+class _Ctx:
+    def import_func(self, func, module=None):
+        if module is None:
+            import builtins
+            return getattr(builtins, func)
+        import importlib
+        return getattr(importlib.import_module(module), func)
+
+
+ctx = _Ctx()
+'''
+
+# `inputs_path` and the script's own path are host paths that are
+# identity-bind-mounted into the container (see build_container_argv), so the
+# same absolute path is valid on both sides -- no fixed `/shinobi_io` mount.
 _RUNNER_TEMPLATE = '''\
 import json
 import sys
@@ -123,10 +156,10 @@ sys.path.insert(0, {source_dir!r})
 
 from {module_path} import {func_name}
 
-with open("/shinobi_io/inputs.json") as f:
+with open({inputs_path!r}) as f:
     inputs = json.load(f)
-
-result = {func_name}(**inputs)
+{ctx_shim}
+result = {func_name}({ctx_arg}**inputs)
 
 if result is not None:
     if hasattr(result, "model_dump"):
@@ -140,6 +173,7 @@ def _run_pystep_container(
     func: Callable,
     outputs_model: type[BaseModel],
     is_empty: bool,
+    wants_ctx: bool,
     ctx: ExecContext,
     backend_name: str,
 ) -> StepResult:
@@ -147,23 +181,36 @@ def _run_pystep_container(
 
     Mounts the function's source module directory and a temp directory
     containing a runner script and serialized inputs. The runner imports
-    the function, calls it with the inputs, and prints JSON output.
+    the function, calls it with the inputs, and prints JSON output. When
+    the function takes a leading `ctx`, a minimal context shim is injected.
     """
     from shinobi.backends.container import build_container_argv
-
-    source_file = Path(inspect.getfile(func))
-    source_dir = str(source_file.parent.resolve())
 
     module_path = func.__module__
     func_name = func.__qualname__
 
-    prepared = ctx.prepare_inputs()
+    # The runner imports `func` via its dotted module path, so the directory
+    # put on sys.path must be the package *root*, not the file's own parent.
+    # For a top-level module (no dots) that is the parent dir; for a package
+    # module like `pkg.sub.mod` it is that many levels above the file.
+    source_file = Path(inspect.getfile(func)).resolve()
+    source_root = source_file.parent
+    for _ in range(module_path.count(".")):
+        source_root = source_root.parent
+    source_dir = str(source_root)
 
-    inputs_json = ctx.inputs.model_dump(mode="json")
+    # Derive the container inputs the same way the in-process path does, so
+    # the two never diverge: prepare_inputs() applies mutability handling,
+    # and re-validating through the model yields a JSON-safe dump.
+    prepared = ctx.prepare_inputs()
+    inputs_json = ctx.scope.inputs_model(**prepared).model_dump(mode="json")
 
     with tempfile.TemporaryDirectory(prefix="shinobi_pystep_") as tmpdir:
         io_dir = Path(tmpdir) / "io"
         io_dir.mkdir()
+
+        inputs_path = io_dir / "inputs.json"
+        inputs_path.write_text(json.dumps(inputs_json))
 
         runner_path = io_dir / "runner.py"
         runner_path.write_text(
@@ -171,16 +218,16 @@ def _run_pystep_container(
                 source_dir=source_dir,
                 module_path=module_path,
                 func_name=func_name,
+                inputs_path=str(inputs_path),
+                ctx_shim=_CTX_SHIM if wants_ctx else "",
+                ctx_arg="ctx, " if wants_ctx else "",
             )
         )
-
-        inputs_path = io_dir / "inputs.json"
-        inputs_path.write_text(json.dumps(inputs_json))
 
         workdir = os.getcwd()
         extra_dirs = [str(io_dir), source_dir]
 
-        inner_argv = ["python3", "/shinobi_io/runner.py"]
+        inner_argv = ["python3", str(runner_path)]
 
         full_argv = build_container_argv(
             backend_name,
@@ -237,7 +284,7 @@ def _run_pystep_container(
 
 
 def _make_adapter(
-    func: Callable, outputs_model: type[BaseModel], is_empty: bool
+    func: Callable, outputs_model: type[BaseModel], is_empty: bool, wants_ctx: bool
 ) -> Callable[[ExecContext], StepResult]:
     def _adapter(ctx: ExecContext) -> StepResult:
         from shinobi.steps.dispatch import _CONTAINER_BACKENDS
@@ -245,11 +292,11 @@ def _make_adapter(
         backend_name = ctx.resolve_backend_name()
         if ctx.scope.image and backend_name in _CONTAINER_BACKENDS:
             return _run_pystep_container(
-                ctx.scope, func, outputs_model, is_empty, ctx, backend_name
+                ctx.scope, func, outputs_model, is_empty, wants_ctx, ctx, backend_name
             )
 
         prepared = ctx.prepare_inputs()
-        ret = func(**prepared)
+        ret = func(ctx, **prepared) if wants_ctx else func(**prepared)
         if is_empty:
             if ret is not None:
                 raise TypeError(
@@ -303,9 +350,9 @@ def pystep(
     """
 
     def decorator(func: Callable) -> StepRef:
-        inputs_model = _inputs_model_from_signature(func)
+        inputs_model, wants_ctx = _inputs_model_from_signature(func)
         outputs_model, is_empty = _outputs_model_from_return(func)
-        adapter = _make_adapter(func, outputs_model, is_empty)
+        adapter = _make_adapter(func, outputs_model, is_empty, wants_ctx)
         step_name = name or func.__name__
         scope = Scope(
             name=step_name,
