@@ -99,3 +99,7 @@ tests/                   # run via `uv run pytest` (pythonpath="." in pyproject)
 ## Before adding a feature
 
 Ask whether Stimela classic or Stimela 2.0 already solved this, and which one solved it *simply*. If neither did, keep the new piece as small and boring as possible -- this project's entire reason to exist is refusing complexity that isn't earning its keep.
+
+## Reviewing changes: check the tree, not just the diff
+
+When reviewing a PR (or reasoning about any change), verify claims against the actual working tree, not the diff alone. A diff only shows what *changed* -- a pre-existing, unchanged file, symbol, or config target does not appear in it, so its absence from the diff is **not** evidence it doesn't exist. Before asserting that something is missing, dead, unused, or unreferenced, confirm against the repo: `git ls-files <path>`, `ls`, or `grep -r` over the checkout. Concretely: PR #1's automated review called `docs/conf.py`'s `exclude_patterns` entry for `docs/design_sandbox.md` "dead config, file doesn't exist" -- but the file is tracked and load-bearing (it stops Sphinx warning that the unlisted markdown isn't in a toctree); it just never showed up in the diff because the PR didn't touch it. Look at the tree.
