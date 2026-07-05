@@ -61,6 +61,22 @@ See `AGENTS.md` for design conventions and what's deliberately left out.
 
 Early scaffolding. Interfaces above are real and tested (`pytest`), but this is not yet ready to run real pipelines.
 
+## Installation
+
+Once published to PyPI:
+
+```bash
+pip install stimela-ninja
+```
+
+Until then, install the latest from GitHub:
+
+```bash
+pip install git+https://github.com/SpheMakh/stimela-ninja.git
+```
+
+This installs the `ninja` command and the importable `shinobi` package.
+
 ## Development
 
 ```bash
