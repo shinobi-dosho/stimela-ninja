@@ -13,8 +13,10 @@ Backend resolution priority: explicit `backend` arg > the scope's own
 
 from __future__ import annotations
 
+import builtins
 import copy
 import heapq
+import importlib
 import warnings
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Any, Callable
@@ -130,19 +132,42 @@ class ExecContext:
         """
         return _prepare_inputs(self.scope, self._raw, validated=self.inputs)
 
+    def resolve_backend_name(self, override: str | None = None) -> str:
+        """Resolve the effective backend name using the standard priority
+        chain. Exposed so orchestration functions (e.g. the pystep
+        adapter) can inspect which backend is active without duplicating
+        the precedence logic.
+        """
+        return (
+            override
+            or self._backend_override
+            or self.scope.backend
+            or self._recipe_backend
+            or (self._config or AppConfig.load()).backend.default
+        )
+
+    def import_func(self, func: str, module: str | None = None) -> Callable:
+        """Import and return a callable by name.
+
+        If `module` is None, looks up `func` in builtins (e.g. ``print``,
+        ``len``). Otherwise imports `module` and returns `getattr(module, func)`.
+
+        Useful for pysteps that invoke container-only functions (e.g. CASA
+        tasks) without triggering linter warnings about missing imports on
+        the host.
+        """
+        if module is None:
+            return getattr(builtins, func)
+        mod = importlib.import_module(module)
+        return getattr(mod, func)
+
     def run(self, *, backend: str | None = None, **overrides: Any) -> StepResult:
         raw = {**self._raw, **overrides}
         # No overrides -> `raw` is exactly what `self.inputs` already
         # validated in __init__; reuse it instead of re-validating.
         validated = self.inputs if not overrides else None
         prepared = _prepare_inputs(self.scope, raw, validated=validated)
-        backend_name = (
-            backend
-            or self._backend_override
-            or self.scope.backend
-            or self._recipe_backend
-            or (self._config or AppConfig.load()).backend.default
-        )
+        backend_name = self.resolve_backend_name(backend)
         if isinstance(self.scope, Cab):
             result = _run_cab(self.scope, prepared, backend_name)
         elif isinstance(self.scope, Recipe):
