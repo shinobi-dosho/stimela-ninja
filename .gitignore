@@ -219,3 +219,7 @@ __marimo__/
 
 # live Slurm test cluster scratch (tests/slurm_live)
 tests/.slurmwork/
+
+# Agents
+.claude/HANDOVER.md
+.opencode/
