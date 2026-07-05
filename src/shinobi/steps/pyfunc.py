@@ -26,7 +26,9 @@ external tool; use `@shinobi.step` when you have an existing `Cab`/`Recipe`.
 resolved, the function runs inside the container instead of in-process.
 The function's source module is mounted into the container via
 `inspect.getfile()`, and a generated runner script handles invocation.
-Native runs call the function in-process (the original behaviour).
+The runner is invoked as ``python3`` -- container images must provide it
+(every official Python image does; a bare ``python`` would fail). Native
+runs call the function in-process (the original behaviour).
 
 For container-only imports (e.g. CASA tasks that don't exist on the host),
 use `ctx.import_func()` to avoid linter warnings:
@@ -213,7 +215,10 @@ def _run_pystep_container(
     source_file = Path(inspect.getfile(func)).resolve()
     # A function defined in a directly-run script has __module__ ==
     # '__main__', which inside the container would name the runner itself;
-    # import it by its file name instead.
+    # import it by its file name instead. The runner inserts source_dir at
+    # sys.path[0], so this file shadows any same-named module elsewhere on
+    # the path -- two __main__ scripts with the same stem in different dirs
+    # never collide because each pystep run mounts only its own source_dir.
     if module_path == "__main__":
         module_path = source_file.stem
 
@@ -228,8 +233,9 @@ def _run_pystep_container(
 
     # Same objects the in-process path passes: prepare_inputs() applies
     # mutability handling on top of pydantic-coerced values. They travel by
-    # pickle (protocol 4 for older container pythons) so e.g. Path-typed
-    # inputs stay Paths inside the container.
+    # pickle (protocol 4, not 5, so containers on Python 3.4-3.7 can
+    # unpickle them -- protocol 5 requires 3.8+) so e.g. Path-typed inputs
+    # stay Paths inside the container.
     prepared = ctx.prepare_inputs()
 
     with tempfile.TemporaryDirectory(prefix="shinobi_pystep_") as tmpdir:
@@ -276,6 +282,11 @@ def _run_pystep_container(
         )
 
         if proc.returncode != 0:
+            # Best-effort outputs on the failure path: try a full
+            # construction (fills defaults), fall back to model_construct
+            # (skips validation -- required fields stay unset). Both are
+            # acceptable because success=False; the point is to carry
+            # stdout/stderr out, not to report valid outputs.
             try:
                 outputs: BaseModel = outputs_model()
             except Exception:
