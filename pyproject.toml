@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ninja-fm"
+name = "stimela-ninja"
 version = "0.1.0.dev0"
 description = "Stimela 3.0 -- a functional, flexible, and simple framework for reproducible radio astronomy pipelines"
 readme = "README.md"

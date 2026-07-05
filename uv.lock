@@ -545,43 +545,6 @@ wheels = [
 ]
 
 [[package]]
-name = "ninja-fm"
-version = "0.1.0.dev0"
-source = { editable = "." }
-dependencies = [
-    { name = "click" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pyyaml" },
-    { name = "rich" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "ruff" },
-]
-examples = [
-    { name = "simms", marker = "python_full_version >= '3.11'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "click", specifier = ">=8.1" },
-    { name = "pydantic", specifier = ">=2.6" },
-    { name = "pydantic-settings", specifier = ">=2.2" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "rich", specifier = ">=13.7" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "ruff", specifier = ">=0.5" },
-]
-examples = [{ name = "simms", marker = "python_full_version >= '3.11'", git = "https://github.com/wits-cfa/simms.git?rev=7511d435348d05b816d2ff4ec1f7bdd652dec6a1" }]
-
-[[package]]
 name = "numba"
 version = "0.66.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1352,6 +1315,43 @@ sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
 ]
+
+[[package]]
+name = "stimela-ninja"
+version = "0.1.0.dev0"
+source = { editable = "." }
+dependencies = [
+    { name = "click" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyyaml" },
+    { name = "rich" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
+]
+examples = [
+    { name = "simms", marker = "python_full_version >= '3.11'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "click", specifier = ">=8.1" },
+    { name = "pydantic", specifier = ">=2.6" },
+    { name = "pydantic-settings", specifier = ">=2.2" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich", specifier = ">=13.7" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "ruff", specifier = ">=0.5" },
+]
+examples = [{ name = "simms", marker = "python_full_version >= '3.11'", git = "https://github.com/wits-cfa/simms.git?rev=7511d435348d05b816d2ff4ec1f7bdd652dec6a1" }]
 
 [[package]]
 name = "tomli"

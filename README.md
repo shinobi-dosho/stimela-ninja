@@ -1,4 +1,4 @@
-# shinobi (Stimela 3.0)
+# stimela-ninja (Stimela 3.0)
 
 A spiritual successor to [Stimela classic](https://github.com/ratt-ru/Stimela-classic), built around the same core philosophy: **functional and flexible simplicity for reproducible radio astronomy pipelines**.
 
