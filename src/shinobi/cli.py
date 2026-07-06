@@ -5,22 +5,19 @@ import importlib.util
 import json
 import os
 import sys
-import types
 from pathlib import Path
-from typing import Union, get_args, get_origin
 
 import click
-from pydantic import BaseModel
-from pydantic_core import PydanticUndefined
 
 import shinobi
+from shinobi.clickutil import build_options
 from shinobi.config import AppConfig
 from shinobi.dag import graph_nodes, render_dag
 from shinobi.graph import RecipeGraphError, RecipeNotOffloadableError
 from shinobi.offload import OffloadCompileError, compile_slurm, status_slurm, submit_slurm
 from shinobi.policies import build_argv
 from shinobi.steps.dispatch import _dispatch, _prepare_inputs
-from shinobi.steps.schema import Recipe, Scope, StepRef, _unwrap_annotation, path_fields
+from shinobi.steps.schema import Recipe, Scope, StepRef
 
 
 @click.group()
@@ -80,50 +77,6 @@ def _resolve_target(target: str):
         return getattr(module, attr)
     except AttributeError:
         raise click.ClickException(f"no '{attr}' in {location}") from None
-
-
-def _is_list(annotation) -> bool:
-    origin = get_origin(annotation)
-    if origin is Union or origin is types.UnionType:
-        return any(_is_list(arg) for arg in get_args(annotation))
-    return origin in (list, tuple)
-
-
-def _click_type(annotation, is_path: bool):
-    if is_path:
-        return click.Path()
-    for leaf in _unwrap_annotation(annotation):
-        if leaf in (int, float, bool, str):
-            return {int: click.INT, float: click.FLOAT, bool: click.BOOL, str: click.STRING}[leaf]
-    return click.STRING
-
-
-def _option_flag(field_name: str) -> str:
-    # ONLY a straight "_" -> "-" replace: click derives the callback kwarg
-    # name from this flag string, and it must round-trip back to the exact
-    # model field name used to dispatch.
-    return "--" + field_name.replace("_", "-")
-
-
-def _build_options(model: type[BaseModel]) -> list[click.Option]:
-    paths = path_fields(model)
-    options = []
-    for name, field in model.model_fields.items():
-        required = field.is_required()
-        default = None if field.default is PydanticUndefined else field.default
-        kwargs: dict = {"required": required, "help": field.description}
-        leaves = _unwrap_annotation(field.annotation)
-        is_list = _is_list(field.annotation)
-        if bool in leaves and not is_list:
-            kwargs.update(is_flag=True, default=bool(default))
-        else:
-            if default is not None:
-                kwargs["default"] = default
-            kwargs["type"] = _click_type(field.annotation, name in paths)
-            if is_list:
-                kwargs["multiple"] = True
-        options.append(click.Option([_option_flag(name)], **kwargs))
-    return options
 
 
 @main.command(
@@ -195,7 +148,7 @@ def run(ctx: click.Context, target: str, dryrun: bool) -> None:
 
     inner = click.Command(
         name=target,
-        params=_build_options(scope.inputs_model),
+        params=build_options(scope.inputs_model),
         callback=_callback,
         help=scope.info,
     )
@@ -276,7 +229,7 @@ def compile_recipe(
 
     inner = click.Command(
         name=target,
-        params=_build_options(recipe.inputs_model),
+        params=build_options(recipe.inputs_model),
         callback=_callback,
         help=recipe.info,
     )

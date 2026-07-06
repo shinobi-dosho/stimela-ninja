@@ -188,7 +188,15 @@ def _build_group(model_name: str, spec: dict[str, Any]) -> type[BaseModel]:
             definitions[field] = _leaf_field(value)
         else:
             sub_model = _build_group(f"{model_name}_{field}", value)
-            definitions[field] = (sub_model, Field(default_factory=sub_model))
+            if any(f.is_required() for f in sub_model.model_fields.values()):
+                # a group with its own required leaf (e.g. `cabs.name`) can't
+                # default to `sub_model()` -- that call would itself fail --
+                # so the group is required from the caller instead. This
+                # also propagates transitively: a required *nested* group
+                # already makes its own parent's fields "required" here.
+                definitions[field] = (sub_model, Field(..., description=None))
+            else:
+                definitions[field] = (sub_model, Field(default_factory=sub_model))
     return create_model(model_name, **definitions)
 
 
