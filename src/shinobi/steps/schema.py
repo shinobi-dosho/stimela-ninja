@@ -284,7 +284,9 @@ class StepRef(BaseModel):
     name: str
     step: Scope
     func: Callable | None = None
-    wiring: dict[str, "InputRef | OutputRef"] = Field(default_factory=dict)
+    wiring: dict[str, "InputRef | OutputRef | list[InputRef | OutputRef]"] = Field(
+        default_factory=dict
+    )
     params: dict[str, Any] = Field(default_factory=dict)
 
     def __call__(self, *, backend: str | None = None, **kwargs: Any):
@@ -380,8 +382,23 @@ class Recipe(Scope):
         return _OutputsProxy(self)
 
     @staticmethod
-    def _split_kwargs(kwargs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        wiring = {k: v for k, v in kwargs.items() if isinstance(v, (InputRef, OutputRef))}
+    def _is_wiring_value(v: Any) -> bool:
+        """A single `InputRef`/`OutputRef`, or a non-empty list of them
+        (e.g. `applycal`'s `gaintable=[recipe.outputs.k.caltable,
+        recipe.outputs.g.caltable]` -- accumulating a variable number of
+        upstream outputs into one list-typed input). A list is wiring only
+        if *every* element is a ref -- a list mixing refs and literal
+        values isn't supported, and is treated as a literal param instead
+        (so it fails loudly in the callee's own validation, rather than
+        silently dropping half its dependency edges).
+        """
+        if isinstance(v, (InputRef, OutputRef)):
+            return True
+        return isinstance(v, list) and bool(v) and all(isinstance(x, (InputRef, OutputRef)) for x in v)
+
+    @classmethod
+    def _split_kwargs(cls, kwargs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        wiring = {k: v for k, v in kwargs.items() if cls._is_wiring_value(v)}
         params = {k: v for k, v in kwargs.items() if k not in wiring}
         return wiring, params
 

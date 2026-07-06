@@ -63,6 +63,36 @@ def test_output_ref_creates_true_dependency_edge():
     assert graph.dependents == [{1}, set()]
 
 
+def test_list_of_output_refs_creates_one_edge_per_producer():
+    """A single wiring value can be a list of refs (e.g. applycal's
+    gaintable=[k.caltable, g.caltable], accumulating a variable number of
+    upstream outputs into one list-typed input) -- each ref in the list
+    contributes its own dependency edge.
+    """
+    make = _cab("make", In, PathOut)
+    use = _cab("use", UseIn, OkOut)
+    graph = build_graph(
+        _recipe(
+            [
+                StepRef(name="k", step=make, wiring={"name": InputRef(field="name")}),
+                StepRef(name="g", step=make, wiring={"name": InputRef(field="name")}),
+                StepRef(
+                    name="apply",
+                    step=use,
+                    wiring={
+                        "path": [
+                            OutputRef(step="k", field="path"),
+                            OutputRef(step="g", field="path"),
+                        ]
+                    },
+                ),
+            ]
+        )
+    )
+    assert graph.deps == [set(), set(), {0, 1}]
+    assert graph.dependents == [{2}, {2}, set()]
+
+
 def test_independent_steps_have_no_edges():
     a = _cab("a", In, PathOut)
     graph = build_graph(
@@ -212,6 +242,26 @@ def test_non_path_output_ref_blocks_offload():
         [
             StepRef(name="make", step=make, wiring={"where": InputRef(field="name")}),
             StepRef(name="use", step=use, wiring={"ms": OutputRef(step="make", field="value")}),
+        ]
+    )
+    with pytest.raises(RecipeNotOffloadableError, match="non-path output 'make.value'"):
+        check_offloadable(recipe)
+
+
+def test_list_wired_non_path_output_ref_blocks_offload():
+    """check_offloadable must look inside a list-valued wiring entry too,
+    not just scalar ones -- each ref in the list is independently checked.
+    """
+    make = Cab(name="make", command="mk", inputs_model=MakePathIn, outputs_model=StrOut)
+    use = Cab(name="use", command="use", inputs_model=UsePathIn, outputs_model=OkOut)
+    recipe = _recipe(
+        [
+            StepRef(name="make", step=make, wiring={"where": InputRef(field="name")}),
+            StepRef(
+                name="use",
+                step=use,
+                wiring={"ms": [OutputRef(step="make", field="value")]},
+            ),
         ]
     )
     with pytest.raises(RecipeNotOffloadableError, match="non-path output 'make.value'"):

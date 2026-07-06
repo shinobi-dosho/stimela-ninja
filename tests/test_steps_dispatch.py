@@ -278,6 +278,75 @@ def test_recipe_wires_a_real_output_value_into_next_steps_input():
     assert use_inputs["path"] == "/tmp/real-value.txt"
 
 
+def test_recipe_wires_a_list_of_output_refs_into_next_steps_list_input():
+    """A single wiring value can be a list of refs (e.g. applycal's
+    gaintable=[k.caltable, g.caltable]), resolving to a real list of
+    values -- not just a single ref per kwarg.
+    """
+
+    class MakeInputs(BaseModel):
+        label: str = "x"
+
+    class PathOut(BaseModel):
+        path: str | None = None
+
+    class UseInputs(BaseModel):
+        paths: list
+
+    class OkOut(BaseModel):
+        ok: bool = True
+
+    class FixedOutputBackend:
+        def __init__(self, value):
+            self.value = value
+
+        def run(self, cab, argv, inputs):
+            return BackendRun(0, f"result={self.value}", "")
+
+    use_recorder = RecordingBackend()
+    register_step_backend("fixed-output-k", FixedOutputBackend("/tmp/k.cal"))
+    register_step_backend("fixed-output-g", FixedOutputBackend("/tmp/g.cal"))
+    register_step_backend("use-list-recorder", use_recorder)
+
+    def make_cab(name, backend):
+        return Cab(
+            name=name,
+            command="x",
+            inputs_model=MakeInputs,
+            outputs_model=PathOut,
+            backend=backend,
+            wranglers={r"result=(?P<path>\S+)": ["PARSE_OUTPUT:path:str"]},
+        )
+
+    use_cab = Cab(
+        name="use",
+        command="x",
+        inputs_model=UseInputs,
+        outputs_model=OkOut,
+        backend="use-list-recorder",
+    )
+    recipe = Recipe(
+        name="r",
+        inputs_model=MakeInputs,
+        outputs_model=OkOut,
+        steps=[
+            StepRef(name="k", step=make_cab("k", "fixed-output-k"), wiring={"label": InputRef(field="label")}),
+            StepRef(name="g", step=make_cab("g", "fixed-output-g"), wiring={"label": InputRef(field="label")}),
+            StepRef(
+                name="use",
+                step=use_cab,
+                wiring={"paths": [OutputRef(step="k", field="path"), OutputRef(step="g", field="path")]},
+            ),
+        ],
+        output_wiring={"ok": OutputRef(step="use", field="ok")},
+    )
+
+    result = _dispatch(recipe, None, label="whatever")
+    assert result.success
+    _, _, use_inputs = use_recorder.calls[0]
+    assert use_inputs["paths"] == ["/tmp/k.cal", "/tmp/g.cal"]
+
+
 # -- backend resolution priority --
 
 

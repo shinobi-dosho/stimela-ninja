@@ -145,20 +145,25 @@ def compile_slurm(
         cab = ref.step
         assert isinstance(cab, Cab)  # guaranteed by check_offloadable
 
+        def resolve_one(step_field: str, source: InputRef | OutputRef) -> Any:
+            if isinstance(source, InputRef):
+                return recipe_inputs[source.field]
+            value = resolved_outputs[source.step][source.field]
+            if value is None:
+                raise OffloadCompileError(
+                    f"step '{name}' input '{step_field}' reads "
+                    f"'{source.step}.{source.field}', whose path isn't statically "
+                    "known at compile time (offloaded steps can't discover it at "
+                    "run time) -- supply it as an input to the producing step"
+                )
+            return value
+
         kwargs: dict[str, Any] = dict(ref.params)
         for step_field, source in ref.wiring.items():
-            if isinstance(source, InputRef):
-                kwargs[step_field] = recipe_inputs[source.field]
-            elif isinstance(source, OutputRef):
-                value = resolved_outputs[source.step][source.field]
-                if value is None:
-                    raise OffloadCompileError(
-                        f"step '{name}' input '{step_field}' reads "
-                        f"'{source.step}.{source.field}', whose path isn't statically "
-                        "known at compile time (offloaded steps can't discover it at "
-                        "run time) -- supply it as an input to the producing step"
-                    )
-                kwargs[step_field] = value
+            if isinstance(source, list):
+                kwargs[step_field] = [resolve_one(step_field, s) for s in source]
+            else:
+                kwargs[step_field] = resolve_one(step_field, source)
 
         # Validate + fill defaults exactly as dispatch would, so the argv
         # matches a local run (and bad inputs fail here, before submission).

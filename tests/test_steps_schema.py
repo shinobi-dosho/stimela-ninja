@@ -213,3 +213,28 @@ def test_builder_splits_wiring_from_params():
     assert recipe.steps[0].params == {}
     assert recipe.steps[1].wiring == {}
     assert recipe.steps[1].params == {"x": 99}
+
+
+def test_builder_treats_a_list_of_refs_as_one_wiring_value():
+    """A list of refs (e.g. applycal's gaintable=[k.caltable, g.caltable])
+    is classified as wiring, not a literal param -- every element must be
+    a ref for this, since a mixed list can't be resolved consistently.
+    """
+    cab = make_cab()
+    recipe = Recipe(name="r", inputs_model=Inputs, outputs_model=Outputs)
+    recipe.add_step("a", cab)
+    recipe.add_step("b", cab)
+    recipe.add_step("c", cab, x=[recipe.outputs.a.y, recipe.outputs.b.y])
+    assert recipe.steps[2].wiring == {
+        "x": [OutputRef(step="a", field="y"), OutputRef(step="b", field="y")]
+    }
+    assert recipe.steps[2].params == {}
+
+
+def test_builder_treats_a_mixed_list_as_a_literal_param():
+    cab = make_cab()
+    recipe = Recipe(name="r", inputs_model=Inputs, outputs_model=Outputs)
+    recipe.add_step("a", cab)
+    recipe.add_step("b", cab, x=[recipe.outputs.a.y, "literal"])
+    assert recipe.steps[1].wiring == {}
+    assert recipe.steps[1].params == {"x": [OutputRef(step="a", field="y"), "literal"]}

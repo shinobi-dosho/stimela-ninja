@@ -257,12 +257,17 @@ def _resolve_wiring(
     already -- the scheduler only makes a step ready once all its upstream
     dependencies have completed.
     """
+    def resolve_one(source: InputRef | OutputRef) -> Any:
+        if isinstance(source, InputRef):
+            return prepared[source.field]
+        return getattr(results[source.step].outputs, source.field)
+
     wired: dict[str, Any] = {}
     for field, source in ref.wiring.items():
-        if isinstance(source, InputRef):
-            wired[field] = prepared[source.field]
-        elif isinstance(source, OutputRef):
-            wired[field] = getattr(results[source.step].outputs, source.field)
+        if isinstance(source, list):
+            wired[field] = [resolve_one(s) for s in source]
+        else:
+            wired[field] = resolve_one(source)
     return {**ref.params, **wired}  # wiring overrides params
 
 

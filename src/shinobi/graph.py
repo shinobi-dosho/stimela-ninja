@@ -84,23 +84,25 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
 
     for i, ref in enumerate(recipe.steps):
         for field, source in ref.wiring.items():
-            if isinstance(source, InputRef):
-                if source.field not in input_fields:
-                    raise RecipeGraphError(
-                        f"step '{ref.name}' wires input '{field}' from recipe "
-                        f"input '{source.field}', which is not a field of "
-                        f"{recipe.inputs_model.__name__}"
-                    )
-            elif isinstance(source, OutputRef):
-                if source.step not in index:
-                    raise RecipeGraphError(
-                        f"step '{ref.name}' wires input '{field}' from the "
-                        f"output of step '{source.step}', which does not exist "
-                        f"in recipe '{recipe.name}'"
-                    )
-                dep = index[source.step]
-                deps[i].add(dep)
-                dependents[dep].add(i)
+            sources = source if isinstance(source, list) else [source]
+            for one_source in sources:
+                if isinstance(one_source, InputRef):
+                    if one_source.field not in input_fields:
+                        raise RecipeGraphError(
+                            f"step '{ref.name}' wires input '{field}' from recipe "
+                            f"input '{one_source.field}', which is not a field of "
+                            f"{recipe.inputs_model.__name__}"
+                        )
+                elif isinstance(one_source, OutputRef):
+                    if one_source.step not in index:
+                        raise RecipeGraphError(
+                            f"step '{ref.name}' wires input '{field}' from the "
+                            f"output of step '{one_source.step}', which does not "
+                            f"exist in recipe '{recipe.name}'"
+                        )
+                    dep = index[one_source.step]
+                    deps[i].add(dep)
+                    dependents[dep].add(i)
 
     for field, source in recipe.output_wiring.items():
         if source.step not in index:
@@ -224,8 +226,10 @@ def check_offloadable(recipe: "Recipe") -> None:
 
     for ref in recipe.steps:
         for field, source in ref.wiring.items():
-            if isinstance(source, OutputRef):
-                check_output_ref(f"step '{ref.name}' input '{field}'", source)
+            sources = source if isinstance(source, list) else [source]
+            for one_source in sources:
+                if isinstance(one_source, OutputRef):
+                    check_output_ref(f"step '{ref.name}' input '{field}'", one_source)
 
     if reasons:
         raise RecipeNotOffloadableError(
