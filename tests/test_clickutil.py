@@ -1,6 +1,8 @@
+import click
+from click.testing import CliRunner
 from pydantic import BaseModel, Field
 
-from shinobi.clickutil import build_options, iter_leaf_fields, option_flag, unflatten_kwargs
+from shinobi.clickutil import bool_option_flag, build_options, iter_leaf_fields, option_flag, unflatten_kwargs
 
 
 class _Plotelev(BaseModel):
@@ -52,6 +54,29 @@ def test_option_flag_round_trips_through_click_kwarg_naming():
     assert option_flag("obsinfo_plotelev_plotter").replace("--", "").replace("-", "_") == (
         "obsinfo_plotelev_plotter"
     )
+
+
+def test_bool_option_flag_produces_negatable_pair():
+    assert bool_option_flag("obsinfo_listobs") == "--obsinfo-listobs/--no-obsinfo-listobs"
+
+
+def test_build_options_bool_field_can_be_explicitly_negated_via_cli():
+    # obsinfo.listobs defaults True -- a bare is_flag option could only ever
+    # turn it on, never override the default back to False.
+    options = build_options(_Inputs)
+
+    @click.command()
+    def cmd(**kwargs):
+        click.echo(repr(kwargs.get("obsinfo_listobs")))
+
+    for opt in options:
+        cmd.params.append(opt)
+
+    runner = CliRunner()
+    default_result = runner.invoke(cmd, ["--ms", "x", "--obsinfo-enable"])
+    assert default_result.output.strip() == "True"
+    negated_result = runner.invoke(cmd, ["--ms", "x", "--obsinfo-enable", "--no-obsinfo-listobs"])
+    assert negated_result.output.strip() == "False"
 
 
 def test_unflatten_kwargs_reconstructs_nested_dict_for_model_construction():

@@ -76,6 +76,18 @@ def option_flag(field_name: str) -> str:
     return "--" + field_name.replace("_", "-")
 
 
+def bool_option_flag(field_name: str) -> str:
+    """`--flag/--no-flag` form, so a boolean field defaulting `True` can
+    still be explicitly set `False` from the CLI -- a bare `is_flag=True`
+    option (the plain `option_flag` form) can only ever turn a flag *on*,
+    never override a `True` default back to `False`. Click infers the same
+    callback kwarg name from the primary (`--flag`) branch, so this still
+    round-trips to `field_name` exactly like `option_flag`.
+    """
+    flag = field_name.replace("_", "-")
+    return f"--{flag}/--no-{flag}"
+
+
 def iter_leaf_fields(
     model: type[BaseModel], *, _prefix: str = "", _path: tuple[str, ...] = ()
 ) -> list[tuple[str, tuple[str, ...], FieldInfo]]:
@@ -106,13 +118,15 @@ def build_options(model: type[BaseModel]) -> list[click.Option]:
         field_is_list = is_list(field.annotation)
         if bool in leaves and not field_is_list:
             kwargs.update(is_flag=True, default=bool(default))
+            flag = bool_option_flag(flat_name)
         else:
             if default is not None:
                 kwargs["default"] = default
             kwargs["type"] = click_type(field.annotation, _is_path_annotation(field.annotation))
             if field_is_list:
                 kwargs["multiple"] = True
-        options.append(click.Option([option_flag(flat_name)], **kwargs))
+            flag = option_flag(flat_name)
+        options.append(click.Option([flag], **kwargs))
     return options
 
 
