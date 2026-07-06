@@ -1,0 +1,551 @@
+name: crosscal
+info: Carry out Cross calibration of the data (delay, bandpass and gain calibration).
+inputs:
+  enable:
+    info: Execute the crosscal worker.
+    dtype: bool
+    required: true
+  label_in:
+    info: Label of the .MS file(s) to work on.
+    dtype: str
+    required: true
+  label_cal:
+    info: Label for output files (calibration tables, images).
+    dtype: str
+    required: false
+    default: 1gc1
+  rewind_flags:
+    enable:
+      info: Enable the rewind_flags segement.
+      dtype: bool
+      required: false
+      default: true
+    mode:
+      info: If mode = 'reset_worker' rewind to the flag version before this worker
+        if it exists, or continue if it does not exist; if mode = 'rewind_to_version'
+        rewind to the flag version given by 'version' below.
+      dtype: str
+      choices:
+      - reset_worker
+      - rewind_to_version
+      required: false
+      default: reset_worker
+    version:
+      info: Flag version to rewind to. If 'auto' it will rewind to the version prefix_workername_before,
+        where 'prefix' is set in the 'general' worker, and 'workername' is the name
+        of this worker including the suffix '__X' if it is a repeated instance of
+        this worker in the configuration file. Note that all flag versions that had
+        been saved after this version will be deleted.
+      dtype: str
+      required: false
+      default: auto
+  overwrite_flagvers:
+    info: Allow Caracal to overwrite existing flag versions. Not recommended. Only
+      enable this if you know what you are doing.
+    dtype: bool
+    required: false
+    default: true
+  uvrange:
+    info: Select what UV range should be used throughout this worker following the
+      CASA notation (e.g., ">100"). The default units are metres but other units can
+      be used (e.g., ">0.5klambda").
+    dtype: str
+    required: false
+    default: '>50'
+  set_model:
+    enable:
+      info: Execute the set_model segment.
+      dtype: bool
+      required: false
+      default: true
+    meerkat_band:
+      info: Select the MeerKAT observation band (only 'L 'or 'UHF' accepted for now).
+        Set to 'L' by default. If both "meerkat_skymodel" and "meerkat_band" are enabled,
+        then custom models of calibrator fields are used. For UHF band only models
+        for PKS 1934-638 and PKS 408-65 are currently available. It is adviced to
+        use them to avoid effects of calibrator field substructure.
+      dtype: str
+      choices:
+      - L
+      - UHF
+      required: false
+      default: L
+    meerkat_skymodel:
+      info: Use the MeerKAT local sky model (lsm) of the calibrator field instead
+        of a point source model. At the moment a MeerKAT lsm is only available for
+        the calibrator PKS 1934-638. For the calibrator 0408-6545 a model is available
+        but is not well tested yet and we do not recommend using it.
+      dtype: bool
+      required: false
+      default: true
+    meerkat_crystalball_skymodel:
+      info: Use the MeerKAT sky model of the calibrator field made for Crystalball.
+      dtype: bool
+      required: false
+      default: true
+    meerkat_crystalball_memory_fraction:
+      info: Fraction of system RAM that can be used when using Crystalball to predict
+        calibrator visibilities in the model column. Used when setting automatically
+        the chunk size.
+      dtype: float
+      required: false
+      default: 0.5
+    meerkat_crystalball_ncpu:
+      info: Explicitly set the number of worker threads. Default is 0, meaning it
+        uses all threads.
+      dtype: int
+      required: false
+      default: 0
+    meerkat_crystalball_num_sources:
+      info: Select only N brightest sources when using Crystalball to predict calibrator
+        visibilities in the model column.
+      dtype: int
+      required: false
+      default: 0
+    meerkat_crystalball_row_chunks:
+      info: Number of rows of input .MS that are processed in a single chunk when
+        using Crystalball to predict calibrator visibilities in the model column.
+        If zero, it will be set automatically.
+      dtype: int
+      required: false
+      default: 0
+    meerkat_crystalball_model_chunks:
+      info: Number of model components that are processed in a single chunk when using
+        Crystalball to predict calibrator visibilities in the model column. If zero,
+        it will be set automatically.
+      dtype: int
+      required: false
+      default: 0
+    unity:
+      info: Enables setting the calibrator to unity.
+      dtype: bool
+      required: false
+      default: true
+    field:
+      info: Set the field to execute the set_model segment on. Specify either the
+        field number, field name or field specification as per obsconf worker (e.g.,
+        "fcal").
+      dtype: str
+      required: false
+      default: fcal
+    tile_size:
+      dtype: int
+      info: Size of tile (time bins) to process. Can be used to reduce memory footprint.
+      required: false
+      default: 128
+    threads:
+      dtype: int
+      info: Number of threads used by MeqTrees if meerkat_skymodel above is enabled.
+      required: false
+      default: 8
+  primary:
+    reuse_existing_gains:
+      info: Reuse gain tables if they exist. Note that this does not check whether
+        the existing tables were obtained with the same Caracal settings. Use with
+        caution.
+      dtype: bool
+      required: false
+      default: true
+    order:
+      info: Order in which to solve for gains for this field. E.g, if order is set
+        to 'KGB', then we solve for delays, then gains and finally bandpass. The full
+        options are 1) K - delay calibration, 2) G - gain calibration (decide whether
+        to solve for amplitude, phase or  both with 'calmode' below), 3) B - bandpass
+        calibration, 4) A - automatic flagging with CASA tfcrop (existing gains will
+        be applied first).
+      dtype: str
+      required: false
+      default: KGB
+    calmode:
+      info: For each step in 'order' above, set whether to solve for phase ('p'),
+        amplitude ('a') or both ('ap'). This is actually only relevant when solving
+        for the gains, i.e., for the G steps in 'order' above. However, users should
+        include an entry (even just an empty string) for all steps in 'order'.
+      required: false
+      default:
+      - a
+      - ap
+      - ap
+      dtype: List[str]
+    solint:
+      info: For each step in 'order' above, set the solution interval. Set to 'inf'
+        to obtain a single solution (see also 'combine' below). Include time units,
+        e.g., '120s' or '2min'.
+      required: false
+      default:
+      - 120s
+      - 120s
+      - 'inf'
+      dtype: List[str]
+    combine:
+      info: For each step in 'order' above, set along what axis the data should be
+        combined before solving. Options are '' (i.e., no data combination; solutions
+        break at obs, scan, field, and spw boundarie), 'obs', 'scan', 'spw', 'field'.
+        To combine along multiple axes use comma-separated axis names in a single
+        string, e.g., 'obs,scan'. This setting is only relevant for the steps of type
+        K, G and B included in 'order' above. For A steps this setting is ignored
+        and an empty string may be used.
+      required: false
+      default:
+      - ''''''
+      - ''''''
+      - scan
+      dtype: List[str]
+    b_solnorm:
+      dtype: bool
+      required: false
+      info: Normalise average solution amplitude to 1.0
+      default: true
+    b_fillgaps:
+      info: Fill flagged channels in the bandpass solutions by interpolation.
+      dtype: int
+      required: false
+      default: 70
+    b_smoothwindow:
+      info: Size of the mean running window for smoothing of the bandpass (in channels).
+        A size of 1 means no smoothing.
+      dtype: int
+      required: false
+      default: 1
+    scanselection:
+      info: String specifying (in CASA format) which scans to select during solving
+        on primary
+      dtype: str
+      required: false
+    spw_k:
+      info: Only use this subset(s) of the band to compute 'K' gains. Default uses
+        full band
+      required: false
+      dtype: str
+    spw_g:
+      info: Only use this subset(s) of the band to compute 'GF' gains. Default uses
+        full band
+      required: false
+      dtype: str
+    plotgains:
+      info: Plot gains with ragavi-gains. The .html plots are located in <output>/diagnostic_plots/crosscal/.
+      dtype: bool
+      required: false
+      default: true
+    flag:
+      col:
+        dtype: str
+        info: Data column to flag on
+        default: corrected
+        required: false
+        choices:
+        - corrected
+        - residual
+      usewindowstats:
+        dtype: str
+        info: Calculate additional flags using sliding window statistics
+        choices:
+        - none
+        - sum
+        - std
+        - both
+        default: std
+        required: false
+      combinescans:
+        dtype: bool
+        info: Accumulate data across scans depending on the value of ntime
+        default: true
+        required: false
+      flagdimension:
+        dtype: str
+        info: Dimensions along which to calculate fits (freq/time/freqtime/timefreq)
+        choices:
+        - freq
+        - time
+        - freqtime
+        - timefreq
+        default: freqtime
+        required: false
+      timecutoff:
+        dtype: float
+        info: Flagging thresholds in units of deviation from the fit
+        default: 4.0
+        required: false
+      freqcutoff:
+        dtype: float
+        info: Flagging thresholds in units of deviation from the fit
+        default: 3.0
+        required: false
+      correlation:
+        dtype: str
+        info: Correlation
+        required: false
+  secondary:
+    reuse_existing_gains:
+      info: Reuse gain tables if they exist. Note that this does not check whether
+        the existing tables were obtained with the same Caracal settings. Use with
+        caution.
+      dtype: bool
+      required: false
+      default: true
+    apply:
+      dtype: str
+      info: Calibration terms solved for in the primary segment that should be applied
+        to the secondary calibrator before solving for the terms in 'order' below.
+      required: false
+      default: B
+    order:
+      dtype: str
+      required: false
+      info: Order of the calibration/flagging/imaging steps for the secondary calibrator.
+        E.g, if order is set to 'KGAF', we solve for delays, then for gains, after
+        that the existing gains (KG) are applied before flagging the calibrated data,
+        and finally, we solve for gains and transfer the flux scale from the primary
+        step. The full options are 1) K - delay calibration; 2) G - gain calibration
+        (set whether to solve for amplitude, phase or both with 'calmode' below);
+        3) F - same as G, but imedietly followed by a fluxscale. Note that a G table
+        must exist from the primary step for this work; 4) B - bandpass calibration;
+        5) A - automatic flagging with CASA tfcrop (existing gains will be applied
+        first); 6) I - imaging with WSClean using the settings in 'image' below, which
+        fills the MODEL column of  the .MS file(s) with a sky model and, therefore,
+        enables self-calibration with a subsequent G step.
+      default: KGAF
+    calmode:
+      info: For each step in 'order' above, set whether to solve for phase ('p'),
+        amplitude ('a') or both ('ap'). This is actually only relevant when solving
+        for the gains, i.e., for the G steps in 'order' above. However, users should
+        include an entry (even just an empty string) for all steps in 'order'.
+      required: false
+      default:
+      - a
+      - ap
+      - None
+      - ap
+      dtype: List[str]
+    solint:
+      info: For each step in 'order' above, set the solution interval. Set to 'inf'
+        to obtain a single solution (see also 'combine' below). Include time units,
+        e.g., '120s' or '2min'.
+      required: false
+      default:
+      - 120s
+      - 'inf'
+      - None
+      - 120s
+      dtype: List[str]
+    combine:
+      info: For each step in 'order' above, set along what axis the data should be
+        combined before solving. Options are '' (i.e., no data combination; solutions
+        break at obs, scan, field, and spw boundarie), 'obs', 'scan', 'spw', 'field'.
+        To combine along multiple axes use comma-separated axis names in a single
+        string, e.g., 'obs,scan'. This setting is only relevant for the steps of type
+        K, G and B included in 'order' above. For A steps this setting is ignored
+        and an empty string may be used.
+      required: false
+      default:
+      - ''''''
+      - ''''''
+      - None
+      - ''''''
+      dtype: List[str]
+    b_solnorm:
+      dtype: bool
+      required: false
+      info: Normalise average solution amplitude to 1.0
+      default: true
+    b_fillgaps:
+      info: Fill flagged channels in the bandpass solutions by interpolation.
+      dtype: int
+      required: false
+      default: 70
+    b_smoothwindow:
+      info: Size of the mean running window for smoothing of the bandpass (in channels).
+        A size of 1 means no smoothing.
+      dtype: int
+      required: false
+      default: 1
+    scanselection:
+      info: String specifying (in CASA format) which scans to select during solving
+        on secondary
+      dtype: str
+      required: false
+    spw_k:
+      info: Only use this subset(s) of the band to compute 'K' gains. Default uses
+        full band
+      required: false
+      dtype: str
+    spw_g:
+      info: Only use this subset(s) of the band to compute 'GF' gains. Default uses
+        full band
+      required: false
+      dtype: str
+    plotgains:
+      info: Plot gains with ragavi-gains. The .html plots are located in <output>/diagnostic_plots/crosscal/.
+      dtype: bool
+      required: false
+      default: true
+    flag:
+      col:
+        dtype: str
+        info: Data column to flag on
+        default: corrected
+        required: false
+        choices:
+        - corrected
+        - residual
+      usewindowstats:
+        dtype: str
+        info: Calculate additional flags using sliding window statistics
+        choices:
+        - none
+        - sum
+        - std
+        - both
+        default: std
+        required: false
+      combinescans:
+        dtype: bool
+        info: Accumulate data across scans depending on the value of ntime
+        default: true
+        required: false
+      flagdimension:
+        dtype: str
+        info: Dimensions along which to calculate fits (freq/time/freqtime/timefreq)
+        choices:
+        - freq
+        - time
+        - freqtime
+        - timefreq
+        default: freqtime
+        required: false
+      timecutoff:
+        dtype: float
+        info: Flagging thresholds in units of deviation from the fit
+        default: 4.0
+        required: false
+      freqcutoff:
+        dtype: float
+        info: Flagging thresholds in units of deviation from the fit
+        default: 3.0
+        required: false
+      correlation:
+        dtype: str
+        info: Correlation
+        required: false
+    image:
+      npix:
+        dtype: int
+        info: Number of pixels in output image
+        required: false
+        default: 4096
+      padding:
+        dtype: float
+        info: Padding in WSclean
+        required: false
+        default: 1.5
+      mgain:
+        dtype: float
+        info: Image CLEANing gain
+        required: false
+        default: 0.85
+      cell:
+        dtype: float
+        info: Image pixel size (arcsec)
+        required: false
+        default: 0.5
+      weight:
+        dtype: str
+        choices:
+        - briggs
+        - uniform
+        - natural
+        info: Image weighting type. If Briggs, set the img robust parameter
+        required: false
+        default: briggs -1.0
+      external_fits_masks:
+        info: List of file names (without .FITS extension) located in input/. The
+          naming must have the field ID in the file name. e.g. specify as "mask-image-4"
+          for a file called "mask-image-4.fits" in input/ where "4" is the field ID.
+          NB - the masks need to be on the same WCS grid as the images being made.
+          Otherwise a WSCleans auto-masking will be used (threshold set by auto_mask
+          below)
+        required: false
+      auto_mask:
+        dtype: float
+        info: Auto masking threshold
+        required: false
+        default: 10.0
+      auto_threshold:
+        dtype: float
+        info: Auto clean threshold
+        required: false
+        default: 1.5
+      col:
+        dtype: str
+        info: Column to image
+        required: false
+        default: CORRECTED_DATA
+      local_rms:
+        dtype: bool
+        info: switch on local rms measurement for cleaning
+        required: false
+        default: true
+      rms_window:
+        dtype: int
+        info: switch on local rms measurement for cleaning
+        required: false
+        default: 150
+      niter:
+        dtype: int
+        info: Number of cleaning iterations
+        required: false
+        default: 120000
+      nchans:
+        dtype: int
+        info: Number of channesls in output image
+        required: false
+        default: 7
+      fit_spectral_pol:
+        dtype: int
+        info: Number of spectral polynomial terms to fit to each clean component.
+          This is equal to the order of the polynomial plus 1.
+        required: false
+        default: 2
+  apply_cal:
+    applyto:
+      info: Fields to apply calibration to
+      required: false
+      default:
+      - bpcal
+      - gcal
+      - target
+      dtype: List[str]
+    calmode:
+      dtype: str
+      info: Calibration mode, the default being "calflag" - calibrates and applies
+        flags from solutions. See CASA documentation for info on other modes.
+      choices:
+      - '='
+      - calflag
+      - calflagstrict
+      - trial
+      - flagonly
+      - flagonlystrict
+      required: false
+      default: calflag
+  summary:
+    enable:
+      dtype: bool
+      info: Execute printing flagging summary.
+      required: false
+      default: true
+  report:
+    dtype: bool
+    required: false
+    info: (Re)generate a full HTML report at the end of this worker.
+    default: true
+  cabs:
+    name:
+      dtype: str
+      required: true
+    version:
+      dtype: str
+      required: false
+    tag:
+      dtype: str
+      required: false

@@ -1,0 +1,43 @@
+base:
+  inputs:
+    prefix:
+      info: Prefix for output products
+      dtype: str
+      default: example_caracal_run
+    label_in:
+      info: Label to identify pipeline products from previous workers
+      dtype: str
+    label_out:
+      info: Label to identify pipeline products from this worker
+      dtype: str
+    output_prefix:
+      info: Prefix for output products
+      dtype: str 
+      implicit: =IFSET(current.label_out, current.prefix+current.label_out, current.prefix)
+    input:
+      info: Input directory
+      dtype: Directory
+      writable: false
+      must_exist: true
+
+  outputs:
+    output:
+      info: Output directory
+      dtype: Directory
+      writable: true
+      path_policies:
+        mkdir_parent: true
+
+ms_base:
+  inputs:
+    msdir:
+      info: MSs and related products (flag versions, etc.) will stored and expected to be found here
+      dtype: Directory
+      writable: true
+      path_policies:
+        mkdir_parent: true
+      required: true
+    ms:
+      info: Input MS
+      dtype: MS
+      required: true

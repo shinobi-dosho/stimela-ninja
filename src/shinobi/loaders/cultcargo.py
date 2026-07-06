@@ -53,7 +53,13 @@ from typing import Any
 import yaml
 
 from shinobi.exceptions import CabLoadError
-from shinobi.loaders._modelgen import build_model, sanitize_unique
+from shinobi.loaders._modelgen import (
+    build_model,
+    deep_merge,
+    get_path,
+    resolve_directive,
+    sanitize_unique,
+)
 from shinobi.steps.schema import Cab, ParamMeta, Policies
 
 
@@ -89,41 +95,17 @@ def _load_raw(path: Path) -> dict[str, Any]:
                 stacklevel=2,
             )
             continue
-        merged = _deep_merge(merged, _load_raw((path.parent / inc).resolve()))
+        merged = deep_merge(merged, _load_raw((path.parent / inc).resolve()))
 
-    return _deep_merge(merged, data)
-
-
-def _deep_merge(base: Any, override: Any) -> Any:
-    if isinstance(base, dict) and isinstance(override, dict):
-        merged = dict(base)
-        for key, value in override.items():
-            merged[key] = _deep_merge(merged[key], value) if key in merged else value
-        return merged
-    return override
-
-
-def _get_path(root: dict[str, Any], dotted: str) -> Any:
-    node: Any = root
-    for part in dotted.split("."):
-        if not isinstance(node, dict) or part not in node:
-            raise CabLoadError(f"_use path '{dotted}' not found (stuck at '{part}')")
-        node = node[part]
-    return node
+    return deep_merge(merged, data)
 
 
 def _resolve_use(node: Any, root: dict[str, Any]) -> Any:
-    if isinstance(node, list):
-        return [_resolve_use(item, root) for item in node]
-    if not isinstance(node, dict):
-        return node
+    def entry_to_dict(dotted: str) -> Any:
+        # recurse so a `_use` target that itself has a `_use` resolves too
+        return resolve_directive(get_path(root, dotted, error=CabLoadError), "_use", entry_to_dict)
 
-    node = {key: _resolve_use(value, root) for key, value in node.items()}
-    if "_use" in node:
-        use_path = node.pop("_use")
-        resolved = _resolve_use(_get_path(root, use_path), root)
-        node = _deep_merge(resolved, node)
-    return node
+    return resolve_directive(node, "_use", entry_to_dict)
 
 
 def _build_cabdef(name: str, spec: dict[str, Any]) -> Cab:

@@ -1,4 +1,6 @@
 
+from pathlib import Path
+
 import pytest
 
 from shinobi.exceptions import CabLoadError
@@ -208,3 +210,18 @@ def test_nested_package_scoped_include_inside_inputs_raises_clear_error():
     )
     with pytest.raises(CabLoadError, match="param spec mapping"):
         loads(text)
+
+
+def test_bracket_list_dtype_resolves_on_real_simms_example():
+    """Regression test for `_modelgen.dtype_to_type`'s `List[<inner>]` support:
+    `examples/simms/simms-cabs.yaml`'s `telsim` cab declares `subarray-list`/
+    `subarray-range` with bracket-syntax dtypes that, before that support was
+    added, silently fell back to `str`. Locks in the now-correct `list[str]`/
+    `list[int]` resolution so a future change to dtype_to_type can't silently
+    re-break this real, already-shipped example without a test noticing.
+    """
+    simms_yaml = Path(__file__).parent.parent / "examples" / "simms" / "simms-cabs.yaml"
+    cabs = load_file(simms_yaml)
+    telsim_inputs = cabs["telsim"].inputs_model.model_fields
+    assert telsim_inputs["subarray_list"].annotation == list[str] | None
+    assert telsim_inputs["subarray_range"].annotation == list[int] | None

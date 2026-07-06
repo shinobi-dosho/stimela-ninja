@@ -18,6 +18,10 @@ class CabLoadError(ShinobiError):
     """A cab definition file could not be loaded or resolved."""
 
 
+class ConfigLoadError(ShinobiError):
+    """A worker/config schema file could not be loaded or resolved."""
+
+
 class UnsupportedFlavourError(ShinobiError):
     """A cab's flavour isn't one shinobi knows how to execute.
 
