@@ -14,7 +14,7 @@ from shinobi.clickutil import build_options
 from shinobi.config import AppConfig
 from shinobi.dag import graph_nodes, render_dag
 from shinobi.graph import RecipeGraphError, RecipeNotOffloadableError
-from shinobi.offload import OffloadCompileError, compile_slurm, status_slurm, submit_slurm
+from shinobi.offload import OffloadCompileError, compile_slurm, status_slurm, status_ssh, submit_slurm
 from shinobi.policies import build_argv
 from shinobi.steps.dispatch import _dispatch, _prepare_inputs
 from shinobi.steps.schema import Recipe, Scope, StepRef
@@ -79,6 +79,89 @@ def _resolve_target(target: str):
         raise click.ClickException(f"no '{attr}' in {location}") from None
 
 
+def _run_remote(
+    ctx: click.Context,
+    target: str,
+    *,
+    dryrun: bool,
+    cache_dir: str | None,
+    no_cache: bool,
+    remote: str,
+    add_venv: bool,
+    include_paths: tuple[str, ...],
+) -> None:
+    """`ninja run TARGET --remote user@host:/path`: sync TARGET's file plus
+    its statically-discoverable cab deps to the remote host and launch it
+    there, detached. Deliberately skips `_resolve_target` (which would exec
+    the module locally) -- the whole point is running on a host that may
+    have dependencies the local machine doesn't.
+    """
+    if dryrun:
+        raise click.ClickException("--remote and --dryrun are mutually exclusive")
+    if cache_dir or no_cache:
+        raise click.ClickException(
+            "--cache-dir/--no-cache apply to local runs only; configure caching via the "
+            "remote host's own AppConfig"
+        )
+    if ":" not in target:
+        raise click.ClickException(f"target must be 'path:name', got {target!r}")
+    location, attr = target.rsplit(":", 1)
+    if not os.path.isfile(location):
+        raise click.ClickException(
+            "--remote only supports a local file target ('path/to/file.py:name'), not a "
+            "dotted module path"
+        )
+
+    from shinobi.offload.ssh import find_cab_deps, launch_remote, parse_remote, sync_to_remote
+
+    pyfile = Path(location).resolve()
+    try:
+        deps, scan_warnings = find_cab_deps(pyfile)
+    except SyntaxError as exc:
+        raise click.ClickException(f"cannot parse {pyfile}: {exc}") from None
+    for w in scan_warnings:
+        click.echo(f"warning: {w} -- pass it via --include if it must be synced", err=True)
+    if not deps:
+        click.echo(
+            "note: only the target file and any statically-discovered cab deps are synced; "
+            "use --include for anything else the recipe reads",
+            err=True,
+        )
+
+    extra = [Path(p).resolve() for p in include_paths]
+    all_paths = [pyfile, *deps, *extra]
+    # Common root of everything being synced, not just pyfile's own directory
+    # -- real recipes keep cabs in sibling/parent dirs (a shared cabs/
+    # folder, an _include: ../lib/foo.yml), which a "must be under the
+    # target file's directory" check would wrongly reject.
+    base_dir = Path(os.path.commonpath([str(p) for p in all_paths]))
+    if base_dir.is_file():
+        base_dir = base_dir.parent
+    if str(base_dir) == base_dir.anchor:
+        raise click.ClickException(
+            "target file and its deps don't share a common directory; pass a narrower "
+            "--include or restructure the recipe"
+        )
+
+    try:
+        remote_spec = parse_remote(remote)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+
+    rel_paths = [p.relative_to(base_dir) for p in all_paths]
+    sync_to_remote(base_dir, rel_paths, remote_spec)
+
+    remote_target = f"{pyfile.relative_to(base_dir)}:{attr}"
+    handle = launch_remote(remote_spec, remote_target, ctx.args, add_venv=add_venv)
+
+    handle_path = _handle_path(None, f"{pyfile.stem}.{attr}")
+    handle_path.parent.mkdir(parents=True, exist_ok=True)
+    handle_path.write_text(json.dumps({"engine": "ssh", **handle.__dict__}, indent=2))
+    click.echo(f"launched on {remote_spec.host} (detached, pid={handle.pid})")
+    click.echo(f"  handle: {handle_path}")
+    click.echo(f"  log: ssh {remote_spec.host} tail -f {remote_spec.path}/{handle.log_file}")
+
+
 @main.command(
     "run",
     context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
@@ -105,8 +188,40 @@ def _resolve_target(target: str):
     is_flag=True,
     help="Disable step-level caching for this run, regardless of AppConfig/Scope cache settings.",
 )
+@click.option(
+    "--remote",
+    "remote",
+    default=None,
+    help="Launch on a remote host instead of locally: 'user@host:/path'. Syncs the target "
+    "file and its statically-discoverable cab deps, then runs detached -- see `ninja status`.",
+)
+@click.option(
+    "--add-venv/--no-add-venv",
+    "add_venv",
+    default=True,
+    help="With --remote, source venv/bin/activate or .venv/bin/activate under the remote "
+    "path before running, if present.",
+)
+@click.option(
+    "--include",
+    "include_paths",
+    multiple=True,
+    type=click.Path(exists=True),
+    help="With --remote, additional files/dirs to sync alongside the target and its "
+    "discovered cab deps -- needed for orchestration code (StepRef/@shinobi.step) that "
+    "reads local files the static cab-dep scan can't see, or for cabs it can't resolve.",
+)
 @click.pass_context
-def run(ctx: click.Context, target: str, dryrun: bool, cache_dir: str | None, no_cache: bool) -> None:
+def run(
+    ctx: click.Context,
+    target: str,
+    dryrun: bool,
+    cache_dir: str | None,
+    no_cache: bool,
+    remote: str | None,
+    add_venv: bool,
+    include_paths: tuple[str, ...],
+) -> None:
     """Run a Cab, Recipe, or @shinobi.step TARGET ('path/to/file.py:name'
     or 'pkg.mod:name').
 
@@ -116,6 +231,13 @@ def run(ctx: click.Context, target: str, dryrun: bool, cache_dir: str | None, no
     if target in ("-h", "--help"):
         click.echo(ctx.get_help())
         ctx.exit()
+
+    if remote:
+        _run_remote(
+            ctx, target, dryrun=dryrun, cache_dir=cache_dir, no_cache=no_cache,
+            remote=remote, add_venv=add_venv, include_paths=include_paths,
+        )
+        return
 
     obj = _resolve_target(target)
 
@@ -257,17 +379,21 @@ def compile_recipe(
 @click.argument("handle_file")
 def show_status(handle_file: str) -> None:
     """Report a detached offloaded run's progress from its HANDLE_FILE
-    (written by `ninja compile --submit`), by querying the engine fresh --
-    no persistent process.
+    (written by `ninja compile --submit` or `ninja run --remote`), by
+    querying the engine fresh -- no persistent process.
     """
     try:
         data = json.loads(Path(handle_file).read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise click.ClickException(f"cannot read handle {handle_file!r}: {exc}") from None
-    if data.get("engine") != "slurm":
-        raise click.ClickException(f"unknown engine in handle: {data.get('engine')!r}")
-    for name, state in status_slurm(data["jobs"]).items():
-        click.echo(f"{name}: {state}")
+    engine = data.get("engine")
+    if engine == "slurm":
+        for name, state in status_slurm(data["jobs"]).items():
+            click.echo(f"{name}: {state}")
+    elif engine == "ssh":
+        click.echo(status_ssh(data))
+    else:
+        raise click.ClickException(f"unknown engine in handle: {engine!r}")
 
 
 @main.command("download")

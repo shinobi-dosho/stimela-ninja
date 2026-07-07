@@ -221,5 +221,5 @@ __marimo__/
 tests/.slurmwork/
 
 # Agents
-.claude/HANDOVER.md
+.claude/
 .opencode/

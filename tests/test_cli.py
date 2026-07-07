@@ -138,3 +138,46 @@ def test_run_with_cache_dir_option_still_executes(tmp_path):
         main, ["run", f"{FIXTURES}:greet", "--text", "hi", "--cache-dir", str(tmp_path)]
     )
     assert result.exit_code == 0, result.output
+
+
+# -- ninja run --remote --
+
+
+def test_run_remote_rejects_dotted_module_target():
+    result = CliRunner().invoke(
+        main, ["run", "shinobi.cli:main", "--remote", "user@host:/path"]
+    )
+    assert result.exit_code != 0
+    assert "local file target" in result.output
+
+
+def test_run_remote_rejects_dryrun_combo():
+    result = CliRunner().invoke(
+        main, ["run", f"{FIXTURES}:greet", "--remote", "user@host:/path", "--dryrun"]
+    )
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+
+
+def test_run_remote_rejects_cache_options():
+    result = CliRunner().invoke(
+        main, ["run", f"{FIXTURES}:greet", "--remote", "user@host:/path", "--no-cache"]
+    )
+    assert result.exit_code != 0
+    assert "local runs only" in result.output
+
+
+def test_run_remote_rejects_malformed_spec():
+    result = CliRunner().invoke(
+        main, ["run", f"{FIXTURES}:greet", "--remote", "no-colon-here"]
+    )
+    assert result.exit_code != 0
+    assert "user@host:/path" in result.output
+
+
+def test_run_help_shows_remote_options():
+    result = CliRunner().invoke(main, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--remote" in result.output
+    assert "--add-venv" in result.output
+    assert "--include" in result.output

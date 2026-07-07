@@ -1,0 +1,8 @@
+_include:
+  - vars.yml
+
+cabs:
+  tool:
+    command: /bin/echo
+    inputs: {}
+    outputs: {}
