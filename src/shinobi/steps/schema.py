@@ -61,12 +61,25 @@ class ParamMeta(BaseModel):
 
 
 class Policies(BaseModel):
-    """How a cab's parameters are turned into command-line arguments."""
+    """How a cab's parameters are turned into command-line arguments.
+
+    `key_value`/`repeat` mirror real cult-cargo cab-level policy keys
+    verbatim (e.g. QuartiCal's `policies: {key_value: true, repeat: '[]',
+    prefix: ''}`): `key_value=True` means a hydra-style single
+    `name=value` argv token instead of two tokens (`--name`, `value`);
+    `repeat="[]"` means a list value formats as one bracketed-literal
+    token (`solver.terms=[K,G]`) instead of `list_sep`-joining. Distinct
+    from a per-field `ParamMeta.repeat_as_tokens` (real per-field
+    `policies: {repeat: list}`, e.g. wsclean's bare `-size 4096 4096`),
+    which is a field-level override and takes precedence when set.
+    """
 
     prefix: str = "--"
     replace: dict[str, str] = Field(default_factory=dict)
     list_sep: str = ","
     repeat_list: bool = False
+    key_value: bool = False
+    repeat: str | None = None
 
     def arg_name(self, name: str) -> str:
         for old, new in self.replace.items():

@@ -23,11 +23,21 @@ _EXECUTABLE_FLAVOURS = {"binary"}
 
 def _format_value(value: Any, policies) -> str:
     if isinstance(value, (list, tuple)):
+        if policies.repeat == "[]":
+            return "[" + ",".join(str(v) for v in value) + "]"
         return policies.list_sep.join(str(v) for v in value)
+    if isinstance(value, bool) and policies.key_value:
+        return "true" if value else "false"
     return str(value)
 
 
 def _emit_arg(argv: list[str], policies, arg_name: str, value: Any) -> None:
+    if policies.key_value:
+        # hydra-style single token, e.g. "input_ms.data_column=DATA" or
+        # "solver.terms=[K,G]" -- never a bare flag, even for a bool.
+        argv.append(f"{arg_name}={_format_value(value, policies)}")
+        return
+
     if isinstance(value, bool):
         if value:
             argv.append(arg_name)

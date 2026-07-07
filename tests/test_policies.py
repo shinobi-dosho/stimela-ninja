@@ -3,7 +3,7 @@ import pytest
 from shinobi.exceptions import UnsupportedFlavourError
 from shinobi.loaders import build_model
 from shinobi.policies import build_argv
-from shinobi.steps.schema import Cab, ParamMeta, ParamPattern, ParamSegment
+from shinobi.steps.schema import Cab, ParamMeta, ParamPattern, ParamSegment, Policies
 
 
 def make_cab(model, **kwargs) -> Cab:
@@ -207,3 +207,80 @@ def test_unmatched_dynamic_name_is_not_emitted():
     cab = make_quartical_like_cab()
     argv = build_argv(cab, {"input_ms": "foo.ms", "K.nonexistent_attr": "x"})
     assert "--K.nonexistent_attr" not in argv
+
+
+# -- key_value / bracket-list policies (real quartical.yml shape:
+# policies: {key_value: true, repeat: '[]', prefix: ''}) --
+
+
+def make_quartical_key_value_cab() -> Cab:
+    return Cab(
+        name="quartical",
+        command="goquartical",
+        inputs_model=build_model(
+            "In",
+            {
+                "input_ms.path": ("MS", True, None),
+                "input_ms.data_column": ("str", False, "DATA"),
+                "solver.terms": ("list:str", False, None),
+                "dask.scheduler": ("bool", False, None),
+            },
+        ),
+        outputs_model=build_model("Out", {}),
+        policies=Policies(prefix="", key_value=True, repeat="[]"),
+    )
+
+
+def test_key_value_policy_emits_single_equals_token():
+    cab = make_quartical_key_value_cab()
+    argv = build_argv(cab, {"input_ms.path": "foo.ms", "input_ms.data_column": "DATA"})
+    assert "input_ms.path=foo.ms" in argv
+    assert "input_ms.data_column=DATA" in argv
+    # never the two-token --flag/value shape, and no bare "input_ms.path"
+    # token separate from its value either
+    assert "--input_ms.path" not in argv
+    assert "input_ms.path" not in argv
+
+
+def test_key_value_policy_formats_list_as_bracket_literal():
+    cab = make_quartical_key_value_cab()
+    argv = build_argv(cab, {"input_ms.path": "foo.ms", "solver.terms": ["K", "G"]})
+    assert "solver.terms=[K,G]" in argv
+
+
+def test_key_value_policy_formats_bool_as_true_false_not_a_bare_flag():
+    cab = make_quartical_key_value_cab()
+    argv = build_argv(cab, {"input_ms.path": "foo.ms", "dask.scheduler": True})
+    assert "dask.scheduler=true" in argv
+    argv = build_argv(cab, {"input_ms.path": "foo.ms", "dask.scheduler": False})
+    assert "dask.scheduler=false" in argv
+
+
+def test_key_value_policy_applies_to_pattern_matched_dynamic_fields_too():
+    cab = Cab(
+        name="quartical",
+        command="goquartical",
+        inputs_model=build_model("In", {"input_ms.path": ("MS", True, None)}, allow_extra=True),
+        outputs_model=build_model("Out", {}),
+        policies=Policies(prefix="", key_value=True, repeat="[]"),
+        input_patterns=[
+            ParamPattern(
+                segments=[ParamSegment(regex=r".+?"), ParamSegment(attrs={"type": ParamMeta()})]
+            )
+        ],
+    )
+    argv = build_argv(cab, {"input_ms.path": "foo.ms", "K.type": "diag_complex"})
+    assert "K.type=diag_complex" in argv
+
+
+def test_loading_real_quartical_policies_dict_preserves_key_value_and_repeat():
+    """Regression test for the actual bug: `Policies(**policies_spec)` used
+    to silently drop `key_value`/`repeat` since the model had no such
+    fields (pydantic's default extra="ignore"), even though real
+    quartical.yml declares `policies: {key_value: true, repeat: '[]',
+    prefix: ''}` -- the exact info needed to build correct argv.
+    """
+    policies = Policies(**{"key_value": True, "repeat": "[]", "prefix": ""})
+    assert policies.key_value is True
+    assert policies.repeat == "[]"
+    assert policies.prefix == ""
