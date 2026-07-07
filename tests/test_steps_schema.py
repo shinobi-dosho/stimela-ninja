@@ -92,6 +92,18 @@ def test_parampattern_soft_validates_a_middle_segment_shape():
     assert pattern.matches("1K.type") is None  # leading digit -- not identifier-shaped
 
 
+def test_parampattern_allows_attrs_on_the_first_segment():
+    # wsclean's dynamic output names are the opposite shape from
+    # cubical/QuartiCal's: a known/enumerable imagetype first, an
+    # open-ended qualifier tail after (`dirty.per-band`).
+    pattern = ParamPattern(
+        segments=[ParamSegment(attrs={"dirty": ParamMeta(dtype="File")}), ParamSegment(regex=r".+")]
+    )
+    meta = pattern.matches("dirty.per-band")
+    assert meta is pattern.segments[0].attrs["dirty"]
+    assert pattern.matches("residual.per-band") is None  # not a known imagetype
+
+
 def test_parampattern_prefers_the_longest_attr_when_one_is_a_suffix_of_another():
     # separator "-" with an attr ("time-int") that itself contains "-":
     # a lazy prefix must prefer "time-int" over "int" for "g1-time-int".
@@ -202,6 +214,25 @@ def test_outputs_proxy_validates_step_and_field_names():
         recipe.outputs.missing_step
     with pytest.raises(AttributeError):
         recipe.outputs.a.not_a_field
+
+
+def test_outputs_proxy_falls_back_to_output_patterns_for_dynamic_names():
+    cab = make_cab(
+        output_patterns=[
+            ParamPattern(
+                segments=[ParamSegment(attrs={"dirty": ParamMeta(dtype="File")}), ParamSegment(regex=r".+")]
+            )
+        ]
+    )
+    recipe = Recipe(name="r", inputs_model=Inputs, outputs_model=Outputs)
+    recipe.add_step("a", cab)
+    # a name matched by output_patterns is accepted even though it's not a
+    # literal outputs_model field
+    assert recipe.outputs.a.__getattr__("dirty.per-band") == OutputRef(step="a", field="dirty.per-band")
+    assert recipe.outputs("a", "dirty.per-band") == OutputRef(step="a", field="dirty.per-band")
+    # a name matching neither outputs_model nor any output_patterns still raises
+    with pytest.raises(AttributeError):
+        recipe.outputs.a.not_a_field_or_pattern
 
 
 def test_builder_splits_wiring_from_params():

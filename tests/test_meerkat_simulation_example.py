@@ -6,8 +6,6 @@ step, including the two that have `backend="native"` baked onto their Cab).
 import importlib.util
 from pathlib import Path
 
-import pytest
-
 from shinobi.backends.recording import RecordingBackend
 from shinobi.dag import graph_nodes, render_dag
 from shinobi.steps import Recipe, register_step_backend
@@ -17,10 +15,14 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "meerkat_simulation
 
 
 def load_example():
+    # No `dynamic_schema` warning expected here anymore: wsclean.yml's
+    # `dynamic_schema` now resolves to a real (validation-only)
+    # `output_patterns` entry (see shinobi.loaders.cultcargo's
+    # `_dynamic_output_patterns`), which suppresses the "possibly
+    # incomplete schema" warning `_build_cabdef` used to emit unconditionally.
     spec = importlib.util.spec_from_file_location("meerkat_simulation", EXAMPLE)
     mod = importlib.util.module_from_spec(spec)
-    with pytest.warns(UserWarning, match="dynamic_schema"):
-        spec.loader.exec_module(mod)
+    spec.loader.exec_module(mod)
     return mod
 
 

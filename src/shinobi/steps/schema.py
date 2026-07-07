@@ -97,10 +97,19 @@ class ParamPattern(BaseModel):
     """A family of inputs whose names are `<segment><separator><segment>...`,
     e.g. QuartiCal's `K.type`/`G.time_interval` or cubical's `g1-solvable`/
     `g-time-int`. Matched as one anchored regex assembled from `segments`:
-    every segment but the last is a `regex` (soft shape-validation of a
-    level that can't be enumerated ahead of time); the last is `attrs` (the
-    known part, each value with its own ParamMeta -- dtype/nom_de_guerre/
-    info). See AGENTS.md for the motivating tools.
+    exactly one segment is `attrs` (the known, enumerable part, each value
+    with its own ParamMeta -- dtype/nom_de_guerre/info); every other segment
+    is a `regex` (soft shape-validation of a level that can't be enumerated
+    ahead of time). See AGENTS.md for the motivating tools.
+
+    The `attrs` segment is usually last (cubical/QuartiCal: an
+    unenumerable term name followed by a known attribute, `g1.solvable`),
+    but doesn't have to be -- wsclean's dynamic output names are the
+    opposite shape, a known/enumerable image type followed by an
+    open-ended qualifier tail (`dirty.per-band`,
+    `restored.i.per-interval.mfs`), so `attrs` there is the *first*
+    segment. Only one segment may carry `attrs`; the rest must all be
+    `regex`.
 
     A segment regex that should behave as an unconstrained "match anything"
     level (the old design's `prefix`) should be written lazily (`.+?`, not
@@ -115,13 +124,14 @@ class ParamPattern(BaseModel):
     segments: list[ParamSegment]
 
     _compiled: re.Pattern = PrivateAttr()
+    _attrs_index: int = PrivateAttr()
 
     @model_validator(mode="after")
     def _compile(self) -> "ParamPattern":
-        if not self.segments or self.segments[-1].attrs is None:
-            raise ValueError("a ParamPattern's last segment must carry `attrs`")
-        if any(seg.attrs is not None for seg in self.segments[:-1]):
-            raise ValueError("only a ParamPattern's last segment may carry `attrs`")
+        attrs_indices = [i for i, seg in enumerate(self.segments) if seg.attrs is not None]
+        if len(attrs_indices) != 1:
+            raise ValueError("a ParamPattern must have exactly one segment that carries `attrs`")
+        object.__setattr__(self, "_attrs_index", attrs_indices[0])
         parts: list[str] = []
         for i, seg in enumerate(self.segments):
             group = f"seg{i}"
@@ -140,8 +150,7 @@ class ParamPattern(BaseModel):
         m = self._compiled.match(name)
         if not m:
             return None
-        last = len(self.segments) - 1
-        return self.segments[last].attrs[m.group(f"seg{last}")]
+        return self.segments[self._attrs_index].attrs[m.group(f"seg{self._attrs_index}")]
 
 
 def _unwrap_annotation(annotation: Any) -> list[Any]:
@@ -233,6 +242,13 @@ class Cab(Scope):
     policies: Policies = Field(default_factory=Policies)
     field_meta: dict[str, ParamMeta] = Field(default_factory=dict)
     input_patterns: list[ParamPattern] = Field(default_factory=list)
+    # Output-side analog of `input_patterns`: validation only -- lets
+    # `recipe.outputs(step, name)` accept a dynamically-named output (e.g.
+    # wsclean's `dirty.per-band`) without it being a literal `outputs_model`
+    # field. Does not resolve the output to a real value/path; a cab's
+    # `outputs_model` still only ever gets populated for its *declared*
+    # fields (see `_fill_outputs` in `steps/dispatch.py`).
+    output_patterns: list[ParamPattern] = Field(default_factory=list)
     # regex -> list of wrangler action strings
     wranglers: dict[str, list[str]] = Field(default_factory=dict)
 
@@ -242,6 +258,13 @@ class Cab(Scope):
 
     def match_pattern(self, name: str) -> ParamMeta | None:
         for pattern in self.input_patterns:
+            meta = pattern.matches(name)
+            if meta is not None:
+                return meta
+        return None
+
+    def match_output_pattern(self, name: str) -> ParamMeta | None:
+        for pattern in self.output_patterns:
             meta = pattern.matches(name)
             if meta is not None:
                 return meta
@@ -327,20 +350,25 @@ class _InputsProxy:
 
 class _StepOutputsProxy:
     """Second level of `recipe.outputs.<step>.<field>` -- validates the
-    field against the sub-step's `outputs_model`.
+    field against the sub-step's `outputs_model`, falling back to the
+    step's `output_patterns` (if it's a `Cab`) for a dynamically-named
+    output not literally declared in `outputs_model`.
     """
 
-    def __init__(self, step: str, outputs_model: type[BaseModel]):
+    def __init__(self, step: str, outputs_model: type[BaseModel], cab: "Cab | None" = None):
         self._step = step
         self._outputs_model = outputs_model
+        self._cab = cab
 
     def __getattr__(self, field: str) -> OutputRef:
-        if field not in self._outputs_model.model_fields:
-            raise AttributeError(
-                f"'{field}' is not an output of step '{self._step}' "
-                f"({self._outputs_model.__name__})"
-            )
-        return OutputRef(step=self._step, field=field)
+        if field in self._outputs_model.model_fields:
+            return OutputRef(step=self._step, field=field)
+        if self._cab is not None and self._cab.match_output_pattern(field) is not None:
+            return OutputRef(step=self._step, field=field)
+        raise AttributeError(
+            f"'{field}' is not an output of step '{self._step}' "
+            f"({self._outputs_model.__name__})"
+        )
 
 
 class _OutputsProxy:
@@ -357,7 +385,8 @@ class _OutputsProxy:
     def __getattr__(self, step: str) -> _StepOutputsProxy:
         for ref in self._recipe.steps:
             if ref.name == step:
-                return _StepOutputsProxy(step, ref.step.outputs_model)
+                cab = ref.step if isinstance(ref.step, Cab) else None
+                return _StepOutputsProxy(step, ref.step.outputs_model, cab)
         raise AttributeError(f"No step named '{step}' in recipe '{self._recipe.name}'")
 
 

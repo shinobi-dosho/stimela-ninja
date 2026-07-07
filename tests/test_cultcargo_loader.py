@@ -182,15 +182,45 @@ def test_include_merges_files_relative_to_including_file(tmp_path):
     assert cabs["breizorro"].image == "breizorro"
 
 
-def test_package_scoped_include_is_skipped_with_warning(tmp_path):
+def test_package_scoped_include_raises_clear_error_without_package_roots(tmp_path):
     main = tmp_path / "main.yml"
     main.write_text(
         "_include:\n  - (cultcargo):\n      - genesis/cult-cargo-base.yml\n"
         "cabs:\n  plain:\n    command: echo\n"
     )
-    with pytest.warns(UserWarning, match="package-scoped"):
-        cabs = load_file(main)
-    assert cabs["plain"].command == "echo"
+    with pytest.raises(CabLoadError, match="package_roots"):
+        load_file(main)
+
+
+def test_package_scoped_include_resolves_via_explicit_package_roots(tmp_path):
+    pkg_dir = tmp_path / "cultcargo"
+    (pkg_dir / "genesis").mkdir(parents=True)
+    (pkg_dir / "genesis" / "cult-cargo-base.yml").write_text(
+        "vars:\n  cult-cargo:\n    images:\n      registry: quay.io/stimela2\n"
+    )
+    main = tmp_path / "main.yml"
+    main.write_text(
+        "_include:\n  - (cultcargo):\n      - genesis/cult-cargo-base.yml\n"
+        "cabs:\n  breizorro:\n    command: breizorro\n"
+        "    image:\n      _use: vars.cult-cargo.images\n      name: breizorro\n"
+    )
+    cabs = load_file(main, package_roots={"cultcargo": pkg_dir})
+    assert cabs["breizorro"].image == "breizorro"
+
+
+def test_package_scoped_include_via_combined_string_form(tmp_path):
+    pkg_dir = tmp_path / "cultcargo"
+    (pkg_dir / "genesis" / "cubical").mkdir(parents=True)
+    (pkg_dir / "genesis" / "cubical" / "schema.yaml").write_text(
+        "data:\n  ms:\n    dtype: MS\n    required: true\n"
+    )
+    main = tmp_path / "main.yml"
+    main.write_text(
+        "cabs:\n  cubical:\n    command: gocubical\n"
+        "    inputs:\n      _include: (cultcargo.genesis.cubical)schema.yaml\n"
+    )
+    cabs = load_file(main, package_roots={"cultcargo": pkg_dir})
+    assert "data_ms" in cabs["cubical"].inputs_model.model_fields
 
 
 def test_dynamic_schema_warns_but_still_loads_static_inputs():
@@ -203,13 +233,133 @@ def test_dynamic_schema_warns_but_still_loads_static_inputs():
     assert "size" in cabs["tool"].inputs_model.model_fields
 
 
-def test_nested_package_scoped_include_inside_inputs_raises_clear_error():
+def test_nested_package_scoped_include_inside_inputs_raises_clear_error_without_roots():
     text = (
         "cabs:\n  cubical:\n    command: gocubical\n"
         "    inputs:\n      _include: (cultcargo.genesis.cubical)schema.yaml\n"
     )
-    with pytest.raises(CabLoadError, match="param spec mapping"):
+    with pytest.raises(CabLoadError, match="package_roots"):
         loads(text)
+
+
+# -- section-flattening (stimela2-style CLI-section-nested inputs) --------
+
+SECTIONED_YAML = """
+cabs:
+    cubical:
+        command: gocubical
+        policies:
+            prefix: '--'
+            replace: {'.': '-'}
+        inputs:
+            data:
+                ms:
+                    dtype: MS
+                    required: true
+                column:
+                    dtype: str
+                    default: DATA
+            sel:
+                field:
+                    dtype: int
+"""
+
+
+def test_section_nested_inputs_flatten_to_dotted_field_names():
+    cubical = loads(SECTIONED_YAML)["cubical"]
+    fields = cubical.inputs_model.model_fields
+    assert "data_ms" in fields and "data_column" in fields and "sel_field" in fields
+    assert "data" not in fields  # the section itself must not become a bogus field
+    assert cubical.field_meta["data_ms"].nom_de_guerre == "data.ms"
+    assert fields["data_column"].default == "DATA"
+
+
+# -- dynamic_schema cabs: per-cab static ParamPattern catch-alls ----------
+
+
+def _write_cubical_fixture(tmp_path: Path) -> Path:
+    pkg_dir = tmp_path / "cultcargo"
+    (pkg_dir / "genesis" / "cubical").mkdir(parents=True)
+    (pkg_dir / "genesis" / "cubical" / "schema.yaml").write_text(
+        "data:\n  ms:\n    dtype: MS\n    required: true\n"
+    )
+    (pkg_dir / "genesis" / "cubical" / "schema_JONES_TEMPLATE.yaml").write_text(
+        "JONES_TEMPLATE:\n"
+        "  solvable:\n    info: whether this term is solvable\n"
+        "  time-int:\n    info: time solution interval\n"
+    )
+    main = tmp_path / "cubical.yml"
+    main.write_text(
+        "cabs:\n  cubical:\n    command: gocubical\n"
+        "    policies:\n      prefix: '--'\n      replace: {'.': '-'}\n"
+        "    inputs:\n      _include: (cultcargo.genesis.cubical)schema.yaml\n"
+        "    dynamic_schema: cultcargo.genesis.cubical.make_stimela_schema.make_stimela_schema\n"
+    )
+    return main
+
+
+def test_dynamic_cab_gets_input_pattern_and_allow_extra(tmp_path):
+    from shinobi.loaders._modelgen import build_model
+
+    main = _write_cubical_fixture(tmp_path)
+    cubical = load_file(main, package_roots={"cultcargo": tmp_path / "cultcargo"})["cubical"]
+
+    assert "data_ms" in cubical.inputs_model.model_fields
+    assert cubical.inputs_model.model_config.get("extra") == "allow"
+    meta = cubical.match_pattern("g1.solvable")
+    assert meta is not None
+    assert cubical.match_pattern("g1.time-int") is not None
+    assert cubical.match_pattern("g1.not-a-real-attr") is None
+    # a genuinely unrelated model with allow_extra shouldn't matter here --
+    # just sanity-checking build_model itself isn't broken (used elsewhere)
+    assert build_model("X", {}).model_config.get("extra") is None
+
+
+def test_dynamic_cab_argv_uses_replace_policy_for_pattern_matched_field(tmp_path):
+    from shinobi.policies import build_argv
+
+    main = _write_cubical_fixture(tmp_path)
+    cubical = load_file(main, package_roots={"cultcargo": tmp_path / "cultcargo"})["cubical"]
+    resolved = {"data_ms": "foo.ms", "g1.solvable": True}
+    argv = build_argv(cubical, resolved)
+    assert "--g1-solvable" in argv
+
+
+def test_cab_without_template_file_loads_without_dynamic_pattern(tmp_path):
+    """cubical.yml still loads fine (allow_extra=False, no input_patterns)
+    if package_roots is supplied but the JONES_TEMPLATE file itself is
+    missing -- graceful degrade, not a hard failure.
+    """
+    pkg_dir = tmp_path / "cultcargo"
+    (pkg_dir / "genesis" / "cubical").mkdir(parents=True)
+    (pkg_dir / "genesis" / "cubical" / "schema.yaml").write_text(
+        "data:\n  ms:\n    dtype: MS\n    required: true\n"
+    )
+    main = tmp_path / "cubical.yml"
+    main.write_text(
+        "cabs:\n  cubical:\n    command: gocubical\n"
+        "    inputs:\n      _include: (cultcargo.genesis.cubical)schema.yaml\n"
+        "    dynamic_schema: cultcargo.genesis.cubical.make_stimela_schema.make_stimela_schema\n"
+    )
+    with pytest.warns(UserWarning, match="dynamic_schema"):
+        cubical = load_file(main, package_roots={"cultcargo": pkg_dir})["cubical"]
+    assert cubical.input_patterns == []
+    assert cubical.inputs_model.model_config.get("extra") is None
+
+
+# -- wsclean output_patterns (validation-only) -----------------------------
+
+
+def test_wsclean_dynamic_schema_gets_output_pattern_no_warning():
+    text = "cabs:\n  wsclean:\n    command: wsclean\n    dynamic_schema: cultcargo.genesis.wsclean.make_stimela_schema\n"
+    import warnings as _warnings
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        wsclean = loads(text)["wsclean"]
+    assert wsclean.match_output_pattern("dirty.per-band") is not None
+    assert wsclean.match_output_pattern("restored.i.per-interval.mfs") is not None
+    assert wsclean.match_output_pattern("totally-unknown-shape") is None
 
 
 def test_bracket_list_dtype_resolves_on_real_simms_example():
