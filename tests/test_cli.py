@@ -116,3 +116,25 @@ def test_run_recipe_target_dryrun_shows_declared_graph():
     assert "[ make_file ]" in result.output
     assert "[ use_file ]" in result.output
     assert "v" in result.output  # a dependency edge was drawn
+
+
+# -- caching options --
+
+
+def test_run_help_shows_cache_options():
+    result = CliRunner().invoke(main, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--cache-dir" in result.output
+    assert "--no-cache" in result.output
+
+
+def test_run_with_no_cache_flag_still_executes():
+    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet", "--text", "hi", "--no-cache"])
+    assert result.exit_code == 0, result.output
+
+
+def test_run_with_cache_dir_option_still_executes(tmp_path):
+    result = CliRunner().invoke(
+        main, ["run", f"{FIXTURES}:greet", "--text", "hi", "--cache-dir", str(tmp_path)]
+    )
+    assert result.exit_code == 0, result.output

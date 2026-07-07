@@ -91,8 +91,22 @@ def _resolve_target(target: str):
     is_flag=True,
     help="Show what would run as a graph, without actually running it.",
 )
+@click.option(
+    "--cache-dir",
+    "cache_dir",
+    default=None,
+    help="Directory for step-level result caching (see shinobi.cache). Only takes effect for a "
+    "step that has caching enabled some other way (its own Scope.cache, an enclosing recipe's, "
+    "or AppConfig.cache.enabled) -- this option alone doesn't turn caching on.",
+)
+@click.option(
+    "--no-cache",
+    "no_cache",
+    is_flag=True,
+    help="Disable step-level caching for this run, regardless of AppConfig/Scope cache settings.",
+)
 @click.pass_context
-def run(ctx: click.Context, target: str, dryrun: bool) -> None:
+def run(ctx: click.Context, target: str, dryrun: bool, cache_dir: str | None, no_cache: bool) -> None:
     """Run a Cab, Recipe, or @shinobi.step TARGET ('path/to/file.py:name'
     or 'pkg.mod:name').
 
@@ -136,7 +150,10 @@ def run(ctx: click.Context, target: str, dryrun: bool) -> None:
             return
 
         backend = ctx.meta.get("backend_override")
-        result = _dispatch(scope, func, backend=backend, _config=ctx.obj, **call_kwargs)
+        cache = False if no_cache else None
+        result = _dispatch(
+            scope, func, backend=backend, cache=cache, cache_dir=cache_dir, _config=ctx.obj, **call_kwargs
+        )
         if result.stdout:
             click.echo(result.stdout)
         if result.stderr:
