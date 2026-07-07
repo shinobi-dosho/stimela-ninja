@@ -21,6 +21,7 @@ import warnings
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Any, Callable
 
+from shinobi.cache import compute_cache_key, get_cache_manifest
 from shinobi.config import AppConfig
 from shinobi.graph import build_graph
 from shinobi.policies import build_argv
@@ -114,6 +115,9 @@ class ExecContext:
         backend_override: str | None = None,
         recipe_backend: str | None = None,
         config: AppConfig | None = None,
+        cache_enabled: bool = False,
+        cache_dir: str = "",
+        cache_path: str = "",
     ):
         self.scope = scope
         self._raw = raw_inputs
@@ -122,6 +126,9 @@ class ExecContext:
         self._backend_override = backend_override
         self._recipe_backend = recipe_backend
         self._config = config
+        self._cache_enabled = cache_enabled
+        self._cache_dir = cache_dir
+        self._cache_path = cache_path
 
     def prepare_inputs(self) -> dict[str, Any]:
         """Validated + mutability-processed inputs, with no overrides applied
@@ -171,7 +178,15 @@ class ExecContext:
         if isinstance(self.scope, Cab):
             result = _run_cab(self.scope, prepared, backend_name)
         elif isinstance(self.scope, Recipe):
-            result = _run_recipe(self.scope, prepared, backend_name, self._config)
+            result = _run_recipe(
+                self.scope,
+                prepared,
+                backend_name,
+                self._config,
+                self._cache_enabled,
+                self._cache_dir,
+                self._cache_path,
+            )
         else:
             raise TypeError(
                 f"{type(self.scope).__name__} scope has no ctx.run() support -- a "
@@ -187,27 +202,67 @@ def _dispatch(
     func: Callable | None,
     *,
     backend: str | None = None,
+    cache: bool | None = None,
+    cache_dir: str | None = None,
     _recipe_backend: str | None = None,
+    _recipe_cache: bool | None = None,
+    _recipe_cache_dir: str | None = None,
+    _cache_path: str | None = None,
     _config: AppConfig | None = None,
     **kwargs: Any,
 ) -> StepResult:
+    config = _config or AppConfig.load()
+    cache_enabled = (
+        cache
+        if cache is not None
+        else scope.cache
+        if scope.cache is not None
+        else _recipe_cache
+        if _recipe_cache is not None
+        else config.cache.enabled
+    )
+    cache_dir_value = cache_dir or scope.cache_dir or _recipe_cache_dir or config.cache.dir
+    cache_path = _cache_path or scope.name
+    # A Recipe-shaped scope is never itself cached -- its own sub-steps
+    # each get their own cache check via their own recursive _dispatch
+    # call (see shinobi.cache's module docstring for why).
+    cacheable = cache_enabled and not isinstance(scope, Recipe)
+
     ctx = ExecContext(
         scope,
         kwargs,
         backend_override=backend,
         recipe_backend=_recipe_backend,
         config=_config,
+        cache_enabled=cache_enabled,
+        cache_dir=cache_dir_value,
+        cache_path=cache_path,
     )
+
+    manifest = None
+    cache_key = None
+    if cacheable:
+        manifest = get_cache_manifest(cache_dir_value)
+        prepared_for_key = ctx.prepare_inputs()
+        cache_key = compute_cache_key(scope, func, prepared_for_key)
+        hit = manifest.check(cache_path, cache_key, scope, prepared_for_key)
+        if hit is not None:
+            return hit
+
     if func is None:
-        return ctx.run()
-    result = func(ctx)
-    if result is None:
-        return ctx.run()
-    if not isinstance(result, StepResult):
-        raise TypeError(
-            f"step function {getattr(func, '__name__', func)!r} must return "
-            f"StepResult or None, got {type(result).__name__}"
-        )
+        result = ctx.run()
+    else:
+        result = func(ctx)
+        if result is None:
+            result = ctx.run()
+        elif not isinstance(result, StepResult):
+            raise TypeError(
+                f"step function {getattr(func, '__name__', func)!r} must return "
+                f"StepResult or None, got {type(result).__name__}"
+            )
+
+    if cacheable and result.success:
+        manifest.record(cache_path, cache_key, result.outputs)
     return result
 
 
@@ -272,7 +327,13 @@ def _resolve_wiring(
 
 
 def _run_recipe(
-    recipe: Recipe, prepared: dict[str, Any], backend_name: str, config: AppConfig | None
+    recipe: Recipe,
+    prepared: dict[str, Any],
+    backend_name: str,
+    config: AppConfig | None,
+    cache_enabled: bool = False,
+    cache_dir: str = "",
+    cache_path: str = "",
 ) -> StepResult:
     """Topological wavefront scheduler over the recipe's declared DAG.
 
@@ -311,6 +372,9 @@ def _run_recipe(
                     ref.step,
                     ref.func,
                     _recipe_backend=backend_name,
+                    _recipe_cache=cache_enabled,
+                    _recipe_cache_dir=cache_dir,
+                    _cache_path=f"{cache_path}.{ref.name}",
                     _config=config,
                     **sub_kwargs,
                 )

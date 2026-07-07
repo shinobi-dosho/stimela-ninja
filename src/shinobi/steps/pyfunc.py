@@ -419,6 +419,13 @@ def pystep(
         inputs_model, wants_ctx = _inputs_model_from_signature(func)
         outputs_model, is_empty = _outputs_model_from_return(func)
         adapter = _make_adapter(func, outputs_model, is_empty, wants_ctx)
+        # `adapter` is a generic closure defined once in this module --
+        # every pystep's adapter has identical source text. Anything that
+        # wants the *actual* decorated function (e.g. `shinobi.cache`'s
+        # cache-key identity, which hashes a pystep's own source so
+        # editing its implementation invalidates cached results) needs
+        # this standard `__wrapped__` pointer to see past the adapter.
+        adapter.__wrapped__ = func
         step_name = name or func.__name__
         scope = Scope(
             name=step_name,

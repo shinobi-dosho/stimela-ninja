@@ -200,12 +200,18 @@ class Scope(BaseModel):
     backend: str | None = None
     image: str | None = None
     input_mutability: dict[str, Mutability] = Field(default_factory=dict)
+    # Step-level skip-if-unchanged caching (shinobi.cache), same precedence
+    # shape as `backend`: explicit call-time `cache=`/`cache_dir=` kwarg >
+    # this Scope's own value > the enclosing recipe's > `AppConfig.cache`'s
+    # default (itself disabled by default).
+    cache: bool | None = None
+    cache_dir: str | None = None
 
-    def __call__(self, *, backend: str | None = None, **kwargs: Any):
+    def __call__(self, *, backend: str | None = None, cache: bool | None = None, cache_dir: str | None = None, **kwargs: Any):
         """Bare execution -- no orchestration function."""
         from shinobi.steps.dispatch import _dispatch
 
-        return _dispatch(self, None, backend=backend, **kwargs)
+        return _dispatch(self, None, backend=backend, cache=cache, cache_dir=cache_dir, **kwargs)
 
     def mutability_of(self, field: str) -> Mutability:
         return self.input_mutability.get(field, Mutability.IMMUTABLE)
@@ -289,7 +295,7 @@ class StepRef(BaseModel):
     )
     params: dict[str, Any] = Field(default_factory=dict)
 
-    def __call__(self, *, backend: str | None = None, **kwargs: Any):
+    def __call__(self, *, backend: str | None = None, cache: bool | None = None, cache_dir: str | None = None, **kwargs: Any):
         """Standalone execution. `params` are merged under caller kwargs;
         wiring is ignored (it can only be resolved inside a running
         Recipe), so any wired-only fields must be supplied as kwargs --
@@ -297,7 +303,9 @@ class StepRef(BaseModel):
         """
         from shinobi.steps.dispatch import _dispatch
 
-        return _dispatch(self.step, self.func, backend=backend, **{**self.params, **kwargs})
+        return _dispatch(
+            self.step, self.func, backend=backend, cache=cache, cache_dir=cache_dir, **{**self.params, **kwargs}
+        )
 
 
 class _InputsProxy:

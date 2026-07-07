@@ -29,6 +29,14 @@ class ExecutionConfig(BaseModel):
     max_workers: int = 1
 
 
+class CacheConfig(BaseModel):
+    # Step-level skip-if-unchanged caching (shinobi.cache). Disabled by
+    # default -- same "opt-in, zero cost for existing users" shape as
+    # `backend.default`/`execution.max_workers`.
+    enabled: bool = False
+    dir: str = ".shinobi/cache"
+
+
 class LogConfig(BaseModel):
     dir: str = "."
     level: str = "INFO"
@@ -62,6 +70,7 @@ class AppConfig(BaseSettings):
     backend: BackendConfig = Field(default_factory=BackendConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     log: LogConfig = Field(default_factory=LogConfig)
+    cache: CacheConfig = Field(default_factory=CacheConfig)
 
     @classmethod
     def settings_customise_sources(

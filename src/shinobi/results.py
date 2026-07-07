@@ -49,6 +49,9 @@ class StepResult:
     inputs: BaseModel
     stdout: str = ""
     stderr: str = ""
+    # True when this result was synthesized from `shinobi.cache` (the step
+    # itself never actually ran) rather than produced by a real backend run.
+    cached: bool = False
 
     @property
     def success(self) -> bool:
