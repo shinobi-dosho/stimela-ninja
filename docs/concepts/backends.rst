@@ -20,7 +20,10 @@ Available backends
     Runs the cab's ``image`` in a container. Bind mounts are derived from the
     cab's own schema -- every ``File``/``MS``-dtype parameter contributes its
     parent directory as a mount, so inputs and outputs are visible inside the
-    container.
+    container. For ``docker``/``podman``, the container runs as the invoking
+    host user (not root) by default, so bind-mounted outputs come out
+    host-owned -- see ``backend.run_as_host_user`` in :doc:`config`.
+    ``apptainer`` already runs as the host user, so this is a no-op there.
 
 ``slurm``
     Submits the command as a batch job via ``sbatch`` and tracks it with
