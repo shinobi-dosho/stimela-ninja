@@ -133,6 +133,32 @@ def test_run_with_no_cache_flag_still_executes():
     assert result.exit_code == 0, result.output
 
 
+# -- live stdout/stderr streaming (default on) / --quiet --
+
+
+def test_run_default_streams_live_with_label_prefix():
+    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet", "--text", "hello there"])
+    assert result.exit_code == 0, result.output
+    assert "[greet] --text hello there" in result.output
+    # streamed live -> no separate end-of-run dump repeating the same text
+    assert result.output.count("hello there") == 1
+
+
+def test_run_quiet_flag_suppresses_streaming_and_dumps_at_end():
+    result = CliRunner().invoke(
+        main, ["run", f"{FIXTURES}:greet", "--text", "hello there", "--quiet"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "[greet]" not in result.output
+    assert "hello there" in result.output
+
+
+def test_run_help_shows_quiet_option():
+    result = CliRunner().invoke(main, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--quiet" in result.output
+
+
 def test_run_with_cache_dir_option_still_executes(tmp_path):
     result = CliRunner().invoke(
         main, ["run", f"{FIXTURES}:greet", "--text", "hi", "--cache-dir", str(tmp_path)]

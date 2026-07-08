@@ -41,7 +41,7 @@ class MutatingBackend:
     observe whether that input was the caller's own object (MUTABLE) or a
     deep copy (IMMUTABLE)."""
 
-    def run(self, cab, argv, inputs):
+    def run(self, cab, argv, inputs, **kwargs):
         for value in inputs.values():
             if isinstance(value, list):
                 value.append(99)
@@ -177,7 +177,7 @@ def test_wrangler_output_populates_outputs_model():
         pass
 
     class FixedBackend:
-        def run(self, cab, argv, inputs):
+        def run(self, cab, argv, inputs, **kwargs):
             return BackendRun(0, "answer=42\n", "")
 
     register_step_backend("fixed", FixedBackend())
@@ -339,7 +339,7 @@ def test_recipe_wires_a_real_output_value_into_next_steps_input():
         ok: bool = True
 
     class FixedOutputBackend:
-        def run(self, cab, argv, inputs):
+        def run(self, cab, argv, inputs, **kwargs):
             return BackendRun(0, "result=/tmp/real-value.txt", "")
 
     use_recorder = RecordingBackend()
@@ -395,7 +395,7 @@ def test_recipe_wires_a_list_of_output_refs_into_next_steps_list_input():
         def __init__(self, value):
             self.value = value
 
-        def run(self, cab, argv, inputs):
+        def run(self, cab, argv, inputs, **kwargs):
             return BackendRun(0, f"result={self.value}", "")
 
     use_recorder = RecordingBackend()
@@ -553,7 +553,7 @@ def test_independent_steps_run_concurrently_when_max_workers_allows():
     barrier = threading.Barrier(2, timeout=5)
 
     class BarrierBackend:
-        def run(self, cab, argv, inputs):
+        def run(self, cab, argv, inputs, **kwargs):
             barrier.wait()  # only both return if two threads arrive together
             return BackendRun(0, "", "")
 
@@ -569,7 +569,7 @@ def test_default_max_workers_is_sequential():
     barrier = threading.Barrier(2, timeout=1)
 
     class BarrierBackend:
-        def run(self, cab, argv, inputs):
+        def run(self, cab, argv, inputs, **kwargs):
             barrier.wait()
             return BackendRun(0, "", "")
 
@@ -582,12 +582,12 @@ def test_default_max_workers_is_sequential():
 
 def test_aggregation_is_declaration_order_not_completion_order():
     class SlowBackend:
-        def run(self, cab, argv, inputs):
+        def run(self, cab, argv, inputs, **kwargs):
             time.sleep(0.15)
             return BackendRun(0, "AAA", "errA")
 
     class FastBackend:
-        def run(self, cab, argv, inputs):
+        def run(self, cab, argv, inputs, **kwargs):
             return BackendRun(0, "BBB", "errB")
 
     register_step_backend("slow", SlowBackend())
@@ -601,7 +601,7 @@ def test_aggregation_is_declaration_order_not_completion_order():
 
 def test_failure_stops_dependents_but_drains_independent_inflight():
     class FailBackend:
-        def run(self, cab, argv, inputs):
+        def run(self, cab, argv, inputs, **kwargs):
             return BackendRun(2, "", "boom")
 
     ok_recorder = RecordingBackend()
@@ -634,11 +634,11 @@ def test_failure_stops_dependents_but_drains_independent_inflight():
 
 def test_first_failure_by_declaration_order_wins():
     class RC2Backend:
-        def run(self, cab, argv, inputs):
+        def run(self, cab, argv, inputs, **kwargs):
             return BackendRun(2, "", "")
 
     class RC3Backend:
-        def run(self, cab, argv, inputs):
+        def run(self, cab, argv, inputs, **kwargs):
             return BackendRun(3, "", "")
 
     register_step_backend("rc2", RC2Backend())
@@ -669,7 +669,7 @@ def test_recipe_max_workers_overrides_config_default():
     barrier = threading.Barrier(2, timeout=5)
 
     class BarrierBackend:
-        def run(self, cab, argv, inputs):
+        def run(self, cab, argv, inputs, **kwargs):
             barrier.wait()
             return BackendRun(0, "", "")
 
@@ -686,7 +686,7 @@ def test_config_execution_max_workers_is_honoured(monkeypatch):
     barrier = threading.Barrier(2, timeout=5)
 
     class BarrierBackend:
-        def run(self, cab, argv, inputs):
+        def run(self, cab, argv, inputs, **kwargs):
             barrier.wait()
             return BackendRun(0, "", "")
 

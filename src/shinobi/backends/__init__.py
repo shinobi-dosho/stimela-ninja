@@ -21,7 +21,15 @@ class Backend(ABC):
     name: str
 
     @abstractmethod
-    def run(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> BackendRun:
+    def run(
+        self,
+        cab: Cab,
+        argv: list[str],
+        inputs: dict[str, Any],
+        *,
+        label: str = "",
+        stream: bool = True,
+    ) -> BackendRun:
         """Execute argv (as built by shinobi.policies.build_argv) and
         return a BackendRun. Must not raise on a non-zero exit -- that's
         reported via BackendRun.returncode / BackendRun.success.
@@ -30,6 +38,12 @@ class Backend(ABC):
         one `_prepare_inputs` produces, so MUTABLE fields are the caller's
         own objects by reference). Most backends ignore it, but container
         backends need it to know which File/MS-valued params to bind-mount.
+
+        ``label``/``stream`` control live stdout/stderr echo (see
+        `shinobi.backends._stream.run_streaming`) -- only `native` and
+        `container` act on them today; `slurm`/`kubernetes` accept and
+        ignore both (neither has any log-tailing infrastructure yet, so
+        they keep reading output once after the job/pod finishes).
         """
 
 

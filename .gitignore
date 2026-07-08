@@ -227,7 +227,7 @@ tests/.slurmwork/
 # Real output from running examples/meerkat_simulation.py (or similar) by
 # hand -- generated data, not source.
 examples/*.ms/
-examples/*.cc-out/
+examples/*.cc-out*/
 examples/*.last
 examples/*-image.fits
 examples/*-dirty.fits

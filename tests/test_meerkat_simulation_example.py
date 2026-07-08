@@ -148,7 +148,7 @@ def test_recipe_dispatches_with_correct_argv_shape():
     wsclean_argv = calls_by_name["wsclean"][1]
     assert "-size" in wsclean_argv
     size_i = wsclean_argv.index("-size")
-    assert wsclean_argv[size_i + 1 : size_i + 3] == ["4096", "4096"]
+    assert wsclean_argv[size_i + 1 : size_i + 3] == ["2048", "2048"]
     assert "-weight" in wsclean_argv
     weight_i = wsclean_argv.index("-weight")
     assert wsclean_argv[weight_i + 1 : weight_i + 3] == ["briggs", "2.0"]

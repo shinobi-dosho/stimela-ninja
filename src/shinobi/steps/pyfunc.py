@@ -57,13 +57,13 @@ import inspect
 import json
 import os
 import pickle
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, get_type_hints
 
 from pydantic import BaseModel, create_model
 
+from shinobi.backends._stream import run_streaming
 from shinobi.results import StepResult
 from shinobi.steps.schema import Scope, StepRef
 
@@ -275,13 +275,9 @@ def _run_pystep_container(
             extra_dirs=extra_dirs,
         )
 
-        proc = subprocess.run(
-            full_argv,
-            capture_output=True,
-            text=True,
-        )
+        run = run_streaming(full_argv, label=ctx._cache_path or scope.name, stream=ctx._stream)
 
-        if proc.returncode != 0:
+        if run.returncode != 0:
             # Best-effort outputs on the failure path: try a full
             # construction (fills defaults), fall back to model_construct
             # (skips validation -- required fields stay unset). Both are
@@ -293,11 +289,11 @@ def _run_pystep_container(
                 outputs = outputs_model.model_construct()
             return StepResult(
                 name=scope.name,
-                returncode=proc.returncode,
+                returncode=run.returncode,
                 outputs=outputs,
                 inputs=ctx.inputs,
-                stdout=proc.stdout,
-                stderr=proc.stderr,
+                stdout=run.stdout,
+                stderr=run.stderr,
             )
 
         # Exit 0 means the runner ran to completion, and it always writes
@@ -334,8 +330,8 @@ def _run_pystep_container(
             returncode=0,
             outputs=outputs,
             inputs=ctx.inputs,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
+            stdout=run.stdout,
+            stderr=run.stderr,
         )
 
 

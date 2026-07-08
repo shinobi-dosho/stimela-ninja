@@ -40,6 +40,10 @@ class CacheConfig(BaseModel):
 class LogConfig(BaseModel):
     dir: str = "."
     level: str = "INFO"
+    # Live-echo a running cab's stdout/stderr to the terminal as it runs
+    # (native/container backends only -- see shinobi.backends._stream).
+    # Default on: `ninja run --quiet` opts out for one invocation.
+    stream: bool = True
 
 
 class _YamlFileSource(PydanticBaseSettingsSource):

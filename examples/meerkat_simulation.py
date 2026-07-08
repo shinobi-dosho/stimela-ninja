@@ -133,6 +133,7 @@ def build_simulation(robust_values: tuple[int, ...] = (2, 0, -2)) -> Recipe:
         telsim,
         ms=recipe.inputs.ms,
         telescope=recipe.inputs.telescope,
+        direction="J2000,0h0m0s,-30d8m0s",
         dtime=30.0,
         ntime=4,
         startfreq="750MHz",
@@ -153,12 +154,12 @@ def build_simulation(robust_values: tuple[int, ...] = (2, 0, -2)) -> Recipe:
         wsclean_with_model,
         ms=[recipe.outputs("simulate", "ms")],
         column="DATA",
-        weight=("briggs", 1.0),
+        weight=("briggs", 1.5),
         prefix="meerkat-simdata",
-        size=(4096, 4096),
-        scale="2asec",
+        size=(1024, 1024),
+        scale="4asec",
         niter=5000,
-        mgain=0.85,
+        mgain=0.9,
         pol="I",
     )
 
@@ -194,10 +195,10 @@ def build_simulation(robust_values: tuple[int, ...] = (2, 0, -2)) -> Recipe:
             column="CORRECTED_DATA",
             weight=("briggs", float(robust)),
             prefix=f"meerkat-sim-robust{robust}",
-            size=(4096, 4096),
+            size=(2048, 2048),
             scale="2asec",
-            niter=5000,
-            mgain=0.85,
+            niter=1000,
+            mgain=0.9,
         )
         image_steps.append(name)
 

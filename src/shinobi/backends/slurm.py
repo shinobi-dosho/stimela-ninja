@@ -118,7 +118,9 @@ class SlurmBackend(Backend):
                     return int(exit_code.split(":")[0])
             time.sleep(self.poll_interval)
 
-    def run(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> BackendRun:
+    def run(
+        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True
+    ) -> BackendRun:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             script_path = tmp_path / "job.sh"

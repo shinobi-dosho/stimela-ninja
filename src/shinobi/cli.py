@@ -224,6 +224,14 @@ def _run_remote(
     help="Disable step-level caching for this run, regardless of AppConfig/Scope cache settings.",
 )
 @click.option(
+    "--quiet",
+    "quiet",
+    is_flag=True,
+    help="Don't live-echo running cabs' stdout/stderr (native/container backends only) -- "
+    "restores the old behavior of a silent run followed by one dump of captured output at "
+    "the end. Overrides AppConfig.log.stream for this invocation.",
+)
+@click.option(
     "--remote",
     "remote",
     default=None,
@@ -253,6 +261,7 @@ def run(
     dryrun: bool,
     cache_dir: str | None,
     no_cache: bool,
+    quiet: bool,
     remote: str | None,
     add_venv: bool,
     include_paths: tuple[str, ...],
@@ -308,13 +317,24 @@ def run(
 
         backend = ctx.meta.get("backend_override")
         cache = False if no_cache else None
+        config = ctx.obj or AppConfig.load()
+        stream = False if quiet else None
+        stream_enabled = False if quiet else config.log.stream
         result = _dispatch(
-            scope, func, backend=backend, cache=cache, cache_dir=cache_dir, _config=ctx.obj, **call_kwargs
+            scope, func, backend=backend, cache=cache, cache_dir=cache_dir, stream=stream,
+            _config=ctx.obj, **call_kwargs
         )
-        if result.stdout:
-            click.echo(result.stdout)
-        if result.stderr:
-            click.echo(result.stderr, err=True)
+        # When streaming happened, every line already printed live as it
+        # ran -- dumping the same captured text again here would just
+        # repeat it. Only fall back to the old one-shot dump when
+        # streaming was off (--quiet, or config.log.stream=False), or on a
+        # cache hit that never actually ran anything (so nothing was ever
+        # streamed regardless of the setting).
+        if not stream_enabled or result.cached:
+            if result.stdout:
+                click.echo(result.stdout)
+            if result.stderr:
+                click.echo(result.stderr, err=True)
         if not result.success:
             raise click.ClickException(
                 f"'{scope.name}' exited with status {result.returncode}"

@@ -22,6 +22,8 @@ class RecordingBackend(Backend):
     def __init__(self) -> None:
         self.calls: list[tuple[Cab, list[str], dict[str, Any]]] = []
 
-    def run(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> BackendRun:
+    def run(
+        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True
+    ) -> BackendRun:
         self.calls.append((cab, argv, inputs))
         return BackendRun(returncode=0, stdout="", stderr="")

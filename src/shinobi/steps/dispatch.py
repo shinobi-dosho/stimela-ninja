@@ -119,6 +119,7 @@ class ExecContext:
         cache_enabled: bool = False,
         cache_dir: str = "",
         cache_path: str = "",
+        stream: bool = True,
     ):
         self.scope = scope
         self._raw = raw_inputs
@@ -130,6 +131,7 @@ class ExecContext:
         self._cache_enabled = cache_enabled
         self._cache_dir = cache_dir
         self._cache_path = cache_path
+        self._stream = stream
 
     def prepare_inputs(self) -> dict[str, Any]:
         """Validated + mutability-processed inputs, with no overrides applied
@@ -177,7 +179,9 @@ class ExecContext:
         prepared = _prepare_inputs(self.scope, raw, validated=validated)
         backend_name = self.resolve_backend_name(backend)
         if isinstance(self.scope, Cab):
-            result = _run_cab(self.scope, prepared, backend_name)
+            result = _run_cab(
+                self.scope, prepared, backend_name, label=self._cache_path, stream=self._stream
+            )
         elif isinstance(self.scope, Recipe):
             result = _run_recipe(
                 self.scope,
@@ -187,6 +191,7 @@ class ExecContext:
                 self._cache_enabled,
                 self._cache_dir,
                 self._cache_path,
+                self._stream,
             )
         else:
             raise TypeError(
@@ -205,9 +210,11 @@ def _dispatch(
     backend: str | None = None,
     cache: bool | None = None,
     cache_dir: str | None = None,
+    stream: bool | None = None,
     _recipe_backend: str | None = None,
     _recipe_cache: bool | None = None,
     _recipe_cache_dir: str | None = None,
+    _recipe_stream: bool | None = None,
     _cache_path: str | None = None,
     _config: AppConfig | None = None,
     **kwargs: Any,
@@ -224,6 +231,9 @@ def _dispatch(
     )
     cache_dir_value = cache_dir or scope.cache_dir or _recipe_cache_dir or config.cache.dir
     cache_path = _cache_path or scope.name
+    stream_enabled = (
+        stream if stream is not None else _recipe_stream if _recipe_stream is not None else config.log.stream
+    )
     # A Recipe-shaped scope is never itself cached -- its own sub-steps
     # each get their own cache check via their own recursive _dispatch
     # call (see shinobi.cache's module docstring for why).
@@ -238,6 +248,7 @@ def _dispatch(
         cache_enabled=cache_enabled,
         cache_dir=cache_dir_value,
         cache_path=cache_path,
+        stream=stream_enabled,
     )
 
     manifest = None
@@ -306,13 +317,15 @@ def _resolve_implicit_template(
         ) from exc
 
 
-def _run_cab(cab: Cab, prepared: dict[str, Any], backend_name: str) -> StepResult:
+def _run_cab(
+    cab: Cab, prepared: dict[str, Any], backend_name: str, *, label: str = "", stream: bool = True
+) -> StepResult:
     argv = build_argv(cab, prepared)
     backend = get_step_backend(backend_name)
     # The backend gets the prepared dict (not a rebuilt model) so MUTABLE
     # fields reach it as the caller's own objects by reference -- rebuilding
     # a pydantic model here would deep-copy every container and break that.
-    run = backend.run(cab, argv, prepared)
+    run = backend.run(cab, argv, prepared, label=label or cab.name, stream=stream)
     lines = run.stdout.splitlines() + run.stderr.splitlines()
     wrangled = apply_wranglers(cab.wranglers, lines)
     outputs = _fill_outputs(cab, prepared, run, wrangled)
@@ -357,6 +370,7 @@ def _run_recipe(
     cache_enabled: bool = False,
     cache_dir: str = "",
     cache_path: str = "",
+    stream: bool = True,
 ) -> StepResult:
     """Topological wavefront scheduler over the recipe's declared DAG.
 
@@ -397,6 +411,7 @@ def _run_recipe(
                     _recipe_backend=backend_name,
                     _recipe_cache=cache_enabled,
                     _recipe_cache_dir=cache_dir,
+                    _recipe_stream=stream,
                     _cache_path=f"{cache_path}.{ref.name}",
                     _config=config,
                     **sub_kwargs,

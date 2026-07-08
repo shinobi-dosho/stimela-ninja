@@ -16,11 +16,11 @@ point, with no memory of which of them are paths.
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from shinobi.backends import Backend, register
+from shinobi.backends._stream import run_streaming
 from shinobi.exceptions import BackendError
 from shinobi.loaders._modelgen import is_file_dtype
 from shinobi.results import BackendRun
@@ -130,10 +130,11 @@ class ContainerBackend(Backend):
     def _wrap(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> list[str]:
         return build_container_argv(self.runtime, cab, argv, inputs, self.workdir)
 
-    def run(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> BackendRun:
+    def run(
+        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True
+    ) -> BackendRun:
         full_argv = self._wrap(cab, argv, inputs)
-        proc = subprocess.run(full_argv, capture_output=True, text=True)
-        return BackendRun(returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
+        return run_streaming(full_argv, label=label or cab.name, stream=stream)
 
 
 @register

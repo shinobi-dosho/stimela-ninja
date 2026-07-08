@@ -20,10 +20,9 @@ from pydantic import BaseModel
 from shinobi import pystep
 from shinobi.steps.schema import Cab, Scope
 
-# Captured before any test patches subprocess.run -- patching
-# `shinobi.steps.pyfunc.subprocess.run` rebinds the shared subprocess module's
-# `run`, so the end-to-end helper needs the genuine implementation to avoid
-# recursing into its own patch.
+# Captured before any test patches `shinobi.steps.pyfunc.run_streaming` (the
+# module-level name pyfunc.py actually calls) -- the end-to-end helper needs
+# the genuine subprocess.run to avoid recursing into that patch.
 _REAL_SUBPROCESS_RUN = subprocess.run
 
 
@@ -159,7 +158,7 @@ def test_pystep_container_generates_correct_argv():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
     fake = _fake_container_run({"result": "test.ms:100"})
-    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake) as mock_run:
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake) as mock_run:
         ref(ms="test.ms")
 
     mock_run.assert_called_once()
@@ -189,7 +188,7 @@ def test_pystep_container_mounts_source_and_io_dirs():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
     fake = _fake_container_run({"result": "test.ms:100"})
-    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake) as mock_run:
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake) as mock_run:
         ref(ms="test.ms")
 
     argv = mock_run.call_args[0][0]
@@ -209,7 +208,7 @@ def test_pystep_container_apptainer_argv():
     ref = pystep(image="casa:latest", backend="apptainer")(container_func)
 
     fake = _fake_container_run({"result": "test.ms:100"})
-    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake) as mock_run:
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake) as mock_run:
         ref(ms="test.ms")
 
     argv = mock_run.call_args[0][0]
@@ -222,7 +221,7 @@ def test_pystep_container_parses_outputs_file():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
     fake = _fake_container_run({"result": "parsed.ms:999"})
-    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
         result = ref(ms="parsed.ms", niter=999)
 
     assert result.success
@@ -234,7 +233,7 @@ def test_pystep_container_handles_empty_outputs():
 
     # The runner writes `null` for a -> None function that returned None.
     fake = _fake_container_run(None)
-    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
         result = ref(ms="test.ms")
 
     assert result.success
@@ -249,7 +248,7 @@ def test_pystep_container_nonzero_exit_returns_failure():
     mock_proc.stdout = ""
     mock_proc.stderr = "Traceback: something went wrong"
 
-    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc):
+    with patch("shinobi.steps.pyfunc.run_streaming", return_value=mock_proc):
         result = ref(ms="test.ms")
 
     assert not result.success
@@ -262,7 +261,7 @@ def test_pystep_container_pickles_inputs():
 
     captured_inputs = {}
     fake = _fake_container_run({"result": "ok"}, capture_inputs=captured_inputs)
-    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
         ref(ms="serialised.ms", niter=42)
 
     assert captured_inputs["ms"] == "serialised.ms"
@@ -278,7 +277,7 @@ def test_pystep_container_path_inputs_stay_paths():
     fake = _fake_container_run(
         {"basename": "test.ms"}, capture_inputs=captured_inputs
     )
-    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
         ref(vis="/data/test.ms")
 
     assert isinstance(captured_inputs["vis"], Path)
@@ -297,7 +296,7 @@ def test_pystep_container_runner_script_content():
         return original_write_text(self, content, *args, **kwargs)
 
     fake = _fake_container_run({"result": "ok"})
-    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
         with patch.object(Path, "write_text", capture_write_text):
             ref(ms="test.ms")
 
@@ -314,7 +313,7 @@ def test_pystep_container_backend_override_at_call_time():
     ref = pystep(image="casa:latest")(container_func)
 
     fake = _fake_container_run({"result": "ok"})
-    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake) as mock_run:
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake) as mock_run:
         ref(ms="test.ms", backend="docker")
 
     argv = mock_run.call_args[0][0]
@@ -329,7 +328,7 @@ def test_pystep_container_stdout_noise_does_not_corrupt_outputs():
     fake = _fake_container_run(
         {"result": "from-file"}, stdout="some log line\nanother log\n"
     )
-    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
         result = ref(ms="test.ms")
 
     assert result.success
@@ -346,7 +345,7 @@ def test_pystep_container_missing_outputs_file_raises():
     mock_proc.stdout = ""
     mock_proc.stderr = ""
 
-    with patch("shinobi.steps.pyfunc.subprocess.run", return_value=mock_proc):
+    with patch("shinobi.steps.pyfunc.run_streaming", return_value=mock_proc):
         with pytest.raises(TypeError, match="no readable outputs file"):
             ref(ms="test.ms")
 
@@ -355,7 +354,7 @@ def test_pystep_container_non_dict_output_raises():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
     fake = _fake_container_run(42)
-    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
         with pytest.raises(TypeError, match="must return"):
             ref(ms="test.ms")
 
@@ -434,7 +433,7 @@ def test_pystep_ctx_shim_in_container_runner():
         return original_write_text(self, content, *args, **kwargs)
 
     fake = _fake_container_run({"joined": "/x/y"})
-    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
         with patch.object(Path, "write_text", capture_write_text):
             ref(a="/x", b="y")
 
@@ -458,7 +457,7 @@ def test_pystep_no_ctx_runner_has_no_shim():
         return original_write_text(self, content, *args, **kwargs)
 
     fake = _fake_container_run({"result": "ok"})
-    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
         with patch.object(Path, "write_text", capture_write_text):
             ref(ms="test.ms")
 
@@ -479,7 +478,7 @@ def test_pystep_runner_references_real_io_paths_not_shinobi_io():
         return original_write_text(self, content, *args, **kwargs)
 
     fake = _fake_container_run({"result": "ok"})
-    with patch("shinobi.steps.pyfunc.subprocess.run", side_effect=fake):
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
         with patch.object(Path, "write_text", capture_write_text):
             ref(ms="test.ms")
 
@@ -502,7 +501,7 @@ def test_pystep_container_runner_executes_end_to_end():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
     with patch(
-        "shinobi.steps.pyfunc.subprocess.run", side_effect=_run_runner_on_host
+        "shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host
     ):
         result = ref(ms="real.ms", niter=7)
 
@@ -514,7 +513,7 @@ def test_pystep_container_runner_executes_ctx_end_to_end():
     ref = pystep(image="casa:latest", backend="docker")(ctx_func)
 
     with patch(
-        "shinobi.steps.pyfunc.subprocess.run", side_effect=_run_runner_on_host
+        "shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host
     ):
         result = ref(a="/x", b="y")
 
@@ -529,7 +528,7 @@ def test_pystep_container_runner_executes_path_inputs_end_to_end():
     ref = pystep(image="casa:latest", backend="docker")(path_func)
 
     with patch(
-        "shinobi.steps.pyfunc.subprocess.run", side_effect=_run_runner_on_host
+        "shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host
     ):
         result = ref(vis="/data/real.ms")
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import subprocess
 from typing import Any
 
 from shinobi.backends import Backend, register
+from shinobi.backends._stream import run_streaming
 from shinobi.results import BackendRun
 from shinobi.steps.schema import Cab
 
@@ -14,6 +14,7 @@ class NativeBackend(Backend):
 
     name = "native"
 
-    def run(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> BackendRun:
-        proc = subprocess.run(argv, capture_output=True, text=True)
-        return BackendRun(returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
+    def run(
+        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True
+    ) -> BackendRun:
+        return run_streaming(argv, label=label or cab.name, stream=stream)

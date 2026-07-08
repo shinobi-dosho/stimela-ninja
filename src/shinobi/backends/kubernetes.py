@@ -123,7 +123,9 @@ class KubernetesBackend(Backend):
             return int(proc.stdout.strip())
         return 1
 
-    def run(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> BackendRun:
+    def run(
+        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True
+    ) -> BackendRun:
         job_name = f"shinobi-{cab.name}-{uuid.uuid4().hex[:8]}"
         manifest = self._manifest(cab, argv, inputs, job_name)
 
