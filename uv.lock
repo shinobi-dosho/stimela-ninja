@@ -409,6 +409,29 @@ wheels = [
 ]
 
 [[package]]
+name = "dosho"
+version = "0.1.0a1"
+source = { editable = "../dosho" }
+dependencies = [
+    { name = "stimela-ninja" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "stimela-ninja", editable = "." }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "ruff", specifier = ">=0.5" },
+]
+docs = [
+    { name = "furo", specifier = ">=2024.1" },
+    { name = "myst-parser", specifier = ">=2.0" },
+    { name = "sphinx", specifier = ">=7.2" },
+    { name = "sphinx-copybutton", specifier = ">=0.5" },
+]
+
+[[package]]
 name = "ducc0"
 version = "0.41.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1991,6 +2014,7 @@ docs = [
     { name = "sphinx-copybutton" },
 ]
 examples = [
+    { name = "dosho" },
     { name = "simms", marker = "python_full_version >= '3.11'" },
 ]
 
@@ -2015,7 +2039,10 @@ docs = [
     { name = "sphinx", specifier = ">=7.2" },
     { name = "sphinx-copybutton", specifier = ">=0.5" },
 ]
-examples = [{ name = "simms", marker = "python_full_version >= '3.11'", git = "https://github.com/wits-cfa/simms.git?rev=7511d435348d05b816d2ff4ec1f7bdd652dec6a1" }]
+examples = [
+    { name = "dosho", editable = "../dosho" },
+    { name = "simms", marker = "python_full_version >= '3.11'", git = "https://github.com/wits-cfa/simms.git?rev=7511d435348d05b816d2ff4ec1f7bdd652dec6a1" },
+]
 
 [[package]]
 name = "tomli"

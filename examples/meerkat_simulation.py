@@ -7,46 +7,37 @@ empty MS -> simulate visibilities from a sky model -> calibrate -> image
 3x with different Briggs robust weightings. Every tool involved is real
 and was exercised directly against this file while writing it.
 
-Tool choices, differing from the original script:
+Every cab here comes from **dosho** (https://github.com/SpheMakh/dosho),
+the native shinobi cab repository -- not hand-loaded YAML, not a
+hand-declared `Cab`. This is the intended way to use cabs now; see
+`ninja_selfcal.py` for the older `shinobi.loaders.cultcargo`/hand-declared
+path this example used to take (kept as a second example of that path,
+not because it's still recommended).
+
+Tool choices, differing from the original stimela-classic script:
 
 * The old stimela-1.x `cab/simms` + the MeqTrees-based `cab/simulator` are
   replaced by a single tool, **simms 3.0** (https://github.com/wits-cfa/simms):
   `simms telsim` creates the empty MS, `simms skysim` simulates a sky model
-  into it. Its cab schema is loaded from the vendored, authoritative
-  `examples/simms/simms-cabs.yaml` (see `examples/simms/README.md`) via
-  `shinobi.loaders.cultcargo` -- it's genuine cult-cargo-format YAML and is
-  also the real source the `simms` CLI itself is generated from, so it
-  can't drift out of sync the way a hand-declared cab could.
+  into it (`dosho.cabs.simms`).
 * `cab/calibrator` (also MeqTrees-based) is replaced by **cubical**
-  (hand-declared here, same as `ninja_selfcal.py`'s `cubical` -- real
-  docker image `quay.io/stimela2/cubical:latest`), calibrating against the
-  same sky model used to simulate (a standard smoke-test pattern -- not
-  scientifically meaningful, but structurally correct).
+  (`dosho.cabs.cubical` -- the real 135-parameter schema, docker image
+  `quay.io/stimela2/cubical:...`), calibrating against the same sky model
+  used to simulate (a standard smoke-test pattern -- not scientifically
+  meaningful, but structurally correct). `sol_jones=["G"]` plus the
+  pattern-matched `G-solvable`/`G-type` kwargs exercise
+  `dosho.cabs.cubical`'s real per-Jones-term `ParamPattern`.
 * `cab/casa_listobs`/`cab/casa_rmtables` are dropped entirely: both are
   CASA tasks, and shinobi deliberately never executes a non-"binary"
-  flavour cab (`UnsupportedFlavourError` -- see AGENTS.md, "Never
+  flavour `Cab` (`UnsupportedFlavourError` -- see AGENTS.md, "Never
   eval()/exec() a cab's command"). An MS-info listing and MS teardown
-  aren't needed for a smoke test; see `ninja_selfcal.py`'s docstring for
-  the same exclusion pattern applied to its own CASA cabs.
+  aren't needed for a smoke test. (dosho does have a real `listobs`
+  pystep, `dosho.cabs.casatasks.listobs` -- a `StepRef`, not a `Cab` --
+  left out here since it's genuinely optional for this pipeline, not
+  because it's unavailable.)
 * I/O is plain path/string Recipe inputs wired via `InputRef`/`OutputRef`
   -- *not* stimela-classic's `indir`/`outdir`/`msdir` directory-staging
   convention.
-
-Two real shinobi infra gaps surfaced while wiring this up for real (both
-fixed in `src/shinobi/policies.py`/`src/shinobi/steps/schema.py`/
-`src/shinobi/loaders/cultcargo.py`, and both already present -- just
-previously unimplemented -- in real cult-cargo cab files this project
-already vendors):
-
-* `command: simms telsim` is a two-word subcommand invocation, not a
-  single executable name -- `build_argv` now splits `cab.command` on
-  whitespace.
-* Both simms cabs' `ms` input, and wsclean's `ms`/`size`/`weight` inputs,
-  use per-parameter `policies: {positional: true}` / `{repeat: list}` --
-  a positional CLI arg, and a list value emitted as separate bare argv
-  tokens after one flag (`-size 4096 4096`, not `-size 4096,4096`).
-  `ParamMeta.positional`/`ParamMeta.repeat_as_tokens` + the cultcargo
-  loader + `build_argv` now support both.
 
 Run it:
 
@@ -61,151 +52,28 @@ A real run needs `simms` installed (it has no docker image yet):
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel
 
-from shinobi import Cab, Recipe
-from shinobi.loaders import build_model, sanitize_unique
-from shinobi.loaders.cultcargo import load_file
-from shinobi.steps.schema import ParamMeta
+from shinobi import Recipe
+from shinobi.loaders import build_model
 
-_CULTCARGO_DIR = Path(__file__).parent / "cultcargo"
+from dosho.cabs import cubical, wsclean
+from dosho.cabs.simms import skysim, telsim
+
 _SIMMS_DIR = Path(__file__).parent / "simms"
 
-
-def _infer_dtype(value: Any) -> str:
-    if isinstance(value, bool):
-        return "bool"
-    if isinstance(value, int):
-        return "int"
-    if isinstance(value, float):
-        return "float"
-    if isinstance(value, (list, tuple)):
-        return "list:str"
-    return "str"
-
-
-def cab_from_defaults(
-    name: str,
-    command: str,
-    image: str,
-    defaults: dict[str, Any],
-    *,
-    extra: dict[str, tuple[str, bool, Any]] | None = None,
-    outputs: dict[str, tuple[str, bool, Any]] | None = None,
-) -> Cab:
-    """Build a Cab whose inputs_model comes from a `defaults` dict, instead
-    of typing every parameter by hand. Hyphenated tool parameter names are
-    sanitised to valid pydantic field names, with the original kept as a
-    nom_de_guerre. Copied from `ninja_selfcal.py` -- each example stays
-    self-contained rather than importing from another.
-    """
-    fields: dict[str, tuple[str, bool, Any]] = {}
-    field_meta: dict[str, ParamMeta] = {}
-    seen: dict[str, str] = {}
-    for raw_name, value in defaults.items():
-        field = sanitize_unique(raw_name, seen)
-        fields[field] = (_infer_dtype(value), False, value)
-        if field != raw_name:
-            field_meta[field] = ParamMeta(nom_de_guerre=raw_name)
-    for raw_name, spec in (extra or {}).items():
-        field = sanitize_unique(raw_name, seen)
-        fields[field] = spec
-        if field != raw_name:
-            field_meta[field] = ParamMeta(nom_de_guerre=raw_name)
-    return Cab(
-        name=name,
-        command=command,
-        image=image,
-        inputs_model=build_model(f"{name}_Inputs", fields),
-        outputs_model=build_model(f"{name}_Outputs", outputs or {}),
-        field_meta=field_meta,
-    )
-
-
-# simms 3.0: real, authoritative schema (examples/simms/, vendored). Both
-# cabs load with no `outputs:` at all (real upstream file), so each gets a
-# `.model_copy` override adding a passthrough `ms` output -- same name as
-# the (positional) `ms` input, so dispatch's same-named-input fallback
-# carries the produced/updated MS path through with no wrangler needed.
-# Neither has a docker image yet, so both run via NativeBackend.
-_simms_cabs = load_file(_SIMMS_DIR / "simms-cabs.yaml")
+# Neither real simms cab declares any outputs (matches cult-cargo's own
+# schema -- a genuine gap in the tool's cab metadata, not a dosho
+# omission), but this recipe needs to wire the MS each one produces into
+# the next step -- add a same-named-as-input `ms` passthrough output
+# locally, the same caller-side pattern used elsewhere for cabs with a
+# real output-schema gap (e.g. caracal2's wsclean `input_ms` echo).
+# Neither cab has a docker image yet either, so both run via
+# NativeBackend regardless of the caller's own default backend.
 _SIMMS_MS_OUTPUT = build_model("simms_Outputs", {"ms": ("MS", False, None)})
-telsim = _simms_cabs["telsim"].model_copy(update={"outputs_model": _SIMMS_MS_OUTPUT, "backend": "native"})
-skysim = _simms_cabs["skysim"].model_copy(update={"outputs_model": _SIMMS_MS_OUTPUT, "backend": "native"})
-
-# Real cult-cargo schema (examples/cultcargo/, vendored, shared with
-# ninja_selfcal.py). Its `inputs:` resolve fully via `_use`/`_include`
-# (both implemented by the loader) even though the cab also references an
-# unresolved `dynamic_schema` -- so `field_meta` (positional/repeat_as_tokens/
-# nom_de_guerre) for every field below is genuine, loader-parsed metadata,
-# not hand-typed. `inputs_model` still needs narrowing to what this recipe
-# uses: real wsclean dtypes like `Union[int, Tuple[int, int]]` (`size`) or
-# `List[MS]` (`ms`) use bracket syntax `_modelgen.dtype_to_type` doesn't
-# parse (only its own `list:<inner>` form) -- generalising that would mean
-# reimplementing stimela2's whole type-string grammar, well beyond what
-# this recipe needs, so the handful of fields actually wired below are
-# rebuilt with concrete dtypes shinobi does understand, keeping their real
-# field_meta from the load. `outputs_model` needs an override outright:
-# wsclean's real "implicit outputs" (dirty/restored/residual/model,
-# per-band/per-interval) are structured by the same unresolved
-# dynamic_schema, so there's no static `restored` field to inherit.
-_wsclean_loaded = load_file(_CULTCARGO_DIR / "wsclean.yml")["wsclean"]
-_WSCLEAN_FIELDS: dict[str, tuple[str, bool, Any]] = {
-    "ms": ("MS", True, None),
-    "column": ("str", False, None),
-    "prefix": ("str", True, None),
-    "size": ("list:int", True, None),
-    "scale": ("str", True, None),
-    "niter": ("int", False, None),
-    "mgain": ("float", False, None),
-    "pol": ("str", False, None),
-    "multiscale": ("bool", False, None),
-    "multiscale_scales": ("list:int", False, None),
-    "weight": ("list:str", False, None),
-}
-wsclean = _wsclean_loaded.model_copy(
-    update={
-        "inputs_model": build_model("wsclean_Inputs", _WSCLEAN_FIELDS),
-        "outputs_model": build_model("wsclean_Outputs", {"restored": ("File", False, None)}),
-        "field_meta": {
-            name: _wsclean_loaded.field_meta[name]
-            for name in _WSCLEAN_FIELDS
-            if name in _wsclean_loaded.field_meta
-        },
-    }
-)
-
-# cubical: hand-declared, same shape as ninja_selfcal.py's cubical, but
-# with a `data_ms` passthrough output (not `corrected_ms`) -- cubical
-# calibrates *in place* (writes CORRECTED_DATA into the same MS `data-ms`
-# already points at), so the calibrated MS path *is* the `data-ms` path;
-# naming the output the same lets imaging wire a genuine MS via the same
-# same-named-input fallback used for telsim/skysim's `ms`.
-cal_opts: dict[str, Any] = {
-    "data-column": "DATA",
-    "out-mode": "sc",
-    "weight-column": "WEIGHT_SPECTRUM",
-    "out-overwrite": True,
-    "madmax-enable": True,
-    "madmax-threshold": 7.0,
-}
-cubical = cab_from_defaults(
-    "cubical",
-    "gocubical",
-    "quay.io/stimela2/cubical:latest",
-    cal_opts,
-    extra={
-        "data-ms": ("MS", True, None),
-        "out-name": ("str", True, None),
-        "model-list": ("str", True, None),
-    },
-    outputs={"data_ms": ("MS", False, None)},
-)
-
-
-# ---------------------------------------------------------------- recipe ---
+telsim = telsim.model_copy(update={"outputs_model": _SIMMS_MS_OUTPUT, "backend": "native"})
+skysim = skysim.model_copy(update={"outputs_model": _SIMMS_MS_OUTPUT, "backend": "native"})
 
 
 class SimInputs(BaseModel):
@@ -216,7 +84,11 @@ class SimInputs(BaseModel):
 
 
 class SimOutputs(BaseModel):
-    image: str | None = None
+    # dosho's real wsclean cab resolves `image` via an implicit
+    # `{prefix}-image.fits` template (see dosho/cabs/wsclean.py) -- a real
+    # Path, not the always-empty placeholder the old hand-narrowed wsclean
+    # cab's `restored` output was (it had no way to ever get populated).
+    image: Path | None = None
 
 
 def build_simulation(robust_values: tuple[int, ...] = (2, 0, -2)) -> Recipe:
@@ -251,6 +123,14 @@ def build_simulation(robust_values: tuple[int, ...] = (2, 0, -2)) -> Recipe:
         data_ms=recipe.outputs("simulate", "ms"),
         out_name=recipe.inputs.prefix,
         model_list="MODEL_DATA",
+        data_column="DATA",
+        out_mode="sc",
+        weight_column="WEIGHT_SPECTRUM",
+        out_overwrite=True,
+        madmax_enable="True",  # dosho's cubical port has no explicit
+        madmax_threshold="7.0",  # dtype for these -- both are real str fields
+        sol_jones=["G"],
+        **{"G-solvable": True, "G-type": "complex-2x2"},
     )
 
     image_steps: list[str] = []
@@ -259,11 +139,11 @@ def build_simulation(robust_values: tuple[int, ...] = (2, 0, -2)) -> Recipe:
         recipe.add_step(
             name,
             wsclean,
-            ms=recipe.outputs("calibrate", "data_ms"),
+            ms=[recipe.outputs("calibrate", "ms")],
             column="CORRECTED_DATA",
-            weight=["briggs", str(robust)],
+            weight=("briggs", float(robust)),
             prefix=f"meerkat-sim-robust{robust}",
-            size=[4096, 4096],
+            size=(4096, 4096),
             scale="2asec",
             niter=5000,
             mgain=0.85,
@@ -273,7 +153,7 @@ def build_simulation(robust_values: tuple[int, ...] = (2, 0, -2)) -> Recipe:
         )
         image_steps.append(name)
 
-    recipe.set_output("image", recipe.outputs(image_steps[0], "restored"))
+    recipe.set_output("image", recipe.outputs(image_steps[0], "image"))
     return recipe
 
 

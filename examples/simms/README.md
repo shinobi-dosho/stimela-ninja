@@ -1,11 +1,26 @@
-Vendored copies of real [simms 3.0](https://github.com/wits-cfa/simms) files, used by `examples/meerkat_simulation.py` for the `telsim`/`skysim` cabs (an empty-MS telescope simulator and a sky-model visibility simulator -- together replacing the old stimela-classic `cab/simms` + the MeqTrees-based `cab/simulator`) and an example ASCII sky catalogue.
+Vendored copies of real [simms 3.0](https://github.com/wits-cfa/simms) files.
 
-Vendored (not fetched at runtime, nor installed as a dependency of shinobi itself) so the example's *schema* stays self-contained, reproducible, and testable offline -- matching how the rest of this project avoids network/filesystem dependencies outside the repo. Actually *running* the example for real still needs the `simms` package installed (see the `examples` dependency group in `pyproject.toml`) -- simms has no docker image, so it runs via shinobi's `NativeBackend`.
+`testsky.txt` (a tiny example ASCII sky catalogue, plain whitespace-delimited,
+`#format:` header line) is used as `examples/meerkat_simulation.py`'s default
+`skymodel` input for its `simulate` step.
 
-Source: https://github.com/wits-cfa/simms, `main` branch, commit `7511d43` as of 2026-07-04:
-- `simms/apps/simms-cabs.yaml` -- genuine cult-cargo-format YAML; this is the *actual* schema source for both the real `simms` CLI (via `scabha.schema_utils.clickify_parameters`) and the cab metadata, not an approximation, so it can't drift out of sync the way a hand-declared cab could.
-- `tests/testsky.txt` -- a tiny example ASCII sky catalogue (plain whitespace-delimited, `#format:` header line), used as the default `skymodel` input for the `simulate` step.
+`simms-cabs.yaml` is no longer used by `meerkat_simulation.py` itself --
+that example now gets its `telsim`/`skysim` cabs from
+[dosho](https://github.com/SpheMakh/dosho) (`dosho.cabs.simms`), the
+native shinobi cab repository, instead of loading this vendored YAML
+directly. It's kept as a real-file regression fixture for
+`shinobi.loaders.cultcargo`'s own dtype handling
+(`tests/test_cultcargo_loader.py::test_bracket_list_dtype_resolves_on_real_simms_example`
+locks in bracket-syntax `List[<inner>]` dtype support against this file's
+`telsim` cab's `subarray-list`/`subarray-range` fields) -- a genuine
+cult-cargo-format YAML file, not a synthetic one, so it's still useful for
+that even though it's no longer wired into a runnable recipe here.
 
-Two things worth knowing if you touch this file:
-- Both cabs' `ms` input is `policies: {positional: true}` -- a genuinely positional CLI arg (no `--ms` flag exists on the real `simms telsim`/`simms skysim` commands). shinobi's `ParamMeta.positional` + `build_argv` support this (see `src/shinobi/policies.py`).
-- `command: simms telsim` / `command: simms skysim` are two-word subcommand invocations, not a single executable name -- shinobi's `build_argv` splits `cab.command` on whitespace for exactly this reason.
+Source: https://github.com/wits-cfa/simms, `main` branch, commit `7511d43`
+as of 2026-07-04:
+- `simms/apps/simms-cabs.yaml` -- genuine cult-cargo-format YAML; this was
+  the *actual* schema source for both the real `simms` CLI (via
+  `scabha.schema_utils.clickify_parameters`) and the cab metadata, not an
+  approximation, so it couldn't drift out of sync the way a hand-declared
+  cab could.
+- `tests/testsky.txt` -- a tiny example ASCII sky catalogue.
