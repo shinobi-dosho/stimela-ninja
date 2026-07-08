@@ -3,9 +3,12 @@ stimela-classic `meerkat_simulation.py` example on the step model
 (`Cab`/`Recipe`/`add_step`, `ninja run`).
 
 This is a genuinely *runnable* pipeline, not just a schema demo: make an
-empty MS -> simulate visibilities from a sky model -> calibrate -> image
-3x with different Briggs robust weightings. Every tool involved is real
-and was exercised directly against this file while writing it.
+empty MS -> simulate visibilities from a sky model -> image the simulated
+data (to populate MODEL_DATA via deconvolution, since simms itself only
+writes DATA + SEFD-derived noise, not a model column CubiCal can
+calibrate against) -> calibrate -> image 3x with different Briggs robust
+weightings. Every tool involved is real and was exercised directly
+against this file while writing it.
 
 Every cab here comes from **dosho** (https://github.com/SpheMakh/dosho),
 the native shinobi cab repository -- not hand-loaded YAML, not a
@@ -53,10 +56,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 
 from shinobi import Recipe
 from shinobi.loaders import build_model
+from shinobi.steps.schema import ParamMeta
 
 from dosho.cabs import cubical, wsclean
 from dosho.cabs.simms import skysim, telsim
@@ -74,6 +78,32 @@ _SIMMS_DIR = Path(__file__).parent / "simms"
 _SIMMS_MS_OUTPUT = build_model("simms_Outputs", {"ms": ("MS", False, None)})
 telsim = telsim.model_copy(update={"outputs_model": _SIMMS_MS_OUTPUT, "backend": "native"})
 skysim = skysim.model_copy(update={"outputs_model": _SIMMS_MS_OUTPUT, "backend": "native"})
+
+# wsclean images *in place* -- deconvolution writes the clean model back
+# into the same MS's MODEL_DATA column, but dosho's real wsclean outputs
+# are FITS image products (`image`/`image_mfs`/...), not the MS itself,
+# so there's no real output to depend on "this imaging step has finished
+# updating MODEL_DATA" from. Add an `input_ms` field to *outputs_model
+# only* (not inputs_model!) -- adding it as an input too (the shape
+# caracal2's own line/selfcal workers use for this same gap) would make
+# build_argv emit it as a real (bogus) `-input-ms <path>` CLI flag, since
+# it iterates every declared *input* field with a resolved value and
+# real wsclean has no such option (the same class of bug just fixed for
+# cubical's booleans, caught by actually running this against real
+# wsclean). Instead, resolve it the same way `image`/`image_mfs` already
+# are: an `implicit` template, `"{ms[0]}"` indexing into wsclean's own
+# real (list) `ms` input -- this recipe always wires exactly one MS into
+# it. Only `wsclean_with_model` (the pre-calibration imaging step) needs
+# this; the final per-robust imaging steps below use the plain `wsclean`
+# cab and only need its real `image` output.
+wsclean_with_model = wsclean.model_copy(
+    update={
+        "outputs_model": create_model(
+            "wsclean_sim_Outputs", __base__=wsclean.outputs_model, input_ms=(Path | None, None)
+        ),
+        "field_meta": {**wsclean.field_meta, "input_ms": ParamMeta(implicit="{ms[0]}")},
+    }
+)
 
 
 class SimInputs(BaseModel):
@@ -117,10 +147,25 @@ def build_simulation(robust_values: tuple[int, ...] = (2, 0, -2)) -> Recipe:
         column="DATA",
         sefd=831.0,
     )
+
+    recipe.add_step(
+        "image_sim",
+        wsclean_with_model,
+        ms=[recipe.outputs("simulate", "ms")],
+        column="DATA",
+        weight=("briggs", 1.0),
+        prefix="meerkat-simdata",
+        size=(4096, 4096),
+        scale="2asec",
+        niter=5000,
+        mgain=0.85,
+        pol="I",
+    )
+
     recipe.add_step(
         "calibrate",
         cubical,
-        data_ms=recipe.outputs("simulate", "ms"),
+        data_ms=recipe.outputs("image_sim", "input_ms"),
         out_name=recipe.inputs.prefix,
         model_list="MODEL_DATA",
         data_column="DATA",
@@ -153,9 +198,6 @@ def build_simulation(robust_values: tuple[int, ...] = (2, 0, -2)) -> Recipe:
             scale="2asec",
             niter=5000,
             mgain=0.85,
-            pol="I",
-            multiscale=True,
-            multiscale_scales=[0, 2],
         )
         image_steps.append(name)
 

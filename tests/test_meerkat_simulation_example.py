@@ -48,6 +48,7 @@ def test_module_imports_and_builds_recipe():
     assert [ref.name for ref in mod.recipe.steps] == [
         "make_ms",
         "simulate",
+        "image_sim",
         "calibrate",
         "image_robust_2",
         "image_robust_0",
@@ -58,7 +59,7 @@ def test_module_imports_and_builds_recipe():
 def test_dryrun_dag_renders():
     mod = load_example()
     rendered = render_dag(graph_nodes(mod.recipe))
-    for name in ["make_ms", "simulate", "calibrate", "image_robust_2"]:
+    for name in ["make_ms", "simulate", "image_sim", "calibrate", "image_robust_2"]:
         assert name in rendered
 
 
@@ -81,7 +82,9 @@ def test_recipe_dispatches_with_correct_argv_shape():
     for cab, argv, _ in recorder.calls:
         calls_by_name.setdefault(cab.name, []).append(argv)
     assert set(calls_by_name) == {"simms-telsim", "simms-skysim", "cubical", "wsclean"}
-    assert len(calls_by_name["wsclean"]) == 3  # one per Briggs robust value
+    # image_sim (pre-calibration, populates MODEL_DATA) + one per Briggs
+    # robust value.
+    assert len(calls_by_name["wsclean"]) == 4
 
     # multi-word `command` split + positional `ms` (no --ms flag, bare
     # value last) for both simms steps.
@@ -101,25 +104,48 @@ def test_recipe_dispatches_with_correct_argv_shape():
     # skysim's ms is wired from telsim's own (positional) ms output.
     assert skysim_argv[-1] == "meerkat_simulation.ms"
 
+    # wsclean's own real outputs are FITS image products (image/image_mfs/
+    # ...), not the MS -- image_sim's `input_ms` is an *outputs_model-only*
+    # field (see wsclean_with_model in the example itself), resolved via
+    # an implicit "{ms[0]}" template indexing into wsclean's own real
+    # (list) `ms` input, never added to inputs_model. This is a
+    # regression guard for a real bug: adding it to inputs_model too (the
+    # shape caracal2's own line/selfcal workers use) makes build_argv
+    # emit it as a bogus `-input-ms <path>` flag real wsclean doesn't
+    # recognise -- caught by actually running this example against real
+    # wsclean/cubical binaries, not just RecordingBackend.
+    image_sim_argv = calls_by_name["wsclean"][0]
+    assert "-input-ms" not in image_sim_argv
+    assert "-data-column" in image_sim_argv
+    assert image_sim_argv[image_sim_argv.index("-data-column") + 1] == "DATA"
+    assert image_sim_argv[-1] == "meerkat_simulation.ms"
+
     # real dosho cubical: flattened flag names, per-Jones-term
     # ParamPattern-matched extras (lowercase g-solvable/g-type -- real
     # CubiCal per-term CLI flags are always lowercase regardless of the
     # term label's own case, unlike --sol-jones' own uppercase "G" value),
-    # a real `ms` output (implicit={data_ms} passthrough) wired all the
-    # way into wsclean below.
+    # explicit_true (real cubical.yml policy) emitting "--flag true"
+    # rather than a bare flag, data-ms wired all the way from image_sim's
+    # implicit-template `input_ms` output.
     cubical_argv = calls_by_name["cubical"][0]
     assert cubical_argv[0] == "gocubical"
-    assert "--data-ms" in cubical_argv
+    i = cubical_argv.index("--data-ms")
+    assert cubical_argv[i : i + 2] == ["--data-ms", "meerkat_simulation.ms"]
     assert "--sol-jones" in cubical_argv
-    assert "--g-solvable" in cubical_argv
+    i = cubical_argv.index("--g-solvable")
+    assert cubical_argv[i : i + 2] == ["--g-solvable", "true"]
     i = cubical_argv.index("--g-type")
     assert cubical_argv[i : i + 2] == ["--g-type", "complex-2x2"]
+    i = cubical_argv.index("--out-overwrite")
+    assert cubical_argv[i : i + 2] == ["--out-overwrite", "true"]
 
-    # wsclean (robust=2, the first image step): repeat_as_tokens for
-    # -size (bare tokens, not comma-joined), a real Union[str, Tuple[str,
-    # float]] `weight` value, real nom_de_guerre flags (-data-column/
-    # -name), ms wired all the way from cubical's real `ms` output.
-    wsclean_argv = calls_by_name["wsclean"][0]
+    # wsclean (robust=2, the first *post-calibration* image step, i.e.
+    # index 1 -- index 0 is image_sim, checked above): repeat_as_tokens
+    # for -size (bare tokens, not comma-joined), a real Union[str,
+    # Tuple[str, float]] `weight` value, real nom_de_guerre flags
+    # (-data-column/-name), ms wired all the way from cubical's real `ms`
+    # output.
+    wsclean_argv = calls_by_name["wsclean"][1]
     assert "-size" in wsclean_argv
     size_i = wsclean_argv.index("-size")
     assert wsclean_argv[size_i + 1 : size_i + 3] == ["4096", "4096"]

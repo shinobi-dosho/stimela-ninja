@@ -224,6 +224,14 @@ tests/.slurmwork/
 .claude/
 .opencode/
 
-# Real MS output from running examples/meerkat_simulation.py (or similar)
-# by hand -- generated data, not source.
+# Real output from running examples/meerkat_simulation.py (or similar) by
+# hand -- generated data, not source.
 examples/*.ms/
+examples/*.cc-out/
+examples/*.last
+examples/*-image.fits
+examples/*-dirty.fits
+examples/*-residual.fits
+examples/*-model.fits
+examples/*-psf.fits
+examples/*.qc/
