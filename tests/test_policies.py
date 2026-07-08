@@ -284,3 +284,78 @@ def test_loading_real_quartical_policies_dict_preserves_key_value_and_repeat():
     assert policies.key_value is True
     assert policies.repeat == "[]"
     assert policies.prefix == ""
+
+
+# -- explicit_true / explicit_false (real cubical.yml shape: policies:
+# {prefix: '--', explicit_true: true, explicit_false: false}) --
+
+
+def make_cubical_like_cab() -> Cab:
+    return Cab(
+        name="cubical",
+        command="gocubical",
+        inputs_model=build_model(
+            "In", {"out_overwrite": ("bool", False, None), "out_derotate": ("bool", False, None)}, allow_extra=True
+        ),
+        outputs_model=build_model("Out", {}),
+        policies=Policies(prefix="--", explicit_true=True, explicit_false=False),
+        input_patterns=[
+            ParamPattern(
+                separator="-",
+                segments=[ParamSegment(regex=r".+?"), ParamSegment(attrs={"solvable": ParamMeta()})],
+            )
+        ],
+    )
+
+
+def test_explicit_true_emits_flag_and_true_token_not_a_bare_flag():
+    cab = make_cubical_like_cab()
+    argv = build_argv(cab, {"out_overwrite": True})
+    assert "--out_overwrite" in argv
+    assert argv[argv.index("--out_overwrite") + 1] == "true"
+
+
+def test_explicit_false_default_still_omits_the_flag_entirely():
+    """cubical.yml's real explicit_false: false -- a False value should
+    still just be omitted, not emitted as `--flag false`, since only
+    explicit_true is set.
+    """
+    cab = make_cubical_like_cab()
+    argv = build_argv(cab, {"out_overwrite": False})
+    assert "--out_overwrite" not in argv
+    assert "false" not in argv
+
+
+def test_explicit_true_applies_to_pattern_matched_dynamic_fields_too():
+    cab = make_cubical_like_cab()
+    argv = build_argv(cab, {"g-solvable": True})
+    assert "--g-solvable" in argv
+    assert argv[argv.index("--g-solvable") + 1] == "true"
+
+
+def test_explicit_false_policy_emits_flag_and_false_token_when_enabled():
+    cab = Cab(
+        name="t",
+        command="t",
+        inputs_model=build_model("In", {"flag": ("bool", False, None)}),
+        outputs_model=build_model("Out", {}),
+        policies=Policies(prefix="--", explicit_false=True),
+    )
+    argv = build_argv(cab, {"flag": False})
+    assert "--flag" in argv
+    assert argv[argv.index("--flag") + 1] == "false"
+
+
+def test_loading_real_cubical_policies_dict_preserves_explicit_true_and_false():
+    """Regression test for the actual bug this was fixing:
+    `Policies(**policies_spec)` used to silently drop `explicit_true`/
+    `explicit_false` since the model had no such fields (pydantic's
+    default extra="ignore"), even though real cubical.yml declares
+    `policies: {prefix: '--', explicit_true: true, explicit_false:
+    false}` -- causing every boolean to build as a bare/omitted flag,
+    which real gocubical's optparse-derived CLI doesn't tolerate (a bare
+    `--flag` with no value corrupts parsing of everything after it).
+    """
+    policies = Policies(**{"prefix": "--", "explicit_true": True, "explicit_false": False})
+    assert policies.explicit_true is True
+    assert policies.explicit_false is False

@@ -223,3 +223,7 @@ tests/.slurmwork/
 # Agents
 .claude/
 .opencode/
+
+# Real MS output from running examples/meerkat_simulation.py (or similar)
+# by hand -- generated data, not source.
+examples/*.ms/

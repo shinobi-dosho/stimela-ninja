@@ -81,6 +81,23 @@ class Policies(BaseModel):
     from a per-field `ParamMeta.repeat_as_tokens` (real per-field
     `policies: {repeat: list}`, e.g. wsclean's bare `-size 4096 4096`),
     which is a field-level override and takes precedence when set.
+
+    `explicit_true`/`explicit_false` also mirror real cult-cargo cab-level
+    policy keys verbatim (e.g. CubiCal's `policies: {explicit_true: true,
+    explicit_false: false}`): by default a `True` boolean value emits as a
+    bare flag (`--flag`, argparse `store_true`-style) and `False` is
+    omitted entirely. Some real CLIs (CubiCal's own optparse-derived
+    parser among them) instead expect every boolean option to always take
+    an explicit value token -- passing a bare flag with no value corrupts
+    parsing of everything after it, since the parser consumes the next
+    token as that flag's value. `explicit_true=True` emits `--flag true`
+    (two tokens, `"true"`/`"false"` lowercase) instead of a bare flag when
+    the value is `True`; `explicit_false=True` does the same instead of
+    omitting the flag when the value is `False`. Each direction is
+    independent (CubiCal only needs `explicit_true`, never
+    `explicit_false`), and this applies uniformly to declared fields and
+    `ParamPattern`-matched dynamic ones (e.g. CubiCal's own
+    per-Jones-term `g-solvable`).
     """
 
     prefix: str = "--"
@@ -89,6 +106,8 @@ class Policies(BaseModel):
     repeat_list: bool = False
     key_value: bool = False
     repeat: str | None = None
+    explicit_true: bool = False
+    explicit_false: bool = False
 
     def arg_name(self, name: str) -> str:
         for old, new in self.replace.items():

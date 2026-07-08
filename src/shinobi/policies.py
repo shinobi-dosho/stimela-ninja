@@ -41,6 +41,11 @@ def _emit_arg(argv: list[str], policies, arg_name: str, value: Any) -> None:
     if isinstance(value, bool):
         if value:
             argv.append(arg_name)
+            if policies.explicit_true:
+                argv.append("true")
+        elif policies.explicit_false:
+            argv.append(arg_name)
+            argv.append("false")
         return
 
     if isinstance(value, (list, tuple)) and policies.repeat_list:
