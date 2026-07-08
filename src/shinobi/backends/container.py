@@ -21,6 +21,7 @@ from typing import Any
 
 from shinobi.backends import Backend, register
 from shinobi.backends._stream import run_streaming
+from shinobi.config import AppConfig
 from shinobi.exceptions import BackendError
 from shinobi.loaders._modelgen import is_file_dtype
 from shinobi.results import BackendRun
@@ -84,6 +85,7 @@ def build_container_argv(
     workdir: str,
     *,
     extra_dirs: list[str] | None = None,
+    run_as_host_user: bool = False,
 ) -> list[str]:
     """Wrap argv in a container-runtime invocation. Shared with the Slurm
     backend, which runs cabs under apptainer the same way a plain
@@ -97,6 +99,16 @@ def build_container_argv(
     `extra_dirs` adds additional bind-mount directories beyond those
     derived from the scope's path-typed inputs (e.g. a pystep's runner
     script directory and source module directory).
+
+    `run_as_host_user`, for docker/podman only, adds `--user uid:gid` plus
+    `HOME=<workdir>` so bind-mounted outputs come out owned by the invoking
+    host user instead of root -- the modern equivalent of stimela-classic's
+    `/etc/passwd`-bind-mount trick. Setting `HOME` to the (writable,
+    bind-mounted) workdir covers the common case of tools that fall back to
+    `getpwuid()` only when `$HOME` is unset; tools that need a real
+    passwd/nss entry (e.g. `getpwnam`, some MPI stacks) can still fail --
+    no bind-mount fully replaces `/etc/passwd` in Linux's user model. No-op
+    for apptainer, which already runs as the host user.
     """
     image = scope.image
     if not image:
@@ -113,7 +125,10 @@ def build_container_argv(
 
     if runtime in _DOCKER_LIKE:
         mounts = [flag for d in dirs for flag in ("-v", f"{d}:{d}")]
-        return [runtime, "run", "--rm", *mounts, "-w", workdir, image, *argv]
+        user_flags: list[str] = []
+        if run_as_host_user:
+            user_flags = ["--user", f"{os.getuid()}:{os.getgid()}", "-e", f"HOME={workdir}"]
+        return [runtime, "run", "--rm", *user_flags, *mounts, "-w", workdir, image, *argv]
 
     # apptainer
     binds = [flag for d in dirs for flag in ("--bind", f"{d}:{d}")]
@@ -121,14 +136,31 @@ def build_container_argv(
 
 
 class ContainerBackend(Backend):
-    def __init__(self, runtime: str, workdir: str | None = None):
+    def __init__(
+        self,
+        runtime: str,
+        workdir: str | None = None,
+        run_as_host_user: bool | None = None,
+    ):
         if runtime not in CONTAINER_RUNTIMES:
             raise ValueError(f"unsupported container runtime '{runtime}'")
         self.runtime = runtime
         self.workdir = workdir or os.getcwd()
+        self.run_as_host_user = (
+            AppConfig.load().backend.run_as_host_user
+            if run_as_host_user is None
+            else run_as_host_user
+        )
 
     def _wrap(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> list[str]:
-        return build_container_argv(self.runtime, cab, argv, inputs, self.workdir)
+        return build_container_argv(
+            self.runtime,
+            cab,
+            argv,
+            inputs,
+            self.workdir,
+            run_as_host_user=self.run_as_host_user,
+        )
 
     def run(
         self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True
@@ -141,21 +173,21 @@ class ContainerBackend(Backend):
 class DockerBackend(ContainerBackend):
     name = "docker"
 
-    def __init__(self, workdir: str | None = None):
-        super().__init__("docker", workdir)
+    def __init__(self, workdir: str | None = None, run_as_host_user: bool | None = None):
+        super().__init__("docker", workdir, run_as_host_user)
 
 
 @register
 class PodmanBackend(ContainerBackend):
     name = "podman"
 
-    def __init__(self, workdir: str | None = None):
-        super().__init__("podman", workdir)
+    def __init__(self, workdir: str | None = None, run_as_host_user: bool | None = None):
+        super().__init__("podman", workdir, run_as_host_user)
 
 
 @register
 class ApptainerBackend(ContainerBackend):
     name = "apptainer"
 
-    def __init__(self, workdir: str | None = None):
-        super().__init__("apptainer", workdir)
+    def __init__(self, workdir: str | None = None, run_as_host_user: bool | None = None):
+        super().__init__("apptainer", workdir, run_as_host_user)

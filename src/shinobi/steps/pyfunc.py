@@ -64,6 +64,7 @@ from typing import TYPE_CHECKING, Any, Callable, get_type_hints
 from pydantic import BaseModel, create_model
 
 from shinobi.backends._stream import run_streaming
+from shinobi.config import AppConfig
 from shinobi.results import StepResult
 from shinobi.steps.schema import Scope, StepRef
 
@@ -273,6 +274,7 @@ def _run_pystep_container(
             prepared,
             workdir,
             extra_dirs=extra_dirs,
+            run_as_host_user=AppConfig.load().backend.run_as_host_user,
         )
 
         run = run_streaming(full_argv, label=ctx._cache_path or scope.name, stream=ctx._stream)

@@ -19,6 +19,14 @@ DEFAULT_CONFIG_FILE = Path.home() / ".shinobi" / "config.yml"
 
 class BackendConfig(BaseModel):
     default: str = "native"
+    # Run docker/podman containers as the host UID/GID (`--user uid:gid`,
+    # HOME=workdir) instead of root, so bind-mounted outputs come out
+    # host-owned. Defaults to True -- unlike this file's other options,
+    # this one is opt-OUT: root-by-default is Docker's own footgun, not
+    # behavior worth preserving silently. Set to False for images that
+    # specifically require running as root. No-op for apptainer, which
+    # already runs as the host user.
+    run_as_host_user: bool = True
 
 
 class ExecutionConfig(BaseModel):
