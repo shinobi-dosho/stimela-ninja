@@ -274,61 +274,21 @@ def test_section_nested_inputs_flatten_to_dotted_field_names():
     assert fields["data_column"].default == "DATA"
 
 
-# -- dynamic_schema cabs: per-cab static ParamPattern catch-alls ----------
+# -- dynamic_schema cabs: no stopgap tables, always just warn ------------
+#
+# wsclean/cubical/quartical's real, cross-checked static schemas now live
+# in dosho (the native shinobi cab repository, a sibling project) instead
+# of a per-cab ParamPattern table in this loader -- any dynamic_schema cab
+# loaded through this module (including those three) just gets the
+# generic warning and whatever static inputs/outputs are present, same as
+# any other dynamic_schema cab. See dosho/cabs/{wsclean,cubical,quartical}.py
+# for the real schemas.
 
 
-def _write_cubical_fixture(tmp_path: Path) -> Path:
-    pkg_dir = tmp_path / "cultcargo"
-    (pkg_dir / "genesis" / "cubical").mkdir(parents=True)
-    (pkg_dir / "genesis" / "cubical" / "schema.yaml").write_text(
-        "data:\n  ms:\n    dtype: MS\n    required: true\n"
-    )
-    (pkg_dir / "genesis" / "cubical" / "schema_JONES_TEMPLATE.yaml").write_text(
-        "JONES_TEMPLATE:\n"
-        "  solvable:\n    info: whether this term is solvable\n"
-        "  time-int:\n    info: time solution interval\n"
-    )
-    main = tmp_path / "cubical.yml"
-    main.write_text(
-        "cabs:\n  cubical:\n    command: gocubical\n"
-        "    policies:\n      prefix: '--'\n      replace: {'.': '-'}\n"
-        "    inputs:\n      _include: (cultcargo.genesis.cubical)schema.yaml\n"
-        "    dynamic_schema: cultcargo.genesis.cubical.make_stimela_schema.make_stimela_schema\n"
-    )
-    return main
-
-
-def test_dynamic_cab_gets_input_pattern_and_allow_extra(tmp_path):
-    from shinobi.loaders._modelgen import build_model
-
-    main = _write_cubical_fixture(tmp_path)
-    cubical = load_file(main, package_roots={"cultcargo": tmp_path / "cultcargo"})["cubical"]
-
-    assert "data_ms" in cubical.inputs_model.model_fields
-    assert cubical.inputs_model.model_config.get("extra") == "allow"
-    meta = cubical.match_pattern("g1.solvable")
-    assert meta is not None
-    assert cubical.match_pattern("g1.time-int") is not None
-    assert cubical.match_pattern("g1.not-a-real-attr") is None
-    # a genuinely unrelated model with allow_extra shouldn't matter here --
-    # just sanity-checking build_model itself isn't broken (used elsewhere)
-    assert build_model("X", {}).model_config.get("extra") is None
-
-
-def test_dynamic_cab_argv_uses_replace_policy_for_pattern_matched_field(tmp_path):
-    from shinobi.policies import build_argv
-
-    main = _write_cubical_fixture(tmp_path)
-    cubical = load_file(main, package_roots={"cultcargo": tmp_path / "cultcargo"})["cubical"]
-    resolved = {"data_ms": "foo.ms", "g1.solvable": True}
-    argv = build_argv(cubical, resolved)
-    assert "--g1-solvable" in argv
-
-
-def test_cab_without_template_file_loads_without_dynamic_pattern(tmp_path):
-    """cubical.yml still loads fine (allow_extra=False, no input_patterns)
-    if package_roots is supplied but the JONES_TEMPLATE file itself is
-    missing -- graceful degrade, not a hard failure.
+def test_dynamic_schema_cab_gets_no_special_case_treatment(tmp_path):
+    """Even a cab shaped exactly like cubical.yml (package-scoped _include
+    + dynamic_schema) gets no per-cab pattern/allow_extra treatment
+    anymore -- it just warns and loads its static fields as-is.
     """
     pkg_dir = tmp_path / "cultcargo"
     (pkg_dir / "genesis" / "cubical").mkdir(parents=True)
@@ -343,23 +303,17 @@ def test_cab_without_template_file_loads_without_dynamic_pattern(tmp_path):
     )
     with pytest.warns(UserWarning, match="dynamic_schema"):
         cubical = load_file(main, package_roots={"cultcargo": pkg_dir})["cubical"]
+    assert "data_ms" in cubical.inputs_model.model_fields
     assert cubical.input_patterns == []
     assert cubical.inputs_model.model_config.get("extra") is None
 
 
-# -- wsclean output_patterns (validation-only) -----------------------------
-
-
-def test_wsclean_dynamic_schema_gets_output_pattern_no_warning():
+def test_wsclean_shaped_dynamic_schema_cab_gets_no_output_pattern():
     text = "cabs:\n  wsclean:\n    command: wsclean\n    dynamic_schema: cultcargo.genesis.wsclean.make_stimela_schema\n"
-    import warnings as _warnings
-
-    with _warnings.catch_warnings():
-        _warnings.simplefilter("error")
+    with pytest.warns(UserWarning, match="dynamic_schema"):
         wsclean = loads(text)["wsclean"]
-    assert wsclean.match_output_pattern("dirty.per-band") is not None
-    assert wsclean.match_output_pattern("restored.i.per-interval.mfs") is not None
-    assert wsclean.match_output_pattern("totally-unknown-shape") is None
+    assert wsclean.output_patterns == []
+    assert wsclean.match_output_pattern("dirty.per-band") is None
 
 
 def test_bracket_list_dtype_resolves_on_real_simms_example():

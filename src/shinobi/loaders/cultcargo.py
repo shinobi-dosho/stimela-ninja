@@ -51,16 +51,18 @@ Deliberately NOT implemented (this is the boundary -- see AGENTS.md):
   cult-cargo's ``wsclean.yml``/``cubical.yml``/``quartical.yml`` use this).
   Resolving it for real is not just a parsing gap like the above: it means
   executing arbitrary code named by a cab file at load time. Not
-  implemented. Instead, `_DYNAMIC_INPUT_PATTERNS`/`_DYNAMIC_OUTPUT_PATTERNS`
-  below give a small, explicit, per-cab table of *static* `ParamPattern`
-  catch-alls for the two real dynamic shapes cult-cargo actually has
-  (per-solver-term input families for cubical/quartical; a permissive
-  dynamic-output-name catch-all for wsclean) -- built by reading the cab's
-  own static *data* files (e.g. cubical's ``schema_JONES_TEMPLATE.yaml``)
-  as plain YAML, never by importing/calling the cab's ``dynamic_schema``
-  function. A cab using ``dynamic_schema`` that isn't in this table loads
-  with a warning and whatever static ``inputs:``/``outputs:`` are present,
-  same as before -- silently incomplete unless you notice the warning.
+  implemented, and not worked around here either: a cab using
+  ``dynamic_schema`` always loads with a warning and whatever static
+  ``inputs:``/``outputs:`` are present -- silently incomplete unless you
+  notice the warning. The hand-authored, cross-checked static schemas for
+  the three real cabs that need this (wsclean, cubical, quartical) live in
+  ``dosho`` (the native shinobi cab repository, a sibling project) instead
+  of as a stopgap table in this loader -- this loader used to carry one
+  (a small per-cab ``ParamPattern`` table read from each cab's own static
+  *data* files, e.g. cubical's ``schema_JONES_TEMPLATE.yaml``), removed
+  once dosho's real ports superseded it. See ``dosho/cabs/wsclean.py``/
+  ``cubical.py``/``quartical.py`` for that knowledge now, and prefer
+  porting a cab there over reintroducing a table here.
 
 Building the expression language out, or actually executing a cab's own
 ``dynamic_schema``, would mean re-deriving stimela2's config engine (or
@@ -85,7 +87,7 @@ from shinobi.loaders._modelgen import (
     resolve_directive,
     sanitize_unique,
 )
-from shinobi.steps.schema import Cab, ParamMeta, ParamPattern, ParamSegment, Policies
+from shinobi.steps.schema import Cab, ParamMeta, Policies
 
 
 def load_file(path: str | Path, *, package_roots: dict[str, Path] | None = None) -> dict[str, Cab]:
@@ -178,98 +180,11 @@ def _resolve_use(node: Any, root: dict[str, Any]) -> Any:
     return resolve_directive(node, "_use", entry_to_dict)
 
 
-# -- static ParamPattern catch-alls for the real dynamic_schema cabs --------
-
 _LEAF_SPEC_KEYS = {
     "info", "dtype", "required", "default", "implicit", "nom_de_guerre",
     "policies", "choices", "must_exist", "mkdir", "writable",
     "path_policies", "element_choices",
 }
-
-
-def _load_template_attrs(dotted_pkg: str, filename: str, top_key: str, package_roots: dict[str, Path]) -> dict[str, ParamMeta]:
-    """Load a dynamic_schema cab's real per-term attrs template as static
-    YAML *data* (never importing/calling the cab's own dynamic_schema
-    Python function) and turn it into `{attr_name: ParamMeta}`. `top_key`
-    is the one wrapping key the real template file uses (cubical's
-    `JONES_TEMPLATE:`, quartical's `gain:`).
-    """
-    pkg_dir = _resolve_package_root(dotted_pkg, package_roots)
-    try:
-        text = (pkg_dir / filename).read_text()
-    except OSError as exc:
-        raise CabLoadError(f"cannot read dynamic_schema template {pkg_dir / filename}: {exc}") from exc
-    doc = yaml.safe_load(text) or {}
-    attrs = doc.get(top_key) or {}
-    return {
-        name: ParamMeta(info=spec.get("info"), dtype=spec.get("dtype"))
-        for name, spec in attrs.items()
-    }
-
-
-def _dynamic_input_patterns(package_roots: dict[str, Path]) -> dict[str, list[ParamPattern]]:
-    """cab name -> extra `input_patterns` to attach after normal static
-    loading, for the two real per-solver-term dynamic_schema cabs. Explicit
-    per-cab, not structural inference: cubical and quartical don't share a
-    clean structural signal to detect this shape from automatically, and
-    only two real examples exist.
-
-    A pattern's `separator="."` matches the cab's *internal* dotted field
-    convention (`g1.solvable`, matching every other loader-generated field,
-    e.g. `data.ms` -> field `data_ms`/`nom_de_guerre="data.ms"`) -- the
-    cab's own `policies.replace: {'.': '-'}` then turns it into the real
-    `--g1-solvable` CLI flag at `build_argv` time, exactly as it already
-    does for every static field. No special-casing needed here.
-
-    Gracefully returns no entry for a cab whose template file isn't
-    resolvable (e.g. `package_roots` wasn't supplied) -- the cab still
-    loads with just its static fields, as if this table didn't exist.
-    """
-    patterns: dict[str, list[ParamPattern]] = {}
-    sources = {
-        "cubical": ("cultcargo.genesis.cubical", "schema_JONES_TEMPLATE.yaml", "JONES_TEMPLATE"),
-        "quartical": ("cultcargo.genesis.quartical", "gain_schema.yaml", "gain"),
-    }
-    for cab_name, (pkg, filename, top_key) in sources.items():
-        try:
-            attrs = _load_template_attrs(pkg, filename, top_key, package_roots)
-        except CabLoadError:
-            continue
-        if not attrs:
-            continue
-        patterns[cab_name] = [
-            ParamPattern(separator=".", segments=[ParamSegment(regex=r".+?"), ParamSegment(attrs=attrs)])
-        ]
-    return patterns
-
-
-# wsclean's real dynamic output names are `<enumerable-imagetype>.<qualifiers>`
-# (e.g. `dirty.per-band`, `restored.i.per-interval.mfs`) -- the imagetype is
-# enumerable (from cult-cargo's own wsclean/__init__.py `img_output()` call
-# sites), the qualifier tail is open-ended/combinatorial (built from several
-# resolved params: nchan/pol/intervals-out/niter/make-psf/...). This is
-# validation-only (see task scope): it lets `recipe.outputs(step, name)`
-# accept a real dynamic name without raising, but does not resolve `implicit`
-# glob/placeholder templates into real file paths -- that stays unbuilt.
-_WSCLEAN_IMAGETYPES: dict[str, ParamMeta] = {
-    "dirty": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
-    "image": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
-    "restored": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
-    "residual": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
-    "model": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
-    "psf": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
-}
-
-
-def _dynamic_output_patterns() -> dict[str, list[ParamPattern]]:
-    return {
-        "wsclean": [
-            ParamPattern(
-                separator=".",
-                segments=[ParamSegment(attrs=_WSCLEAN_IMAGETYPES), ParamSegment(regex=r".+")],
-            )
-        ]
-    }
 
 
 def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path]) -> Cab:
@@ -284,16 +199,14 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
     if "command" not in spec:
         raise CabLoadError(f"cab '{name}' has no 'command' (check its _use references)")
 
-    extra_input_patterns = _dynamic_input_patterns(package_roots).get(name, [])
-    extra_output_patterns = _dynamic_output_patterns().get(name, [])
-
-    if spec.get("dynamic_schema") and not extra_input_patterns and not extra_output_patterns:
+    if spec.get("dynamic_schema"):
         warnings.warn(
             f"cab '{name}' uses dynamic_schema ({spec['dynamic_schema']!r}), which "
             "shinobi doesn't resolve -- it's a dotted reference to a Python function "
             "that would need importing and calling to get the real schema. Any static "
             "'inputs:'/'outputs:' present are used as-is, but may be incomplete "
-            "relative to the tool's actual interface.",
+            "relative to the tool's actual interface. Check whether dosho (the native "
+            "shinobi cab repository) already has a real port of this cab.",
             stacklevel=2,
         )
 
@@ -310,11 +223,9 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
         image=image,
         flavour=flavour,
         policies=Policies(**policies_spec),
-        inputs_model=build_model(f"{name}_Inputs", in_fields, allow_extra=bool(extra_input_patterns)),
+        inputs_model=build_model(f"{name}_Inputs", in_fields),
         outputs_model=build_model(f"{name}_Outputs", out_fields),
         field_meta=field_meta,
-        input_patterns=extra_input_patterns,
-        output_patterns=extra_output_patterns,
         wranglers=wranglers,
     )
 
