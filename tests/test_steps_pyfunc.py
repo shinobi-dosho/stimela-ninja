@@ -44,6 +44,19 @@ def test_wraps_an_existing_function_without_decorator_syntax():
     assert ref.name == "add_offset"
 
 
+def test_step_ref_json_dumps_without_crashing_on_func():
+    """`func` is a live callable, not JSON-serializable by default -- this
+    is what `ninja cabs show <name>` exercises for a pystep-backed
+    `shinobi.cabs` provider entry (e.g. dosho's CASA-task pysteps).
+    """
+    import json
+
+    ref = pystep()(add_offset)
+    dumped = json.loads(ref.model_dump_json())
+    assert dumped["func"] == "_adapter"
+    assert dumped["name"] == "add_offset"
+
+
 def test_unannotated_parameter_raises_at_decoration():
     def bad(x) -> OffsetOutputs:  # no type hint on x
         return OffsetOutputs(shifted="x")

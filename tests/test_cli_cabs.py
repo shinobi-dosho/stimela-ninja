@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from shinobi import cli
 from shinobi.exceptions import CabLoadError
+from shinobi.steps import pystep
 from shinobi.steps.schema import Cab
 
 
@@ -53,6 +54,29 @@ def test_cabs_show_prints_cab_schema_json(monkeypatch):
     result = CliRunner().invoke(cli.main, ["cabs", "show", "wsclean"])
     assert result.exit_code == 0
     assert '"name": "wsclean"' in result.output
+
+
+def test_cabs_show_prints_pystep_schema_json_no_crash(monkeypatch):
+    """A pystep-backed provider entry (e.g. a dosho CASA-task wrapper) must
+    also work through `ninja cabs show` -- exercises the StepRef.func
+    field_serializer fix.
+    """
+    import shinobi.cabs as cabs_module
+
+    def _listobs(vis: str) -> None:
+        return None
+
+    ref = pystep(name="listobs")(_listobs)
+
+    def _get(name: str):
+        if name != "listobs":
+            raise KeyError(name)
+        return ref
+
+    monkeypatch.setattr(cabs_module, "get", _get)
+    result = CliRunner().invoke(cli.main, ["cabs", "show", "listobs"])
+    assert result.exit_code == 0
+    assert '"name": "listobs"' in result.output
 
 
 def test_cabs_show_unknown_cab_errors_cleanly(monkeypatch):

@@ -357,6 +357,16 @@ class StepRef(BaseModel):
     )
     params: dict[str, Any] = Field(default_factory=dict)
 
+    @field_serializer("func")
+    def _serialize_func(self, func: Callable | None) -> str | None:
+        """`func` is a live Python callable (e.g. a `@shinobi.pystep`'s
+        adapter), not JSON-serializable by default -- used by `ninja cabs
+        show` on a pystep-backed provider entry. Dump its `__name__`
+        instead of the callable itself, same reasoning as `Scope`'s own
+        `inputs_model`/`outputs_model` field_serializer.
+        """
+        return getattr(func, "__name__", None) if func is not None else None
+
     def __call__(self, *, backend: str | None = None, cache: bool | None = None, cache_dir: str | None = None, **kwargs: Any):
         """Standalone execution. `params` are merged under caller kwargs;
         wiring is ignored (it can only be resolved inside a running

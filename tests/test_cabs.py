@@ -10,7 +10,8 @@ from pydantic import BaseModel
 
 from shinobi import cabs
 from shinobi.exceptions import CabLoadError
-from shinobi.steps.schema import Cab
+from shinobi.steps import pystep
+from shinobi.steps.schema import Cab, StepRef
 
 
 class Inputs(BaseModel):
@@ -25,6 +26,14 @@ def _make_cab(name: str) -> Cab:
     return Cab(name=name, command=name, inputs_model=Inputs, outputs_model=Outputs)
 
 
+def _make_pystep(name: str) -> StepRef:
+    def _fn(x: int = 0) -> None:
+        return None
+
+    ref = pystep(name=name)(_fn)
+    return ref
+
+
 class FakeProviderModule:
     def __init__(self, cab_names: list[str]):
         self._cabs = {name: _make_cab(name) for name in cab_names}
@@ -34,6 +43,22 @@ class FakeProviderModule:
 
     def list_cabs(self) -> list[str]:
         return list(self._cabs)
+
+
+class FakePystepProviderModule:
+    """A `shinobi.cabs` provider vending `StepRef`s (e.g. CASA-task
+    pysteps) instead of `Cab`s -- the resolver must not care which shape
+    a provider entry is.
+    """
+
+    def __init__(self, names: list[str]):
+        self._entries = {name: _make_pystep(name) for name in names}
+
+    def get(self, name: str) -> StepRef:
+        return self._entries[name]
+
+    def list_cabs(self) -> list[str]:
+        return list(self._entries)
 
 
 def _fake_entry_point(provider_name: str, module: FakeProviderModule):
@@ -91,3 +116,21 @@ def test_get_falls_through_to_next_provider_if_first_lacks_the_cab(monkeypatch):
     _patch_entry_points(monkeypatch, [ep_a, ep_b])
     resolved = cabs.get("only-in-b")
     assert resolved is b._cabs["only-in-b"]
+
+
+def test_get_resolves_a_stepref_backed_pystep_provider_entry(monkeypatch):
+    module = FakePystepProviderModule(["listobs"])
+    ep = _fake_entry_point("dosho", module)
+    _patch_entry_points(monkeypatch, [ep])
+    resolved = cabs.get("listobs")
+    assert isinstance(resolved, StepRef)
+    assert resolved.name == "listobs"
+
+
+def test_list_cabs_works_across_mixed_cab_and_pystep_providers(monkeypatch):
+    cab_provider = FakeProviderModule(["wsclean"])
+    pystep_provider = FakePystepProviderModule(["listobs"])
+    ep_cabs = _fake_entry_point("a-cabs", cab_provider)
+    ep_psteps = _fake_entry_point("b-psteps", pystep_provider)
+    _patch_entry_points(monkeypatch, [ep_cabs, ep_psteps])
+    assert cabs.list_cabs() == {"a-cabs": ["wsclean"], "b-psteps": ["listobs"]}
