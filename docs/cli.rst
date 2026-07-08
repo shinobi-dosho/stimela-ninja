@@ -50,8 +50,35 @@ The dry run executes the recipe's real Python control flow with every cab
 swapped for a no-op that records the call, so it shows the one path taken for
 the given inputs -- never an untaken branch.
 
-``ninja cab`` -- inspect a cab schema
--------------------------------------
+Add ``--cache-dir DIR`` / ``--no-cache`` to control step-level result caching
+(a step must also opt in via its own ``Scope.cache``, an enclosing recipe's,
+or ``AppConfig.cache.enabled`` -- these flags alone don't turn caching on):
+
+.. code-block:: console
+
+    $ ninja run myrecipe.py:selfcal --ms data.ms --cache-dir /scratch/cache
+    $ ninja run myrecipe.py:selfcal --ms data.ms --no-cache
+
+By default, running cabs' stdout/stderr are echoed live as they run
+(native/container backends only). Add ``--quiet`` to restore the old
+behavior of a silent run followed by one dump of captured output at the end;
+this overrides ``AppConfig.log.stream`` for the invocation.
+
+Add ``--remote user@host:/path`` to launch on a remote host instead of
+locally: the target file and its statically-discoverable cab deps are synced
+over, then the run happens detached -- check progress with ``ninja status``.
+``--add-venv/--no-add-venv`` (default: on) sources ``venv/bin/activate`` or
+``.venv/bin/activate`` under the remote path first, if present.
+``--include PATH`` (repeatable) syncs extra files/dirs alongside the target,
+for orchestration code the static cab-dep scan can't see:
+
+.. code-block:: console
+
+    $ ninja run myrecipe.py:selfcal --ms data.ms --remote user@cluster:/scratch/run1
+    $ ninja run myrecipe.py:selfcal --ms data.ms --remote user@cluster:/scratch/run1 --include extra_cabs.yml
+
+``ninja cab`` -- inspect a cab schema by file
+----------------------------------------------
 
 Dumps a cab's resolved schema (as loaded from a cult-cargo style YAML file) as
 JSON:
@@ -59,6 +86,31 @@ JSON:
 .. code-block:: console
 
     $ ninja cab cabs.yml wsclean
+
+``ninja cabs`` -- look up installed cabs by name
+--------------------------------------------------
+
+Looks up cabs by name across installed ``shinobi.cabs`` providers (e.g.
+``dosho``), instead of pointing at a specific YAML file:
+
+.. code-block:: console
+
+    $ ninja cabs list
+    $ ninja cabs show wsclean
+
+``ninja download`` -- fetch cab definitions
+---------------------------------------------
+
+Downloads cab definitions for use with the file-based ``ninja cab`` /
+cult-cargo loader. ``--cult-cargo`` downloads cab definitions from GitHub;
+``--dest-dir`` sets the destination (default: ``.shinobi/cabs/cultcargo``);
+``--version`` picks ``latest`` (highest ``v*`` tag), a tag, a branch, or a
+commit SHA:
+
+.. code-block:: console
+
+    $ ninja download --cult-cargo
+    $ ninja download --cult-cargo --version v1.2.3 --dest-dir .shinobi/cabs/cultcargo
 
 ``ninja compile`` -- offload a recipe
 -------------------------------------
@@ -79,7 +131,8 @@ imaged cabs in; ``none`` for bare argv), and ``--submit`` (submit and detach).
 ----------------------------------------
 
 Reports a detached offloaded run's progress from the handle file written by
-``ninja compile --submit``, querying the engine fresh (no persistent process):
+``ninja compile --submit`` or ``ninja run --remote``, querying the engine
+fresh (no persistent process):
 
 .. code-block:: console
 

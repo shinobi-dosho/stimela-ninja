@@ -98,3 +98,12 @@ is handy for checking how a YAML definition was interpreted:
 .. code-block:: console
 
     $ ninja cab cabs.yml wsclean
+
+To look a cab up by name across installed ``shinobi.cabs`` providers (e.g.
+`dosho <https://github.com/caracal-pipeline/dosho>`_) instead of pointing at
+a specific YAML file, use ``ninja cabs show``/``ninja cabs list``:
+
+.. code-block:: console
+
+    $ ninja cabs list
+    $ ninja cabs show wsclean
