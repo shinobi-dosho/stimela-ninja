@@ -35,7 +35,7 @@ dev = [
 # yet either).
 examples = [
     "simms @ git+https://github.com/wits-cfa/simms.git@7511d435348d05b816d2ff4ec1f7bdd652dec6a1 ; python_version >= '3.11'",
-    "dosho @ https://github.com/SpheMakh/stimela-ninja",
+    "dosho @ git+https://github.com/SpheMakh/dosho ; python_version >= '3.11'",
 ]
 # Documentation build (Sphinx + Furo + autodoc). `uv sync --group docs`.
 docs = [
