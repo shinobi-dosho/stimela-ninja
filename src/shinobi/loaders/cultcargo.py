@@ -94,7 +94,8 @@ def load_file(path: str | Path, *, package_roots: dict[str, Path] | None = None)
     raw = _load_raw(path, roots)
     resolved = _resolve_use(raw, raw)
     cabs_section = resolved.get("cabs", resolved)
-    return {name: _build_cabdef(name, spec, roots) for name, spec in cabs_section.items()}
+    dynamic_inputs = _dynamic_input_patterns(roots)
+    return {name: _build_cabdef(name, spec, roots, dynamic_inputs) for name, spec in cabs_section.items()}
 
 
 def loads(text: str, *, package_roots: dict[str, Path] | None = None) -> dict[str, Cab]:
@@ -108,7 +109,8 @@ def loads(text: str, *, package_roots: dict[str, Path] | None = None) -> dict[st
     raw = resolve_directive(raw, "_include", lambda entry: _include_entry_to_dict(entry, None, roots))
     resolved = _resolve_use(raw, raw)
     cabs_section = resolved.get("cabs", resolved)
-    return {name: _build_cabdef(name, spec, roots) for name, spec in cabs_section.items()}
+    dynamic_inputs = _dynamic_input_patterns(roots)
+    return {name: _build_cabdef(name, spec, roots, dynamic_inputs) for name, spec in cabs_section.items()}
 
 
 _PKG_INCLUDE_RE = re.compile(r"^\((?P<pkg>[\w.]+)\)(?P<rest>.*)$")
@@ -180,6 +182,15 @@ def _resolve_use(node: Any, root: dict[str, Any]) -> Any:
 
 # -- static ParamPattern catch-alls for the real dynamic_schema cabs --------
 
+# Closed-world assumption, deliberately: `_is_section` (below) treats a
+# dict as a leaf param spec if it uses *any* of these keys, and as a
+# section (to recurse/flatten) otherwise. Every real cult-cargo leaf spec
+# key seen in this project's own vendored cab files is listed -- but a
+# leaf spec using only some *other*, not-yet-seen key (and no key from
+# this set) would be misclassified as a section, since there's no
+# positive "this dict is definitely a leaf" signal, only the absence of
+# a known negative one. Extend this set (never remove from it) if a real
+# cab hits this.
 _LEAF_SPEC_KEYS = {
     "info", "dtype", "required", "default", "implicit", "nom_de_guerre",
     "policies", "choices", "must_exist", "mkdir", "writable",
@@ -193,6 +204,21 @@ def _load_template_attrs(dotted_pkg: str, filename: str, top_key: str, package_r
     Python function) and turn it into `{attr_name: ParamMeta}`. `top_key`
     is the one wrapping key the real template file uses (cubical's
     `JONES_TEMPLATE:`, quartical's `gain:`).
+
+    Carries over every `ParamMeta` field the template's own per-attr spec
+    can express -- `info`/`dtype` directly, `nom_de_guerre`/`implicit`
+    directly, `positional`/`repeat_as_tokens` from a nested `policies:`
+    block -- the same extraction `_collect` does for ordinary static
+    fields below. `required`/`default`/`choices` (real keys template specs
+    do carry, e.g. quartical's `gain.type.choices`) are deliberately not
+    forwarded: `ParamMeta` has no fields for them at all, because a
+    pattern-matched dynamic attr never becomes a declared pydantic model
+    field the way a static one does (see `ParamPattern`'s own docstring)
+    -- there's no per-field "required"/"default" slot to populate for an
+    attr that's only ever validated by regex/dtype at match time, not by
+    the model itself. This table is a soft validation catch-all, not a
+    complete re-derivation of the tool's real schema (see this module's
+    own top-level docstring on `dynamic_schema`).
     """
     pkg_dir = _resolve_package_root(dotted_pkg, package_roots)
     try:
@@ -201,10 +227,19 @@ def _load_template_attrs(dotted_pkg: str, filename: str, top_key: str, package_r
         raise CabLoadError(f"cannot read dynamic_schema template {pkg_dir / filename}: {exc}") from exc
     doc = yaml.safe_load(text) or {}
     attrs = doc.get(top_key) or {}
-    return {
-        name: ParamMeta(info=spec.get("info"), dtype=spec.get("dtype"))
-        for name, spec in attrs.items()
-    }
+    result: dict[str, ParamMeta] = {}
+    for name, spec in attrs.items():
+        spec = spec or {}
+        param_policies = spec.get("policies") or {}
+        result[name] = ParamMeta(
+            info=spec.get("info"),
+            dtype=spec.get("dtype"),
+            nom_de_guerre=spec.get("nom_de_guerre"),
+            implicit=spec.get("implicit"),
+            positional=bool(param_policies.get("positional", False)),
+            repeat_as_tokens=param_policies.get("repeat") == "list",
+        )
+    return result
 
 
 def _dynamic_input_patterns(package_roots: dict[str, Path]) -> dict[str, list[ParamPattern]]:
@@ -224,6 +259,14 @@ def _dynamic_input_patterns(package_roots: dict[str, Path]) -> dict[str, list[Pa
     Gracefully returns no entry for a cab whose template file isn't
     resolvable (e.g. `package_roots` wasn't supplied) -- the cab still
     loads with just its static fields, as if this table didn't exist.
+
+    Called once per `load_file`/`loads` (not once per cab defined in the
+    loaded document) and the result threaded through to `_build_cabdef` --
+    both real template files are only ever read from disk once per load
+    call, however many cabs the document defines, rather than once per
+    cab (which would have re-read *both* cubical's and quartical's
+    template files for every cab in a multi-cab file, regardless of
+    whether that cab even used `dynamic_schema`).
     """
     patterns: dict[str, list[ParamPattern]] = {}
     sources = {
@@ -245,15 +288,24 @@ def _dynamic_input_patterns(package_roots: dict[str, Path]) -> dict[str, list[Pa
 
 # wsclean's real dynamic output names are `<enumerable-imagetype>.<qualifiers>`
 # (e.g. `dirty.per-band`, `restored.i.per-interval.mfs`) -- the imagetype is
-# enumerable (from cult-cargo's own wsclean/__init__.py `img_output()` call
-# sites), the qualifier tail is open-ended/combinatorial (built from several
-# resolved params: nchan/pol/intervals-out/niter/make-psf/...). This is
-# validation-only (see task scope): it lets `recipe.outputs(step, name)`
+# enumerable, the qualifier tail is open-ended/combinatorial (built from
+# several resolved params: nchan/pol/intervals-out/niter/make-psf/...). This
+# is validation-only (see task scope): it lets `recipe.outputs(step, name)`
 # accept a real dynamic name without raising, but does not resolve `implicit`
 # glob/placeholder templates into real file paths -- that stays unbuilt.
+#
+# Hand-transcribed (not read from cult-cargo at load time -- would mean
+# importing cab package code, the exact thing this loader avoids) from
+# cult-cargo's `cultcargo/genesis/wsclean/__init__.py`'s
+# `make_stimela_schema()`: `imagetypes` only ever collects
+# "psf"/"dirty"/"restored"/"residual"/"model" (the `outputs[f"{imagetype}...]`
+# dict-key prefix) -- `img_output()`'s own `imagetype == "restored" ->
+# "image"` rename is an unrelated *filename*-component substitution, not a
+# second valid key prefix, so "image" is deliberately not in this table. If
+# cult-cargo's own `imagetypes` list ever changes, this table silently
+# drifts out of sync (no runtime cross-check against the real package).
 _WSCLEAN_IMAGETYPES: dict[str, ParamMeta] = {
     "dirty": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
-    "image": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
     "restored": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
     "residual": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
     "model": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
@@ -272,7 +324,9 @@ def _dynamic_output_patterns() -> dict[str, list[ParamPattern]]:
     }
 
 
-def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path]) -> Cab:
+def _build_cabdef(
+    name: str, spec: dict[str, Any], package_roots: dict[str, Path], dynamic_inputs: dict[str, list[ParamPattern]]
+) -> Cab:
     image = spec.get("image")
     if isinstance(image, dict):
         image = image.get("name")
@@ -284,7 +338,11 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
     if "command" not in spec:
         raise CabLoadError(f"cab '{name}' has no 'command' (check its _use references)")
 
-    extra_input_patterns = _dynamic_input_patterns(package_roots).get(name, [])
+    # dynamic_inputs is computed once per load_file()/loads() call and
+    # passed in, not recomputed here -- see _dynamic_input_patterns's own
+    # docstring for why (avoids re-reading cubical's/quartical's template
+    # files from disk once per cab in a multi-cab document).
+    extra_input_patterns = dynamic_inputs.get(name, [])
     extra_output_patterns = _dynamic_output_patterns().get(name, [])
 
     if spec.get("dynamic_schema") and not extra_input_patterns and not extra_output_patterns:
@@ -327,6 +385,14 @@ def _is_section(value: dict) -> bool:
     like a known param-spec key. An empty dict is always a (minimal) leaf
     spec, never an empty section -- this preserves the existing bare `key:`
     (implicit `{}`) leaf convention.
+
+    Closed-world heuristic (see `_LEAF_SPEC_KEYS`'s own comment): this can
+    misclassify a leaf spec as a section if it uses only param-spec keys
+    this project hasn't seen yet. A misclassified leaf would recurse into
+    `_collect` and get flattened as if it were a nested section instead
+    of being treated as one field -- the fix, when that happens, is
+    adding the missing key(s) to `_LEAF_SPEC_KEYS`, not rewriting this
+    function.
     """
     return bool(value) and not (set(value) & _LEAF_SPEC_KEYS)
 

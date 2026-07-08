@@ -1,4 +1,5 @@
 
+import warnings
 from pathlib import Path
 
 import pytest
@@ -325,6 +326,67 @@ def test_dynamic_cab_argv_uses_replace_policy_for_pattern_matched_field(tmp_path
     assert "--g1-solvable" in argv
 
 
+def test_dynamic_input_patterns_reads_each_template_file_once_per_load(tmp_path, monkeypatch):
+    """Regression guard for the redundant-per-cab-I/O review finding:
+    _dynamic_input_patterns must be computed once per load_file()/loads()
+    call, not once per cab defined in the loaded document.
+    """
+    import shinobi.loaders.cultcargo as cultcargo_loader
+
+    main = _write_cubical_fixture(tmp_path)
+    # a second, unrelated cab in the same document -- if _dynamic_input_
+    # patterns were still being called once per cab, loading this
+    # two-cab file would re-read cubical's template file twice.
+    main.write_text(main.read_text() + "  plain:\n    command: echo\n    inputs:\n      x:\n        dtype: str\n")
+
+    calls = 0
+    real = cultcargo_loader._load_template_attrs
+
+    def counting(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cultcargo_loader, "_load_template_attrs", counting)
+    cabs = load_file(main, package_roots={"cultcargo": tmp_path / "cultcargo"})
+    assert set(cabs) == {"cubical", "plain"}
+    # one call per real template source (cubical, quartical) -- not one
+    # per cab defined in the document.
+    assert calls == 2
+
+
+def test_dynamic_cab_template_attrs_carry_policies_and_implicit(tmp_path):
+    """_load_template_attrs must forward nom_de_guerre/implicit/
+    positional/repeat_as_tokens from a template attr's own spec, not just
+    info/dtype -- the "drops template fields" review finding.
+    """
+    pkg_dir = tmp_path / "cultcargo"
+    (pkg_dir / "genesis" / "cubical").mkdir(parents=True)
+    (pkg_dir / "genesis" / "cubical" / "schema.yaml").write_text(
+        "data:\n  ms:\n    dtype: MS\n    required: true\n"
+    )
+    (pkg_dir / "genesis" / "cubical" / "schema_JONES_TEMPLATE.yaml").write_text(
+        "JONES_TEMPLATE:\n"
+        "  solvable:\n    info: whether this term is solvable\n"
+        "  positions:\n    info: positional attr\n    policies:\n      positional: true\n"
+        "  tags:\n    info: repeated attr\n    policies:\n      repeat: list\n"
+    )
+    main = tmp_path / "cubical.yml"
+    main.write_text(
+        "cabs:\n  cubical:\n    command: gocubical\n"
+        "    policies:\n      prefix: '--'\n      replace: {'.': '-'}\n"
+        "    inputs:\n      _include: (cultcargo.genesis.cubical)schema.yaml\n"
+        "    dynamic_schema: cultcargo.genesis.cubical.make_stimela_schema.make_stimela_schema\n"
+    )
+    cubical = load_file(main, package_roots={"cultcargo": tmp_path / "cultcargo"})["cubical"]
+    pattern = cubical.input_patterns[0]
+    attrs = next(seg.attrs for seg in pattern.segments if seg.attrs)
+    assert attrs["positions"].positional is True
+    assert attrs["tags"].repeat_as_tokens is True
+    assert attrs["solvable"].positional is False
+    assert attrs["solvable"].repeat_as_tokens is False
+
+
 def test_cab_without_template_file_loads_without_dynamic_pattern(tmp_path):
     """cubical.yml still loads fine (allow_extra=False, no input_patterns)
     if package_roots is supplied but the JONES_TEMPLATE file itself is
@@ -352,14 +414,22 @@ def test_cab_without_template_file_loads_without_dynamic_pattern(tmp_path):
 
 def test_wsclean_dynamic_schema_gets_output_pattern_no_warning():
     text = "cabs:\n  wsclean:\n    command: wsclean\n    dynamic_schema: cultcargo.genesis.wsclean.make_stimela_schema\n"
-    import warnings as _warnings
-
-    with _warnings.catch_warnings():
-        _warnings.simplefilter("error")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         wsclean = loads(text)["wsclean"]
     assert wsclean.match_output_pattern("dirty.per-band") is not None
     assert wsclean.match_output_pattern("restored.i.per-interval.mfs") is not None
     assert wsclean.match_output_pattern("totally-unknown-shape") is None
+
+
+def test_wsclean_image_is_not_a_real_imagetype_key():
+    """"image" is img_output()'s internal *filename*-component rename for
+    "restored" (see cultcargo.py's own _WSCLEAN_IMAGETYPES comment) --
+    never a real outputs-dict key prefix, so it must not be accepted.
+    """
+    text = "cabs:\n  wsclean:\n    command: wsclean\n    dynamic_schema: cultcargo.genesis.wsclean.make_stimela_schema\n"
+    wsclean = loads(text)["wsclean"]
+    assert wsclean.match_output_pattern("image.per-band") is None
 
 
 def test_bracket_list_dtype_resolves_on_real_simms_example():

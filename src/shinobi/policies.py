@@ -35,6 +35,11 @@ def _emit_arg(argv: list[str], policies, arg_name: str, value: Any) -> None:
     if policies.key_value:
         # hydra-style single token, e.g. "input_ms.data_column=DATA" or
         # "solver.terms=[K,G]" -- never a bare flag, even for a bool.
+        # Returns before the repeat_list branch below, so a cab with both
+        # key_value=True and repeat_list=True (none do today -- quartical
+        # sets key_value with repeat="[]", handled by _format_value's own
+        # list branch above) would have repeat_list silently ignored; the
+        # single hydra-style token is correct for every real key_value cab.
         argv.append(f"{arg_name}={_format_value(value, policies)}")
         return
 
