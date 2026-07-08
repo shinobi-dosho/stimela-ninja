@@ -35,7 +35,7 @@ dev = [
 # yet either).
 examples = [
     "simms @ git+https://github.com/wits-cfa/simms.git@7511d435348d05b816d2ff4ec1f7bdd652dec6a1 ; python_version >= '3.11'",
-    "dosho",
+    "dosho @ https://github.com/SpheMakh/stimela-ninja",
 ]
 # Documentation build (Sphinx + Furo + autodoc). `uv sync --group docs`.
 docs = [
@@ -44,12 +44,6 @@ docs = [
     "sphinx-copybutton>=0.5",
     "myst-parser>=2.0",
 ]
-
-# dosho isn't published to PyPI yet -- points at the local sibling
-# checkout for now, same convention dosho's own pyproject.toml uses for
-# its stimela-ninja dependency.
-[tool.uv.sources]
-dosho = { path = "../dosho", editable = true }
 
 [project.urls]
 Homepage = "https://github.com/SpheMakh/stimela-ninja"
