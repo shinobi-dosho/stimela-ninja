@@ -50,6 +50,15 @@ class ParamMeta(BaseModel):
     cult-cargo cabs express this as a per-field `policies: {repeat: list}`
     (see e.g. wsclean's `-size <w> <h>`/`-weight briggs <n>`, which need
     two separate argv tokens, not `"4096,4096"` as one).
+
+    On an *output* field, a string `implicit` containing `{name}`
+    placeholders is resolved by `steps.dispatch._fill_outputs` as a
+    `str.format` template against the step's prepared (validated) input
+    values -- e.g. `implicit="{prefix}-MFS-image.fits"` derives a tool's
+    output path from its own `prefix` input, without shinobi ever
+    importing/executing the tool's own schema-generation code. A plain
+    string with no `{...}` is used as a literal constant, same as on an
+    input field.
     """
 
     nom_de_guerre: str | None = None

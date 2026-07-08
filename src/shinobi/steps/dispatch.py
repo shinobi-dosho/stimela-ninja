@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from shinobi.cache import compute_cache_key, get_cache_manifest
 from shinobi.config import AppConfig
+from shinobi.exceptions import ParameterError
 from shinobi.graph import build_graph
 from shinobi.policies import build_argv
 from shinobi.results import StepResult
@@ -269,7 +270,13 @@ def _dispatch(
 def _fill_outputs(cab: Cab, prepared: dict[str, Any], run, wrangled: dict[str, Any]):
     """Fill the cab's outputs_model by priority: wrangler value >
     same-named final input > reserved run field (returncode/stdout/stderr)
-    > field default.
+    > `ParamMeta.implicit` template/constant > field default.
+
+    An `implicit` string containing `{...}` placeholders is resolved as a
+    `str.format` template against `prepared` (the step's own validated
+    input values) -- e.g. wsclean's `implicit="{prefix}-MFS-image.fits"`
+    derives its output path from the `prefix` input. A plain string with
+    no placeholders is used as-is, same as an input field's `implicit`.
     """
     reserved = {"returncode": run.returncode, "stdout": run.stdout, "stderr": run.stderr}
     values: dict[str, Any] = {}
@@ -280,7 +287,23 @@ def _fill_outputs(cab: Cab, prepared: dict[str, Any], run, wrangled: dict[str, A
             values[name] = prepared[name]
         elif name in reserved:
             values[name] = reserved[name]
+        else:
+            meta = cab.field_meta.get(name)
+            if meta is not None and isinstance(meta.implicit, str):
+                values[name] = _resolve_implicit_template(cab, name, meta.implicit, prepared)
     return cab.outputs_model(**values)
+
+
+def _resolve_implicit_template(
+    cab: Cab, field: str, template: str, prepared: dict[str, Any]
+) -> str:
+    try:
+        return template.format(**prepared)
+    except KeyError as exc:
+        raise ParameterError(
+            f"cab {cab.name!r} output {field!r} implicit template {template!r} "
+            f"references unknown input {exc}"
+        ) from exc
 
 
 def _run_cab(cab: Cab, prepared: dict[str, Any], backend_name: str) -> StepResult:

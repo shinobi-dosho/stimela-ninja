@@ -194,6 +194,101 @@ def test_wrangler_output_populates_outputs_model():
     assert result.success
 
 
+def test_implicit_template_output_resolves_against_prepared_inputs():
+    """A `ParamMeta.implicit` template on an *output* field (e.g. wsclean's
+    `implicit="{prefix}-MFS-image.fits"`) is resolved by `str.format`-ing
+    against the step's own validated inputs -- no eval/exec, and no need
+    for a caller to thread a synthetic passthrough field just to get a
+    real, wireable output value.
+    """
+    from shinobi.steps.schema import ParamMeta
+
+    class In(BaseModel):
+        prefix: str
+
+    class Out(BaseModel):
+        image: str | None = None
+
+    register_step_backend("implicit-out", RecordingBackend())
+    cab = Cab(
+        name="wsclean",
+        command="wsclean",
+        inputs_model=In,
+        outputs_model=Out,
+        backend="implicit-out",
+        field_meta={"image": ParamMeta(implicit="{prefix}-MFS-image.fits")},
+    )
+    result = _dispatch(cab, None, prefix="deep")
+    assert result.outputs.image == "deep-MFS-image.fits"
+
+
+def test_implicit_constant_output_still_works_with_no_placeholders():
+    from shinobi.steps.schema import ParamMeta
+
+    class In(BaseModel):
+        pass
+
+    class Out(BaseModel):
+        mode: str | None = None
+
+    register_step_backend("implicit-const-out", RecordingBackend())
+    cab = Cab(
+        name="tool",
+        command="tool",
+        inputs_model=In,
+        outputs_model=Out,
+        backend="implicit-const-out",
+        field_meta={"mode": ParamMeta(implicit="summary")},
+    )
+    result = _dispatch(cab, None)
+    assert result.outputs.mode == "summary"
+
+
+def test_implicit_output_template_referencing_unknown_input_raises_parameter_error():
+    from shinobi.exceptions import ParameterError
+    from shinobi.steps.schema import ParamMeta
+
+    class In(BaseModel):
+        pass
+
+    class Out(BaseModel):
+        image: str | None = None
+
+    register_step_backend("implicit-bad-out", RecordingBackend())
+    cab = Cab(
+        name="wsclean",
+        command="wsclean",
+        inputs_model=In,
+        outputs_model=Out,
+        backend="implicit-bad-out",
+        field_meta={"image": ParamMeta(implicit="{missing}-image.fits")},
+    )
+    with pytest.raises(ParameterError, match="missing"):
+        _dispatch(cab, None)
+
+
+def test_wrangled_and_prepared_values_still_take_priority_over_implicit():
+    from shinobi.steps.schema import ParamMeta
+
+    class In(BaseModel):
+        image: str | None = None
+
+    class Out(BaseModel):
+        image: str | None = None
+
+    register_step_backend("implicit-priority-out", RecordingBackend())
+    cab = Cab(
+        name="tool",
+        command="tool",
+        inputs_model=In,
+        outputs_model=Out,
+        backend="implicit-priority-out",
+        field_meta={"image": ParamMeta(implicit="{image}-fallback.fits")},
+    )
+    result = _dispatch(cab, None, image="explicit.fits")
+    assert result.outputs.image == "explicit.fits"
+
+
 # -- standalone StepRef call --
 
 
