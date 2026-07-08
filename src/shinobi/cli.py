@@ -52,6 +52,41 @@ def show_cab(cab_file: str, cab_name: str) -> None:
     click.echo(cabs[cab_name].model_dump_json(indent=2))
 
 
+@main.group("cabs")
+def cabs_group() -> None:
+    """Look up cabs by name across installed `shinobi.cabs` providers
+    (e.g. `dosho`), instead of pointing at a specific YAML file (see the
+    path-based `cab` command above for that)."""
+
+
+@cabs_group.command("list")
+def list_cabs() -> None:
+    """List every cab name, grouped by the provider that supplies it."""
+    from shinobi.cabs import list_cabs as _list_cabs
+
+    by_provider = _list_cabs()
+    if not by_provider:
+        raise click.ClickException("no shinobi.cabs providers installed")
+    for provider, names in by_provider.items():
+        click.echo(f"{provider}:")
+        for name in names:
+            click.echo(f"  {name}")
+
+
+@cabs_group.command("show")
+@click.argument("cab_name")
+def show_cab_by_name(cab_name: str) -> None:
+    """Show a cab's schema, resolved by name across installed providers."""
+    from shinobi.cabs import get as _get_cab
+    from shinobi.exceptions import CabLoadError
+
+    try:
+        cab = _get_cab(cab_name)
+    except CabLoadError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(cab.model_dump_json(indent=2))
+
+
 def _resolve_target(target: str):
     """Resolve 'path/to/file.py:name' or 'dotted.module.path:name' into the
     Scope or StepRef it names.

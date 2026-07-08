@@ -21,7 +21,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Union, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_serializer, model_validator
 
 
 class Mutability(str, Enum):
@@ -237,6 +237,23 @@ class Scope(BaseModel):
     # default (itself disabled by default).
     cache: bool | None = None
     cache_dir: str | None = None
+
+    @field_serializer("inputs_model", "outputs_model")
+    def _serialize_param_model(self, model: type[BaseModel]) -> dict[str, Any]:
+        """`inputs_model`/`outputs_model` are pydantic model *classes*, not
+        instances -- not JSON-serializable by default (used by `ninja cab`/
+        `ninja cabs show`'s `model_dump_json()`). Dump each field's
+        annotation/required-ness/default as a plain dict instead of the
+        class object itself.
+        """
+        return {
+            name: {
+                "type": str(field.annotation),
+                "required": field.is_required(),
+                "default": None if field.is_required() else field.default,
+            }
+            for name, field in model.model_fields.items()
+        }
 
     def __call__(self, *, backend: str | None = None, cache: bool | None = None, cache_dir: str | None = None, **kwargs: Any):
         """Bare execution -- no orchestration function."""
