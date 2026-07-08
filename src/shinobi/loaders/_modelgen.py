@@ -8,12 +8,16 @@ names (`str`/`int`/`float`/`bool`), file-like names (`File`/`MS`/
 `Directory`/`URI`, all mapped to `pathlib.Path` so `path_fields` picks
 them up for bind-mounting), `list:<inner>` (cult-cargo/classic colon
 syntax) and `List[<inner>]` (newer bracket syntax seen in both newer
-cult-cargo cabs and caracal2's scabha-dialect config schemas) for lists.
+cult-cargo cabs and caracal2's scabha-dialect config schemas) for lists,
+and `Tuple[<a>, <b>, ...]`/`Union[<a>, <b>, ...]` (both bracket syntax,
+nestable inside each other and inside `List[...]`) for tuples and unions.
 """
 
 from __future__ import annotations
 
+import functools
 import keyword
+import operator
 import re
 from pathlib import Path
 from typing import Any, Callable
@@ -77,12 +81,39 @@ def is_file_dtype(dtype: str) -> bool:
 
 
 _BRACKET_LIST_RE = re.compile(r"^list\[(?P<inner>.+)\]$", re.IGNORECASE)
+_TUPLE_RE = re.compile(r"^tuple\[(?P<inner>.+)\]$", re.IGNORECASE)
+_UNION_RE = re.compile(r"^union\[(?P<inner>.+)\]$", re.IGNORECASE)
+
+
+def _split_top_level(spec: str) -> list[str]:
+    """Split a bracket-inner spec (`"int, int"`, `"str, List[int]"`) on
+    top-level commas only -- commas nested inside a `[...]` (e.g. inside a
+    `List[...]`/`Tuple[...]`/`Union[...]` argument) don't split.
+    """
+    parts = []
+    depth = 0
+    current: list[str] = []
+    for ch in spec:
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        parts.append("".join(current).strip())
+    return parts
 
 
 def dtype_to_type(dtype: str) -> Any:
     """Map a cab dtype string to a Python type. File-like dtypes become
     `pathlib.Path`; `list:<inner>` or `List[<inner>]` becomes
-    `list[<inner>]`; anything unrecognised falls back to `str`.
+    `list[<inner>]`; `Tuple[<a>, <b>, ...]` becomes `tuple[<a>, <b>, ...]`;
+    `Union[<a>, <b>, ...]` becomes `<a> | <b> | ...`; anything unrecognised
+    falls back to `str`.
     """
     dtype = str(dtype).strip()
     lower = dtype.lower()
@@ -90,6 +121,14 @@ def dtype_to_type(dtype: str) -> Any:
         return list[dtype_to_type(dtype[5:])]
     if m := _BRACKET_LIST_RE.match(dtype):
         return list[dtype_to_type(m.group("inner"))]
+    if m := _TUPLE_RE.match(dtype):
+        items = tuple(dtype_to_type(p) for p in _split_top_level(m.group("inner")))
+        return tuple[items] if items else tuple
+    if m := _UNION_RE.match(dtype):
+        items = [dtype_to_type(p) for p in _split_top_level(m.group("inner"))]
+        if items:
+            return functools.reduce(operator.or_, items)
+        return str
     if is_file_dtype(dtype):
         return Path
     return _SCALAR_TYPES.get(lower, str)
