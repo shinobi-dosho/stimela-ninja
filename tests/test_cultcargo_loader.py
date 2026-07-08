@@ -423,13 +423,18 @@ def test_wsclean_dynamic_schema_gets_output_pattern_no_warning():
 
 
 def test_wsclean_image_is_not_a_real_imagetype_key():
-    """"image" is img_output()'s internal *filename*-component rename for
-    "restored" (see cultcargo.py's own _WSCLEAN_IMAGETYPES comment) --
-    never a real outputs-dict key prefix, so it must not be accepted.
+    """"restored" is the real outputs-dict key prefix; "image" is
+    img_output()'s own real on-disk filename component for it (its
+    nom_de_guerre, see cultcargo.py's own _WSCLEAN_IMAGETYPES comment)
+    -- "image" itself must not be accepted as a key.
     """
     text = "cabs:\n  wsclean:\n    command: wsclean\n    dynamic_schema: cultcargo.genesis.wsclean.make_stimela_schema\n"
     wsclean = loads(text)["wsclean"]
     assert wsclean.match_output_pattern("image.per-band") is None
+    restored_meta = next(
+        seg.attrs["restored"] for seg in wsclean.output_patterns[0].segments if seg.attrs and "restored" in seg.attrs
+    )
+    assert restored_meta.nom_de_guerre == "image"
 
 
 def test_bracket_list_dtype_resolves_on_real_simms_example():

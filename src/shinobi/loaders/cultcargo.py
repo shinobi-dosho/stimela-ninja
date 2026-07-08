@@ -299,14 +299,20 @@ def _dynamic_input_patterns(package_roots: dict[str, Path]) -> dict[str, list[Pa
 # cult-cargo's `cultcargo/genesis/wsclean/__init__.py`'s
 # `make_stimela_schema()`: `imagetypes` only ever collects
 # "psf"/"dirty"/"restored"/"residual"/"model" (the `outputs[f"{imagetype}...]`
-# dict-key prefix) -- `img_output()`'s own `imagetype == "restored" ->
-# "image"` rename is an unrelated *filename*-component substitution, not a
-# second valid key prefix, so "image" is deliberately not in this table. If
-# cult-cargo's own `imagetypes` list ever changes, this table silently
-# drifts out of sync (no runtime cross-check against the real package).
+# dict-key prefix -- this table's keys). "image" is *not* a second valid
+# key prefix -- it's `img_output()`'s own real filename component for the
+# "restored" key (`imagetype == "restored": imagetype = "image"`, then
+# `{prefix}-image.fits`): "restored" is wsclean's nom_de_guerre-style
+# alias for what the tool actually names "image" on disk, the same
+# declared-name-vs-real-name split `ParamMeta.nom_de_guerre` exists for
+# elsewhere in this loader. If cult-cargo's own `imagetypes` list ever
+# changes, this table silently drifts out of sync (no runtime
+# cross-check against the real package).
 _WSCLEAN_IMAGETYPES: dict[str, ParamMeta] = {
     "dirty": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
-    "restored": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
+    "restored": ParamMeta(
+        dtype="File", info="wsclean dynamic output (validation only)", nom_de_guerre="image"
+    ),
     "residual": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
     "model": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
     "psf": ParamMeta(dtype="File", info="wsclean dynamic output (validation only)"),
