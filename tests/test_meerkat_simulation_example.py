@@ -102,15 +102,18 @@ def test_recipe_dispatches_with_correct_argv_shape():
     assert skysim_argv[-1] == "meerkat_simulation.ms"
 
     # real dosho cubical: flattened flag names, per-Jones-term
-    # ParamPattern-matched extras (G-solvable/G-type), a real `ms` output
-    # (implicit={data_ms} passthrough) wired all the way into wsclean below.
+    # ParamPattern-matched extras (lowercase g-solvable/g-type -- real
+    # CubiCal per-term CLI flags are always lowercase regardless of the
+    # term label's own case, unlike --sol-jones' own uppercase "G" value),
+    # a real `ms` output (implicit={data_ms} passthrough) wired all the
+    # way into wsclean below.
     cubical_argv = calls_by_name["cubical"][0]
     assert cubical_argv[0] == "gocubical"
     assert "--data-ms" in cubical_argv
     assert "--sol-jones" in cubical_argv
-    assert "--G-solvable" in cubical_argv
-    i = cubical_argv.index("--G-type")
-    assert cubical_argv[i : i + 2] == ["--G-type", "complex-2x2"]
+    assert "--g-solvable" in cubical_argv
+    i = cubical_argv.index("--g-type")
+    assert cubical_argv[i : i + 2] == ["--g-type", "complex-2x2"]
 
     # wsclean (robust=2, the first image step): repeat_as_tokens for
     # -size (bare tokens, not comma-joined), a real Union[str, Tuple[str,

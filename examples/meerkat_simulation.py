@@ -130,7 +130,13 @@ def build_simulation(robust_values: tuple[int, ...] = (2, 0, -2)) -> Recipe:
         madmax_enable="True",  # dosho's cubical port has no explicit
         madmax_threshold="7.0",  # dtype for these -- both are real str fields
         sol_jones=["G"],
-        **{"G-solvable": True, "G-type": "complex-2x2"},
+        # sol-jones' *value* uses the term's own label case ("G"), but
+        # real CubiCal's per-term CLI flags are always lowercase
+        # regardless -- confirmed against caracal 1.x's real production
+        # usage (selfcal_worker.py/ddcal_worker.py: "g-solvable", never
+        # "G-solvable"). shinobi's ParamPattern match is case-agnostic,
+        # so "G-solvable" would build fine but gocubical itself rejects it.
+        **{"g-solvable": True, "g-type": "complex-2x2"},
     )
 
     image_steps: list[str] = []
