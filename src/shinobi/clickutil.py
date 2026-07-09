@@ -34,6 +34,15 @@ from shinobi.steps.schema import _unwrap_annotation
 
 
 def is_list(annotation) -> bool:
+    """Check whether a type annotation names a list/tuple type.
+
+    Args:
+        annotation: A type annotation, possibly wrapped in `Optional`/`Union`.
+
+    Returns:
+        True if the annotation (or any of its `Union` arms) is `list` or
+        `tuple`.
+    """
     origin = get_origin(annotation)
     if origin is Union or origin is types.UnionType:
         return any(is_list(arg) for arg in get_args(annotation))
@@ -61,6 +70,17 @@ def _is_path_annotation(annotation) -> bool:
 
 
 def click_type(annotation, is_path: bool):
+    """Pick the `click` parameter type for a field's annotation.
+
+    Args:
+        annotation: The field's type annotation.
+        is_path: Whether the annotation is path-like (as determined by
+            `_is_path_annotation`); takes priority over the leaf type.
+
+    Returns:
+        A `click.Path()` if `is_path`, otherwise the `click` type
+        matching the annotation's leaf type (`click.STRING` as fallback).
+    """
     if is_path:
         return click.Path()
     for leaf in _unwrap_annotation(annotation):
@@ -70,6 +90,14 @@ def click_type(annotation, is_path: bool):
 
 
 def option_flag(field_name: str) -> str:
+    """Build a `--flag-name` click option string from a flat field name.
+
+    Args:
+        field_name: Flat, underscore-joined field name (e.g. `"foo_bar"`).
+
+    Returns:
+        The corresponding `--foo-bar` flag string.
+    """
     # ONLY a straight "_" -> "-" replace: click derives the callback kwarg
     # name from this flag string, and it must round-trip back to the exact
     # flat name used here and in unflatten_kwargs.
@@ -109,6 +137,17 @@ def iter_leaf_fields(
 
 
 def build_options(model: type[BaseModel]) -> list[click.Option]:
+    """Turn a pydantic model's (possibly nested) fields into click options.
+
+    Args:
+        model: A pydantic `BaseModel` subclass; nested `BaseModel` fields are
+            flattened via `iter_leaf_fields`.
+
+    Returns:
+        A list of `click.Option` instances, one per leaf field. Boolean
+        fields become `--flag/--no-flag` options; list/tuple fields become
+        `multiple=True` options.
+    """
     options = []
     for flat_name, _path, field in iter_leaf_fields(model):
         required = field.is_required()

@@ -16,6 +16,18 @@ _TYPES: dict[str, type] = {"str": str, "int": int, "float": float, "bool": bool}
 
 
 def apply_wranglers(wranglers: dict[str, list[str]], lines: list[str]) -> dict[str, Any]:
+    """Extract structured output values from a cab's console output.
+
+    Args:
+        wranglers: Mapping of regex pattern to the list of wrangler action
+            strings to apply on each matching line (e.g.
+            `"PARSE_OUTPUT:<groupname>:<typename>"`).
+        lines: The cab's combined stdout/stderr lines, in order.
+
+    Returns:
+        A dict of extracted output field name to typed value, built by
+        applying each matched line's actions in order.
+    """
     outputs: dict[str, Any] = {}
     compiled = [(re.compile(pattern), actions) for pattern, actions in wranglers.items()]
 

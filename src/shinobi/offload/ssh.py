@@ -60,6 +60,13 @@ from shinobi.exceptions import BackendError
 
 @dataclass
 class RemoteSpec:
+    """A parsed `user@host:/path` (or `host:/path`) remote target.
+
+    Attributes:
+        host: The host part (optionally including `user@`).
+        path: The remote filesystem path.
+    """
+
     host: str
     path: str
 
@@ -271,6 +278,17 @@ def sync_to_remote(base_dir: Path, rel_paths: list[Path], remote: RemoteSpec) ->
 
 @dataclass
 class RemoteHandle:
+    """A reference to a detached, remotely-running (or completed) recipe.
+
+    Attributes:
+        host: The remote host the recipe is running on.
+        path: The remote working directory the recipe runs in.
+        pid: Process ID of the remote launcher process.
+        log_file: Remote path to the combined stdout/stderr log.
+        exit_file: Remote path to the file the process writes its exit
+            code to on completion.
+    """
+
     host: str
     path: str
     pid: str

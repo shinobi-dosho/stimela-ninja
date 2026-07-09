@@ -212,6 +212,14 @@ def check_offloadable(recipe: "Recipe") -> RecipeGraph:
             )
 
     def check_output_ref(label: str, src: OutputRef) -> None:
+        """Append a reason to `reasons` if `src` can't cross a node boundary.
+
+        Args:
+            label: Human-readable description of what references `src`,
+                used in the reported reason.
+            src: The output reference to check (wrangler-derived and
+                non-path outputs are ineligible for offload).
+        """
         producer = by_name.get(src.step)
         if producer is None or not isinstance(producer.step, Cab):
             return  # unknown/non-Cab producer already reported elsewhere

@@ -65,10 +65,26 @@ from shinobi.steps.schema import Cab, ParamMeta
 
 
 def load_file(path: str | Path) -> Cab:
+    """Load a stimela-classic cab definition (JSON) file into a `Cab`.
+
+    Args:
+        path: Path to the JSON cab definition file.
+
+    Returns:
+        The built `Cab` instance.
+    """
     return loads(Path(path).read_text())
 
 
 def loads(text: str) -> Cab:
+    """Parse a stimela-classic cab definition from a JSON string.
+
+    Args:
+        text: JSON text of the cab definition.
+
+    Returns:
+        The built `Cab` instance.
+    """
     return _build_cabdef(json.loads(text))
 
 

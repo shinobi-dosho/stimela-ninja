@@ -67,6 +67,15 @@ class SlurmJob:
 
 @dataclass
 class SlurmWorkflow:
+    """A recipe compiled to a set of dependent sbatch jobs, ready to submit.
+
+    Attributes:
+        recipe: Name of the source recipe.
+        jobs: Compiled `SlurmJob`s, in topological order.
+        log_dir: Directory where each job's `--output`/`--error` land;
+            created by `submit_slurm`.
+    """
+
     recipe: str
     jobs: list[SlurmJob]  # in topological order
     log_dir: Path  # where each job's --output/--error land; created by submit
@@ -132,6 +141,22 @@ def compile_slurm(
         assert isinstance(cab, Cab)  # guaranteed by check_offloadable
 
         def resolve_one(step_field: str, source: InputRef | OutputRef) -> Any:
+            """Resolve one step input to its statically-known value.
+
+            Args:
+                step_field: Name of the input field being resolved, used
+                    in the error message if resolution fails.
+                source: Where the value comes from -- either the recipe's
+                    own inputs (`InputRef`) or a prior step's output
+                    (`OutputRef`).
+
+            Returns:
+                The resolved value.
+
+            Raises:
+                OffloadCompileError: If `source` is an `OutputRef` whose
+                    value isn't statically known at compile time.
+            """
             if isinstance(source, InputRef):
                 return recipe_inputs[source.field]
             value = resolved_outputs[source.step][source.field]

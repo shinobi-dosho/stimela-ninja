@@ -18,6 +18,8 @@ DEFAULT_CONFIG_FILE = Path.home() / ".shinobi" / "config.yml"
 
 
 class BackendConfig(BaseModel):
+    """Settings controlling which execution backend cabs run under."""
+
     default: str = "native"
     # Run docker/podman containers as the host UID/GID (`--user uid:gid`,
     # HOME=workdir) instead of root, so bind-mounted outputs come out
@@ -30,6 +32,8 @@ class BackendConfig(BaseModel):
 
 
 class ExecutionConfig(BaseModel):
+    """Settings controlling recipe step scheduling."""
+
     # How many recipe steps may run concurrently. Default 1 (sequential) --
     # parallelism is opt-in: at 1 the scheduler reproduces exact
     # declaration-order execution, and no MUTABLE input can be shared across
@@ -38,6 +42,8 @@ class ExecutionConfig(BaseModel):
 
 
 class CacheConfig(BaseModel):
+    """Settings controlling step-level skip-if-unchanged caching."""
+
     # Step-level skip-if-unchanged caching (shinobi.cache). Disabled by
     # default -- same "opt-in, zero cost for existing users" shape as
     # `backend.default`/`execution.max_workers`.
@@ -46,6 +52,8 @@ class CacheConfig(BaseModel):
 
 
 class LogConfig(BaseModel):
+    """Settings controlling logging and live output streaming."""
+
     dir: str = "."
     level: str = "INFO"
     # Live-echo a running cab's stdout/stderr to the terminal as it runs
@@ -58,15 +66,34 @@ class _YamlFileSource(PydanticBaseSettingsSource):
     """Reads a YAML file (if it exists) as a settings source."""
 
     def __init__(self, settings_cls: type[BaseSettings], yaml_file: Path):
+        """Load `yaml_file` (if it exists) into the source's data.
+
+        Args:
+            settings_cls: The `BaseSettings` subclass this source feeds.
+            yaml_file: Path to the YAML config file. Missing files are
+                treated as empty config, not an error.
+        """
         super().__init__(settings_cls)
         self._data: dict[str, Any] = {}
         if yaml_file.exists():
             self._data = yaml.safe_load(yaml_file.read_text()) or {}
 
     def get_field_value(self, field, field_name: str) -> tuple[Any, str, bool]:
+        """Look up a single field's value, per `PydanticBaseSettingsSource`.
+
+        Args:
+            field: The pydantic field metadata (unused; required by the
+                base class interface).
+            field_name: Name of the top-level settings field to look up.
+
+        Returns:
+            A `(value, field_name, is_complex)` tuple, `is_complex` always
+            False.
+        """
         return self._data.get(field_name), field_name, False
 
     def __call__(self) -> dict[str, Any]:
+        """Return the full parsed YAML data as this source's settings dict."""
         return self._data
 
 
@@ -93,10 +120,35 @@ class AppConfig(BaseSettings):
         dotenv_settings,
         file_secret_settings,
     ):
+        """Set the settings source precedence: init > env vars > YAML file.
+
+        Args:
+            settings_cls: The `BaseSettings` subclass being configured.
+            init_settings: Source for values passed directly to `__init__`.
+            env_settings: Source for `SHINOBI_*` environment variables.
+            dotenv_settings: Unused; `.env` files are not supported.
+            file_secret_settings: Unused; Docker/Kubernetes secret files
+                are not supported.
+
+        Returns:
+            The ordered tuple of settings sources pydantic-settings should
+            consult, highest precedence first.
+        """
         yaml_source = _YamlFileSource(settings_cls, cls._config_file)
         return (init_settings, env_settings, yaml_source)
 
     @classmethod
     def load(cls, config_file: str | Path | None = None, **cli_overrides: Any) -> "AppConfig":
+        """Build an `AppConfig`, layering defaults, config file, env, and overrides.
+
+        Args:
+            config_file: Path to a YAML config file. Defaults to
+                `DEFAULT_CONFIG_FILE` (`~/.shinobi/config.yml`) if not given.
+            **cli_overrides: Explicit values that take precedence over the
+                config file and environment variables.
+
+        Returns:
+            A fully-resolved `AppConfig` instance.
+        """
         cls._config_file = Path(config_file) if config_file else DEFAULT_CONFIG_FILE
         return cls(**cli_overrides)

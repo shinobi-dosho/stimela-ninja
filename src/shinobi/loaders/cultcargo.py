@@ -94,6 +94,16 @@ from shinobi.steps.schema import Cab, ParamMeta, Policies
 
 
 def load_file(path: str | Path, *, package_roots: dict[str, Path] | None = None) -> dict[str, Cab]:
+    """Load a cult-cargo cab definition file into `Cab` instances.
+
+    Args:
+        path: Path to the YAML cab definition file.
+        package_roots: Mapping of package name to filesystem root, used to
+            resolve `_include` directives that reference other packages.
+
+    Returns:
+        A dict mapping cab name to its built `Cab` instance.
+    """
     path = Path(path)
     roots = package_roots or {}
     raw = _load_raw(path.resolve(), roots)

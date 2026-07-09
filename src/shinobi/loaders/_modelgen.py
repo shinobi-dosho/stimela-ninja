@@ -235,6 +235,14 @@ def resolve_use(node: Any, root: dict[str, Any], *, error: type[Exception]) -> A
     """
 
     def entry_to_dict(dotted: str) -> Any:
+        """Resolve the `_use` target at `dotted`, recursing into its own `_use`.
+
+        Args:
+            dotted: Dotted path into `root` naming the `_use` target.
+
+        Returns:
+            The target node with its own `_use` directives resolved.
+        """
         return resolve_directive(get_path(root, dotted, error=error), "_use", entry_to_dict)
 
     return resolve_directive(node, "_use", entry_to_dict)

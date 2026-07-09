@@ -79,6 +79,19 @@ _PKG_INCLUDE_RE = re.compile(r"^\((?P<module>[\w.]+)\)(?P<file>.+)$")
 
 
 def load_worker_schema(path: str | Path) -> ConfigSchema:
+    """Load a stimela-classic worker schema (YAML) file into a `ConfigSchema`.
+
+    Args:
+        path: Path to the YAML worker schema file.
+
+    Returns:
+        The built `ConfigSchema`, with `inputs_model`/`outputs_model`
+        pydantic models generated from the schema's `inputs`/`outputs`.
+
+    Raises:
+        ConfigLoadError: If the file's top-level content isn't a mapping,
+            or it has no top-level `name`.
+    """
     path = Path(path)
     raw = yaml.safe_load(path.read_text()) or {}
     raw = _resolve_includes(raw, path.parent)
@@ -103,6 +116,16 @@ def load_worker_schema(path: str | Path) -> ConfigSchema:
 
 def _resolve_includes(node: Any, base_dir: Path) -> Any:
     def entry_to_dict(entry: Any) -> Any:
+        """Resolve one `_include` entry to the dict it refers to.
+
+        Args:
+            entry: The `_include` entry -- a plain path or `(module)file`
+                string; anything else is unsupported and skipped.
+
+        Returns:
+            The loaded include's dict content, or `{}` if `entry` is not
+            a supported string form.
+        """
         if not isinstance(entry, str):
             warnings.warn(
                 f"skipping unsupported _include entry {entry!r} in {base_dir} "

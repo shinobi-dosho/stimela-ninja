@@ -17,4 +17,16 @@ class NativeBackend(Backend):
     def run(
         self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True
     ) -> BackendRun:
+        """Run a cab's argv directly on the host.
+
+        Args:
+            cab: The cab being executed.
+            argv: Resolved command-line arguments to run.
+            inputs: Prepared inputs dict; unused by this backend.
+            label: Label used for streamed output lines. Defaults to `cab.name`.
+            stream: Whether to stream stdout/stderr live as the process runs.
+
+        Returns:
+            The completed `BackendRun` (never raises on non-zero exit).
+        """
         return run_streaming(argv, label=label or cab.name, stream=stream)

@@ -50,6 +50,8 @@ _TERMINAL_STATES = {
 
 @register
 class SlurmBackend(Backend):
+    """Backend that runs cabs as blocking Slurm batch jobs via `sbatch`."""
+
     name = "slurm"
 
     def __init__(
@@ -60,6 +62,17 @@ class SlurmBackend(Backend):
         sbatch_opts: dict[str, str] | None = None,
         poll_interval: float = 5.0,
     ):
+        """Initialize the backend.
+
+        Args:
+            container_runtime: Container runtime used to wrap cabs that
+                declare an image (e.g. `"apptainer"`). Set to `None` to run
+                the cab's argv directly, without a container.
+            workdir: Working directory the job runs in. Defaults to the
+                current working directory.
+            sbatch_opts: Extra `#SBATCH` options to include in the job script.
+            poll_interval: Seconds to wait between `sacct` status polls.
+        """
         self.container_runtime = container_runtime
         self.workdir = workdir or os.getcwd()
         self.sbatch_opts = sbatch_opts or {}
@@ -111,6 +124,22 @@ class SlurmBackend(Backend):
     def run(
         self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True
     ) -> BackendRun:
+        """Submit a cab as a Slurm job and block until it terminates.
+
+        Args:
+            cab: The cab being executed.
+            argv: Resolved command-line arguments to run in the job.
+            inputs: Prepared inputs dict used to derive container bind mounts,
+                if `container_runtime` and `cab.image` are both set.
+            label: Unused; slurm has no log-tailing/streaming support.
+            stream: Unused; slurm has no log-tailing/streaming support.
+
+        Returns:
+            A `BackendRun` with the job's exit code and captured stdout/stderr.
+
+        Raises:
+            BackendError: If `sbatch` submission fails.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             script_path = tmp_path / "job.sh"

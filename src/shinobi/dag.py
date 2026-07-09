@@ -22,6 +22,16 @@ if TYPE_CHECKING:
 
 @dataclass
 class TraceStep:
+    """A recipe step node for display purposes.
+
+    Attributes:
+        id: Index of the step within the recipe's step list.
+        name: The step's name.
+        depends_on: IDs of steps this one depends on -- either a real
+            output-dependency edge or a display-only "declaration order"
+            edge (see `graph_nodes`).
+    """
+
     id: int
     name: str
     depends_on: set[int] = field(default_factory=set)
@@ -162,6 +172,15 @@ def _connector(
 
 
 def render_dag(steps: list[TraceStep]) -> str:
+    """Draw a box-and-arrow diagram of a recipe's execution graph.
+
+    Args:
+        steps: Display nodes, as produced by `graph_nodes`.
+
+    Returns:
+        A multi-line string with the rendered diagram, or a placeholder
+        message if `steps` is empty.
+    """
     if not steps:
         return "(no steps traced)"
 

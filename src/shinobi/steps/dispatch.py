@@ -45,6 +45,16 @@ def register_step_backend(name: str, backend: Any) -> None:
 
 
 def get_step_backend(name: str) -> Any:
+    """Resolve a backend instance by name, checking test overrides first.
+
+    Args:
+        name: Backend name, e.g. `"native"`, `"slurm"`, or a name registered
+            via `register_step_backend`.
+
+    Returns:
+        The backend instance registered under `name` in `_STEP_BACKENDS`,
+        else a fresh instance from `shinobi.backends.get_backend`.
+    """
     if name in _STEP_BACKENDS:
         return _STEP_BACKENDS[name]
     from shinobi.backends import get_backend
@@ -121,6 +131,23 @@ class ExecContext:
         cache_path: str = "",
         stream: bool = True,
     ):
+        """Initialize execution state for one dispatched step.
+
+        Args:
+            scope: The Cab or Recipe being executed.
+            raw_inputs: The caller's raw kwargs, validated against
+                `scope.inputs_model`.
+            backend_override: Explicit backend name for this call, highest
+                priority in `resolve_backend_name`.
+            recipe_backend: Backend name inherited from the enclosing
+                recipe, used if nothing more specific is set.
+            config: App configuration to fall back on; loaded fresh if not
+                given.
+            cache_enabled: Whether step-level result caching is active.
+            cache_dir: Directory the cache manifest lives in.
+            cache_path: Dotted step path used as this run's cache/log label.
+            stream: Whether to stream the step's stdout/stderr live.
+        """
         self.scope = scope
         self._raw = raw_inputs
         self.inputs = scope.inputs_model(**raw_inputs)
@@ -172,6 +199,22 @@ class ExecContext:
         return getattr(mod, func)
 
     def run(self, *, backend: str | None = None, **overrides: Any) -> StepResult:
+        """Run the underlying Cab or Recipe with optional input overrides.
+
+        Args:
+            backend: Backend name to use for this run, taking priority
+                over the scope's own/recipe-inherited/config default.
+            **overrides: Input values to override on top of the raw inputs
+                this context was created with.
+
+        Returns:
+            The step's `StepResult`. Also stored on `self.outputs`.
+
+        Raises:
+            TypeError: If `self.scope` is neither a `Cab` nor a `Recipe`
+                (a plain-function step must return its result directly
+                instead of calling `ctx.run()`).
+        """
         raw = {**self._raw, **overrides}
         # No overrides -> `raw` is exactly what `self.inputs` already
         # validated in __init__; reuse it instead of re-validating.
@@ -349,6 +392,15 @@ def _resolve_wiring(
     dependencies have completed.
     """
     def resolve_one(source: InputRef | OutputRef) -> Any:
+        """Resolve a single wiring source to its concrete value.
+
+        Args:
+            source: Either an `InputRef` (a recipe input) or an `OutputRef`
+                (an already-completed upstream step's output).
+
+        Returns:
+            The resolved value.
+        """
         if isinstance(source, InputRef):
             return prepared[source.field]
         return getattr(results[source.step].outputs, source.field)
@@ -400,6 +452,12 @@ def _run_recipe(
         futures: dict[Future, int] = {}
 
         def submit_ready() -> None:
+            """Submit as many ready steps as there is worker capacity for.
+
+            Pops from `ready` (a min-heap of step indices, so lowest
+            declaration-index steps are drained first) until `ready` is
+            empty, `stop` is set, or `futures` is at `max_workers` capacity.
+            """
             while ready and not stop and len(futures) < max_workers:
                 i = heapq.heappop(ready)
                 ref = recipe.steps[i]

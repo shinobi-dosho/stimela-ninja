@@ -414,6 +414,15 @@ def pystep(
     """
 
     def decorator(func: Callable) -> StepRef:
+        """Turn `func` into a `StepRef` with a schema derived from its signature.
+
+        Args:
+            func: A type-hinted plain function (or a function taking `ctx`
+                as its first parameter).
+
+        Returns:
+            A `StepRef` wrapping `func` behind a generated adapter.
+        """
         inputs_model, wants_ctx = _inputs_model_from_signature(func)
         outputs_model, is_empty = _outputs_model_from_return(func)
         adapter = _make_adapter(func, outputs_model, is_empty, wants_ctx)

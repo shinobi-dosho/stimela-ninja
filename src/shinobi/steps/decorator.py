@@ -30,6 +30,15 @@ def step(
     """
 
     def decorator(func: Callable) -> StepRef:
+        """Bind `func` as the orchestration function for `scope`.
+
+        Args:
+            func: The orchestration function to bind. Its own signature is
+                never introspected.
+
+        Returns:
+            A `StepRef` carrying `scope`, `func`, and the step's params.
+        """
         bound_scope = scope.with_backend(backend)
         return StepRef(name=name or func.__name__, step=bound_scope, func=func, params=params)
 
