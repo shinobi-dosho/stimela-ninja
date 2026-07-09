@@ -25,8 +25,6 @@ its output-field default, mirroring `_fill_outputs` minus the backend run.
 from __future__ import annotations
 
 import os
-import re
-import shlex
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -36,15 +34,16 @@ from typing import Any
 from pydantic_core import PydanticUndefined
 
 from shinobi.backends.container import build_container_argv
+from shinobi.backends.slurm_script import (
+    build_sbatch_script,
+    parse_sbatch_job_id,
+    sacct_job_fields,
+    safe_slurm_name,
+)
 from shinobi.exceptions import BackendError
-from shinobi.graph import build_graph, check_offloadable
+from shinobi.graph import check_offloadable
 from shinobi.policies import build_argv
 from shinobi.steps.schema import Cab, InputRef, OutputRef, Recipe
-
-# A name that gets interpolated into a generated #SBATCH line or a job-name
-# must not be able to smuggle in a newline (which would inject further
-# directives/commands). Keep it to a strict, obviously-safe charset.
-_SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class OffloadCompileError(ValueError):
@@ -73,15 +72,6 @@ class SlurmWorkflow:
     log_dir: Path  # where each job's --output/--error land; created by submit
 
 
-def _safe(name: str, kind: str) -> str:
-    if not _SAFE_NAME.match(name):
-        raise OffloadCompileError(
-            f"{kind} {name!r} contains characters unsafe for a Slurm script "
-            f"(allowed: letters, digits, '.', '_', '-')"
-        )
-    return name
-
-
 def _static_outputs(cab: Cab, resolved_inputs: dict[str, Any]) -> dict[str, Any]:
     """The cab's output values knowable without running it: a same-named
     input passthrough, else the output field's declared default. (Wrangler-
@@ -98,19 +88,16 @@ def _static_outputs(cab: Cab, resolved_inputs: dict[str, Any]) -> dict[str, Any]
 
 
 def _script(cab: Cab, argv: list[str], workdir: str, sbatch_opts: dict[str, str], log_dir: Path) -> str:
-    job_name = _safe(cab.name, "cab name")
-    lines = [
-        "#!/bin/bash",
-        f"#SBATCH --job-name={job_name}",
-        f"#SBATCH --chdir={workdir}",
-        f"#SBATCH --output={log_dir / f'{job_name}.out'}",
-        f"#SBATCH --error={log_dir / f'{job_name}.err'}",
-    ]
-    for key, value in sbatch_opts.items():
-        lines.append(f"#SBATCH --{_safe(key, 'sbatch option')}={value}")
-    lines.append("")
-    lines.append(shlex.join(argv))  # exec-form argv; never a shell template
-    return "\n".join(lines) + "\n"
+    job_name = safe_slurm_name(cab.name, "cab name", error=OffloadCompileError)
+    return build_sbatch_script(
+        job_name=job_name,
+        chdir=workdir,
+        stdout_path=log_dir / f"{job_name}.out",
+        stderr_path=log_dir / f"{job_name}.err",
+        sbatch_opts=sbatch_opts,
+        argv=argv,
+        error=OffloadCompileError,
+    )
 
 
 def compile_slurm(
@@ -128,10 +115,9 @@ def compile_slurm(
     step inputs) don't validate, and `OffloadCompileError` if an inter-step
     path can't be resolved statically.
     """
-    check_offloadable(recipe)  # raises RecipeNotOffloadableError / RecipeGraphError
-    graph = build_graph(recipe)
+    graph = check_offloadable(recipe)  # raises RecipeNotOffloadableError / RecipeGraphError
     workdir = workdir or os.getcwd()
-    log_dir = Path(workdir) / ".shinobi" / _safe(recipe.name, "recipe name")
+    log_dir = Path(workdir) / ".shinobi" / safe_slurm_name(recipe.name, "recipe name", error=OffloadCompileError)
     sbatch_opts = sbatch_opts or {}
 
     validated_recipe = recipe.inputs_model(**inputs)
@@ -205,7 +191,7 @@ def submit_slurm(workflow: SlurmWorkflow, *, workdir: str | None = None) -> dict
         proc = subprocess.run([*args, str(script_path)], capture_output=True, text=True)
         if proc.returncode != 0:
             raise BackendError(f"sbatch failed for step '{job.name}': {proc.stderr.strip()}")
-        job_ids[job.name] = proc.stdout.strip().split(";")[0]
+        job_ids[job.name] = parse_sbatch_job_id(proc.stdout)
     return job_ids
 
 
@@ -219,11 +205,10 @@ def status_slurm(job_ids: dict[str, str]) -> dict[str, str]:
     states: dict[str, str] = {}
     for name, job_id in job_ids.items():
         proc = subprocess.run(
-            ["sacct", "-j", job_id, "--format=State", "--noheader", "--parsable2"],
+            ["sacct", "-j", job_id, "--format=JobID,State", "--noheader", "--parsable2"],
             capture_output=True,
             text=True,
         )
-        lines = proc.stdout.strip().splitlines()
-        # first line is the job's overall state (later lines are steps like .batch)
-        states[name] = lines[0].split("|")[0].strip() if lines else "UNKNOWN"
+        fields = sacct_job_fields(proc.stdout, job_id)
+        states[name] = fields[1].strip() if fields and len(fields) >= 2 else "UNKNOWN"
     return states

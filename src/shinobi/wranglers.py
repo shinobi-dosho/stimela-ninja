@@ -30,10 +30,33 @@ def apply_wranglers(wranglers: dict[str, list[str]], lines: list[str]) -> dict[s
     return outputs
 
 
-def _apply_action(action: str, match: re.Match, outputs: dict[str, Any]) -> None:
+def parse_output_action(action: str) -> tuple[str, str] | None:
+    """Parse one wrangler action string: `(groupname, typename)` for a
+    `PARSE_OUTPUT:<groupname>:<typename>` action, or `None` for any other
+    (unimplemented) action kind. The one place both `apply_wranglers`
+    (which populates the field at run time, below) and
+    `graph._wrangler_output_fields` (which needs the field name statically,
+    for `check_offloadable`, without running anything) agree on this
+    grammar -- so the two can't silently drift on what a wrangler action
+    means the way they briefly did (one required exactly 3 colon-separated
+    parts, the other tolerated 2+).
+    """
     if not action.startswith("PARSE_OUTPUT"):
+        return None
+    parts = action.split(":")
+    if len(parts) != 3:
+        raise ValueError(
+            f"malformed PARSE_OUTPUT action {action!r} -- expected "
+            "'PARSE_OUTPUT:<groupname>:<type>'"
+        )
+    return parts[1], parts[2]
+
+
+def _apply_action(action: str, match: re.Match, outputs: dict[str, Any]) -> None:
+    parsed = parse_output_action(action)
+    if parsed is None:
         return  # other action kinds not implemented in this scaffold
 
-    _, groupname, typename = action.split(":")
+    groupname, typename = parsed
     caster = _TYPES.get(typename, str)
     outputs[groupname] = caster(match.group(groupname))

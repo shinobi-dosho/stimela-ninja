@@ -10,7 +10,7 @@ from pathlib import Path
 import click
 
 import shinobi
-from shinobi.clickutil import build_options
+from shinobi.clickutil import build_options, unflatten_kwargs
 from shinobi.config import AppConfig
 from shinobi.dag import graph_nodes, render_dag
 from shinobi.graph import RecipeGraphError, RecipeNotOffloadableError
@@ -298,11 +298,11 @@ def run(
 
     def _callback(**kwargs):
         # Drop options the user didn't provide (None) so the inputs_model's
-        # own defaults apply; per-step constants from a StepRef go under them.
-        call_kwargs = {**params}
-        for name, value in kwargs.items():
-            if value is not None:
-                call_kwargs[name] = value
+        # own defaults apply; per-step constants from a StepRef go under
+        # them. `unflatten_kwargs` also re-nests any `--parent-child`
+        # flattened group option (build_options' counterpart for a nested
+        # BaseModel field) back into the nested dict its model expects.
+        call_kwargs = {**params, **unflatten_kwargs(scope.inputs_model, kwargs)}
 
         if dryrun:
             if isinstance(scope, Recipe):
@@ -400,7 +400,7 @@ def compile_recipe(
     runtime = None if container_runtime.lower() == "none" else container_runtime
 
     def _callback(**kwargs):
-        inputs = {name: value for name, value in kwargs.items() if value is not None}
+        inputs = unflatten_kwargs(recipe.inputs_model, kwargs)
         try:
             workflow = compile_slurm(recipe, inputs, workdir=workdir, container_runtime=runtime)
         except (RecipeNotOffloadableError, OffloadCompileError, RecipeGraphError) as exc:

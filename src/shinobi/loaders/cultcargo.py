@@ -72,6 +72,7 @@ avoid unless a real cab actually needs it.
 
 from __future__ import annotations
 
+import functools
 import re
 import warnings
 from pathlib import Path
@@ -81,11 +82,13 @@ import yaml
 
 from shinobi.exceptions import CabLoadError
 from shinobi.loaders._modelgen import (
+    COMMON_LEAF_KEYS,
     build_model,
     deep_merge,
-    get_path,
     resolve_directive,
+    resolve_use,
     sanitize_unique,
+    validate_choices,
 )
 from shinobi.steps.schema import Cab, ParamMeta, Policies
 
@@ -93,8 +96,8 @@ from shinobi.steps.schema import Cab, ParamMeta, Policies
 def load_file(path: str | Path, *, package_roots: dict[str, Path] | None = None) -> dict[str, Cab]:
     path = Path(path)
     roots = package_roots or {}
-    raw = _load_raw(path, roots)
-    resolved = _resolve_use(raw, raw)
+    raw = _load_raw(path.resolve(), roots)
+    resolved = resolve_use(raw, raw, error=CabLoadError)
     cabs_section = resolved.get("cabs", resolved)
     return {name: _build_cabdef(name, spec, roots) for name, spec in cabs_section.items()}
 
@@ -108,7 +111,7 @@ def loads(text: str, *, package_roots: dict[str, Path] | None = None) -> dict[st
     roots = package_roots or {}
     raw = yaml.safe_load(text) or {}
     raw = resolve_directive(raw, "_include", lambda entry: _include_entry_to_dict(entry, None, roots))
-    resolved = _resolve_use(raw, raw)
+    resolved = resolve_use(raw, raw, error=CabLoadError)
     cabs_section = resolved.get("cabs", resolved)
     return {name: _build_cabdef(name, spec, roots) for name, spec in cabs_section.items()}
 
@@ -166,25 +169,31 @@ def _include_entry_to_dict(entry: Any, base_dir: Path | None, package_roots: dic
 
 
 def _load_raw(path: Path, package_roots: dict[str, Path]) -> dict[str, Any]:
+    """Read, parse, and recursively `_include`-resolve one file. Cached
+    (keyed on the resolved path and `package_roots`) for the same reason as
+    `worker_schema._load_include_file`: a cab library commonly has many
+    files `_include`-ing the same shared base (cult-cargo's own
+    `cult-cargo-base.yml`/`vars` files) or `_use`-ing each other, so without
+    this every referencing file re-reads and re-parses it from disk. Safe
+    to cache: `resolve_directive`/`deep_merge` never mutate their inputs, so
+    the same returned dict can be reused (and further deep_merged from,
+    which always builds a new dict) by every caller. `package_roots` is
+    turned into a hashable, order-independent key since a plain dict can't
+    be an `lru_cache` argument directly.
+    """
+    return _load_raw_cached(path, tuple(sorted(package_roots.items())))
+
+
+@functools.lru_cache(maxsize=None)
+def _load_raw_cached(path: Path, roots_key: tuple[tuple[str, Path], ...]) -> dict[str, Any]:
+    package_roots = dict(roots_key)
     data = yaml.safe_load(path.read_text()) or {}
     return resolve_directive(
         data, "_include", lambda entry: _include_entry_to_dict(entry, path.parent, package_roots)
     )
 
 
-def _resolve_use(node: Any, root: dict[str, Any]) -> Any:
-    def entry_to_dict(dotted: str) -> Any:
-        # recurse so a `_use` target that itself has a `_use` resolves too
-        return resolve_directive(get_path(root, dotted, error=CabLoadError), "_use", entry_to_dict)
-
-    return resolve_directive(node, "_use", entry_to_dict)
-
-
-_LEAF_SPEC_KEYS = {
-    "info", "dtype", "required", "default", "implicit", "nom_de_guerre",
-    "policies", "choices", "must_exist", "mkdir", "writable",
-    "path_policies", "element_choices",
-}
+_LEAF_SPEC_KEYS = COMMON_LEAF_KEYS | {"nom_de_guerre", "mkdir", "element_choices"}
 
 
 def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path]) -> Cab:
@@ -214,7 +223,10 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
     wranglers = ((spec.get("management") or {}).get("wranglers")) or {}
 
     in_fields, field_meta = _collect(spec.get("inputs") or {})
-    out_fields, _ = _collect(spec.get("outputs") or {})
+    out_fields, out_meta = _collect(spec.get("outputs") or {})
+
+    in_choices = {field: meta.choices for field, meta in field_meta.items() if meta.choices}
+    out_choices = {field: meta.choices for field, meta in out_meta.items() if meta.choices}
 
     return Cab(
         name=name,
@@ -223,8 +235,8 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
         image=image,
         flavour=flavour,
         policies=Policies(**policies_spec),
-        inputs_model=build_model(f"{name}_Inputs", in_fields),
-        outputs_model=build_model(f"{name}_Outputs", out_fields),
+        inputs_model=build_model(f"{name}_Inputs", in_fields, choices=in_choices),
+        outputs_model=build_model(f"{name}_Outputs", out_fields, choices=out_choices),
         field_meta=field_meta,
         wranglers=wranglers,
     )
@@ -280,12 +292,14 @@ def _collect(
         param_policies = value.get("policies") or {}
         positional = bool(param_policies.get("positional", False))
         repeat_as_tokens = param_policies.get("repeat") == "list"
-        if nom or implicit is not None or value.get("info") or positional or repeat_as_tokens:
+        choices = validate_choices(value.get("choices"), error=CabLoadError)
+        if nom or implicit is not None or value.get("info") or positional or repeat_as_tokens or choices:
             metas[field] = ParamMeta(
                 nom_de_guerre=nom,
                 implicit=implicit,
                 info=value.get("info"),
                 positional=positional,
                 repeat_as_tokens=repeat_as_tokens,
+                choices=choices,
             )
     return fields, metas

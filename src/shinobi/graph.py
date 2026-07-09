@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, path_fields
+from shinobi.wranglers import parse_output_action
 
 if TYPE_CHECKING:
     from shinobi.steps.schema import Recipe
@@ -148,18 +149,20 @@ def _wrangler_output_fields(cab: Cab) -> set[str]:
     fields: set[str] = set()
     for actions in cab.wranglers.values():
         for action in actions:
-            if action.startswith("PARSE_OUTPUT"):
-                parts = action.split(":")
-                if len(parts) >= 2:
-                    fields.add(parts[1])
+            parsed = parse_output_action(action)
+            if parsed is not None:
+                fields.add(parsed[0])
     return fields
 
 
-def check_offloadable(recipe: "Recipe") -> None:
+def check_offloadable(recipe: "Recipe") -> RecipeGraph:
     """Raise `RecipeNotOffloadableError` (with *all* disqualifying reasons)
     unless `recipe` is a purely declarative DAG that can be compiled to an
     external engine and detached. A valid graph is a precondition, so this
-    calls `build_graph` first (which may raise `RecipeGraphError`).
+    calls `build_graph` first (which may raise `RecipeGraphError`) and
+    returns it, so a caller that needs the graph right after checking
+    eligibility (e.g. `offload.slurm.compile_slurm`) doesn't have to call
+    `build_graph` a second time.
 
     The rules follow directly from "the cluster runs the graph, shinobi is
     not in the loop per step" (see AGENTS.md / the design note):
@@ -181,7 +184,7 @@ def check_offloadable(recipe: "Recipe") -> None:
       a downstream `ninja status` reconstructs what it can (paths yes,
       dynamic values best-effort).
     """
-    build_graph(recipe)  # valid graph is a precondition
+    graph = build_graph(recipe)  # valid graph is a precondition
     reasons: list[str] = []
     by_name = {ref.name: ref for ref in recipe.steps}
 
@@ -236,3 +239,4 @@ def check_offloadable(recipe: "Recipe") -> None:
             f"recipe '{recipe.name}' cannot be offloaded to an external engine:\n"
             + "\n".join(f"  - {r}" for r in reasons)
         )
+    return graph

@@ -47,6 +47,25 @@ fail = Cab(name="fail", command="/bin/false", info="Always fails.", inputs_model
            outputs_model=CommandOutputs)
 
 
+class SubGroup(BaseModel):
+    value: str = "default"
+
+
+class GroupInputs(BaseModel):
+    """A nested-`BaseModel` group field -- real cult-cargo/classic cabs
+    never produce this shape (always flat), but `worker_schema.ConfigSchema`
+    does, and `clickutil.build_options`/`unflatten_kwargs` are built to
+    support it either way. Used to check the CLI round-trips a flattened
+    `--sub-value` option back into the nested `sub` dict the model expects.
+    """
+
+    sub: SubGroup = SubGroup()
+
+
+group_cab = Cab(name="group_cab", command="/bin/echo", info="A cab with a nested-group input.",
+                inputs_model=GroupInputs, outputs_model=CommandOutputs)
+
+
 @step(scope=greet)
 def greet_step(ctx):
     """A decorated step target for the CLI."""

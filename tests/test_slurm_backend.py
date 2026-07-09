@@ -29,6 +29,24 @@ def test_script_contains_sbatch_directives_and_command():
     assert script.strip().endswith("tool --x 1")
 
 
+def test_unsafe_cab_name_is_rejected():
+    """Regression test: the backend used to interpolate `cab.name` (which
+    can come from untrusted cult-cargo YAML) straight into a `#SBATCH` line
+    with no charset check, unlike the offload compiler's `_safe` -- a
+    newline in the name could inject arbitrary further directives. Now both
+    go through the same `shinobi.backends.slurm_script.safe_slurm_name`.
+    """
+    backend = SlurmBackend(container_runtime=None, workdir="/work")
+    with pytest.raises(BackendError, match="unsafe"):
+        backend._script(make_cab(name="tool\ninjected"), ["tool"], {}, Path("/tmp/o"), Path("/tmp/e"))
+
+
+def test_unsafe_sbatch_option_key_is_rejected():
+    backend = SlurmBackend(container_runtime=None, workdir="/work", sbatch_opts={"time\ninjected": "1"})
+    with pytest.raises(BackendError, match="unsafe"):
+        backend._script(make_cab(), ["tool"], {}, Path("/tmp/o"), Path("/tmp/e"))
+
+
 def test_script_wraps_command_in_apptainer_when_cab_has_image():
     backend = SlurmBackend(workdir="/work")
     script = backend._script(make_cab(image="tool:latest"), ["tool"], {}, Path("/tmp/o"), Path("/tmp/e"))

@@ -1,0 +1,7 @@
+cabs:
+  nested_tool:
+    command: /bin/echo
+    inputs:
+      _include:
+        - nested_vars.yml
+    outputs: {}

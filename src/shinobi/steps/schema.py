@@ -51,6 +51,16 @@ class ParamMeta(BaseModel):
     (see e.g. wsclean's `-size <w> <h>`/`-weight briggs <n>`, which need
     two separate argv tokens, not `"4096,4096"` as one).
 
+    `choices`: the field's allowed values (cult-cargo/classic's `choices`
+    key). A loader that sets this also narrows the field's real annotation
+    on `inputs_model`/`outputs_model` to `typing.Literal[*choices]` (see
+    `loaders._modelgen.narrow_choices`), so an out-of-set value fails
+    pydantic validation the same way a wrong `dtype` would -- not merely
+    documented in `info`. Kept here too (rather than only inferred from the
+    model's own annotation) so a `ParamPattern` attr -- which has no
+    declared model field for a dynamically-matched name -- can still carry
+    it.
+
     On an *output* field, a string `implicit` containing `{name}`
     placeholders is resolved by `steps.dispatch._fill_outputs` as a
     `str.format` template against the step's prepared (validated) input
@@ -67,6 +77,7 @@ class ParamMeta(BaseModel):
     positional: bool = False
     repeat_as_tokens: bool = False
     dtype: str | None = None
+    choices: list[Any] | None = None
 
 
 class Policies(BaseModel):

@@ -20,7 +20,7 @@ import keyword
 import operator
 import re
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from pydantic import ConfigDict, create_model
 
@@ -134,6 +134,32 @@ def dtype_to_type(dtype: str) -> Any:
     return _SCALAR_TYPES.get(lower, str)
 
 
+def validate_choices(choices: Any, *, error: type[Exception]) -> list[Any] | None:
+    """Normalise a raw `choices:` value to a plain list, or `None` if it
+    wasn't given -- the one place both `cultcargo._collect` and
+    `worker_schema._leaf_field` check the "must be a list" shape, so the
+    error message and the shape rule can't drift between the two scabha-
+    dialect loaders.
+    """
+    if not choices:
+        return None
+    if not isinstance(choices, (list, tuple)):
+        raise error(f"'choices' must be a list, got {choices!r}")
+    return list(choices)
+
+
+def narrow_choices(py_type: Any, choices: list[Any] | None) -> Any:
+    """Narrow `py_type` to `typing.Literal[*choices]` when `choices` is a
+    non-empty list -- shinobi's one enum-like schema mechanism (shared by
+    `build_model` below and `worker_schema._leaf_field`), so an out-of-set
+    value fails real pydantic validation instead of only being documented
+    in a field's `info` text.
+    """
+    if not choices:
+        return py_type
+    return Literal[tuple(choices)]
+
+
 def required_field_spec(py_type: Any, required: bool, default: Any) -> tuple[Any, Any]:
     """`(annotation, default)` for a `pydantic.create_model`/`Field` slot: a
     required field with no default is `(py_type, ...)`; everything else is
@@ -152,14 +178,19 @@ def build_model(
     fields: dict[str, tuple[str, bool, Any]],
     *,
     allow_extra: bool = False,
+    choices: dict[str, list[Any]] | None = None,
 ) -> type:
     """Create a pydantic model class named `name`.
 
     `fields` maps a field name to `(dtype, required, default)`. See
     `required_field_spec` for the required/default rule applied to each.
+    `choices` maps a field name to its allowed values (see
+    `narrow_choices`) -- omitted or absent for a field means its plain
+    `dtype`-derived type applies unchanged.
     """
+    choices = choices or {}
     definitions: dict[str, tuple[Any, Any]] = {
-        field_name: required_field_spec(dtype_to_type(dtype), required, default)
+        field_name: required_field_spec(narrow_choices(dtype_to_type(dtype), choices.get(field_name)), required, default)
         for field_name, (dtype, required, default) in fields.items()
     }
     config = ConfigDict(extra="allow") if allow_extra else None
@@ -192,6 +223,40 @@ def get_path(root: dict[str, Any], dotted: str, *, error: type[Exception]) -> An
             raise error(f"path '{dotted}' not found (stuck at '{part}')")
         node = node[part]
     return node
+
+
+def resolve_use(node: Any, root: dict[str, Any], *, error: type[Exception]) -> Any:
+    """Resolve every `_use: dotted.path` directive in `node` (a `_use`
+    target that itself has a `_use` resolves too, recursively) by dotted
+    lookup against `root` (the fully `_include`-resolved document) --
+    `cultcargo`'s and `worker_schema`'s dialects agree on this directive
+    (deep-merge the target in, with the dict's own sibling keys winning),
+    differing only in which exception type reports a bad dotted path.
+    """
+
+    def entry_to_dict(dotted: str) -> Any:
+        return resolve_directive(get_path(root, dotted, error=error), "_use", entry_to_dict)
+
+    return resolve_directive(node, "_use", entry_to_dict)
+
+
+# Leaf-descriptor keys both scabha-dialect loaders (`cultcargo`, a *cab*
+# schema, and `worker_schema`, a *config* schema) agree mean "this is a
+# leaf parameter, not a nested group" -- a loader that recognises extra
+# keys of its own (e.g. cultcargo's `nom_de_guerre`/`mkdir`) extends this
+# set rather than re-listing the shared ones.
+COMMON_LEAF_KEYS = {
+    "info",
+    "dtype",
+    "default",
+    "required",
+    "implicit",
+    "choices",
+    "policies",
+    "writable",
+    "must_exist",
+    "path_policies",
+}
 
 
 def resolve_directive(node: Any, key: str, entry_to_dict: Callable[[Any], Any]) -> Any:
