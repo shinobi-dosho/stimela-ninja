@@ -1,6 +1,7 @@
 
 from pathlib import Path
 
+import pydantic
 import pytest
 
 from shinobi.exceptions import CabLoadError
@@ -182,6 +183,43 @@ def test_include_merges_files_relative_to_including_file(tmp_path):
     assert cabs["breizorro"].image == "breizorro"
 
 
+def test_shared_include_is_only_read_from_disk_once(tmp_path, monkeypatch):
+    """Regression test: `_load_raw` used to re-read and re-parse an
+    `_include`-d file from disk on every reference, unlike
+    `worker_schema._load_include_file`'s `lru_cache`'d equivalent -- a real
+    cab library commonly has many cab files all `_include`-ing the same
+    shared base. Now cached the same way, keyed on the resolved path.
+    """
+    base = tmp_path / "shared_base.yml"
+    base.write_text("vars:\n  cult-cargo:\n    images:\n      registry: quay.io/stimela2\n")
+    base_resolved = base.resolve()
+
+    def make_main(cab_name: str) -> Path:
+        main = tmp_path / f"{cab_name}.yml"
+        main.write_text(
+            f"_include:\n  - shared_base.yml\ncabs:\n  {cab_name}:\n    command: {cab_name}\n"
+            "    image:\n      _use: vars.cult-cargo.images\n      name: x\n"
+        )
+        return main
+
+    read_calls = []
+    original_read_text = Path.read_text
+
+    def counting_read_text(self, *args, **kwargs):
+        if self == base_resolved:
+            read_calls.append(self)
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+
+    cabs_a = load_file(make_main("cab_a"))
+    cabs_b = load_file(make_main("cab_b"))
+
+    assert cabs_a["cab_a"].image == "x"
+    assert cabs_b["cab_b"].image == "x"
+    assert len(read_calls) == 1
+
+
 def test_package_scoped_include_raises_clear_error_without_package_roots(tmp_path):
     main = tmp_path / "main.yml"
     main.write_text(
@@ -329,3 +367,33 @@ def test_bracket_list_dtype_resolves_on_real_simms_example():
     telsim_inputs = cabs["telsim"].inputs_model.model_fields
     assert telsim_inputs["subarray_list"].annotation == list[str] | None
     assert telsim_inputs["subarray_range"].annotation == list[int] | None
+
+
+CHOICES_YAML = """
+cabs:
+    pick:
+        command: pick
+        inputs:
+            mode:
+                dtype: str
+                choices: [auto, spw, scan]
+                default: auto
+"""
+
+
+def test_choices_are_recorded_on_field_meta():
+    cab = loads(CHOICES_YAML)["pick"]
+    assert cab.field_meta["mode"].choices == ["auto", "spw", "scan"]
+
+
+def test_choices_are_enforced_by_the_generated_model():
+    cab = loads(CHOICES_YAML)["pick"]
+    cab.inputs_model(mode="spw")
+    with pytest.raises(pydantic.ValidationError):
+        cab.inputs_model(mode="not-a-choice")
+
+
+def test_non_list_choices_raise():
+    bad = "cabs:\n  pick:\n    command: pick\n    inputs:\n      mode:\n        dtype: str\n        choices: auto\n"
+    with pytest.raises(CabLoadError, match="'choices' must be a list"):
+        loads(bad)

@@ -28,9 +28,11 @@ Field mapping (into a generated `inputs_model` + `field_meta`):
 * `required`, `default`, `info` -> the model field / its `ParamMeta`.
 * `mapping` -> `ParamMeta.nom_de_guerre` (classic's own name for the same
   concept: what the underlying tool actually calls this parameter).
-* `choices` -> shinobi has no enum/choices concept; appended to `info`
-  as a parenthetical instead of inventing new schema machinery for one
-  format's sake.
+* `choices` -> `ParamMeta.choices`, and the generated model field's real
+  annotation is narrowed to `typing.Literal[*choices]` (see
+  `_modelgen.narrow_choices`) -- an out-of-set value fails pydantic
+  validation, not just a note in `info`. Also still appended to `info` as
+  a human-readable parenthetical, for callers that only look at `info`.
 
 `flavour`: classic's CASA-task cabs (`base` containing `"casa"`) are
 *not* real standalone executables -- `binary` there is a CASA task name
@@ -57,15 +59,32 @@ import json
 from pathlib import Path
 from typing import Any
 
-from shinobi.loaders._modelgen import build_model, sanitize_unique
+from shinobi.exceptions import CabLoadError
+from shinobi.loaders._modelgen import build_model, sanitize_unique, validate_choices
 from shinobi.steps.schema import Cab, ParamMeta
 
 
 def load_file(path: str | Path) -> Cab:
+    """Load a stimela-classic cab definition (JSON) file into a `Cab`.
+
+    Args:
+        path: Path to the JSON cab definition file.
+
+    Returns:
+        The built `Cab` instance.
+    """
     return loads(Path(path).read_text())
 
 
 def loads(text: str) -> Cab:
+    """Parse a stimela-classic cab definition from a JSON string.
+
+    Args:
+        text: JSON text of the cab definition.
+
+    Returns:
+        The built `Cab` instance.
+    """
     return _build_cabdef(json.loads(text))
 
 
@@ -84,13 +103,15 @@ def _build_cabdef(spec: dict[str, Any]) -> Cab:
         if meta is not None:
             metas[field] = meta
 
+    choices = {field: meta.choices for field, meta in metas.items() if meta.choices}
+
     return Cab(
         name=name,
         command=spec.get("binary", name),
         info=spec.get("description"),
         image=base or None,
         flavour=flavour,
-        inputs_model=build_model(f"{name}_Inputs", fields),
+        inputs_model=build_model(f"{name}_Inputs", fields, choices=choices),
         outputs_model=build_model(f"{name}_Outputs", {}),
         field_meta=metas,
     )
@@ -107,8 +128,8 @@ def _build_param(
     if param.get("io") == "msfile":
         dtype = "MS"
 
+    choices = validate_choices(param.get("choices"), error=CabLoadError)
     info = param.get("info")
-    choices = param.get("choices")
     if choices:
         choices_text = f"choices: {', '.join(str(c) for c in choices)}"
         info = f"{info} ({choices_text})" if info else choices_text
@@ -117,5 +138,5 @@ def _build_param(
     # param name if sanitising the field name changed it.
     nom = param.get("mapping") or (original if original != field else None)
     field_spec = (dtype, bool(param.get("required", False)), param.get("default"))
-    meta = ParamMeta(nom_de_guerre=nom, info=info) if (nom or info) else None
+    meta = ParamMeta(nom_de_guerre=nom, info=info, choices=choices) if (nom or info or choices) else None
     return field_spec, meta

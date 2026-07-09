@@ -118,6 +118,23 @@ def test_run_recipe_target_dryrun_shows_declared_graph():
     assert "v" in result.output  # a dependency edge was drawn
 
 
+def test_run_flattened_group_option_reaches_the_nested_model():
+    """Regression test: `build_options` flattens a nested-`BaseModel` group
+    field to a `--parent-child` option (see `clickutil`'s docstring), but
+    `cli.py`'s callbacks used to pass the flat kwargs straight to the model
+    without its matching inverse (`unflatten_kwargs`) -- silently dropping
+    a `--sub-value` override instead of nesting it back under `sub`. No
+    shipped cab loader produces this shape today, but `clickutil` is
+    documented as reusable by a downstream project's own CLI, so the gap
+    was real even if unexercised.
+    """
+    result = CliRunner().invoke(
+        main, ["run", f"{FIXTURES}:group_cab", "--dryrun", "--sub-value", "hi-nested"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "hi-nested" in result.output
+
+
 # -- caching options --
 
 

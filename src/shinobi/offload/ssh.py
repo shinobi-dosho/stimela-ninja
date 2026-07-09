@@ -60,6 +60,13 @@ from shinobi.exceptions import BackendError
 
 @dataclass
 class RemoteSpec:
+    """A parsed `user@host:/path` (or `host:/path`) remote target.
+
+    Attributes:
+        host: The host part (optionally including `user@`).
+        path: The remote filesystem path.
+    """
+
     host: str
     path: str
 
@@ -133,11 +140,39 @@ def _find_load_file_calls(tree: ast.Module) -> list[ast.Call]:
     return calls
 
 
+def _find_include_entries(node: Any) -> list[Any]:
+    """Every `_include:` entry found anywhere in a nested dict/list --
+    cult-cargo's own convention lets `_include` appear at the top level
+    *or* nested under `inputs:`/`outputs:` (real `cubical.yml`/
+    `quartical.yml` do this; see `cultcargo.py`'s own module docstring), so
+    a top-level-only scan silently misses those dependencies. Deliberately
+    not `_modelgen.resolve_directive`: that resolves-and-merges each
+    entry's content (needing an `entry_to_dict` callback that would have to
+    already know how to load every entry kind, package-scoped ones
+    included); this only needs to know *where* `_include` appears, to list
+    dependency files -- not what they resolve to.
+    """
+    entries: list[Any] = []
+    if isinstance(node, list):
+        for item in node:
+            entries.extend(_find_include_entries(item))
+        return entries
+    if not isinstance(node, dict):
+        return entries
+    for key, value in node.items():
+        if key == "_include":
+            entries.extend(value if isinstance(value, list) else [value])
+        else:
+            entries.extend(_find_include_entries(value))
+    return entries
+
+
 def _include_deps(yaml_path: Path, warnings: list[str]) -> list[Path]:
     """Follow cult-cargo `_include:` the same way
     `shinobi.loaders.cultcargo._load_raw` resolves it (relative to the
-    including file), returning every included file path found (not the
-    merged content -- we only need the file list to sync).
+    including file, and wherever `_include` appears in the document -- not
+    just at the top level), returning every included file path found (not
+    the merged content -- we only need the file list to sync).
     """
     try:
         data = yaml.safe_load(yaml_path.read_text()) or {}
@@ -145,7 +180,7 @@ def _include_deps(yaml_path: Path, warnings: list[str]) -> list[Path]:
         warnings.append(f"could not read {yaml_path} to follow its _include chain: {exc}")
         return []
     deps = []
-    for inc in data.get("_include", None) or []:
+    for inc in _find_include_entries(data):
         if not isinstance(inc, str):
             # package-scoped `{(pkg): [...]}` form -- resolves into an
             # installed package, assumed already present remotely, same
@@ -243,6 +278,17 @@ def sync_to_remote(base_dir: Path, rel_paths: list[Path], remote: RemoteSpec) ->
 
 @dataclass
 class RemoteHandle:
+    """A reference to a detached, remotely-running (or completed) recipe.
+
+    Attributes:
+        host: The remote host the recipe is running on.
+        path: The remote working directory the recipe runs in.
+        pid: Process ID of the remote launcher process.
+        log_file: Remote path to the combined stdout/stderr log.
+        exit_file: Remote path to the file the process writes its exit
+            code to on completion.
+    """
+
     host: str
     path: str
     pid: str

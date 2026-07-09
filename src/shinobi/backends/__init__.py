@@ -18,6 +18,13 @@ from shinobi.steps.schema import Cab
 
 
 class Backend(ABC):
+    """Abstract base class for execution backends.
+
+    Attributes:
+        name: Registry key used to look up this backend (e.g. ``"native"``,
+            ``"container"``, ``"slurm"``).
+    """
+
     name: str
 
     @abstractmethod
@@ -51,11 +58,33 @@ _REGISTRY: dict[str, type[Backend]] = {}
 
 
 def register(backend_cls: type[Backend]) -> type[Backend]:
+    """Register a backend class under its ``name`` attribute.
+
+    Intended for use as a class decorator on `Backend` subclasses.
+
+    Args:
+        backend_cls: The backend class to register.
+
+    Returns:
+        The same class, unmodified, so it can be used as a decorator.
+    """
     _REGISTRY[backend_cls.name] = backend_cls
     return backend_cls
 
 
 def get_backend(name: str, **opts) -> Backend:
+    """Instantiate a registered backend by name.
+
+    Args:
+        name: Registry key of the backend (e.g. ``"native"``, ``"slurm"``).
+        **opts: Keyword arguments forwarded to the backend's constructor.
+
+    Returns:
+        A new instance of the requested backend.
+
+    Raises:
+        ValueError: If no backend is registered under ``name``.
+    """
     try:
         backend_cls = _REGISTRY[name]
     except KeyError:
@@ -66,6 +95,11 @@ def get_backend(name: str, **opts) -> Backend:
 
 
 def registered_backend_classes() -> list[type[Backend]]:
+    """Return all backend classes currently registered.
+
+    Returns:
+        A list of registered `Backend` subclasses.
+    """
     return list(_REGISTRY.values())
 
 

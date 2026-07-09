@@ -51,6 +51,16 @@ class ParamMeta(BaseModel):
     (see e.g. wsclean's `-size <w> <h>`/`-weight briggs <n>`, which need
     two separate argv tokens, not `"4096,4096"` as one).
 
+    `choices`: the field's allowed values (cult-cargo/classic's `choices`
+    key). A loader that sets this also narrows the field's real annotation
+    on `inputs_model`/`outputs_model` to `typing.Literal[*choices]` (see
+    `loaders._modelgen.narrow_choices`), so an out-of-set value fails
+    pydantic validation the same way a wrong `dtype` would -- not merely
+    documented in `info`. Kept here too (rather than only inferred from the
+    model's own annotation) so a `ParamPattern` attr -- which has no
+    declared model field for a dynamically-matched name -- can still carry
+    it.
+
     On an *output* field, a string `implicit` containing `{name}`
     placeholders is resolved by `steps.dispatch._fill_outputs` as a
     `str.format` template against the step's prepared (validated) input
@@ -67,6 +77,7 @@ class ParamMeta(BaseModel):
     positional: bool = False
     repeat_as_tokens: bool = False
     dtype: str | None = None
+    choices: list[Any] | None = None
 
 
 class Policies(BaseModel):
@@ -110,6 +121,15 @@ class Policies(BaseModel):
     explicit_false: bool = False
 
     def arg_name(self, name: str) -> str:
+        """Build the CLI flag name for a parameter name.
+
+        Args:
+            name: The parameter's declared/matched name.
+
+        Returns:
+            `name` with each `replace` substitution applied, prefixed by
+            `prefix` (e.g. `"--"`).
+        """
         for old, new in self.replace.items():
             name = name.replace(old, new)
         return f"{self.prefix}{name}"
@@ -188,6 +208,15 @@ class ParamPattern(BaseModel):
         return self
 
     def matches(self, name: str) -> ParamMeta | None:
+        """Check whether `name` matches this pattern and look up its metadata.
+
+        Args:
+            name: A dynamic parameter name to test, e.g. `"g1.solvable"`.
+
+        Returns:
+            The `ParamMeta` for the matched `attrs` segment value, or
+            `None` if `name` doesn't match the compiled pattern.
+        """
         m = self._compiled.match(name)
         if not m:
             return None
@@ -281,6 +310,15 @@ class Scope(BaseModel):
         return _dispatch(self, None, backend=backend, cache=cache, cache_dir=cache_dir, **kwargs)
 
     def mutability_of(self, field: str) -> Mutability:
+        """Look up the declared mutability of an input field.
+
+        Args:
+            field: Name of the input field.
+
+        Returns:
+            The field's `Mutability`, defaulting to `Mutability.IMMUTABLE`
+            if not explicitly declared.
+        """
         return self.input_mutability.get(field, Mutability.IMMUTABLE)
 
     def with_backend(self, backend: str | None) -> "Scope":
@@ -311,10 +349,28 @@ class Cab(Scope):
     wranglers: dict[str, list[str]] = Field(default_factory=dict)
 
     def param_name(self, field: str) -> str:
+        """Resolve the tool-facing name for a declared input field.
+
+        Args:
+            field: The cab's own (shinobi-side) field name.
+
+        Returns:
+            The field's `nom_de_guerre` if declared in `field_meta`,
+            otherwise `field` unchanged.
+        """
         meta = self.field_meta.get(field)
         return meta.nom_de_guerre if meta and meta.nom_de_guerre else field
 
     def match_pattern(self, name: str) -> ParamMeta | None:
+        """Check `name` against this cab's dynamic input patterns.
+
+        Args:
+            name: An input name not declared as a literal field.
+
+        Returns:
+            The matched `ParamMeta`, or `None` if no `input_patterns`
+            entry matches.
+        """
         for pattern in self.input_patterns:
             meta = pattern.matches(name)
             if meta is not None:
@@ -322,6 +378,15 @@ class Cab(Scope):
         return None
 
     def match_output_pattern(self, name: str) -> ParamMeta | None:
+        """Check `name` against this cab's dynamic output patterns.
+
+        Args:
+            name: An output name not declared as a literal field.
+
+        Returns:
+            The matched `ParamMeta`, or `None` if no `output_patterns`
+            entry matches.
+        """
         for pattern in self.output_patterns:
             meta = pattern.matches(name)
             if meta is not None:
@@ -403,12 +468,37 @@ class _InputsProxy:
     """`recipe.inputs.ms` or `recipe.inputs("ms")` -> InputRef(field="ms")."""
 
     def __init__(self, recipe: "Recipe"):
+        """Bind the proxy to `recipe`.
+
+        Args:
+            recipe: The recipe whose `inputs_model` fields this proxy
+                exposes as `InputRef`s.
+        """
         self._recipe = recipe
 
     def __call__(self, field: str) -> InputRef:
+        """Same as attribute access, for a dynamic/non-identifier field name.
+
+        Args:
+            field: Name of a field on `recipe.inputs_model`.
+
+        Returns:
+            An `InputRef` for `field`.
+        """
         return self.__getattr__(field)
 
     def __getattr__(self, field: str) -> InputRef:
+        """Resolve `recipe.inputs.<field>` to an `InputRef`.
+
+        Args:
+            field: Name of a field on `recipe.inputs_model`.
+
+        Returns:
+            An `InputRef` for `field`.
+
+        Raises:
+            AttributeError: If `field` isn't a field of `recipe.inputs_model`.
+        """
         if field not in self._recipe.inputs_model.model_fields:
             raise AttributeError(
                 f"'{field}' is not a field of {self._recipe.inputs_model.__name__}"
@@ -424,11 +514,31 @@ class _StepOutputsProxy:
     """
 
     def __init__(self, step: str, outputs_model: type[BaseModel], cab: "Cab | None" = None):
+        """Bind the proxy to one recipe step's outputs.
+
+        Args:
+            step: Name of the producing step.
+            outputs_model: The step's `outputs_model`.
+            cab: The step's `Cab` instance, if it is one -- used to fall
+                back to `output_patterns` for dynamically-named outputs.
+        """
         self._step = step
         self._outputs_model = outputs_model
         self._cab = cab
 
     def __getattr__(self, field: str) -> OutputRef:
+        """Resolve `recipe.outputs.<step>.<field>` to an `OutputRef`.
+
+        Args:
+            field: Name of an output field, declared or pattern-matched.
+
+        Returns:
+            An `OutputRef` for `(step, field)`.
+
+        Raises:
+            AttributeError: If `field` is neither a declared output field
+                nor matched by the cab's `output_patterns`.
+        """
         if field in self._outputs_model.model_fields:
             return OutputRef(step=self._step, field=field)
         if self._cab is not None and self._cab.match_output_pattern(field) is not None:
@@ -445,12 +555,37 @@ class _OutputsProxy:
     """
 
     def __init__(self, recipe: "Recipe"):
+        """Bind the proxy to `recipe`.
+
+        Args:
+            recipe: The recipe whose steps' outputs this proxy exposes.
+        """
         self._recipe = recipe
 
     def __call__(self, step: str, field: str) -> OutputRef:
+        """Same as `recipe.outputs.<step>.<field>`, for dynamic names.
+
+        Args:
+            step: Name of the producing step.
+            field: Name of the output field.
+
+        Returns:
+            An `OutputRef` for `(step, field)`.
+        """
         return getattr(self.__getattr__(step), field)
 
     def __getattr__(self, step: str) -> _StepOutputsProxy:
+        """Resolve `recipe.outputs.<step>` to a `_StepOutputsProxy`.
+
+        Args:
+            step: Name of a step declared in `recipe.steps`.
+
+        Returns:
+            A `_StepOutputsProxy` for that step's outputs.
+
+        Raises:
+            AttributeError: If no step named `step` exists in the recipe.
+        """
         for ref in self._recipe.steps:
             if ref.name == step:
                 cab = ref.step if isinstance(ref.step, Cab) else None
@@ -528,7 +663,28 @@ class Recipe(Scope):
         return self
 
     def step(self, scope: Scope, *, backend: str | None = None, **kwargs: Any):
+        """Decorate a function as a new step appended to this recipe.
+
+        Args:
+            scope: The Cab, Recipe, or bare Scope to bind as this step.
+            backend: Backend override for this step.
+            **kwargs: Split into wiring (`InputRef`/`OutputRef` values) and
+                per-step constant params via `_split_kwargs`.
+
+        Returns:
+            A decorator that binds the given function, appends the
+            resulting `StepRef` to `self.steps`, and returns it.
+        """
+
         def decorator(func: Callable) -> StepRef:
+            """Bind `func` as this step's orchestration function.
+
+            Args:
+                func: The orchestration function.
+
+            Returns:
+                The new `StepRef`, already appended to `self.steps`.
+            """
             bound = scope.with_backend(backend)
             wiring, params = self._split_kwargs(kwargs)
             ref = StepRef(name=func.__name__, step=bound, func=func, wiring=wiring, params=params)
@@ -538,6 +694,15 @@ class Recipe(Scope):
         return decorator
 
     def set_output(self, field: str, ref: OutputRef) -> "Recipe":
+        """Wire a recipe output field to an upstream step's output.
+
+        Args:
+            field: Name of the recipe's own output field.
+            ref: The step output that should populate `field`.
+
+        Returns:
+            `self`, for chaining.
+        """
         self.output_wiring[field] = ref
         return self
 

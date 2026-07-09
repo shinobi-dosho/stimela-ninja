@@ -142,6 +142,12 @@ class CacheManifest:
     """
 
     def __init__(self, path: Path):
+        """Initialize the manifest, backed by a JSON file at `path`.
+
+        Args:
+            path: Path to the JSON manifest file. Not read until first use;
+                created (with parent directories) on first write.
+        """
         self._path = path
         self._lock = threading.Lock()
 

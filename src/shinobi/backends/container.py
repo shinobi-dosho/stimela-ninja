@@ -136,12 +136,27 @@ def build_container_argv(
 
 
 class ContainerBackend(Backend):
+    """Backend that runs cabs via a container runtime (docker/podman/apptainer)."""
+
     def __init__(
         self,
         runtime: str,
         workdir: str | None = None,
         run_as_host_user: bool | None = None,
     ):
+        """Initialize the backend for a given container runtime.
+
+        Args:
+            runtime: Runtime binary name, one of `CONTAINER_RUNTIMES`.
+            workdir: Working directory to bind-mount and run inside. Defaults
+                to the current working directory.
+            run_as_host_user: Whether to run docker/podman containers as the
+                invoking host user (see `build_container_argv`). Defaults to
+                `AppConfig.backend.run_as_host_user` when not given.
+
+        Raises:
+            ValueError: If `runtime` is not a supported container runtime.
+        """
         if runtime not in CONTAINER_RUNTIMES:
             raise ValueError(f"unsupported container runtime '{runtime}'")
         self.runtime = runtime
@@ -165,29 +180,65 @@ class ContainerBackend(Backend):
     def run(
         self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True
     ) -> BackendRun:
+        """Run a cab's argv inside the configured container runtime.
+
+        Args:
+            cab: The cab being executed.
+            argv: Resolved command-line arguments to run inside the container.
+            inputs: Prepared inputs dict used to derive bind mounts.
+            label: Label used for streamed output lines. Defaults to `cab.name`.
+            stream: Whether to stream stdout/stderr live as the process runs.
+
+        Returns:
+            The completed `BackendRun` (never raises on non-zero exit).
+        """
         full_argv = self._wrap(cab, argv, inputs)
         return run_streaming(full_argv, label=label or cab.name, stream=stream)
 
 
 @register
 class DockerBackend(ContainerBackend):
+    """Container backend that shells out to `docker`."""
+
     name = "docker"
 
     def __init__(self, workdir: str | None = None, run_as_host_user: bool | None = None):
+        """Initialize a Docker-backed container backend.
+
+        Args:
+            workdir: Working directory to bind-mount and run inside.
+            run_as_host_user: Whether to run as the invoking host user.
+        """
         super().__init__("docker", workdir, run_as_host_user)
 
 
 @register
 class PodmanBackend(ContainerBackend):
+    """Container backend that shells out to `podman`."""
+
     name = "podman"
 
     def __init__(self, workdir: str | None = None, run_as_host_user: bool | None = None):
+        """Initialize a Podman-backed container backend.
+
+        Args:
+            workdir: Working directory to bind-mount and run inside.
+            run_as_host_user: Whether to run as the invoking host user.
+        """
         super().__init__("podman", workdir, run_as_host_user)
 
 
 @register
 class ApptainerBackend(ContainerBackend):
+    """Container backend that shells out to `apptainer`."""
+
     name = "apptainer"
 
     def __init__(self, workdir: str | None = None, run_as_host_user: bool | None = None):
+        """Initialize an Apptainer-backed container backend.
+
+        Args:
+            workdir: Working directory to bind-mount and run inside.
+            run_as_host_user: Ignored for apptainer (always runs as host user).
+        """
         super().__init__("apptainer", workdir, run_as_host_user)

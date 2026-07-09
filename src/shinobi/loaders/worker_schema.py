@@ -45,18 +45,21 @@ import importlib
 import re
 import warnings
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field, create_model
 
 from shinobi.exceptions import ConfigLoadError
 from shinobi.loaders._modelgen import (
+    COMMON_LEAF_KEYS,
     dtype_to_type,
-    get_path,
+    narrow_choices,
     required_field_spec,
     resolve_directive,
+    resolve_use,
     sanitize_unique,
+    validate_choices,
 )
 
 
@@ -76,10 +79,23 @@ _PKG_INCLUDE_RE = re.compile(r"^\((?P<module>[\w.]+)\)(?P<file>.+)$")
 
 
 def load_worker_schema(path: str | Path) -> ConfigSchema:
+    """Load a stimela-classic worker schema (YAML) file into a `ConfigSchema`.
+
+    Args:
+        path: Path to the YAML worker schema file.
+
+    Returns:
+        The built `ConfigSchema`, with `inputs_model`/`outputs_model`
+        pydantic models generated from the schema's `inputs`/`outputs`.
+
+    Raises:
+        ConfigLoadError: If the file's top-level content isn't a mapping,
+            or it has no top-level `name`.
+    """
     path = Path(path)
     raw = yaml.safe_load(path.read_text()) or {}
     raw = _resolve_includes(raw, path.parent)
-    resolved = _resolve_use(raw, raw)
+    resolved = resolve_use(raw, raw, error=ConfigLoadError)
 
     if not isinstance(resolved, dict):
         raise ConfigLoadError(f"worker schema '{path}' must be a mapping, got {resolved!r}")
@@ -100,6 +116,16 @@ def load_worker_schema(path: str | Path) -> ConfigSchema:
 
 def _resolve_includes(node: Any, base_dir: Path) -> Any:
     def entry_to_dict(entry: Any) -> Any:
+        """Resolve one `_include` entry to the dict it refers to.
+
+        Args:
+            entry: The `_include` entry -- a plain path or `(module)file`
+                string; anything else is unsupported and skipped.
+
+        Returns:
+            The loaded include's dict content, or `{}` if `entry` is not
+            a supported string form.
+        """
         if not isinstance(entry, str):
             warnings.warn(
                 f"skipping unsupported _include entry {entry!r} in {base_dir} "
@@ -139,30 +165,7 @@ def _load_include(entry: str, base_dir: Path) -> dict[str, Any]:
     return _load_include_file(path.resolve())
 
 
-def _resolve_use(node: Any, root: dict[str, Any]) -> Any:
-    def entry_to_dict(dotted: str) -> Any:
-        # recurse so a `_use` target that itself has a `_use` resolves too
-        return resolve_directive(
-            get_path(root, dotted, error=ConfigLoadError), "_use", entry_to_dict
-        )
-
-    return resolve_directive(node, "_use", entry_to_dict)
-
-
-_LEAF_KEYS = {
-    "info",
-    "dtype",
-    "default",
-    "required",
-    "choices",
-    "implicit",
-    # seen in real files (caracal2's caracal_base.yaml) but not modelled --
-    # see the module docstring's "Deliberately NOT modelled" note.
-    "writable",
-    "must_exist",
-    "path_policies",
-    "policies",
-}
+_LEAF_KEYS = COMMON_LEAF_KEYS
 
 
 def _build_group(model_name: str, spec: dict[str, Any]) -> type[BaseModel]:
@@ -202,11 +205,7 @@ def _build_group(model_name: str, spec: dict[str, Any]) -> type[BaseModel]:
 
 def _leaf_field(value: dict[str, Any]) -> tuple[Any, Any]:
     py_type = dtype_to_type(value.get("dtype", "str"))
-    choices = value.get("choices")
-    if choices:
-        if not isinstance(choices, (list, tuple)):
-            raise ConfigLoadError(f"'choices' must be a list, got {choices!r}")
-        py_type = Literal[tuple(choices)]
+    py_type = narrow_choices(py_type, validate_choices(value.get("choices"), error=ConfigLoadError))
 
     implicit = value.get("implicit")
     required = bool(value.get("required", False)) and implicit is None

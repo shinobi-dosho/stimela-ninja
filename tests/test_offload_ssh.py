@@ -40,6 +40,19 @@ def test_find_cab_deps_resolves_path_dot_parent_expression_and_follows_include()
     assert (FIXTURE_DIR / "cabs" / "vars.yml").resolve() in deps
 
 
+def test_find_cab_deps_follows_include_nested_under_inputs():
+    """Regression test: real cult-cargo cabs (cubical.yml/quartical.yml)
+    nest `_include:` under `inputs:`/`outputs:`, not just at the top level
+    (see cultcargo.py's own module docstring) -- `_include_deps` used to
+    only scan the top level, silently missing this dependency for
+    `--remote` syncs.
+    """
+    deps, warnings = find_cab_deps(FIXTURE_DIR / "recipe_nested_include.py")
+    assert warnings == []
+    assert (FIXTURE_DIR / "cabs" / "nested_include_tool.yml").resolve() in deps
+    assert (FIXTURE_DIR / "cabs" / "nested_vars.yml").resolve() in deps
+
+
 def test_find_cab_deps_warns_instead_of_raising_on_unresolvable_call():
     deps, warnings = find_cab_deps(FIXTURE_DIR / "recipe_unresolvable.py")
     assert deps == []

@@ -30,6 +30,7 @@ class BackendRun:
 
     @property
     def success(self) -> bool:
+        """Whether the run exited with return code 0."""
         return self.returncode == 0
 
 
@@ -55,9 +56,22 @@ class StepResult:
 
     @property
     def success(self) -> bool:
+        """Whether the step exited with return code 0."""
         return self.returncode == 0
 
     def __getattr__(self, name: str) -> Any:
+        """Read through to `outputs` for convenience (`result.<output_field>`).
+
+        Args:
+            name: Attribute name, looked up on `self.outputs` if not a
+                dataclass field.
+
+        Returns:
+            The corresponding attribute of `self.outputs`.
+
+        Raises:
+            AttributeError: If `name` isn't found on `self.outputs` either.
+        """
         # convenience: result.<output_field> reads through to outputs
         try:
             return getattr(self.__dict__["outputs"], name)

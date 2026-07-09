@@ -21,7 +21,6 @@ depending on it.
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 import tempfile
 import time
@@ -30,6 +29,7 @@ from typing import Any
 
 from shinobi.backends import Backend, register
 from shinobi.backends.container import build_container_argv
+from shinobi.backends.slurm_script import build_sbatch_script, parse_sbatch_job_id, sacct_job_fields
 from shinobi.exceptions import BackendError
 from shinobi.results import BackendRun
 from shinobi.steps.schema import Cab
@@ -50,6 +50,8 @@ _TERMINAL_STATES = {
 
 @register
 class SlurmBackend(Backend):
+    """Backend that runs cabs as blocking Slurm batch jobs via `sbatch`."""
+
     name = "slurm"
 
     def __init__(
@@ -60,6 +62,17 @@ class SlurmBackend(Backend):
         sbatch_opts: dict[str, str] | None = None,
         poll_interval: float = 5.0,
     ):
+        """Initialize the backend.
+
+        Args:
+            container_runtime: Container runtime used to wrap cabs that
+                declare an image (e.g. `"apptainer"`). Set to `None` to run
+                the cab's argv directly, without a container.
+            workdir: Working directory the job runs in. Defaults to the
+                current working directory.
+            sbatch_opts: Extra `#SBATCH` options to include in the job script.
+            poll_interval: Seconds to wait between `sacct` status polls.
+        """
         self.container_runtime = container_runtime
         self.workdir = workdir or os.getcwd()
         self.sbatch_opts = sbatch_opts or {}
@@ -78,24 +91,21 @@ class SlurmBackend(Backend):
         stdout_path: Path,
         stderr_path: Path,
     ) -> str:
-        lines = [
-            "#!/bin/bash",
-            f"#SBATCH --job-name={cab.name}",
-            f"#SBATCH --chdir={self.workdir}",
-            f"#SBATCH --output={stdout_path}",
-            f"#SBATCH --error={stderr_path}",
-        ]
-        for key, value in self.sbatch_opts.items():
-            lines.append(f"#SBATCH --{key}={value}")
-        lines.append("")
-        lines.append(shlex.join(self._inner_argv(cab, argv, inputs)))
-        return "\n".join(lines) + "\n"
+        return build_sbatch_script(
+            job_name=cab.name,
+            chdir=self.workdir,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            sbatch_opts=self.sbatch_opts,
+            argv=self._inner_argv(cab, argv, inputs),
+            error=BackendError,
+        )
 
     def _submit(self, script_path: Path) -> str:
         proc = subprocess.run(["sbatch", "--parsable", str(script_path)], capture_output=True, text=True)
         if proc.returncode != 0:
             raise BackendError(f"sbatch failed: {proc.stderr.strip()}")
-        return proc.stdout.strip().split(";")[0]
+        return parse_sbatch_job_id(proc.stdout)
 
     def _wait(self, job_id: str) -> int:
         while True:
@@ -104,23 +114,32 @@ class SlurmBackend(Backend):
                 capture_output=True,
                 text=True,
             )
-            for line in proc.stdout.strip().splitlines():
-                fields = line.split("|")
-                if len(fields) < 3:
-                    continue
-                job_field, state, exit_code = fields[0], fields[1], fields[2]
-                # sacct also reports steps like "<id>.batch"/"<id>.extern" --
-                # only the bare job id line reflects the job's overall state
-                if job_field != job_id:
-                    continue
-                state = state.strip().split()[0]  # strip suffixes e.g. "CANCELLED by 1000"
+            fields = sacct_job_fields(proc.stdout, job_id)
+            if fields and len(fields) >= 3:
+                state = fields[1].strip().split()[0]  # strip suffixes e.g. "CANCELLED by 1000"
                 if state in _TERMINAL_STATES:
-                    return int(exit_code.split(":")[0])
+                    return int(fields[2].split(":")[0])
             time.sleep(self.poll_interval)
 
     def run(
         self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True
     ) -> BackendRun:
+        """Submit a cab as a Slurm job and block until it terminates.
+
+        Args:
+            cab: The cab being executed.
+            argv: Resolved command-line arguments to run in the job.
+            inputs: Prepared inputs dict used to derive container bind mounts,
+                if `container_runtime` and `cab.image` are both set.
+            label: Unused; slurm has no log-tailing/streaming support.
+            stream: Unused; slurm has no log-tailing/streaming support.
+
+        Returns:
+            A `BackendRun` with the job's exit code and captured stdout/stderr.
+
+        Raises:
+            BackendError: If `sbatch` submission fails.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             script_path = tmp_path / "job.sh"

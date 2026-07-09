@@ -1,5 +1,9 @@
 import json
 
+import pydantic
+import pytest
+
+from shinobi.exceptions import CabLoadError
 from shinobi.loaders.stimela_classic import load_file, loads
 from shinobi.steps.schema import path_fields
 
@@ -110,6 +114,34 @@ def test_choices_are_appended_to_info():
 def test_choices_alone_become_info_when_no_info_given():
     cab = loads(MSUTILS_JSON)
     assert "sumcols" in cab.field_meta["command"].info
+
+
+def test_choices_are_recorded_on_field_meta():
+    cab = loads(MSTRANSFORM_JSON)
+    assert cab.field_meta["separationaxis"].choices == ["auto", "spw", "scan", "baseline"]
+
+
+def test_choices_are_enforced_by_the_generated_model():
+    cab = loads(MSTRANSFORM_JSON)
+    cab.inputs_model(msname="x.ms", separationaxis="scan")
+    with pytest.raises(pydantic.ValidationError):
+        cab.inputs_model(msname="x.ms", separationaxis="not-a-choice")
+
+
+def test_non_list_choices_raise():
+    """Regression test: `list("auto")` used to silently explode a string
+    `choices` value into per-character choices (`['a', 'u', 't', 'o']`)
+    instead of failing loudly -- now routed through the same
+    `_modelgen.validate_choices` the other loaders use.
+    """
+    bad = json.dumps(
+        {
+            "task": "bad",
+            "parameters": [{"name": "mode", "dtype": "str", "choices": "auto"}],
+        }
+    )
+    with pytest.raises(CabLoadError, match="'choices' must be a list"):
+        loads(bad)
 
 
 def test_dtype_list_uses_first_alternative():

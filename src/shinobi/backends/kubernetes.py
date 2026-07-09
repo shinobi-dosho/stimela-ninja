@@ -40,6 +40,8 @@ _TERMINAL_CONDITIONS = {"Complete", "Failed"}
 
 @register
 class KubernetesBackend(Backend):
+    """Backend that runs cabs as Kubernetes batch Jobs via `kubectl`."""
+
     name = "kubernetes"
 
     def __init__(
@@ -49,6 +51,14 @@ class KubernetesBackend(Backend):
         workdir: str | None = None,
         poll_interval: float = 5.0,
     ):
+        """Initialize the backend.
+
+        Args:
+            namespace: Kubernetes namespace to create and query Jobs in.
+            workdir: Working directory to bind-mount into the pod as
+                hostPath volumes. Defaults to the current working directory.
+            poll_interval: Seconds to wait between Job status polls.
+        """
         self.namespace = namespace
         self.workdir = workdir or os.getcwd()
         self.poll_interval = poll_interval
@@ -126,6 +136,22 @@ class KubernetesBackend(Backend):
     def run(
         self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True
     ) -> BackendRun:
+        """Run a cab as a Kubernetes Job and block until it completes.
+
+        Args:
+            cab: The cab being executed.
+            argv: Resolved command-line arguments to run in the pod.
+            inputs: Prepared inputs dict used to derive hostPath volume mounts.
+            label: Unused; kubernetes has no log-tailing/streaming support.
+            stream: Unused; kubernetes has no log-tailing/streaming support.
+
+        Returns:
+            A `BackendRun` with the pod's exit code and captured stdout.
+
+        Raises:
+            BackendError: If the cab has no image, or any `kubectl` call
+                (apply/get/logs) fails.
+        """
         job_name = f"shinobi-{cab.name}-{uuid.uuid4().hex[:8]}"
         manifest = self._manifest(cab, argv, inputs, job_name)
 

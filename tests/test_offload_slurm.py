@@ -1,10 +1,11 @@
+import subprocess
 from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
 
 from shinobi.graph import RecipeNotOffloadableError
-from shinobi.offload import OffloadCompileError, compile_slurm
+from shinobi.offload import OffloadCompileError, compile_slurm, status_slurm
 from shinobi.steps.schema import Cab, InputRef, OutputRef, Recipe, StepRef
 
 
@@ -142,3 +143,29 @@ def test_diamond_dependencies_are_captured():
     assert by_name["b"].depends_on == ["a"]
     assert by_name["c"].depends_on == ["a"]
     assert sorted(by_name["d"].depends_on) == ["b", "c"]
+
+
+def test_status_slurm_ignores_batch_and_extern_rows(monkeypatch):
+    """Regression test: `status_slurm` used to just take `lines[0]` from
+    `sacct` output, assuming the bare job id row always comes first before
+    any `.batch`/`.extern` sub-step rows -- unlike the blocking backend's
+    `_wait`, which matches on the job id field explicitly. Now both share
+    `sacct_job_fields`, so `status_slurm` is robust to row order too.
+    """
+
+    def fake_run(argv, **kwargs):
+        assert argv[:2] == ["sacct", "-j"]
+        # deliberately out of order: sub-step rows before the bare job row
+        out = "42.extern|RUNNING\n42.batch|RUNNING\n42|COMPLETED\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert status_slurm({"step": "42"}) == {"step": "COMPLETED"}
+
+
+def test_status_slurm_reports_unknown_for_missing_job(monkeypatch):
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, stdout="", stderr=""),
+    )
+    assert status_slurm({"step": "42"}) == {"step": "UNKNOWN"}
