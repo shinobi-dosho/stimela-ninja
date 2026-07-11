@@ -214,7 +214,7 @@ def test_pystep_container_apptainer_argv():
     argv = mock_run.call_args[0][0]
     assert argv[0] == "apptainer"
     assert argv[1] == "exec"
-    assert "casa:latest" in argv
+    assert "docker://casa:latest" in argv
 
 
 def test_pystep_container_parses_outputs_file():

@@ -140,4 +140,18 @@ def test_apptainer_uses_bind_and_exec():
     assert binds == {"/work:/work", "/data:/data"}
     pwd_index = argv.index("--pwd")
     assert argv[pwd_index + 1] == "/work"
-    assert argv[pwd_index + 2] == "tool:latest"
+    # apptainer needs an explicit source scheme for a registry ref
+    assert argv[pwd_index + 2] == "docker://tool:latest"
+
+
+def test_apptainer_image_uri_scheme_handling():
+    from shinobi.backends.container import _apptainer_image_uri
+
+    # bare registry refs get a docker:// source so apptainer pulls them
+    assert _apptainer_image_uri("quay.io/stimela2/casa6:6.7") == "docker://quay.io/stimela2/casa6:6.7"
+    assert _apptainer_image_uri("tool:latest") == "docker://tool:latest"
+    # already-schemed or local images are left untouched
+    assert _apptainer_image_uri("docker://quay.io/x:1") == "docker://quay.io/x:1"
+    assert _apptainer_image_uri("library://x/y:1") == "library://x/y:1"
+    assert _apptainer_image_uri("/images/casa6.sif") == "/images/casa6.sif"
+    assert _apptainer_image_uri("./casa6.sif") == "./casa6.sif"
