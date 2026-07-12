@@ -302,7 +302,11 @@ def test_pystep_container_runner_script_content():
 
     runner = captured_runner["content"]
     assert "import json" in runner
-    assert "sys.path.insert" in runner
+    # The target is loaded from its file as an isolated module, with the
+    # framework/target packages stubbed via a front-of-meta_path finder --
+    # never imported by dotted path onto the host site-packages sys.path.
+    assert "sys.meta_path.insert(0, _StubFinder())" in runner
+    assert "spec_from_file_location" in runner
     assert "container_func" in runner
     assert "inputs.pkl" in runner
     assert "outputs.json" in runner
@@ -507,6 +511,45 @@ def test_pystep_container_runner_executes_end_to_end():
 
     assert result.success, result.stderr
     assert result.outputs.result == "real.ms:7"
+
+
+def test_pystep_container_runs_without_framework_in_container():
+    # The whole point of the stub runner: the container's Python needs
+    # neither shinobi nor pydantic (nor their compiled deps like
+    # pydantic_core, which are ABI-locked to the host venv's Python). Prove
+    # it by executing the generated runner in a subprocess where importing
+    # shinobi or pydantic *raises* -- it must still produce outputs, entirely
+    # via the injected stubs.
+    bootstrap = (
+        "import runpy, sys\n"
+        "class _Block:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name.split('.')[0] in ('shinobi', 'pydantic'):\n"
+        "            raise ImportError('blocked in container: ' + name)\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, _Block())\n"
+        "runpy.run_path(sys.argv[1], run_name='__main__')\n"
+    )
+
+    def hardened_run(argv, *args, **kwargs):
+        runner = next(a for a in argv if a.endswith("runner.py"))
+        proc = _REAL_SUBPROCESS_RUN(
+            [sys.executable, "-c", bootstrap, runner],
+            capture_output=True,
+            text=True,
+        )
+        result = MagicMock()
+        result.returncode = proc.returncode
+        result.stdout = proc.stdout
+        result.stderr = proc.stderr
+        return result
+
+    ref = pystep(image="casa:latest", backend="docker")(container_func)
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=hardened_run):
+        result = ref(ms="hardened.ms", niter=3)
+
+    assert result.success, result.stderr
+    assert result.outputs.result == "hardened.ms:3"
 
 
 def test_pystep_container_runner_executes_ctx_end_to_end():

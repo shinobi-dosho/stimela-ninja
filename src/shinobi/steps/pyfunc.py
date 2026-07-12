@@ -24,8 +24,12 @@ external tool; use `@shinobi.step` when you have an existing `Cab`/`Recipe`.
 
 **Container execution**: when `image=` is set and a container backend is
 resolved, the function runs inside the container instead of in-process.
-The function's source module is mounted into the container via
-`inspect.getfile()`, and a generated runner script handles invocation.
+The function's source *file* is mounted into the container via
+`inspect.getfile()`, and a generated runner script loads it as an isolated
+module and invokes it. The runner never imports the framework stack
+(shinobi/pydantic) or the target's own package inside the container -- it
+stubs them (so the container's Python need not be ABI-compatible with the
+host venv's compiled wheels) and lets the host rebuild the typed outputs.
 The runner is invoked as ``python3`` -- container images must provide it
 (every official Python image does; a bare ``python`` would fail). Native
 runs call the function in-process (the original behaviour).
@@ -152,33 +156,110 @@ def _ctx_shim() -> str:
 
 
 # All paths in the runner (`inputs_path`, `outputs_path`, the script's own
-# path) are host paths that are identity-bind-mounted into the container
-# (see build_container_argv), so the same absolute path is valid on both
-# sides -- no fixed `/shinobi_io` mount. Inputs travel as a pickle so
-# pydantic-coerced values (Path, datetime, ...) arrive in the container as
-# the same types the in-process path passes; the result is written to the
-# outputs file rather than stdout, so the function is free to print.
+# path, the target `source_file`) are host paths that are identity-bind-mounted
+# into the container (see build_container_argv), so the same absolute path is
+# valid on both sides -- no fixed `/shinobi_io` mount. Inputs travel as a
+# pickle so pydantic-coerced values (Path, datetime, ...) arrive in the
+# container as the same types the in-process path passes; the result is written
+# to the outputs file rather than stdout, so the function is free to print.
+#
+# The target module is loaded from its file directly (not imported by its
+# dotted package path), so its package `__init__` never runs and the host
+# site-packages is never placed on the container's `sys.path` -- the host's
+# compiled wheels (e.g. `pydantic_core`, built for the host's cpXY) cannot be
+# loaded by the container's own (possibly different) Python otherwise. Imports
+# of the framework packages (`shinobi`, `pydantic`) and the target's own
+# top-level package are intercepted by a stub finder installed at the front of
+# `sys.meta_path`, so none of them -- nor their compiled deps -- ever load
+# in-container. This honours the ctx-shim's "shinobi is not assumed installed
+# in the container" design: the function is *defined* against dependency-free
+# stubs and *runs* using only stdlib plus whatever it pulls in via
+# `ctx.import_func` (real, container-provided packages like `casatasks`). The
+# function returns a stubbed `*Outputs` (kwargs stored as attrs); its plain
+# dict is written out and the host -- which has real pydantic -- rebuilds the
+# typed, validated model from it (see `_run_pystep_container`).
 _RUNNER_TEMPLATE = '''\
 from __future__ import annotations
 
-import importlib
+import importlib.abc
+import importlib.machinery
+import importlib.util
 import json
 import pickle
 import sys
+import types
 
-sys.path.insert(0, {source_dir!r})
 
-_obj = importlib.import_module({module_path!r})
+class _Any:
+    """Permissive stand-in: every attribute access and call yields another
+    _Any, so a stubbed module's arbitrary members resolve to something
+    harmless at import time (they are never used for real work in-container)."""
+
+    def __getattr__(self, name):
+        return _ANY
+
+    def __call__(self, *args, **kwargs):
+        return _ANY
+
+
+_ANY = _Any()
+
+
+class _StubModel:
+    """Dependency-free stand-in for a pydantic BaseModel: stores keyword
+    arguments as attributes and dumps them back as a plain dict. The host
+    (which has real pydantic) rebuilds the typed *Outputs model from that
+    dict, so no compiled pydantic ever loads inside the container."""
+
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+    def model_dump(self, *args, **kwargs):
+        return dict(self.__dict__)
+
+
+def _stub_attr(name):
+    if name == "BaseModel":
+        return _StubModel
+    if name == "pystep":
+        # `@shinobi.pystep(...)` used as a decorator: return a factory whose
+        # decorator leaves the function unchanged, so the module-level name
+        # stays the plain function rather than a StepRef.
+        return lambda *a, **k: (lambda func: func)
+    return _ANY
+
+
+_STUB_PREFIXES = {stub_prefixes!r}
+
+
+class _StubLoader(importlib.abc.Loader):
+    def create_module(self, spec):
+        mod = types.ModuleType(spec.name)
+        mod.__path__ = []  # mark as a package so `from x.y import z` resolves
+        mod.__getattr__ = _stub_attr
+        return mod
+
+    def exec_module(self, module):
+        pass
+
+
+class _StubFinder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".")[0] in _STUB_PREFIXES:
+            return importlib.machinery.ModuleSpec(fullname, _StubLoader())
+        return None
+
+
+sys.meta_path.insert(0, _StubFinder())
+
+_spec = importlib.util.spec_from_file_location("_shinobi_pystep_target", {source_file!r})
+_module = importlib.util.module_from_spec(_spec)
+sys.modules["_shinobi_pystep_target"] = _module
+_spec.loader.exec_module(_module)
+
+_obj = _module
 for _part in {qualname_parts!r}:
     _obj = getattr(_obj, _part)
-# `@shinobi.pystep` used as a decorator rebinds the module-level name to a
-# StepRef, so importing the function by name here yields the StepRef, not the
-# function. Unwrap it (StepRef.func -> the generated adapter, whose
-# __wrapped__ is the original function) so we call the real function rather
-# than StepRef.__call__. A plain (non-decorator) pystep function has neither
-# attribute and passes through unchanged.
-_obj = getattr(_obj, "func", _obj)
-_obj = getattr(_obj, "__wrapped__", _obj)
 {func_name} = _obj
 
 with open({inputs_path!r}, "rb") as f:
@@ -189,7 +270,7 @@ result = {func_name}({ctx_arg}**inputs)
 if result is not None and hasattr(result, "model_dump"):
     result = result.model_dump(mode="json")
 with open({outputs_path!r}, "w") as f:
-    json.dump(result, f)
+    json.dump(result, f, default=str)
 '''
 
 
@@ -204,12 +285,14 @@ def _run_pystep_container(
 ) -> StepResult:
     """Execute a pystep's function inside a container.
 
-    Mounts the function's source module directory and a temp directory
+    Mounts the function's source-file directory and a temp directory
     containing a runner script, pickled inputs, and the outputs file. The
-    runner imports the function, calls it with the same objects the
+    runner loads the source file as an isolated module (stubbing the
+    framework and the target's own package so neither -- nor their compiled
+    deps -- load in-container), calls the function with the same objects the
     in-process path would pass, and writes the JSON result to the outputs
-    file. When the function takes a leading `ctx`, a context shim is
-    injected.
+    file. The host then rebuilds the typed outputs model from that JSON.
+    When the function takes a leading `ctx`, a context shim is injected.
     """
     from shinobi.backends.container import build_container_argv
 
@@ -220,25 +303,16 @@ def _run_pystep_container(
             "container"
         )
 
-    module_path = func.__module__
     source_file = Path(inspect.getfile(func)).resolve()
-    # A function defined in a directly-run script has __module__ ==
-    # '__main__', which inside the container would name the runner itself;
-    # import it by its file name instead. The runner inserts source_dir at
-    # sys.path[0], so this file shadows any same-named module elsewhere on
-    # the path -- two __main__ scripts with the same stem in different dirs
-    # never collide because each pystep run mounts only its own source_dir.
-    if module_path == "__main__":
-        module_path = source_file.stem
 
-    # The runner imports `func` via its dotted module path, so the directory
-    # put on sys.path must be the package *root*, not the file's own parent.
-    # For a top-level module (no dots) that is the parent dir; for a package
-    # module like `pkg.sub.mod` it is that many levels above the file.
-    source_root = source_file.parent
-    for _ in range(module_path.count(".")):
-        source_root = source_root.parent
-    source_dir = str(source_root)
+    # The runner loads this file as an isolated module, stubbing the framework
+    # packages (shinobi, pydantic) and the target's own top-level package so
+    # none of them execute in-container (see _RUNNER_TEMPLATE). A function
+    # defined in a directly-run script has __module__ == '__main__' and no
+    # importable package; only the two framework prefixes are stubbed for it.
+    stub_prefixes = {"shinobi", "pydantic"}
+    if func.__module__ != "__main__":
+        stub_prefixes.add(func.__module__.split(".")[0])
 
     # Same objects the in-process path passes: prepare_inputs() applies
     # mutability handling on top of pydantic-coerced values. They travel by
@@ -259,8 +333,8 @@ def _run_pystep_container(
         runner_path = io_dir / "runner.py"
         runner_path.write_text(
             _RUNNER_TEMPLATE.format(
-                source_dir=source_dir,
-                module_path=module_path,
+                stub_prefixes=stub_prefixes,
+                source_file=str(source_file),
                 qualname_parts=func.__qualname__.split("."),
                 func_name=func.__name__,
                 inputs_path=str(inputs_path),
@@ -271,7 +345,10 @@ def _run_pystep_container(
         )
 
         workdir = os.getcwd()
-        extra_dirs = [str(io_dir), source_dir]
+        # Mount only the target file's own directory (identity bind), not the
+        # whole package root -- the runner loads the file by path and never
+        # puts it on sys.path, so nothing else in the tree is read.
+        extra_dirs = [str(io_dir), str(source_file.parent)]
 
         inner_argv = ["python3", str(runner_path)]
 
