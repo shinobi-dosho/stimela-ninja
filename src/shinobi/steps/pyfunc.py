@@ -171,6 +171,14 @@ sys.path.insert(0, {source_dir!r})
 _obj = importlib.import_module({module_path!r})
 for _part in {qualname_parts!r}:
     _obj = getattr(_obj, _part)
+# `@shinobi.pystep` used as a decorator rebinds the module-level name to a
+# StepRef, so importing the function by name here yields the StepRef, not the
+# function. Unwrap it (StepRef.func -> the generated adapter, whose
+# __wrapped__ is the original function) so we call the real function rather
+# than StepRef.__call__. A plain (non-decorator) pystep function has neither
+# attribute and passes through unchanged.
+_obj = getattr(_obj, "func", _obj)
+_obj = getattr(_obj, "__wrapped__", _obj)
 {func_name} = _obj
 
 with open({inputs_path!r}, "rb") as f:

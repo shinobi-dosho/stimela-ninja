@@ -534,3 +534,23 @@ def test_pystep_container_runner_executes_path_inputs_end_to_end():
 
     assert result.success, result.stderr
     assert result.outputs.basename == "real.ms"
+
+
+# A module-level *decorated* pystep: `@pystep` rebinds this name to a StepRef,
+# so the container runner -- which re-imports the function by name -- gets the
+# StepRef, not the function. This is how dosho's cabs are all defined, and it
+# regressed as `StepRef.__call__() takes 1 positional argument but 2 were
+# given` until the runner learned to unwrap StepRef -> adapter -> function.
+@pystep(image="casa:latest", backend="docker")
+def decorated_container_func(ms: str, niter: int = 100) -> ContainerOutputs:
+    return ContainerOutputs(result=f"{ms}:{niter}")
+
+
+def test_pystep_decorator_form_runner_executes_end_to_end():
+    with patch(
+        "shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host
+    ):
+        result = decorated_container_func(ms="dec.ms", niter=5)
+
+    assert result.success, result.stderr
+    assert result.outputs.result == "dec.ms:5"
