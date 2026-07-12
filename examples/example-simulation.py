@@ -1,5 +1,5 @@
-"""MeerKAT simulation -- a shinobi Recipe reimplementing the old
-stimela-classic `meerkat_simulation.py` example on the step model
+"""End-to-End simulation -- a shinobi Recipe reimplementing the old
+stimela-classic `example_simulation.py` example on the step model
 (`Cab`/`Recipe`/`add_step`, `ninja run`).
 
 This is a genuinely *runnable* pipeline, not just a schema demo: make an
@@ -44,28 +44,27 @@ Tool choices, differing from the original stimela-classic script:
 
 Run it:
 
-    ninja run examples/meerkat_simulation.py:recipe --dryrun
+    ninja run examples/example_simulation.py:recipe --dryrun
 
 A real run needs `simms` installed (it has no docker image yet):
 
     uv sync --group examples
-    ninja run examples/meerkat_simulation.py:recipe --ms sim.ms
+    ninja run examples/example_simulation.py:recipe --ms sim.ms
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from dosho.cabs import cubical, wsclean
+from dosho.cabs.simms import skysim, telsim
 from pydantic import BaseModel, create_model
 
 from shinobi import Recipe
 from shinobi.loaders import build_model
 from shinobi.steps.schema import ParamMeta
 
-from dosho.cabs import cubical, wsclean
-from dosho.cabs.simms import skysim, telsim
-
-_SIMMS_DIR = Path(__file__).parent / "simms"
+_INPUT_DIR = Path(__file__).parent / "input-dir"
 
 # Neither real simms cab declares any outputs (matches cult-cargo's own
 # schema -- a genuine gap in the tool's cab metadata, not a dosho
@@ -107,10 +106,10 @@ wsclean_with_model = wsclean.model_copy(
 
 
 class SimInputs(BaseModel):
-    ms: str = "meerkat_simulation.ms"
+    ms: str = "example-simulation.ms"
     telescope: str = "meerkat"
-    skymodel: str = str(_SIMMS_DIR / "testsky.txt")
-    prefix: str = "meerkat-sim"
+    skymodel: str = str(_INPUT_DIR / "testsky.txt")
+    prefix: str = "example-sim"
 
 
 class SimOutputs(BaseModel):
@@ -126,7 +125,7 @@ def build_simulation(robust_values: tuple[int, ...] = (2, 0, -2)) -> Recipe:
     one wsclean image per entry in `robust_values` (matching the original
     script's `briggs_robust = [2, 0, -2]` loop).
     """
-    recipe = Recipe(name="meerkat_simulation", inputs_model=SimInputs, outputs_model=SimOutputs)
+    recipe = Recipe(name="example_simulation", inputs_model=SimInputs, outputs_model=SimOutputs)
 
     recipe.add_step(
         "make_ms",
@@ -155,7 +154,7 @@ def build_simulation(robust_values: tuple[int, ...] = (2, 0, -2)) -> Recipe:
         ms=[recipe.outputs("simulate", "ms")],
         column="DATA",
         weight=("briggs", 1.5),
-        prefix="meerkat-simdata",
+        prefix="example-simdata",
         size=(1024, 1024),
         scale="4asec",
         niter=5000,
@@ -194,7 +193,7 @@ def build_simulation(robust_values: tuple[int, ...] = (2, 0, -2)) -> Recipe:
             ms=[recipe.outputs("calibrate", "ms")],
             column="CORRECTED_DATA",
             weight=("briggs", float(robust)),
-            prefix=f"meerkat-sim-robust{robust}",
+            prefix=f"example-sim-robust{robust}",
             size=(2048, 2048),
             scale="2asec",
             niter=1000,
