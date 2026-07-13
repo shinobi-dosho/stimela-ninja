@@ -64,6 +64,16 @@ By default, running cabs' stdout/stderr are echoed live as they run
 behavior of a silent run followed by one dump of captured output at the end;
 this overrides ``AppConfig.log.stream`` for the invocation.
 
+Add ``--provenance`` to make the run reproducible: container images are
+digest-pinned before running and a run manifest is written under
+``AppConfig.provenance.dir``. It's off by default (``--no-provenance`` forces
+it off), and overrides ``AppConfig.provenance.enabled`` for the invocation.
+See :doc:`concepts/provenance`.
+
+.. code-block:: console
+
+    $ ninja run myrecipe.py:selfcal --ms data.ms --provenance
+
 Add ``--remote user@host:/path`` to launch on a remote host instead of
 locally: the target file and its statically-discoverable cab deps are synced
 over, then the run happens detached -- check progress with ``ninja status``.
@@ -126,6 +136,23 @@ Compiles a purely-declarative recipe into a cluster workflow and, with
 Options: ``--engine`` (workflow engine, ``slurm`` in v1), ``--workdir``
 (working directory for compiled jobs), ``--container-runtime`` (runtime to wrap
 imaged cabs in; ``none`` for bare argv), and ``--submit`` (submit and detach).
+
+.. _ninja-clean:
+
+``ninja clean`` -- remove runtime artifacts
+-------------------------------------------
+
+Removes shinobi's runtime artifacts: run manifests (``AppConfig.provenance.dir``)
+and the step cache (``AppConfig.cache.dir``). Both are removed by default;
+``--no-runs`` / ``--no-cache`` narrow the selection, and ``--dry-run`` previews
+what would be removed without deleting. Nothing outside those configured
+directories is touched.
+
+.. code-block:: console
+
+    $ ninja clean                   # run manifests + step cache
+    $ ninja clean --no-cache        # just run manifests
+    $ ninja clean --dry-run         # preview
 
 ``ninja status`` -- check a detached run
 ----------------------------------------

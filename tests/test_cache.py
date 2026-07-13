@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from shinobi.backends.recording import RecordingBackend
 from shinobi.cache import CacheManifest, compute_cache_key, get_cache_manifest
+from shinobi.results import StepResult
 from shinobi.steps import Cab, register_step_backend
 from shinobi.steps.dispatch import _dispatch
 
@@ -207,7 +208,7 @@ def test_wrangled_non_path_output_is_restored_verbatim_on_a_hit(tmp_path):
     manifest = CacheManifest(tmp_path / "manifest.json")
     outputs = WrangledOutputs(note="hello from stdout wrangling", marker=None)
 
-    manifest.record("w", "key1", outputs)
+    manifest.record("w", "key1", StepResult(name="w", returncode=0, outputs=outputs, inputs=NoInputs()))
     hit = manifest.check("w", "key1", scope, {})
     assert hit is not None
     assert hit.outputs.note == "hello from stdout wrangling"
@@ -232,7 +233,11 @@ def test_concurrent_record_does_not_corrupt_manifest(tmp_path):
     manifest = CacheManifest(tmp_path / "manifest.json")
 
     def worker(i):
-        manifest.record(f"step{i}", f"key{i}", SimpleOutputs(value=i))
+        manifest.record(
+            f"step{i}",
+            f"key{i}",
+            StepResult(name=f"step{i}", returncode=0, outputs=SimpleOutputs(value=i), inputs=NoInputs()),
+        )
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(20)]
     for t in threads:

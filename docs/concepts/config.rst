@@ -30,10 +30,16 @@ Settings
     cache:
       enabled: false              # step-level result caching, off by default
       dir: ".shinobi/cache"       # cache directory
+    provenance:
+      enabled: false              # image pinning + run manifests, off by default
+      dir: ".shinobi/runs"        # where run manifests are written
 
 ``execution.max_workers`` defaults to ``1``: parallelism is opt-in. At ``1``
 the scheduler reproduces exact declaration-order execution and no ``MUTABLE``
-input can be shared across concurrently-running steps.
+input can be shared across concurrently-running steps. Raising it lets
+independent recipe branches run concurrently -- see the execution model in
+:doc:`recipes`. A recipe can also set its own ``max_workers``, overriding this
+default.
 
 ``backend.run_as_host_user`` (docker/podman only, default ``True``) adds
 ``--user uid:gid`` plus ``HOME=<workdir>`` so bind-mounted outputs come out
@@ -51,6 +57,12 @@ unchanged cache key is skipped and its prior result reused. It's off by
 default and must also be opted into per-step or per-recipe via ``Scope.cache``
 -- see ``shinobi.cache``. ``ninja run --cache-dir``/``--no-cache`` override
 this per invocation.
+
+``provenance.enabled`` turns on reproducible-run provenance: container images
+are digest-pinned before running (pin-then-run) and a run manifest is written
+per top-level run under ``provenance.dir``. It's off by default because
+pinning changes how containers execute. ``ninja run --provenance``/
+``--no-provenance`` override this per invocation. See :doc:`provenance`.
 
 Config file location
 ---------------------

@@ -62,6 +62,19 @@ class LogConfig(BaseModel):
     stream: bool = True
 
 
+class ProvenanceConfig(BaseModel):
+    """Settings controlling reproducible-run provenance (`shinobi.provenance`)."""
+
+    # Opt-in. When enabled, two things happen together: container images are
+    # digest-pinned before running (pin-then-run -- so what executes is what
+    # gets recorded, but the run now needs a registry round-trip and executes
+    # `repo@sha256:...` instead of `repo:tag`), and a static run manifest is
+    # written per top-level run. Off by default so the pinning behaviour is
+    # never a surprise; turn on with `ninja run --provenance` or config.
+    enabled: bool = False
+    dir: str = ".shinobi/runs"
+
+
 class _YamlFileSource(PydanticBaseSettingsSource):
     """Reads a YAML file (if it exists) as a settings source."""
 
@@ -110,6 +123,7 @@ class AppConfig(BaseSettings):
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     log: LogConfig = Field(default_factory=LogConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
+    provenance: ProvenanceConfig = Field(default_factory=ProvenanceConfig)
 
     @classmethod
     def settings_customise_sources(

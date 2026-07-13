@@ -352,7 +352,7 @@ def _run_pystep_container(
 
         inner_argv = ["python3", str(runner_path)]
 
-        full_argv = build_container_argv(
+        full_argv, image_digest = build_container_argv(
             backend_name,
             ctx.scope,
             inner_argv,
@@ -360,9 +360,11 @@ def _run_pystep_container(
             workdir,
             extra_dirs=extra_dirs,
             run_as_host_user=AppConfig.load().backend.run_as_host_user,
+            pin=ctx._pin,
         )
 
         run = run_streaming(full_argv, label=ctx._cache_path or scope.name, stream=ctx._stream)
+        run.image_digest = image_digest
 
         if run.returncode != 0:
             # Best-effort outputs on the failure path: try a full
@@ -381,6 +383,11 @@ def _run_pystep_container(
                 inputs=ctx.inputs,
                 stdout=run.stdout,
                 stderr=run.stderr,
+                kind="pyfunc",
+                backend=backend_name,
+                image=scope.image,
+                image_digest=image_digest,
+                containerized=True,
             )
 
         # Exit 0 means the runner ran to completion, and it always writes
@@ -419,6 +426,11 @@ def _run_pystep_container(
             inputs=ctx.inputs,
             stdout=run.stdout,
             stderr=run.stderr,
+            kind="pyfunc",
+            backend=backend_name,
+            image=scope.image,
+            image_digest=image_digest,
+            containerized=True,
         )
 
 
@@ -468,6 +480,7 @@ def _make_adapter(
             inputs=ctx.inputs,
             stdout="",
             stderr="",
+            kind="pyfunc",  # ran in-process; no container -> backend/image left None
         )
 
     return _adapter

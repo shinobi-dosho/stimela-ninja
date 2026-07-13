@@ -235,3 +235,6 @@ examples/*-residual.fits
 examples/*-model.fits
 examples/*-psf.fits
 examples/*.qc/
+
+# shinobi run-time output (cache, run manifests)
+.shinobi/

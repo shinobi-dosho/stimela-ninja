@@ -26,7 +26,8 @@ class RecordingBackend(Backend):
         self.calls: list[tuple[Cab, list[str], dict[str, Any]]] = []
 
     def run(
-        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True
+        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True,
+        pin: bool = False,  # accepted for the Backend protocol; recording backend runs nothing
     ) -> BackendRun:
         """Record the call and return an empty, successful `BackendRun`.
 

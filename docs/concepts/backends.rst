@@ -24,6 +24,8 @@ Available backends
     host user (not root) by default, so bind-mounted outputs come out
     host-owned -- see ``backend.run_as_host_user`` in :doc:`config`.
     ``apptainer`` already runs as the host user, so this is a no-op there.
+    With :doc:`provenance` enabled, the image is digest-pinned before running
+    (``repo@sha256:...``); by default it runs by its original tag.
 
 ``slurm``
     Submits the command as a batch job via ``sbatch`` and tracks it with

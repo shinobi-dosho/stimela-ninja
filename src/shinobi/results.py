@@ -27,6 +27,17 @@ class BackendRun:
     returncode: int
     stdout: str = ""
     stderr: str = ""
+    # Registry digest (``sha256:...``) of the image that actually ran, when
+    # the backend could pin it (see ``backends.container._pin_image``);
+    # ``None`` for native runs or images that couldn't be resolved to a
+    # digest (local-built/untagged, offline, no skopeo).
+    image_digest: str | None = None
+    # Whether this run actually executed inside a container. True even when
+    # ``image_digest`` is None (containerized but unpinnable) -- that pair is
+    # exactly what makes a run report ``pinned: false``. Set by every backend
+    # that wraps in a container runtime (incl. Slurm-under-apptainer, whose
+    # backend *name* isn't a container-runtime name).
+    containerized: bool = False
 
     @property
     def success(self) -> bool:
@@ -53,6 +64,21 @@ class StepResult:
     # True when this result was synthesized from `shinobi.cache` (the step
     # itself never actually ran) rather than produced by a real backend run.
     cached: bool = False
+    # Provenance, for the run manifest (see `shinobi.provenance`). `kind` is
+    # stamped explicitly at each construction site rather than inferred, so a
+    # containerized pystep can never be mistaken for a plain one. `backend`,
+    # `image`, and `image_digest` are set for steps that ran a container;
+    # `sub_results` holds a recipe's per-step results in declaration order.
+    kind: str = "cab"
+    backend: str | None = None
+    image: str | None = None
+    image_digest: str | None = None
+    # Whether the step ran inside a container (see BackendRun.containerized).
+    # `pinned` requires a digest only for containerized steps, so this -- not
+    # the backend name -- is what distinguishes a native cab (image is just
+    # metadata) from a Slurm-under-apptainer run that must be pinned.
+    containerized: bool = False
+    sub_results: "dict[str, StepResult] | None" = None
 
     @property
     def success(self) -> bool:

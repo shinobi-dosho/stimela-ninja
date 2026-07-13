@@ -451,16 +451,26 @@ class StepRef(BaseModel):
         """
         return getattr(func, "__name__", None) if func is not None else None
 
-    def __call__(self, *, backend: str | None = None, cache: bool | None = None, cache_dir: str | None = None, **kwargs: Any):
+    def __call__(
+        self,
+        *,
+        backend: str | None = None,
+        cache: bool | None = None,
+        cache_dir: str | None = None,
+        provenance: bool | None = None,
+        **kwargs: Any,
+    ):
         """Standalone execution. `params` are merged under caller kwargs;
         wiring is ignored (it can only be resolved inside a running
         Recipe), so any wired-only fields must be supplied as kwargs --
-        input validation catches omissions.
+        input validation catches omissions. `provenance` opts this run into
+        image pinning + manifest emission, overriding the config default.
         """
         from shinobi.steps.dispatch import _dispatch
 
         return _dispatch(
-            self.step, self.func, backend=backend, cache=cache, cache_dir=cache_dir, **{**self.params, **kwargs}
+            self.step, self.func, backend=backend, cache=cache, cache_dir=cache_dir,
+            provenance=provenance, **{**self.params, **kwargs},
         )
 
 

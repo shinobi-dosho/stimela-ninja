@@ -180,18 +180,43 @@ class CacheManifest:
 
         outputs = scope.outputs_model(**entry["outputs"])
         inputs = scope.inputs_model(**prepared)
+        # Restore provenance too (missing on entries written by older
+        # versions -- `.get` defaults keep those readable), so a cached step
+        # carries the same kind/backend/image/digest into the run manifest as
+        # a freshly-run one and doesn't spuriously mark the run unpinned.
         return StepResult(
-            name=scope.name, returncode=0, outputs=outputs, inputs=inputs, stdout="", stderr="", cached=True
+            name=scope.name,
+            returncode=0,
+            outputs=outputs,
+            inputs=inputs,
+            stdout="",
+            stderr="",
+            cached=True,
+            kind=entry.get("kind", "cab"),
+            backend=entry.get("backend"),
+            image=entry.get("image"),
+            image_digest=entry.get("image_digest"),
+            containerized=entry.get("containerized", False),
         )
 
-    def record(self, step_path: str, cache_key: str, outputs) -> None:
+    def record(self, step_path: str, cache_key: str, result) -> None:
         """Persist the *whole* outputs model (not just path-valued
         fields) -- a downstream step wired to a non-path (e.g. wrangled)
-        output of a cached step still needs a real value on a later hit.
+        output of a cached step still needs a real value on a later hit --
+        plus the step's provenance (kind/backend/image/digest) so a later
+        cache hit can reconstruct a manifest-complete `StepResult`.
         """
         with self._lock:
             data = self._read()
-            data[step_path] = {"cache_key": cache_key, "outputs": json.loads(outputs.model_dump_json())}
+            data[step_path] = {
+                "cache_key": cache_key,
+                "outputs": json.loads(result.outputs.model_dump_json()),
+                "kind": result.kind,
+                "backend": result.backend,
+                "image": result.image,
+                "image_digest": result.image_digest,
+                "containerized": result.containerized,
+            }
             self._write_atomic(data)
 
 
