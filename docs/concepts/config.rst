@@ -36,7 +36,10 @@ Settings
 
 ``execution.max_workers`` defaults to ``1``: parallelism is opt-in. At ``1``
 the scheduler reproduces exact declaration-order execution and no ``MUTABLE``
-input can be shared across concurrently-running steps.
+input can be shared across concurrently-running steps. Raising it lets
+independent recipe branches run concurrently -- see the execution model in
+:doc:`recipes`. A recipe can also set its own ``max_workers``, overriding this
+default.
 
 ``backend.run_as_host_user`` (docker/podman only, default ``True``) adds
 ``--user uid:gid`` plus ``HOME=<workdir>`` so bind-mounted outputs come out

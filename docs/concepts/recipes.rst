@@ -66,15 +66,81 @@ you build a recipe programmatically:
   ``output_wiring``) sourced from another step's output. This is the edge the
   execution graph is built from.
 
+The dependency graph
+--------------------
+
+A recipe's ``steps`` list plus the ``OutputRef`` wiring between them *is* a
+directed acyclic graph (DAG). Every ``OutputRef`` is a **data-dependency
+edge**: a step that consumes another step's output cannot start until that
+producer has finished. Steps with no edge between them are independent, no
+matter what order they were declared in.
+
+So **declaration order is not execution order**. The edges are the data flow;
+declaration order only breaks ties between steps that become ready at the same
+moment (see below). Two steps that both read only the recipe's own inputs have
+no edge between them and may run in either order -- or at the same time.
+
+The graph is built and validated by ``shinobi.graph.build_graph``, which
+raises ``RecipeGraphError`` on:
+
+* a duplicated step name;
+* an ``InputRef`` to a field the recipe's ``inputs_model`` does not have;
+* an ``OutputRef`` (in a step's wiring or in ``output_wiring``) naming a step
+  that does not exist;
+* a **cycle** in the dependency edges.
+
+Validation runs at **run time and dry-run time**, not when you call
+``add_step``: a recipe is deliberately mutable while you build it, so a forward
+reference to a step you have not added yet is legitimate mid-construction. The
+executor and the ``--dryrun`` renderer both go through ``build_graph``, so they
+can never disagree about what depends on what, or on whether the recipe is even
+valid.
+
+Because a recipe is itself a scope, a recipe used as a step of a larger recipe
+is simply one node in the parent's graph; its own internal graph runs when that
+node is scheduled.
+
+Execution and concurrency
+-------------------------
+
+The executor schedules a **topological wavefront** over the true dependency
+edges. A step becomes *ready* the moment every step it depends on has
+completed; ready steps run on a pool of ``max_workers`` worker threads. When
+more steps are ready than there are free workers, the lowest-declaration-index
+step goes first -- so at ``max_workers = 1`` the recipe runs in exact
+declaration order, and raising it lets independent branches run concurrently.
+
+.. code-block:: python
+
+    Recipe(name="pipe", inputs_model=..., outputs_model=..., max_workers=4)
+
+``max_workers`` defaults to ``1`` (per recipe, falling back to
+``AppConfig.execution.max_workers``); concurrency is opt-in. The reason is data
+safety: at ``1`` no ``MUTABLE`` input can be shared between two steps running
+at once. With ``max_workers > 1`` you must ensure two concurrently-running
+steps never share a mutable object -- see :doc:`config`.
+
+However steps interleave, results are **deterministic**: stdout, stderr, the
+aggregated outputs, and the recipe's exit code are all assembled in declaration
+order, not completion order. On the first failure -- a non-zero exit or a
+raised exception -- no further steps are submitted; steps already running are
+allowed to finish (a launched job cannot be honestly cancelled), and the first
+failure by declaration order is the one reported.
+
 Orchestration functions
 ------------------------
 
 Wiring does not have to be fully declarative. Because a recipe is plain
 Python, its orchestration can be a function whose body uses ordinary ``if`` and
-``for`` -- the graph a ``--dryrun`` shows is the *one* path actually taken for
-the given inputs, not a static declaration of all possible branches. See
-:doc:`../cli` for how ``--dryrun`` renders the graph, and ``AGENTS.md`` in the
-repository for how fan-out/fan-in is detected.
+``for``. The graph a ``--dryrun`` shows is then the *one* path actually taken
+for the given inputs -- the dry run executes the real control flow with each
+cab swapped for a no-op that records the call, so it never shows an untaken
+branch.
+
+The rendered graph groups independent steps that share the same set of
+dependencies onto a single row (a **fan-out**), and shows steps that several
+others feed into as a **fan-in** -- the same wavefront structure the executor
+runs. See :doc:`../cli` for the ``--dryrun`` output.
 
 Offloading
 ----------

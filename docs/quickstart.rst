@@ -122,6 +122,8 @@ Where to next
 
 * :doc:`concepts/cabs` -- defining cabs in Python or loading them from YAML.
 * :doc:`concepts/steps` -- ``@shinobi.step`` vs ``@shinobi.pystep``.
-* :doc:`concepts/recipes` -- declarative vs orchestration-function wiring.
+* :doc:`concepts/recipes` -- wiring, the dependency graph, and how steps are
+  scheduled.
 * :doc:`concepts/backends` -- running natively, in containers, or on a cluster.
+* :doc:`concepts/provenance` -- image pinning and reproducible run manifests.
 * :doc:`offloading` -- compiling a recipe to Slurm and detaching.
