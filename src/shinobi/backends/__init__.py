@@ -36,6 +36,7 @@ class Backend(ABC):
         *,
         label: str = "",
         stream: bool = True,
+        pin: bool = False,
     ) -> BackendRun:
         """Execute argv (as built by shinobi.policies.build_argv) and
         return a BackendRun. Must not raise on a non-zero exit -- that's

@@ -134,7 +134,8 @@ class KubernetesBackend(Backend):
         return 1
 
     def run(
-        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True
+        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True,
+        pin: bool = False,  # accepted for the Backend protocol; not yet wired for k8s
     ) -> BackendRun:
         """Run a cab as a Kubernetes Job and block until it completes.
 

@@ -78,10 +78,16 @@ class SlurmBackend(Backend):
         self.sbatch_opts = sbatch_opts or {}
         self.poll_interval = poll_interval
 
-    def _inner_argv(self, cab: Cab, argv: list[str], inputs: dict[str, Any]) -> list[str]:
+    def _inner_argv(
+        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, pin: bool = False
+    ) -> tuple[list[str], str | None]:
+        """The argv the job runs, and the pinned image digest (or `None` for
+        a non-container or unpinned run). Digest resolution is memoized, so
+        resolving it here and again in `run` is a single registry round-trip.
+        """
         if cab.image and self.container_runtime:
-            return build_container_argv(self.container_runtime, cab, argv, inputs, self.workdir)
-        return argv
+            return build_container_argv(self.container_runtime, cab, argv, inputs, self.workdir, pin=pin)
+        return argv, None
 
     def _script(
         self,
@@ -90,6 +96,8 @@ class SlurmBackend(Backend):
         inputs: dict[str, Any],
         stdout_path: Path,
         stderr_path: Path,
+        *,
+        pin: bool = False,
     ) -> str:
         return build_sbatch_script(
             job_name=cab.name,
@@ -97,7 +105,7 @@ class SlurmBackend(Backend):
             stdout_path=stdout_path,
             stderr_path=stderr_path,
             sbatch_opts=self.sbatch_opts,
-            argv=self._inner_argv(cab, argv, inputs),
+            argv=self._inner_argv(cab, argv, inputs, pin=pin)[0],
             error=BackendError,
         )
 
@@ -122,7 +130,8 @@ class SlurmBackend(Backend):
             time.sleep(self.poll_interval)
 
     def run(
-        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True
+        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True,
+        pin: bool = False,
     ) -> BackendRun:
         """Submit a cab as a Slurm job and block until it terminates.
 
@@ -133,6 +142,7 @@ class SlurmBackend(Backend):
                 if `container_runtime` and `cab.image` are both set.
             label: Unused; slurm has no log-tailing/streaming support.
             stream: Unused; slurm has no log-tailing/streaming support.
+            pin: Digest-pin the container image before submitting (provenance).
 
         Returns:
             A `BackendRun` with the job's exit code and captured stdout/stderr.
@@ -145,7 +155,7 @@ class SlurmBackend(Backend):
             script_path = tmp_path / "job.sh"
             stdout_path = tmp_path / "stdout.log"
             stderr_path = tmp_path / "stderr.log"
-            script_path.write_text(self._script(cab, argv, inputs, stdout_path, stderr_path))
+            script_path.write_text(self._script(cab, argv, inputs, stdout_path, stderr_path, pin=pin))
 
             job_id = self._submit(script_path)
             returncode = self._wait(job_id)
@@ -153,4 +163,13 @@ class SlurmBackend(Backend):
             stdout = stdout_path.read_text() if stdout_path.exists() else ""
             stderr = stderr_path.read_text() if stderr_path.exists() else ""
 
-        return BackendRun(returncode=returncode, stdout=stdout, stderr=stderr)
+        # Memoized, so this doesn't re-hit the registry after _script's call.
+        _, image_digest = self._inner_argv(cab, argv, inputs, pin=pin)
+        containerized = bool(cab.image and self.container_runtime)
+        return BackendRun(
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+            image_digest=image_digest,
+            containerized=containerized,
+        )

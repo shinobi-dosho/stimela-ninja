@@ -130,6 +130,7 @@ class ExecContext:
         cache_dir: str = "",
         cache_path: str = "",
         stream: bool = True,
+        pin: bool = False,
     ):
         """Initialize execution state for one dispatched step.
 
@@ -159,6 +160,9 @@ class ExecContext:
         self._cache_dir = cache_dir
         self._cache_path = cache_path
         self._stream = stream
+        # Provenance on -> digest-pin container images (pin-then-run). Read by
+        # the pystep container path and threaded to backends via ctx.run().
+        self._pin = pin
 
     def prepare_inputs(self) -> dict[str, Any]:
         """Validated + mutability-processed inputs, with no overrides applied
@@ -223,7 +227,8 @@ class ExecContext:
         backend_name = self.resolve_backend_name(backend)
         if isinstance(self.scope, Cab):
             result = _run_cab(
-                self.scope, prepared, backend_name, label=self._cache_path, stream=self._stream
+                self.scope, prepared, backend_name, label=self._cache_path, stream=self._stream,
+                pin=self._pin,
             )
         elif isinstance(self.scope, Recipe):
             result = _run_recipe(
@@ -235,6 +240,7 @@ class ExecContext:
                 self._cache_dir,
                 self._cache_path,
                 self._stream,
+                provenance=self._pin,
             )
         else:
             raise TypeError(
@@ -246,6 +252,22 @@ class ExecContext:
         return result
 
 
+def _emit_run_manifest(
+    result: StepResult, ctx: "ExecContext", config: AppConfig, backend: str | None
+) -> None:
+    """Write the run manifest for a completed top-level run. Callers gate on
+    the resolved provenance flag; this stays best-effort -- a provenance
+    failure warns but never fails the run.
+    """
+    try:
+        from shinobi.provenance import build_manifest, run_manifest_path
+
+        manifest = build_manifest(result, backend=ctx.resolve_backend_name(backend))
+        manifest.write(run_manifest_path(config, result.name))
+    except Exception as exc:  # noqa: BLE001 -- provenance must not break a run
+        warnings.warn(f"failed to write run manifest for {result.name!r}: {exc}", stacklevel=2)
+
+
 def _dispatch(
     scope: Scope,
     func: Callable | None,
@@ -254,10 +276,12 @@ def _dispatch(
     cache: bool | None = None,
     cache_dir: str | None = None,
     stream: bool | None = None,
+    provenance: bool | None = None,
     _recipe_backend: str | None = None,
     _recipe_cache: bool | None = None,
     _recipe_cache_dir: str | None = None,
     _recipe_stream: bool | None = None,
+    _recipe_provenance: bool | None = None,
     _cache_path: str | None = None,
     _config: AppConfig | None = None,
     **kwargs: Any,
@@ -277,6 +301,16 @@ def _dispatch(
     stream_enabled = (
         stream if stream is not None else _recipe_stream if _recipe_stream is not None else config.log.stream
     )
+    # Provenance (image pinning + manifest emission) is one opt-in switch,
+    # resolved highest-priority-first like cache: explicit arg (CLI
+    # --provenance) > inherited-from-recipe > config default.
+    provenance_enabled = (
+        provenance
+        if provenance is not None
+        else _recipe_provenance
+        if _recipe_provenance is not None
+        else config.provenance.enabled
+    )
     # A Recipe-shaped scope is never itself cached -- its own sub-steps
     # each get their own cache check via their own recursive _dispatch
     # call (see shinobi.cache's module docstring for why).
@@ -292,6 +326,7 @@ def _dispatch(
         cache_dir=cache_dir_value,
         cache_path=cache_path,
         stream=stream_enabled,
+        pin=provenance_enabled,
     )
 
     manifest = None
@@ -302,6 +337,8 @@ def _dispatch(
         cache_key = compute_cache_key(scope, func, prepared_for_key)
         hit = manifest.check(cache_path, cache_key, scope, prepared_for_key)
         if hit is not None:
+            if _cache_path is None and provenance_enabled:
+                _emit_run_manifest(hit, ctx, config, backend)
             return hit
 
     if func is None:
@@ -317,7 +354,9 @@ def _dispatch(
             )
 
     if cacheable and result.success:
-        manifest.record(cache_path, cache_key, result.outputs)
+        manifest.record(cache_path, cache_key, result)
+    if _cache_path is None and provenance_enabled:
+        _emit_run_manifest(result, ctx, config, backend)
     return result
 
 
@@ -361,14 +400,15 @@ def _resolve_implicit_template(
 
 
 def _run_cab(
-    cab: Cab, prepared: dict[str, Any], backend_name: str, *, label: str = "", stream: bool = True
+    cab: Cab, prepared: dict[str, Any], backend_name: str, *, label: str = "", stream: bool = True,
+    pin: bool = False,
 ) -> StepResult:
     argv = build_argv(cab, prepared)
     backend = get_step_backend(backend_name)
     # The backend gets the prepared dict (not a rebuilt model) so MUTABLE
     # fields reach it as the caller's own objects by reference -- rebuilding
     # a pydantic model here would deep-copy every container and break that.
-    run = backend.run(cab, argv, prepared, label=label or cab.name, stream=stream)
+    run = backend.run(cab, argv, prepared, label=label or cab.name, stream=stream, pin=pin)
     lines = run.stdout.splitlines() + run.stderr.splitlines()
     wrangled = apply_wranglers(cab.wranglers, lines)
     outputs = _fill_outputs(cab, prepared, run, wrangled)
@@ -379,6 +419,11 @@ def _run_cab(
         inputs=cab.inputs_model(**prepared),
         stdout=run.stdout,
         stderr=run.stderr,
+        kind="cab",
+        backend=backend_name,
+        image=cab.image,
+        image_digest=run.image_digest,
+        containerized=run.containerized,
     )
 
 
@@ -423,6 +468,7 @@ def _run_recipe(
     cache_dir: str = "",
     cache_path: str = "",
     stream: bool = True,
+    provenance: bool = False,
 ) -> StepResult:
     """Topological wavefront scheduler over the recipe's declared DAG.
 
@@ -470,6 +516,7 @@ def _run_recipe(
                     _recipe_cache=cache_enabled,
                     _recipe_cache_dir=cache_dir,
                     _recipe_stream=stream,
+                    _recipe_provenance=provenance,
                     _cache_path=f"{cache_path}.{ref.name}",
                     _config=config,
                     **sub_kwargs,
@@ -517,4 +564,6 @@ def _run_recipe(
         inputs=recipe.inputs_model(**prepared),
         stdout="\n".join(s for name in ordered if (s := results[name].stdout)),
         stderr="\n".join(s for name in ordered if (s := results[name].stderr)),
+        kind="recipe",
+        sub_results={name: results[name] for name in ordered},
     )

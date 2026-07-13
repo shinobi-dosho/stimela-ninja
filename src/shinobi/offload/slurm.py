@@ -183,7 +183,8 @@ def compile_slurm(
 
         argv = build_argv(cab, resolved)  # inherits the non-"binary" flavour guard
         if cab.image and container_runtime:
-            argv = build_container_argv(container_runtime, cab, argv, resolved, workdir)
+            # Digest is discarded here -- offloaded-Slurm provenance is a follow-up.
+            argv, _ = build_container_argv(container_runtime, cab, argv, resolved, workdir)
 
         depends_on = [graph.names[d] for d in sorted(graph.deps[i])]
         jobs.append(SlurmJob(name=name, script=_script(cab, argv, workdir, sbatch_opts, log_dir), depends_on=depends_on))
