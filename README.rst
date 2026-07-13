@@ -3,7 +3,7 @@ stimela-ninja (Stimela 3.0)
 
 A spiritual successor to `Stimela classic
 <https://github.com/ratt-ru/Stimela-classic>`_, built around the same core
-philosophy: **functional and flexible simplicity for reproducible radio
+philosophy: **robust and flexible simplicity for reproducible radio
 astronomy pipelines**.
 
 Recipes are plain Python. A step is a function call; a step's output is a
