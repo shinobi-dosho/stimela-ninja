@@ -36,6 +36,21 @@ _APPTAINER_LIKE = {"apptainer"}
 CONTAINER_RUNTIMES = frozenset(_DOCKER_LIKE | _APPTAINER_LIKE)
 
 
+def _apptainer_image_uri(image: str) -> str:
+    """Resolve a cab's `image` string to something `apptainer exec` accepts.
+
+    docker/podman auto-pull a bare `quay.io/org/img:tag` registry ref, but
+    apptainer treats an unschemed string as a local filesystem path and
+    fails (`could not open image /cwd/quay.io/...`). Prepend `docker://` so
+    the registry ref is pulled (and cached as a SIF) on first use -- unless
+    the image is already a URI (`docker://`, `oras://`, `library://`, ...)
+    or a local path / `.sif` file the caller supplied deliberately.
+    """
+    if "://" in image or image.endswith(".sif") or image.startswith((".", "/")):
+        return image
+    return f"docker://{image}"
+
+
 def bind_dirs(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[str]:
     """Parent directories of every File/MS-valued input, plus the working
     directory itself. Order-preserving, de-duplicated.
@@ -132,7 +147,7 @@ def build_container_argv(
 
     # apptainer
     binds = [flag for d in dirs for flag in ("--bind", f"{d}:{d}")]
-    return [runtime, "exec", *binds, "--pwd", workdir, image, *argv]
+    return [runtime, "exec", *binds, "--pwd", workdir, _apptainer_image_uri(image), *argv]
 
 
 class ContainerBackend(Backend):

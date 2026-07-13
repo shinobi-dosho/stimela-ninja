@@ -214,7 +214,7 @@ def test_pystep_container_apptainer_argv():
     argv = mock_run.call_args[0][0]
     assert argv[0] == "apptainer"
     assert argv[1] == "exec"
-    assert "casa:latest" in argv
+    assert "docker://casa:latest" in argv
 
 
 def test_pystep_container_parses_outputs_file():
@@ -302,7 +302,11 @@ def test_pystep_container_runner_script_content():
 
     runner = captured_runner["content"]
     assert "import json" in runner
-    assert "sys.path.insert" in runner
+    # The target is loaded from its file as an isolated module, with the
+    # framework/target packages stubbed via a front-of-meta_path finder --
+    # never imported by dotted path onto the host site-packages sys.path.
+    assert "sys.meta_path.insert(0, _StubFinder())" in runner
+    assert "spec_from_file_location" in runner
     assert "container_func" in runner
     assert "inputs.pkl" in runner
     assert "outputs.json" in runner
@@ -509,6 +513,45 @@ def test_pystep_container_runner_executes_end_to_end():
     assert result.outputs.result == "real.ms:7"
 
 
+def test_pystep_container_runs_without_framework_in_container():
+    # The whole point of the stub runner: the container's Python needs
+    # neither shinobi nor pydantic (nor their compiled deps like
+    # pydantic_core, which are ABI-locked to the host venv's Python). Prove
+    # it by executing the generated runner in a subprocess where importing
+    # shinobi or pydantic *raises* -- it must still produce outputs, entirely
+    # via the injected stubs.
+    bootstrap = (
+        "import runpy, sys\n"
+        "class _Block:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name.split('.')[0] in ('shinobi', 'pydantic'):\n"
+        "            raise ImportError('blocked in container: ' + name)\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, _Block())\n"
+        "runpy.run_path(sys.argv[1], run_name='__main__')\n"
+    )
+
+    def hardened_run(argv, *args, **kwargs):
+        runner = next(a for a in argv if a.endswith("runner.py"))
+        proc = _REAL_SUBPROCESS_RUN(
+            [sys.executable, "-c", bootstrap, runner],
+            capture_output=True,
+            text=True,
+        )
+        result = MagicMock()
+        result.returncode = proc.returncode
+        result.stdout = proc.stdout
+        result.stderr = proc.stderr
+        return result
+
+    ref = pystep(image="casa:latest", backend="docker")(container_func)
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=hardened_run):
+        result = ref(ms="hardened.ms", niter=3)
+
+    assert result.success, result.stderr
+    assert result.outputs.result == "hardened.ms:3"
+
+
 def test_pystep_container_runner_executes_ctx_end_to_end():
     ref = pystep(image="casa:latest", backend="docker")(ctx_func)
 
@@ -534,3 +577,23 @@ def test_pystep_container_runner_executes_path_inputs_end_to_end():
 
     assert result.success, result.stderr
     assert result.outputs.basename == "real.ms"
+
+
+# A module-level *decorated* pystep: `@pystep` rebinds this name to a StepRef,
+# so the container runner -- which re-imports the function by name -- gets the
+# StepRef, not the function. This is how dosho's cabs are all defined, and it
+# regressed as `StepRef.__call__() takes 1 positional argument but 2 were
+# given` until the runner learned to unwrap StepRef -> adapter -> function.
+@pystep(image="casa:latest", backend="docker")
+def decorated_container_func(ms: str, niter: int = 100) -> ContainerOutputs:
+    return ContainerOutputs(result=f"{ms}:{niter}")
+
+
+def test_pystep_decorator_form_runner_executes_end_to_end():
+    with patch(
+        "shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host
+    ):
+        result = decorated_container_func(ms="dec.ms", niter=5)
+
+    assert result.success, result.stderr
+    assert result.outputs.result == "dec.ms:5"
