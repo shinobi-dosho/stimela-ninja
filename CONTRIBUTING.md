@@ -1,7 +1,7 @@
 # Contributing to stimela-ninja
 
 Thanks for your interest in contributing! **stimela-ninja** (import name
-`shinobi`, CLI `ninja`) is a functional, flexible framework for reproducible
+`shinobi`, CLI `ninja`) is a simple but flexible framework for reproducible
 radio-astronomy pipelines — Stimela 3.0. It's early-beta software, so the most
 valuable contributions right now are bug reports, focused fixes, tests,
 documentation, and feedback on the design.
