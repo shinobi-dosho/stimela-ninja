@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -232,6 +233,14 @@ def _run_remote(
     "the end. Overrides AppConfig.log.stream for this invocation.",
 )
 @click.option(
+    "--provenance/--no-provenance",
+    "provenance",
+    default=None,
+    help="Enable reproducible-run provenance for this run: digest-pin container images before "
+    "running (pin-then-run) and write a run manifest under AppConfig.provenance.dir. Off by "
+    "default -- overrides AppConfig.provenance.enabled for this invocation.",
+)
+@click.option(
     "--remote",
     "remote",
     default=None,
@@ -262,6 +271,7 @@ def run(
     cache_dir: str | None,
     no_cache: bool,
     quiet: bool,
+    provenance: bool | None,
     remote: str | None,
     add_venv: bool,
     include_paths: tuple[str, ...],
@@ -322,7 +332,7 @@ def run(
         stream_enabled = False if quiet else config.log.stream
         result = _dispatch(
             scope, func, backend=backend, cache=cache, cache_dir=cache_dir, stream=stream,
-            _config=ctx.obj, **call_kwargs
+            provenance=provenance, _config=ctx.obj, **call_kwargs
         )
         # When streaming happened, every line already printed live as it
         # ran -- dumping the same captured text again here would just
@@ -347,6 +357,36 @@ def run(
         help=scope.info,
     )
     inner.main(args=ctx.args, prog_name=f"{ctx.info_name} {target}", standalone_mode=False)
+
+
+@main.command("clean")
+@click.option("--runs/--no-runs", "runs", default=True, help="Remove run manifests (AppConfig.provenance.dir).")
+@click.option("--cache/--no-cache", "cache", default=True, help="Remove the step cache (AppConfig.cache.dir).")
+@click.option("--dry-run", "dry_run", is_flag=True, help="Show what would be removed without deleting.")
+@click.pass_context
+def clean(ctx: click.Context, runs: bool, cache: bool, dry_run: bool) -> None:
+    """Remove shinobi runtime artifacts: run manifests and the step cache.
+
+    Targets come from the active config (AppConfig.provenance.dir and
+    AppConfig.cache.dir); nothing else is touched. Use --dry-run to preview.
+    """
+    config = ctx.obj or AppConfig.load()
+    targets: list[tuple[str, Path]] = []
+    if runs:
+        targets.append(("run manifests", Path(config.provenance.dir)))
+    if cache:
+        targets.append(("step cache", Path(config.cache.dir)))
+    if not targets:
+        raise click.ClickException("nothing selected: pass --runs and/or --cache")
+
+    for label, path in targets:
+        if not path.exists():
+            click.echo(f"{label}: nothing at {path}")
+        elif dry_run:
+            click.echo(f"{label}: would remove {path}")
+        else:
+            shutil.rmtree(path)
+            click.echo(f"{label}: removed {path}")
 
 
 def _handle_path(workdir: str | None, recipe: str) -> Path:
