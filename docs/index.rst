@@ -1,7 +1,7 @@
 stimela-ninja
 =============
 
-**Stimela 3.0** -- a functional, flexible, and simple framework for
+**Stimela 3.0** -- a simple but flexible framework for
 reproducible radio astronomy pipelines.
 
 A spiritual successor to `Stimela classic
