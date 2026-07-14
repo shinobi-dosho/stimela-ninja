@@ -4,8 +4,9 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
+from shinobi.exceptions import BackendError
 from shinobi.graph import RecipeNotOffloadableError
-from shinobi.offload import OffloadCompileError, compile_slurm, status_slurm
+from shinobi.offload import OffloadCompileError, compile_slurm, status_slurm, submit_slurm
 from shinobi.steps.schema import Cab, InputRef, OutputRef, Recipe, StepRef
 
 
@@ -169,3 +170,34 @@ def test_status_slurm_reports_unknown_for_missing_job(monkeypatch):
         lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, stdout="", stderr=""),
     )
     assert status_slurm({"step": "42"}) == {"step": "UNKNOWN"}
+
+
+def _find_script_dir(workdir: Path) -> Path | None:
+    matches = list(workdir.glob("shinobi-slurm-*"))
+    return matches[0] if matches else None
+
+
+def test_submit_slurm_removes_script_dir_on_success(tmp_path, monkeypatch):
+    wf = compile_slurm(_linear_recipe(), {"ms": "/x.ms"}, workdir=str(tmp_path), container_runtime=None)
+
+    def fake_run(argv, **kwargs):
+        # the script file must exist and be readable at submission time,
+        # exactly like a real sbatch invocation would need
+        assert Path(argv[-1]).exists()
+        return subprocess.CompletedProcess(argv, 0, stdout="99\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    submit_slurm(wf, workdir=str(tmp_path))
+    assert _find_script_dir(tmp_path) is None
+
+
+def test_submit_slurm_removes_script_dir_on_failure(tmp_path, monkeypatch):
+    wf = compile_slurm(_linear_recipe(), {"ms": "/x.ms"}, workdir=str(tmp_path), container_runtime=None)
+
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, stdout="", stderr="boom"),
+    )
+    with pytest.raises(BackendError):
+        submit_slurm(wf, workdir=str(tmp_path))
+    assert _find_script_dir(tmp_path) is None

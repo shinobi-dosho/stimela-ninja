@@ -362,13 +362,33 @@ def run(
 @main.command("clean")
 @click.option("--runs/--no-runs", "runs", default=True, help="Remove run manifests (AppConfig.provenance.dir).")
 @click.option("--cache/--no-cache", "cache", default=True, help="Remove the step cache (AppConfig.cache.dir).")
+@click.option(
+    "--launches/--no-launches",
+    "launches",
+    default=False,
+    help=(
+        "Remove detached-run launch dirs (.shinobi/<recipe>/, holding handle.json "
+        "and Slurm job logs). Off by default: unlike runs/cache, deleting one can "
+        "destroy `ninja status`'s only local record of a still-running detached job."
+    ),
+)
+@click.option(
+    "--workdir",
+    "workdir",
+    default=None,
+    help="Directory to look for launch dirs under (default: cwd). Only affects --launches.",
+)
 @click.option("--dry-run", "dry_run", is_flag=True, help="Show what would be removed without deleting.")
 @click.pass_context
-def clean(ctx: click.Context, runs: bool, cache: bool, dry_run: bool) -> None:
-    """Remove shinobi runtime artifacts: run manifests and the step cache.
+def clean(ctx: click.Context, runs: bool, cache: bool, launches: bool, workdir: str | None, dry_run: bool) -> None:
+    """Remove shinobi runtime artifacts: run manifests, the step cache, and
+    (opt-in) detached-run launch dirs.
 
-    Targets come from the active config (AppConfig.provenance.dir and
-    AppConfig.cache.dir); nothing else is touched. Use --dry-run to preview.
+    Run manifests and the step cache come from the active config
+    (AppConfig.provenance.dir and AppConfig.cache.dir) and are removed by
+    default. Launch dirs (.shinobi/<recipe>/, written by `ninja compile
+    --submit` / `ninja run --remote`) are opt-in via --launches. Use
+    --dry-run to preview.
     """
     config = ctx.obj or AppConfig.load()
     targets: list[tuple[str, Path]] = []
@@ -376,8 +396,15 @@ def clean(ctx: click.Context, runs: bool, cache: bool, dry_run: bool) -> None:
         targets.append(("run manifests", Path(config.provenance.dir)))
     if cache:
         targets.append(("step cache", Path(config.cache.dir)))
-    if not targets:
-        raise click.ClickException("nothing selected: pass --runs and/or --cache")
+    if launches:
+        base = Path(workdir or os.getcwd())
+        found = [p.parent for p in sorted(base.glob(".shinobi/*/handle.json"))]
+        if found:
+            targets.extend((f"launch ({p.name})", p) for p in found)
+        else:
+            click.echo(f"launches: nothing at {base / '.shinobi'}/*/handle.json")
+    if not runs and not cache and not launches:
+        raise click.ClickException("nothing selected: pass --runs/--cache/--launches")
 
     for label, path in targets:
         if not path.exists():

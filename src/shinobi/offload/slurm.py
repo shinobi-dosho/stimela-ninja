@@ -25,6 +25,7 @@ its output-field default, mirroring `_fill_outputs` minus the backend run.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -207,17 +208,24 @@ def submit_slurm(workflow: SlurmWorkflow, *, workdir: str | None = None) -> dict
     workflow.log_dir.mkdir(parents=True, exist_ok=True)
     script_dir = Path(tempfile.mkdtemp(prefix="shinobi-slurm-", dir=workdir))
     job_ids: dict[str, str] = {}
-    for job in workflow.jobs:
-        script_path = script_dir / f"{job.name}.sh"
-        script_path.write_text(job.script)
-        args = ["sbatch", "--parsable"]
-        if job.depends_on:
-            parents = ":".join(job_ids[dep] for dep in job.depends_on)
-            args.append(f"--dependency=afterok:{parents}")
-        proc = subprocess.run([*args, str(script_path)], capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise BackendError(f"sbatch failed for step '{job.name}': {proc.stderr.strip()}")
-        job_ids[job.name] = parse_sbatch_job_id(proc.stdout)
+    try:
+        for job in workflow.jobs:
+            script_path = script_dir / f"{job.name}.sh"
+            script_path.write_text(job.script)
+            args = ["sbatch", "--parsable"]
+            if job.depends_on:
+                parents = ":".join(job_ids[dep] for dep in job.depends_on)
+                args.append(f"--dependency=afterok:{parents}")
+            proc = subprocess.run([*args, str(script_path)], capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise BackendError(f"sbatch failed for step '{job.name}': {proc.stderr.strip()}")
+            job_ids[job.name] = parse_sbatch_job_id(proc.stdout)
+    finally:
+        # sbatch reads each script synchronously during submission (the
+        # subprocess.run call above blocks until it returns), so nothing
+        # needs script_dir once this function is done -- remove it here
+        # rather than leaking a `shinobi-slurm-*` tempdir into workdir forever.
+        shutil.rmtree(script_dir, ignore_errors=True)
     return job_ids
 
 
