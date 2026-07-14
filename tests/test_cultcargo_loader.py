@@ -356,13 +356,13 @@ def test_wsclean_shaped_dynamic_schema_cab_gets_no_output_pattern():
 
 def test_bracket_list_dtype_resolves_on_real_simms_example():
     """Regression test for `_modelgen.dtype_to_type`'s `List[<inner>]` support:
-    `examples/simms/simms-cabs.yaml`'s `telsim` cab declares `subarray-list`/
+    `examples/input-dir/simms-cabs.yaml`'s `telsim` cab declares `subarray-list`/
     `subarray-range` with bracket-syntax dtypes that, before that support was
     added, silently fell back to `str`. Locks in the now-correct `list[str]`/
     `list[int]` resolution so a future change to dtype_to_type can't silently
     re-break this real, already-shipped example without a test noticing.
     """
-    simms_yaml = Path(__file__).parent.parent / "examples" / "simms" / "simms-cabs.yaml"
+    simms_yaml = Path(__file__).parent.parent / "examples" / "input-dir" / "simms-cabs.yaml"
     cabs = load_file(simms_yaml)
     telsim_inputs = cabs["telsim"].inputs_model.model_fields
     assert telsim_inputs["subarray_list"].annotation == list[str] | None

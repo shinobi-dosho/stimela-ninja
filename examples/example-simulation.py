@@ -44,12 +44,12 @@ Tool choices, differing from the original stimela-classic script:
 
 Run it:
 
-    ninja run examples/example_simulation.py:recipe --dryrun
+    ninja run examples/example-simulation.py:recipe --dryrun
 
 A real run needs `simms` installed (it has no docker image yet):
 
     uv sync --group examples
-    ninja run examples/example_simulation.py:recipe --ms sim.ms
+    ninja run examples/example-simulation.py:recipe --ms sim.ms
 """
 
 from __future__ import annotations

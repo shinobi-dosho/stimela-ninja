@@ -1,4 +1,4 @@
-"""Smoke tests for examples/meerkat_simulation.py -- must pass with none of
+"""Smoke tests for examples/example-simulation.py -- must pass with none of
 simms/wsclean/cubical actually installed (RecordingBackend intercepts every
 step, including the two that have `backend="native"` baked onto their Cab).
 
@@ -22,7 +22,7 @@ from shinobi.dag import graph_nodes, render_dag  # noqa: E402
 from shinobi.steps import Recipe, register_step_backend  # noqa: E402
 from shinobi.steps.dispatch import _dispatch  # noqa: E402
 
-EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "meerkat_simulation.py"
+EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "example-simulation.py"
 
 
 def load_example():
@@ -35,9 +35,9 @@ def load_example():
     # soon as a field actually gets a real (non-None) value -- which only
     # started happening once this example's `image` output resolved to a
     # real path via dosho's wsclean implicit-template outputs).
-    spec = importlib.util.spec_from_file_location("meerkat_simulation", EXAMPLE)
+    spec = importlib.util.spec_from_file_location("example_simulation", EXAMPLE)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["meerkat_simulation"] = mod
+    sys.modules["example_simulation"] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -76,7 +76,7 @@ def test_recipe_dispatches_with_correct_argv_shape():
 
     res = _dispatch(mod.recipe, None, backend="recording")
     assert res.success
-    assert str(res.outputs.image) == "meerkat-sim-robust2-image.fits"
+    assert str(res.outputs.image) == "example-sim-robust2-image.fits"
 
     calls_by_name: dict[str, list[list[str]]] = {}
     for cab, argv, _ in recorder.calls:
@@ -92,17 +92,17 @@ def test_recipe_dispatches_with_correct_argv_shape():
     assert telsim_argv[:2] == ["simms", "telsim"]
     assert "--ms" not in telsim_argv
     assert "--telescope" in telsim_argv
-    assert telsim_argv[-1] == "meerkat_simulation.ms"
+    assert telsim_argv[-1] == "example-simulation.ms"
 
     skysim_argv = calls_by_name["simms-skysim"][0]
     assert skysim_argv[:2] == ["simms", "skysim"]
     assert "--ms" not in skysim_argv
     assert "--ascii-sky" in skysim_argv
     assert skysim_argv[skysim_argv.index("--ascii-sky") + 1] == str(
-        mod._SIMMS_DIR / "testsky.txt"
+        mod._INPUT_DIR / "testsky.txt"
     )
     # skysim's ms is wired from telsim's own (positional) ms output.
-    assert skysim_argv[-1] == "meerkat_simulation.ms"
+    assert skysim_argv[-1] == "example-simulation.ms"
 
     # wsclean's own real outputs are FITS image products (image/image_mfs/
     # ...), not the MS -- image_sim's `input_ms` is an *outputs_model-only*
@@ -118,7 +118,7 @@ def test_recipe_dispatches_with_correct_argv_shape():
     assert "-input-ms" not in image_sim_argv
     assert "-data-column" in image_sim_argv
     assert image_sim_argv[image_sim_argv.index("-data-column") + 1] == "DATA"
-    assert image_sim_argv[-1] == "meerkat_simulation.ms"
+    assert image_sim_argv[-1] == "example-simulation.ms"
 
     # real dosho cubical: flattened flag names, per-Jones-term
     # ParamPattern-matched extras (lowercase g-solvable/g-type -- real
@@ -130,7 +130,7 @@ def test_recipe_dispatches_with_correct_argv_shape():
     cubical_argv = calls_by_name["cubical"][0]
     assert cubical_argv[0] == "gocubical"
     i = cubical_argv.index("--data-ms")
-    assert cubical_argv[i : i + 2] == ["--data-ms", "meerkat_simulation.ms"]
+    assert cubical_argv[i : i + 2] == ["--data-ms", "example-simulation.ms"]
     assert "--sol-jones" in cubical_argv
     i = cubical_argv.index("--g-solvable")
     assert cubical_argv[i : i + 2] == ["--g-solvable", "true"]
@@ -154,4 +154,4 @@ def test_recipe_dispatches_with_correct_argv_shape():
     assert wsclean_argv[weight_i + 1 : weight_i + 3] == ["briggs", "2.0"]
     assert "-data-column" in wsclean_argv
     assert "-name" in wsclean_argv
-    assert wsclean_argv[-1] == "meerkat_simulation.ms"
+    assert wsclean_argv[-1] == "example-simulation.ms"

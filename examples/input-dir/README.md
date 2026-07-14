@@ -1,10 +1,10 @@
 Vendored copies of real [simms 3.0](https://github.com/wits-cfa/simms) files.
 
 `testsky.txt` (a tiny example ASCII sky catalogue, plain whitespace-delimited,
-`#format:` header line) is used as `examples/meerkat_simulation.py`'s default
+`#format:` header line) is used as `examples/example-simulation.py`'s default
 `skymodel` input for its `simulate` step.
 
-`simms-cabs.yaml` is no longer used by `meerkat_simulation.py` itself --
+`simms-cabs.yaml` is no longer used by `example-simulation.py` itself --
 that example now gets its `telsim`/`skysim` cabs from
 [dosho](https://github.com/SpheMakh/dosho) (`dosho.cabs.simms`), the
 native shinobi cab repository, instead of loading this vendored YAML
