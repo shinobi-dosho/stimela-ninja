@@ -142,17 +142,28 @@ imaged cabs in; ``none`` for bare argv), and ``--submit`` (submit and detach).
 ``ninja clean`` -- remove runtime artifacts
 -------------------------------------------
 
-Removes shinobi's runtime artifacts: run manifests (``AppConfig.provenance.dir``)
-and the step cache (``AppConfig.cache.dir``). Both are removed by default;
-``--no-runs`` / ``--no-cache`` narrow the selection, and ``--dry-run`` previews
-what would be removed without deleting. Nothing outside those configured
-directories is touched.
+Removes shinobi's runtime artifacts: run manifests (``AppConfig.provenance.dir``),
+the step cache (``AppConfig.cache.dir``), and detached-run launch dirs
+(``.shinobi/<recipe>/``, holding the handle file and Slurm job logs written by
+``ninja compile --submit`` / ``ninja run --remote``). ``--dry-run`` previews
+what would be removed without deleting.
+
+Run manifests and the step cache are removed by default; narrow the
+selection with ``--no-runs`` / ``--no-cache``. Launch dirs are the opposite:
+**off by default**, opt in with ``--launches`` -- deleting one doesn't stop a
+still-running detached job, but it does destroy ``ninja status``'s only local
+record of it, so it isn't swept as part of a routine clean. ``--workdir DIR``
+picks where to look for launch dirs (default: cwd); it has no effect on
+``--runs``/``--cache``, which always come from the active config. Nothing
+outside those targets is touched.
 
 .. code-block:: console
 
     $ ninja clean                   # run manifests + step cache
     $ ninja clean --no-cache        # just run manifests
     $ ninja clean --dry-run         # preview
+    $ ninja clean --launches        # + all detached-run launch dirs under cwd
+    $ ninja clean --no-runs --no-cache --launches --workdir /scratch/run1
 
 ``ninja status`` -- check a detached run
 ----------------------------------------
