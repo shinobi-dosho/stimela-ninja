@@ -117,9 +117,9 @@ persistent process to keep alive:
     $ ninja status /scratch/.shinobi/pipe/handle.json
 
 Once a run is done, remove its handle file and Slurm job logs with
-``ninja clean --launches`` (see :ref:`ninja-clean`) -- unlike run manifests
+``ninja clean --launches --workdir <workdir>`` (or run it from ``<workdir>``;
+see :ref:`ninja-clean`) -- unlike run manifests
 and the step cache, this is opt-in, since deleting a handle for a
-still-running job only loses your local way to check on it.
 
 .. note::
 
