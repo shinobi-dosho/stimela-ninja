@@ -77,6 +77,16 @@ positional (passed as a bare argument rather than ``--flag value``) with a
         field_meta={"out": ParamMeta(positional=True)},
     )
 
+Positional args come after every flagged/pattern-matched arg, in
+field-declaration order -- the right spot for tools that take flags then a
+trailing bare value (e.g. simms' ``ms``). Some tools instead only recognise a
+positional as their very first argument (``argv[1]``), never as a trailing
+leftover -- CubiCal and killMS both only look at ``sys.argv[1]`` for a parset
+file. For those, use ``ParamMeta(positional_head=True)`` instead: it emits
+the value as a bare argument *before* every flag. Head and tail positionals
+can be mixed on the same cab; each group keeps its own field-declaration
+order.
+
 See :class:`shinobi.Cab` and :class:`shinobi.steps.schema.Policies` in the
 :doc:`API reference <../api/index>` for the full set of knobs (prefixes,
 repeat policies, ``nom_de_guerre`` renaming, input patterns, and output
