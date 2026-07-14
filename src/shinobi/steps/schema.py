@@ -43,7 +43,22 @@ class ParamMeta(BaseModel):
     param has no declared field/type annotation for `path_fields` to
     inspect, this is how backends know to bind-mount its directory --
     `positional`: emitted as a bare value (no `--flag`), in
-    field-declaration order, after every flagged/pattern-matched arg -- and
+    field-declaration order, after every flagged/pattern-matched arg.
+    `positional_head`: the same, but emitted *before* every flagged/
+    pattern-matched arg instead of after -- real cult-cargo's own
+    `cubical.yml` names this exact policy (`parset: {policies:
+    {positional_head: true}}`) for a tool whose own CLI only recognises a
+    leading bare token as a parset file to seed defaults from (CubiCal's
+    `main.py`: `if len(sys.argv) > 1 and not sys.argv[1][0].startswith('-'):
+    custom_parset_file = sys.argv[1]`); killMS's `kMS.py` has the identical
+    `sys.argv[1]`-only check. A plain `positional` field there would always
+    land after every `--flag`, which these two tools' own argv[1]-anchored
+    parset detection can't see -- either raising ("Unexpected number of
+    arguments", CubiCal) or silently not reading the parset at all
+    (killMS, which never validates leftover-arg count). Setting both
+    `positional` and `positional_head` on the same field is nonsensical;
+    `positional_head` wins if both are set. Head positionals, like tail
+    ones, are emitted in field-declaration order. -- and
     `repeat_as_tokens`: a list/tuple value is emitted as separate bare argv
     tokens (after the one flag occurrence, or as separate positional
     tokens) instead of joined into one comma-separated token -- real
@@ -75,6 +90,7 @@ class ParamMeta(BaseModel):
     implicit: Any = None
     info: str | None = None
     positional: bool = False
+    positional_head: bool = False
     repeat_as_tokens: bool = False
     dtype: str | None = None
     choices: list[Any] | None = None
