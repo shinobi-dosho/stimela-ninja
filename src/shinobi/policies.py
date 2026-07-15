@@ -79,7 +79,9 @@ def build_argv(cab: Cab, resolved: dict[str, Any]) -> list[str]:
     argv: list[str] = cab.command.split()
     policies = cab.policies
     declared = set(cab.inputs_model.model_fields)
-    positionals: list[str] = []
+    positionals_head: list[str] = []
+    positionals_tail: list[str] = []
+    flags: list[str] = []
 
     for name in cab.inputs_model.model_fields:
         meta = cab.field_meta.get(name)
@@ -92,7 +94,8 @@ def build_argv(cab: Cab, resolved: dict[str, Any]) -> list[str]:
         if value is None:
             continue
         repeat_as_tokens = meta is not None and meta.repeat_as_tokens and isinstance(value, (list, tuple))
-        if meta is not None and meta.positional:
+        if meta is not None and (meta.positional or meta.positional_head):
+            positionals = positionals_head if meta.positional_head else positionals_tail
             if repeat_as_tokens:
                 positionals.extend(str(item) for item in value)
             else:
@@ -102,10 +105,10 @@ def build_argv(cab: Cab, resolved: dict[str, Any]) -> list[str]:
             # One flag occurrence, then each item as its own bare token --
             # e.g. wsclean's "-size 4096 4096"/"-weight briggs 0", not
             # "-size 4096,4096" (one token, which the tool can't parse).
-            argv.append(policies.arg_name(cab.param_name(name)))
-            argv.extend(str(item) for item in value)
+            flags.append(policies.arg_name(cab.param_name(name)))
+            flags.extend(str(item) for item in value)
             continue
-        _emit_arg(argv, policies, policies.arg_name(cab.param_name(name)), value)
+        _emit_arg(flags, policies, policies.arg_name(cab.param_name(name)), value)
 
     # pattern-matched (dynamically-named) params, e.g. K.type/G.type
     for name, value in resolved.items():
@@ -115,10 +118,16 @@ def build_argv(cab: Cab, resolved: dict[str, Any]) -> list[str]:
         if meta is None:
             continue
         arg = meta.nom_de_guerre or name
-        _emit_arg(argv, policies, policies.arg_name(arg), value)
+        _emit_arg(flags, policies, policies.arg_name(arg), value)
 
-    # Positional args (e.g. simms' "ms") come last, in field-declaration
-    # order -- matches how tools that mix flags with one positional arg
-    # are actually invoked (flags first, bare value last).
-    argv.extend(positionals)
+    # Head positionals (e.g. CubiCal/killMS's `parset`, real
+    # `policies: {positional_head: true}` in cult-cargo's own cubical.yml)
+    # come before every flag -- some tools only recognise a positional as
+    # their argv[1], not just any leftover non-flag token. Tail positionals
+    # (e.g. simms' "ms") come last, in field-declaration order -- matches
+    # how tools that mix flags with one positional arg are actually
+    # invoked (flags first, bare value last).
+    argv.extend(positionals_head)
+    argv.extend(flags)
+    argv.extend(positionals_tail)
     return argv

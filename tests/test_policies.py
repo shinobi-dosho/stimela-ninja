@@ -108,6 +108,38 @@ def test_multiple_positionals_keep_field_declaration_order():
     assert argv[-2:] == ["a", "b"]
 
 
+# -- positional_head (real cult-cargo `cubical.yml`'s `parset: {policies:
+# {positional_head: true}}` -- for tools like CubiCal/killMS whose own CLI
+# only recognises a bare token as argv[1], never as a trailing leftover) --
+
+
+def test_positional_head_emitted_before_every_flag():
+    cab = make_cab(
+        build_model("In", {"parset": ("File", False, None), "data_ms": ("MS", True, None)}),
+        field_meta={"parset": ParamMeta(positional_head=True)},
+    )
+    argv = build_argv(cab, {"parset": "base.parset", "data_ms": "foo.ms"})
+    assert argv == ["tool", "base.parset", "--data_ms", "foo.ms"]
+
+
+def test_positional_head_omitted_when_none_optional():
+    cab = make_cab(
+        build_model("In", {"parset": ("File", False, None), "data_ms": ("MS", True, None)}),
+        field_meta={"parset": ParamMeta(positional_head=True)},
+    )
+    argv = build_argv(cab, {"data_ms": "foo.ms"})
+    assert argv == ["tool", "--data_ms", "foo.ms"]
+
+
+def test_positional_head_and_positional_tail_bracket_the_flags():
+    cab = make_cab(
+        build_model("In", {"parset": ("File", False, None), "ms": ("MS", True, None), "telescope": ("str", True, None)}),
+        field_meta={"parset": ParamMeta(positional_head=True), "ms": ParamMeta(positional=True)},
+    )
+    argv = build_argv(cab, {"parset": "base.parset", "ms": "foo.ms", "telescope": "meerkat"})
+    assert argv == ["tool", "base.parset", "--telescope", "meerkat", "foo.ms"]
+
+
 # -- repeat_as_tokens (e.g. wsclean's "-size 4096 4096"/"-weight briggs 0") --
 
 
