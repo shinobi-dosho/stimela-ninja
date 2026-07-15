@@ -301,14 +301,24 @@ def _collect(
         nom = value.get("nom_de_guerre") or (dotted_key if dotted_key != field else None)
         param_policies = value.get("policies") or {}
         positional = bool(param_policies.get("positional", False))
+        positional_head = bool(param_policies.get("positional_head", False))
         repeat_as_tokens = param_policies.get("repeat") == "list"
         choices = validate_choices(value.get("choices"), error=CabLoadError)
-        if nom or implicit is not None or value.get("info") or positional or repeat_as_tokens or choices:
+        if (
+            nom
+            or implicit is not None
+            or value.get("info")
+            or positional
+            or positional_head
+            or repeat_as_tokens
+            or choices
+        ):
             metas[field] = ParamMeta(
                 nom_de_guerre=nom,
                 implicit=implicit,
                 info=value.get("info"),
                 positional=positional,
+                positional_head=positional_head,
                 repeat_as_tokens=repeat_as_tokens,
                 choices=choices,
             )

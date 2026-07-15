@@ -6,6 +6,7 @@ import pytest
 
 from shinobi.exceptions import CabLoadError
 from shinobi.loaders.cultcargo import load_file, loads
+from shinobi.policies import build_argv
 from shinobi.steps.schema import path_fields
 
 BREIZORRO_YAML = """
@@ -109,6 +110,39 @@ cabs:
                 dtype: list:int
                 required: false
 """
+
+
+POSITIONAL_HEAD_YAML = """
+cabs:
+    cubical:
+        command: gocubical
+        inputs:
+            parset:
+                dtype: File
+                required: false
+                policies:
+                    positional_head: true
+            data-ms:
+                dtype: MS
+                required: true
+"""
+
+
+def test_param_positional_head_policy_parsed_into_meta():
+    cubical = loads(POSITIONAL_HEAD_YAML)["cubical"]
+    assert cubical.field_meta["parset"].positional_head is True
+    assert (
+        "data_ms" not in cubical.field_meta
+        or cubical.field_meta["data_ms"].positional_head is False
+    )
+
+
+def test_positional_head_policy_produces_head_positional_in_argv():
+    # end-to-end: a YAML cab shaped like cubical.yml emits parset as argv[1],
+    # before every flag -- the whole point of the positional_head policy.
+    cubical = loads(POSITIONAL_HEAD_YAML)["cubical"]
+    argv = build_argv(cubical, {"parset": "base.parset", "data_ms": "foo.ms"})
+    assert argv == ["gocubical", "base.parset", "--data-ms", "foo.ms"]
 
 
 def test_param_repeat_list_policy_parsed_into_meta():

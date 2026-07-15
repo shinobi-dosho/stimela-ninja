@@ -27,7 +27,7 @@ dev = [
     "ruff>=0.5",
 ]
 # Not installed by default `uv sync`/`uv run` -- only needed to actually
-# execute examples/example_simulation.py for real (`uv sync --group examples`).
+# execute examples/example-simulation.py for real (`uv sync --group examples`).
 # simms has no docker image yet, so it must be installed to run via NativeBackend.
 # dosho (the native shinobi cab repository) supplies that example's real
 # wsclean/cubical/simms cabs -- see [tool.uv.sources] below for the local
