@@ -22,6 +22,10 @@ class ConfigLoadError(ShinobiError):
     """A worker/config schema file could not be loaded or resolved."""
 
 
+class ReplayError(ShinobiError):
+    """A run manifest cannot be replayed against the current target."""
+
+
 class UnsupportedFlavourError(ShinobiError):
     """A cab's flavour isn't one shinobi knows how to execute.
 

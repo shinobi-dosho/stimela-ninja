@@ -295,3 +295,171 @@ def test_manifest_serializes_non_jsonable_inputs_lossily():
     result = StepResult(name="w", returncode=0, outputs=_M(), inputs=Weird(), kind="cab", backend="native")
     m = build_manifest(result, backend="native")
     assert isinstance(m.root.inputs["obj"], str)  # degraded to str, did not crash
+
+
+def test_manifest_step_records_use_step_names_not_cab_names():
+    # One cab backing two steps: sub_results keys are the *step* names
+    # (what replay matches on); each value's own .name is the cab's.
+    root = StepResult(
+        name="r",
+        returncode=0,
+        outputs=_M(),
+        inputs=_M(),
+        kind="recipe",
+        sub_results={
+            "first": _cab_result("echo", backend="native"),
+            "second": _cab_result("echo", backend="native"),
+        },
+    )
+    m = build_manifest(root, backend="native")
+    assert [s.name for s in m.root.steps] == ["first", "second"]
+
+
+# -- target recording (for `ninja replay`) --
+
+
+def test_dispatch_records_provenance_target():
+    import json
+
+    from shinobi.steps.dispatch import _dispatch
+
+    _dispatch(_true_cab("p_target"), None, provenance=True, _provenance_target="f.py:r")
+    files = list(_runs_dir().glob("p_target*.run.json"))
+    assert files and json.loads(files[-1].read_text())["target"] == "f.py:r"
+
+
+def test_dispatch_without_target_records_honest_null():
+    import json
+
+    from shinobi.steps.dispatch import _dispatch
+
+    _dispatch(_true_cab("p_notarget"), None, provenance=True)
+    files = list(_runs_dir().glob("p_notarget*.run.json"))
+    assert files and json.loads(files[-1].read_text())["target"] is None
+
+
+def test_old_manifest_without_target_still_validates():
+    from shinobi.provenance import RunManifest
+
+    m = build_manifest(_cab_result("old", backend="native"), backend="native")
+    payload = m.model_dump(mode="json")
+    del payload["target"]  # a manifest written before the field existed
+    import json
+
+    old = RunManifest.model_validate_json(json.dumps(payload))
+    assert old.target is None
+
+
+# -- replay: unpinned_steps + apply_manifest_pins --
+
+
+def _rec(name, *, kind="cab", image=None, digest=None, containerized=False, steps=(), inputs=None):
+    from shinobi.provenance import StepRecord
+
+    return StepRecord(
+        name=name, kind=kind, returncode=0, cached=False,
+        image=image, image_digest=digest, containerized=containerized,
+        inputs=inputs or {}, outputs={}, steps=list(steps),
+    )
+
+
+def test_unpinned_steps_names_offenders():
+    from shinobi.provenance import unpinned_steps
+
+    d = "sha256:" + "a" * 64
+    root = _rec("outer", kind="recipe", steps=[
+        _rec("ok", image="a:1", digest=d, containerized=True),
+        _rec("inner", kind="recipe", steps=[_rec("bad", image="b:1", containerized=True)]),
+        _rec("native"),  # not containerized; never an offender
+    ])
+    assert unpinned_steps(root) == ["bad"]
+
+
+class _RIn(BaseModel):
+    x: int = 0
+
+
+class _Empty(BaseModel):
+    pass
+
+
+def _image_step_cab(name, image):
+    from shinobi.steps.schema import Cab
+
+    return Cab(name=name, command=name, image=image, inputs_model=_RIn, outputs_model=_Empty)
+
+
+def test_apply_pins_rewrites_cab_image():
+    from shinobi.provenance import apply_manifest_pins
+
+    d = "sha256:" + "a" * 64
+    cab = _image_step_cab("t", "alpine:3.19")
+    pinned = apply_manifest_pins(cab, _rec("t", image="alpine:3.19", digest=d, containerized=True))
+    assert pinned.image == f"alpine@{d}"
+    assert cab.image == "alpine:3.19"  # original untouched
+
+
+def test_apply_pins_leaves_native_and_sif_unchanged():
+    from shinobi.provenance import apply_manifest_pins
+
+    native = _image_step_cab("n", "alpine:3.19")
+    assert apply_manifest_pins(native, _rec("n", image="alpine:3.19")).image == "alpine:3.19"
+
+    sif = _image_step_cab("s", "/imgs/tool.sif")
+    d = "sha256:" + "b" * 64  # a content hash, not a registry ref
+    assert apply_manifest_pins(sif, _rec("s", image="/imgs/tool.sif", digest=d, containerized=True)).image == "/imgs/tool.sif"
+
+
+def _nested_recipe():
+    from shinobi.steps.schema import Recipe
+
+    inner = Recipe(name="inner", inputs_model=_RIn, outputs_model=_Empty)
+    inner.add_step("c", _image_step_cab("c", "quay.io/x/y:1"), x=inner.inputs.x)
+    outer = Recipe(name="outer", inputs_model=_RIn, outputs_model=_Empty)
+    outer.add_step("a", _image_step_cab("a", "alpine:3.19"), x=outer.inputs.x)
+    outer.add_step("b", inner, x=outer.inputs.x)
+    return outer
+
+
+def test_apply_pins_recipe_matches_by_name_and_recurses():
+    from shinobi.graph import build_graph
+    from shinobi.provenance import apply_manifest_pins
+
+    d1, d2 = "sha256:" + "1" * 64, "sha256:" + "2" * 64
+    outer = _nested_recipe()
+    root = _rec("outer", kind="recipe", steps=[
+        _rec("a", image="alpine:3.19", digest=d1, containerized=True),
+        _rec("b", kind="recipe", steps=[_rec("c", image="quay.io/x/y:1", digest=d2, containerized=True)]),
+    ])
+    pinned = apply_manifest_pins(outer, root)
+    assert pinned.steps[0].step.image == f"alpine@{d1}"
+    assert pinned.steps[1].step.steps[0].step.image == f"quay.io/x/y@{d2}"
+    # ref identity data (name/wiring) survives the copy, so by-name wiring
+    # and the dependency graph still hold together.
+    assert [ref.name for ref in pinned.steps] == ["a", "b"]
+    assert pinned.steps[0].wiring == outer.steps[0].wiring
+    build_graph(pinned)  # must not raise
+    assert outer.steps[0].step.image == "alpine:3.19"  # original untouched
+
+
+def test_apply_pins_shape_mismatches_error():
+    from shinobi.exceptions import ReplayError
+    from shinobi.provenance import apply_manifest_pins
+
+    outer = _nested_recipe()
+
+    # a manifest step the recipe no longer has
+    extra = _rec("outer", kind="recipe", steps=[
+        _rec("a", containerized=False), _rec("b", kind="recipe"), _rec("gone"),
+    ])
+    with pytest.raises(ReplayError, match="gone"):
+        apply_manifest_pins(outer, extra)
+
+    # a recipe step the manifest never ran (recipe grew, or run stopped early)
+    partial = _rec("outer", kind="recipe", steps=[_rec("a", containerized=False)])
+    with pytest.raises(ReplayError, match="'b'"):
+        apply_manifest_pins(outer, partial)
+
+    # the target changed shape entirely
+    with pytest.raises(ReplayError, match="changed shape"):
+        apply_manifest_pins(_image_step_cab("outer", "a:1"), _rec("outer", kind="recipe"))

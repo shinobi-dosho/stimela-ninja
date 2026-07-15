@@ -27,6 +27,7 @@ from shinobi.results import StepResult
 
 if TYPE_CHECKING:
     from shinobi.config import AppConfig
+    from shinobi.steps.schema import Scope
 
 
 def _jsonable(model: BaseModel) -> dict[str, Any]:
@@ -60,13 +61,17 @@ class StepRecord(BaseModel):
 class RunManifest(BaseModel):
     """The whole run, frozen. `stimela_version` and `cab_repo_commit` are
     nullable and only populated once those provenance sources are wired --
-    they are honest nulls, never fabricated.
+    they are honest nulls, never fabricated. `target` records the CLI target
+    string ('path/to/file.py:name' or 'pkg.mod:name') that produced the run,
+    so `ninja replay` can find the recipe again; it is null for programmatic
+    runs and manifests written before the field existed.
     """
 
     schema_version: int = 1
     shinobi_version: str
     stimela_version: str | None = None
     cab_repo_commit: str | None = None
+    target: str | None = None
     generated_at: datetime
     backend: str
     returncode: int
@@ -94,10 +99,16 @@ class RunManifest(BaseModel):
         return path
 
 
-def _record(result: StepResult) -> StepRecord:
-    """Walk a `StepResult` (and its `sub_results`) into a `StepRecord` tree."""
+def _record(result: StepResult, name: str | None = None) -> StepRecord:
+    """Walk a `StepResult` (and its `sub_results`) into a `StepRecord` tree.
+
+    `name` overrides `result.name`: a recipe's `sub_results` are keyed by the
+    *step* name (the `StepRef.name` replay matches on), while each value's
+    own `.name` is the underlying cab's -- ambiguous when one cab backs
+    several steps.
+    """
     return StepRecord(
-        name=result.name,
+        name=name or result.name,
         kind=result.kind,
         returncode=result.returncode,
         cached=result.cached,
@@ -107,19 +118,89 @@ def _record(result: StepResult) -> StepRecord:
         containerized=result.containerized,
         inputs=_jsonable(result.inputs),
         outputs=_jsonable(result.outputs),
-        steps=[_record(sub) for sub in (result.sub_results or {}).values()],
+        steps=[_record(sub, name=key) for key, sub in (result.sub_results or {}).items()],
     )
 
 
-def build_manifest(result: StepResult, *, backend: str) -> RunManifest:
+def build_manifest(result: StepResult, *, backend: str, target: str | None = None) -> RunManifest:
     """Build a `RunManifest` freezing a completed top-level run's `result`."""
     return RunManifest(
         shinobi_version=_shinobi_version,
+        target=target,
         generated_at=datetime.now(timezone.utc),
         backend=backend,
         returncode=result.returncode,
         root=_record(result),
     )
+
+
+def load_manifest(path: Path) -> RunManifest:
+    """Read and validate a run manifest from `path`."""
+    return RunManifest.model_validate_json(path.read_text())
+
+
+def unpinned_steps(record: StepRecord) -> list[str]:
+    """Names of every step in `record`'s tree that ran containerized but has
+    no resolved image digest -- the steps that make `RunManifest.pinned`
+    false, named so a refusal to replay can say which ones.
+    """
+    names: list[str] = []
+    if record.containerized and record.image_digest is None:
+        names.append(record.name)
+    for child in record.steps:
+        names.extend(unpinned_steps(child))
+    return names
+
+
+def apply_manifest_pins(scope: "Scope", record: StepRecord) -> "Scope":
+    """Return a copy of `scope` with every containerized step's image forced
+    to the `repo@sha256:...` its manifest `record` recorded, so a replay runs
+    exactly the images of the original run (an already-digest-pinned ref
+    passes through pin-then-run without a registry round-trip).
+
+    Recipe sub-steps are matched to `record.steps` by name; any shape
+    difference -- the recipe changed since the manifest was written, or the
+    recorded run stopped before finishing -- raises `ReplayError` rather than
+    replaying something other than what the manifest froze. Never mutates
+    `scope`.
+    """
+    from shinobi.backends.container import _with_digest
+    from shinobi.exceptions import ReplayError
+    from shinobi.steps.schema import Recipe
+
+    if isinstance(scope, Recipe) != (record.kind == "recipe"):
+        raise ReplayError(
+            f"step {record.name!r}: manifest records a {record.kind}, but the target "
+            f"now resolves to a {type(scope).__name__} -- the code has changed shape "
+            "since this manifest was written"
+        )
+    if isinstance(scope, Recipe):
+        by_name = {rec.name: rec for rec in record.steps}
+        current = {ref.name for ref in scope.steps}
+        if extra := sorted(set(by_name) - current):
+            raise ReplayError(
+                f"manifest step(s) {extra} no longer exist in recipe {scope.name!r} -- "
+                "the recipe has changed since this manifest was written"
+            )
+        if missing := sorted(current - set(by_name)):
+            raise ReplayError(
+                f"recipe {scope.name!r} step(s) {missing} are not in the manifest -- "
+                "either the recipe gained steps since the manifest was written, or the "
+                "recorded run failed/stopped before reaching them; such a run cannot "
+                "be replayed exactly"
+            )
+        new_steps = [
+            ref.model_copy(update={"step": apply_manifest_pins(ref.step, by_name[ref.name])})
+            for ref in scope.steps
+        ]
+        return scope.model_copy(update={"steps": new_steps})
+    if record.containerized and record.image_digest and record.image:
+        if record.image.endswith(".sif"):
+            # The recorded digest is a content hash of the local file, not a
+            # registry ref -- the path already names the exact image.
+            return scope
+        return scope.model_copy(update={"image": _with_digest(record.image, record.image_digest)})
+    return scope
 
 
 def run_manifest_path(config: "AppConfig", name: str) -> Path:

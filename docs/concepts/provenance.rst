@@ -73,6 +73,7 @@ It freezes the resolved run as a tree of steps:
     {
       "schema_version": 1,
       "shinobi_version": "0.1.0b1",
+      "target": "myrecipe.py:selfcal",
       "generated_at": "2026-07-13T14:07:50Z",
       "backend": "docker",
       "returncode": 0,
@@ -102,7 +103,54 @@ A recipe's sub-steps appear, in declaration order, under ``steps``.
 ``image_digest``
     The ``sha256:...`` that actually ran, or ``null`` when unpinned.
 
+``target``
+    The CLI target string (``path/to/file.py:name`` or ``pkg.mod:name``) that
+    produced the run, recorded so :ref:`ninja replay <ninja-replay>` can find
+    the recipe again. ``null`` for programmatic runs (a ``StepRef`` called
+    from Python) and for manifests written before the field existed.
+
 ``stimela_version`` / ``cab_repo_commit`` are reserved and currently ``null``.
+
+Replaying a run
+---------------
+
+A manifest is not just a record -- it can be re-run:
+
+.. code-block:: console
+
+    $ ninja replay .shinobi/runs/selfcal.20260713T140750Z.12345.run.json
+
+Replay loads the manifest's ``target``, forces every containerized step's
+image to the recorded ``repo@sha256:...`` (an already-pinned reference passes
+through pin-then-run with no registry round-trip), and re-runs with the
+recorded inputs on the recorded backend. The replay is itself a provenance
+run, so it writes a fresh manifest of what it ran.
+
+What replay guarantees -- and what it refuses:
+
+* **Unpinned manifests are refused.** A manifest with ``pinned: false``
+  cannot promise the same images run again, so replay errors, naming the
+  unpinned steps; ``--allow-unpinned`` proceeds anyway, running those steps
+  by their original reference.
+* **A changed recipe is an error.** Manifest steps are matched to the
+  recipe's steps by name; a step that has since been removed, renamed, or
+  added makes replay refuse rather than run something other than what the
+  manifest froze. This also means a failed or interrupted run (whose
+  manifest omits never-reached steps) cannot be replayed exactly.
+* **The source still matters.** The manifest pins images and inputs, not
+  code: replay re-imports the target file, so it reproduces the original run
+  only against the same checkout (the reserved ``cab_repo_commit`` field is
+  where that will eventually be recorded). Orchestration functions
+  (``@shinobi.step`` bodies) re-execute; any nondeterminism inside them is
+  outside the manifest's guarantee.
+* **Lossy inputs may not replay.** Non-serializable inputs (e.g. a MUTABLE
+  field holding a live Python object) are stored in the manifest as strings;
+  if they no longer validate against the recipe's inputs model, replay
+  reports that rather than guessing.
+
+``--target`` supplies the target for manifests that don't record one, and the
+global ``ninja --backend`` flag overrides the recorded backend (e.g. when
+replaying a Slurm run on a laptop with docker).
 
 Cleaning up
 -----------

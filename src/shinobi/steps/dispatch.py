@@ -253,7 +253,8 @@ class ExecContext:
 
 
 def _emit_run_manifest(
-    result: StepResult, ctx: "ExecContext", config: AppConfig, backend: str | None
+    result: StepResult, ctx: "ExecContext", config: AppConfig, backend: str | None,
+    target: str | None = None,
 ) -> None:
     """Write the run manifest for a completed top-level run. Callers gate on
     the resolved provenance flag; this stays best-effort -- a provenance
@@ -262,7 +263,7 @@ def _emit_run_manifest(
     try:
         from shinobi.provenance import build_manifest, run_manifest_path
 
-        manifest = build_manifest(result, backend=ctx.resolve_backend_name(backend))
+        manifest = build_manifest(result, backend=ctx.resolve_backend_name(backend), target=target)
         manifest.write(run_manifest_path(config, result.name))
     except Exception as exc:  # noqa: BLE001 -- provenance must not break a run
         warnings.warn(f"failed to write run manifest for {result.name!r}: {exc}", stacklevel=2)
@@ -284,6 +285,7 @@ def _dispatch(
     _recipe_provenance: bool | None = None,
     _cache_path: str | None = None,
     _config: AppConfig | None = None,
+    _provenance_target: str | None = None,
     **kwargs: Any,
 ) -> StepResult:
     config = _config or AppConfig.load()
@@ -338,7 +340,7 @@ def _dispatch(
         hit = manifest.check(cache_path, cache_key, scope, prepared_for_key)
         if hit is not None:
             if _cache_path is None and provenance_enabled:
-                _emit_run_manifest(hit, ctx, config, backend)
+                _emit_run_manifest(hit, ctx, config, backend, target=_provenance_target)
             return hit
 
     if func is None:
@@ -356,7 +358,7 @@ def _dispatch(
     if cacheable and result.success:
         manifest.record(cache_path, cache_key, result)
     if _cache_path is None and provenance_enabled:
-        _emit_run_manifest(result, ctx, config, backend)
+        _emit_run_manifest(result, ctx, config, backend, target=_provenance_target)
     return result
 
 
