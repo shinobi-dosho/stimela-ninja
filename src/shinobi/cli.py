@@ -332,7 +332,7 @@ def run(
         stream_enabled = False if quiet else config.log.stream
         result = _dispatch(
             scope, func, backend=backend, cache=cache, cache_dir=cache_dir, stream=stream,
-            provenance=provenance, _config=ctx.obj, **call_kwargs
+            provenance=provenance, _config=ctx.obj, _provenance_target=target, **call_kwargs
         )
         # When streaming happened, every line already printed live as it
         # ran -- dumping the same captured text again here would just
@@ -357,6 +357,102 @@ def run(
         help=scope.info,
     )
     inner.main(args=ctx.args, prog_name=f"{ctx.info_name} {target}", standalone_mode=False)
+
+
+@main.command("replay")
+@click.argument("run_manifest", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--target",
+    "target_override",
+    default=None,
+    help="Override the target recorded in the manifest ('path/to/file.py:name' or "
+    "'pkg.mod:name'); required for manifests that don't record one (older manifests, "
+    "or runs launched programmatically rather than via `ninja run`).",
+)
+@click.option(
+    "--allow-unpinned",
+    "allow_unpinned",
+    is_flag=True,
+    help="Replay even when the manifest is not fully digest-pinned (pinned: false). "
+    "Unpinned steps run their original image reference, so exact reproduction is "
+    "not guaranteed.",
+)
+@click.pass_context
+def replay(ctx: click.Context, run_manifest: str, target_override: str | None, allow_unpinned: bool) -> None:
+    """Re-run a recorded run from its RUN_MANIFEST (a `.run.json` written by
+    a `--provenance` run), forcing every containerized step to the exact
+    image digest that originally ran and re-feeding the recorded inputs.
+
+    Uses the manifest's recorded backend by default; the global `ninja
+    --backend` flag overrides it. The replay is itself a provenance run and
+    writes its own manifest.
+    """
+    from pydantic import ValidationError
+
+    from shinobi.exceptions import ReplayError
+    from shinobi.provenance import apply_manifest_pins, load_manifest, unpinned_steps
+
+    try:
+        manifest = load_manifest(Path(run_manifest))
+    except (OSError, ValidationError) as exc:
+        raise click.ClickException(f"cannot read run manifest {run_manifest!r}: {exc}") from None
+
+    target = target_override or manifest.target
+    if target is None:
+        raise click.ClickException(
+            "manifest has no 'target' (written by an older shinobi, or a programmatic "
+            "run) -- pass --target 'path/to/file.py:name' to identify the recipe/cab"
+        )
+
+    if not manifest.pinned and not allow_unpinned:
+        offenders = unpinned_steps(manifest.root)
+        raise click.ClickException(
+            f"manifest is not fully pinned (steps without an image digest: "
+            f"{', '.join(offenders)}); replay cannot guarantee the same images ran -- "
+            "pass --allow-unpinned to proceed anyway"
+        )
+
+    obj = _resolve_target(target)
+    if isinstance(obj, StepRef):
+        # Per-step params are ignored: the manifest root inputs are the
+        # fully-resolved values of the original run, which subsume them.
+        scope, func = obj.step, obj.func
+    elif isinstance(obj, Scope):
+        scope, func = obj, None
+    else:
+        raise click.ClickException(
+            f"{target!r} is neither a Cab, Recipe, nor a @shinobi.step function"
+        )
+
+    try:
+        scope = apply_manifest_pins(scope, manifest.root)
+    except ReplayError as exc:
+        raise click.ClickException(str(exc)) from None
+
+    try:
+        scope.inputs_model(**manifest.root.inputs)
+    except ValidationError as exc:
+        raise click.ClickException(
+            f"manifest inputs no longer validate against {scope.name!r}: {exc}\n"
+            "(non-serializable inputs -- e.g. MUTABLE fields -- are stored as strings "
+            "in the manifest and may not be replayable)"
+        ) from None
+
+    config = ctx.obj or AppConfig.load()
+    backend = ctx.meta.get("backend_override") or manifest.backend
+    result = _dispatch(
+        scope, func, backend=backend, provenance=True,
+        _config=ctx.obj, _provenance_target=target, **manifest.root.inputs
+    )
+    # Same output policy as `run`: streaming already echoed everything live;
+    # only dump captured output when streaming was off or nothing ran.
+    if not config.log.stream or result.cached:
+        if result.stdout:
+            click.echo(result.stdout)
+        if result.stderr:
+            click.echo(result.stderr, err=True)
+    if not result.success:
+        raise click.ClickException(f"'{scope.name}' exited with status {result.returncode}")
 
 
 @main.command("clean")

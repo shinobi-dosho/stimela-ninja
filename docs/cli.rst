@@ -87,6 +87,35 @@ for orchestration code the static cab-dep scan can't see:
     $ ninja run myrecipe.py:selfcal --ms data.ms --remote user@cluster:/scratch/run1
     $ ninja run myrecipe.py:selfcal --ms data.ms --remote user@cluster:/scratch/run1 --include extra_cabs.yml
 
+.. _ninja-replay:
+
+``ninja replay`` -- reproduce a recorded run
+--------------------------------------------
+
+Re-runs a run recorded by a ``--provenance`` run manifest (a ``.run.json``
+under ``AppConfig.provenance.dir``): the recipe/cab named by the manifest's
+``target`` is loaded again, every containerized step is forced to the exact
+``repo@sha256:...`` digest that originally ran, and the recorded inputs are
+re-fed. See :doc:`concepts/provenance`.
+
+.. code-block:: console
+
+    $ ninja replay .shinobi/runs/selfcal.20260713T140750Z.12345.run.json
+
+Replay is strict by default: a manifest with ``pinned: false`` (some
+containerized step never resolved a digest) is refused, because it cannot
+guarantee the same images run again. ``--allow-unpinned`` proceeds anyway,
+running unpinned steps by their original image reference.
+
+``--target 'path/to/file.py:name'`` overrides the recorded target -- required
+for manifests that don't record one (older manifests, or runs launched
+programmatically rather than via ``ninja run``).
+
+The recorded backend is used by default; the global ``ninja --backend`` flag
+overrides it (the escape hatch when the recorded backend doesn't exist on the
+replaying host). A replay is itself a provenance run and writes its own
+manifest.
+
 ``ninja cab`` -- inspect a cab schema by file
 ----------------------------------------------
 
