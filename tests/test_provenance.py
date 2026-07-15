@@ -403,11 +403,15 @@ def test_apply_pins_leaves_native_and_sif_unchanged():
     from shinobi.provenance import apply_manifest_pins
 
     native = _image_step_cab("n", "alpine:3.19")
-    assert apply_manifest_pins(native, _rec("n", image="alpine:3.19")).image == "alpine:3.19"
+    pinned = apply_manifest_pins(native, _rec("n", image="alpine:3.19"))
+    assert pinned.image == "alpine:3.19"
+    assert pinned is not native  # unchanged still means a fresh instance
 
     sif = _image_step_cab("s", "/imgs/tool.sif")
     d = "sha256:" + "b" * 64  # a content hash, not a registry ref
-    assert apply_manifest_pins(sif, _rec("s", image="/imgs/tool.sif", digest=d, containerized=True)).image == "/imgs/tool.sif"
+    pinned = apply_manifest_pins(sif, _rec("s", image="/imgs/tool.sif", digest=d, containerized=True))
+    assert pinned.image == "/imgs/tool.sif"
+    assert pinned is not sif
 
 
 def _nested_recipe():
@@ -440,6 +444,16 @@ def test_apply_pins_recipe_matches_by_name_and_recurses():
     assert pinned.steps[0].wiring == outer.steps[0].wiring
     build_graph(pinned)  # must not raise
     assert outer.steps[0].step.image == "alpine:3.19"  # original untouched
+    # No node of the pinned tree is shared with the original, and Recipe's
+    # mutable builder surface (steps list, output_wiring dict) is its own --
+    # add_step/set_output on one tree can't leak into the other.
+    assert pinned is not outer
+    assert pinned.steps is not outer.steps
+    assert pinned.output_wiring is not outer.output_wiring
+    inner_pinned, inner_orig = pinned.steps[1].step, outer.steps[1].step
+    assert inner_pinned is not inner_orig
+    assert inner_pinned.steps is not inner_orig.steps
+    assert inner_pinned.output_wiring is not inner_orig.output_wiring
 
 
 def test_apply_pins_shape_mismatches_error():

@@ -162,7 +162,9 @@ def apply_manifest_pins(scope: "Scope", record: StepRecord) -> "Scope":
     difference -- the recipe changed since the manifest was written, or the
     recorded run stopped before finishing -- raises `ReplayError` rather than
     replaying something other than what the manifest froze. Never mutates
-    `scope`.
+    `scope`, and every node of the returned tree is a fresh instance (even
+    steps left unchanged), so the pinned tree shares no Scope objects with
+    the original.
     """
     from shinobi.backends.container import _with_digest
     from shinobi.exceptions import ReplayError
@@ -193,14 +195,19 @@ def apply_manifest_pins(scope: "Scope", record: StepRecord) -> "Scope":
             ref.model_copy(update={"step": apply_manifest_pins(ref.step, by_name[ref.name])})
             for ref in scope.steps
         ]
-        return scope.model_copy(update={"steps": new_steps})
+        # `output_wiring` is the rest of Recipe's mutable builder surface --
+        # give the copy its own dict so `set_output` on one can't leak into
+        # the other.
+        return scope.model_copy(
+            update={"steps": new_steps, "output_wiring": dict(scope.output_wiring)}
+        )
     if record.containerized and record.image_digest and record.image:
-        if record.image.endswith(".sif"):
-            # The recorded digest is a content hash of the local file, not a
-            # registry ref -- the path already names the exact image.
-            return scope
-        return scope.model_copy(update={"image": _with_digest(record.image, record.image_digest)})
-    return scope
+        if not record.image.endswith(".sif"):
+            return scope.model_copy(update={"image": _with_digest(record.image, record.image_digest)})
+        # A .sif's recorded digest is a content hash of the local file, not a
+        # registry ref -- the path already names the exact image, so there is
+        # nothing to rewrite.
+    return scope.model_copy()
 
 
 def run_manifest_path(config: "AppConfig", name: str) -> Path:
