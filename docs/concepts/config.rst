@@ -25,6 +25,7 @@ Settings
       max_workers: 1             # concurrent recipe steps (1 = sequential)
     log:
       dir: "."                   # log output directory
+      file: null                  # run-log filename (null = file logging off)
       level: INFO                # log level
       stream: true                # live-echo running cabs' stdout/stderr
     cache:
@@ -33,6 +34,9 @@ Settings
     provenance:
       enabled: false              # image pinning + run manifests, off by default
       dir: ".shinobi/runs"        # where run manifests are written
+    sandbox:
+      enabled: false              # per-step sandbox execution, off by default
+      dir: ".shinobi/work"        # scratch root for per-step sandbox dirs
 
 ``execution.max_workers`` defaults to ``1``: parallelism is opt-in. At ``1``
 the scheduler reproduces exact declaration-order execution and no ``MUTABLE``
@@ -52,6 +56,22 @@ as it runs (native/container backends only); set to ``False`` to restore the
 old behavior of a silent run followed by one dump of captured output at the
 end. Overridable per-invocation with ``ninja run --quiet``.
 
+``log.file`` (default ``None`` = off) turns on the run-log file, written to
+``log.dir/log.file`` and filtered at ``log.level``. Every step -- cab,
+pystep, recipe, and each recipe sub-step under its dotted label (e.g.
+``selfcal.image``) -- is logged exactly once, regardless of backend:
+lifecycle records (``starting`` / ``finished`` / ``failed`` / ``cache hit``)
+and the step's captured stdout/stderr at ``INFO``, failures and exceptions at
+``ERROR``, and the resolved backend plus full argv at ``DEBUG``. Output is
+logged from the captured text after each step completes, so the log is
+complete even for non-streaming backends and unaffected by ``--quiet``. All
+three settings are overridable per-invocation with the global
+``ninja --log-file/--log-dir/--log-level`` options.
+
+Programmatic runs never write a log file (shinobi's modules only emit
+through the ``shinobi.*`` logger hierarchy); attach your own handler to
+``logging.getLogger("shinobi")`` instead.
+
 ``cache.enabled`` turns on step-level result caching: a step with an
 unchanged cache key is skipped and its prior result reused. It's off by
 default and must also be opted into per-step or per-recipe via ``Scope.cache``
@@ -63,6 +83,13 @@ are digest-pinned before running (pin-then-run) and a run manifest is written
 per top-level run under ``provenance.dir``. It's off by default because
 pinning changes how containers execute. ``ninja run --provenance``/
 ``--no-provenance`` override this per invocation. See :doc:`provenance`.
+
+``sandbox.enabled`` turns on per-step sandbox execution: each
+subprocess-backed step runs with its cwd inside a private scratch directory
+under ``sandbox.dir``, and on success only declared outputs are moved back to
+the workspace -- auxiliary droppings (tool logfiles etc.) are deleted with the
+scratch dir. It's off by default. ``ninja run --sandbox``/``--no-sandbox``
+override this per invocation. See :doc:`sandbox`.
 
 Config file location
 ---------------------

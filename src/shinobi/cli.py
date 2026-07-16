@@ -14,6 +14,7 @@ import shinobi
 from shinobi.clickutil import build_options, unflatten_kwargs
 from shinobi.config import AppConfig
 from shinobi.dag import graph_nodes, render_dag
+from shinobi.logsetup import setup_file_logging
 from shinobi.graph import RecipeGraphError, RecipeNotOffloadableError
 from shinobi.offload import OffloadCompileError, compile_slurm, status_slurm, status_ssh, submit_slurm
 from shinobi.policies import build_argv
@@ -24,13 +25,37 @@ from shinobi.steps.schema import Recipe, Scope, StepRef
 @click.group()
 @click.option("--config", "config_file", default=None, help="Path to a config file.")
 @click.option("--backend", "backend", default=None, help="Override the default backend.")
+@click.option("--log-file", "log_file", default=None, help="Log filename, created under the log directory. Overrides AppConfig.log.file.")
+@click.option("--log-dir", "log_dir", default=None, help="Directory log files are written to. Overrides AppConfig.log.dir.")
+@click.option(
+    "--log-level",
+    "log_level",
+    default=None,
+    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False),
+    help="Logging verbosity. Overrides AppConfig.log.level.",
+)
 @click.pass_context
-def main(ctx: click.Context, config_file: str | None, backend: str | None) -> None:
+def main(
+    ctx: click.Context,
+    config_file: str | None,
+    backend: str | None,
+    log_file: str | None,
+    log_dir: str | None,
+    log_level: str | None,
+) -> None:
     """ninja -- the shinobi (Stimela 3.0) CLI."""
     overrides: dict = {}
     if backend:
         overrides["backend"] = {"default": backend}
+    log_overrides = {
+        key: value
+        for key, value in (("file", log_file), ("dir", log_dir), ("level", log_level))
+        if value is not None
+    }
+    if log_overrides:
+        overrides["log"] = log_overrides
     ctx.obj = AppConfig.load(config_file=config_file, **overrides)
+    setup_file_logging(ctx.obj.log)
     ctx.meta["backend_override"] = backend
 
 

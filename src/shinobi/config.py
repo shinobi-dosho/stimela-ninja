@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 DEFAULT_CONFIG_FILE = Path.home() / ".shinobi" / "config.yml"
@@ -55,11 +55,26 @@ class LogConfig(BaseModel):
     """Settings controlling logging and live output streaming."""
 
     dir: str = "."
+    # Filename for the run log, created under `dir`. None (the default)
+    # disables file logging -- same opt-in shape as cache/provenance.
+    file: str | None = None
     level: str = "INFO"
     # Live-echo a running cab's stdout/stderr to the terminal as it runs
     # (native/container backends only -- see shinobi.backends._stream).
     # Default on: `ninja run --quiet` opts out for one invocation.
     stream: bool = True
+
+    @field_validator("level")
+    @classmethod
+    def _normalize_level(cls, value: str) -> str:
+        """Uppercase and validate `level` at config load, so a bad name in
+        the YAML/env fails with a clear message instead of a ValueError
+        deep inside `logging.Handler.setLevel`.
+        """
+        level = value.upper()
+        if level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+            raise ValueError(f"invalid log level {value!r} (expected DEBUG, INFO, WARNING, ERROR, or CRITICAL)")
+        return level
 
 
 class SandboxConfig(BaseModel):
