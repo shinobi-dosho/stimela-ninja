@@ -17,6 +17,7 @@ import builtins
 import copy
 import heapq
 import importlib
+import logging
 import warnings
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -31,6 +32,12 @@ from shinobi.results import StepResult
 from shinobi.sandbox import absolutize_path_inputs, create_sandbox, discard_sandbox, harvest_outputs
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope
 from shinobi.wranglers import apply_wranglers
+
+# Run-log records (step lifecycle + captured tool output) go through the
+# `shinobi` logger hierarchy; nothing prints unless a handler is attached
+# (the CLI attaches a file handler via shinobi.logsetup when
+# AppConfig.log.file is set).
+logger = logging.getLogger("shinobi.run")
 
 # Instance-override registry: lets tests register a specific backend
 # instance (e.g. a RecordingBackend) under a name. Anything not overridden
@@ -364,21 +371,40 @@ def _dispatch(
         cache_key = compute_cache_key(scope, func, prepared_for_key)
         hit = manifest.check(cache_path, cache_key, scope, prepared_for_key)
         if hit is not None:
+            logger.info("step %s: cache hit -- skipping run", cache_path)
             if _cache_path is None and provenance_enabled:
                 _emit_run_manifest(hit, ctx, config, backend, target=_provenance_target)
             return hit
 
-    if func is None:
-        result = ctx.run()
-    else:
-        result = func(ctx)
-        if result is None:
+    logger.info("step %s: starting", cache_path)
+    try:
+        if func is None:
             result = ctx.run()
-        elif not isinstance(result, StepResult):
-            raise TypeError(
-                f"step function {getattr(func, '__name__', func)!r} must return "
-                f"StepResult or None, got {type(result).__name__}"
-            )
+        else:
+            result = func(ctx)
+            if result is None:
+                result = ctx.run()
+            elif not isinstance(result, StepResult):
+                raise TypeError(
+                    f"step function {getattr(func, '__name__', func)!r} must return "
+                    f"StepResult or None, got {type(result).__name__}"
+                )
+    except Exception:
+        logger.exception("step %s: raised", cache_path)
+        raise
+
+    # A recipe's stdout/stderr aggregate its sub-steps', and each sub-step
+    # already logged its own via its recursive _dispatch -- re-logging the
+    # aggregate would duplicate every line.
+    if result.kind != "recipe":
+        for line in result.stdout.splitlines():
+            logger.info("[%s] %s", cache_path, line)
+        for line in result.stderr.splitlines():
+            logger.info("[%s] %s", cache_path, line)
+    if result.success:
+        logger.info("step %s: finished (returncode 0)", cache_path)
+    else:
+        logger.error("step %s: failed (returncode %s)", cache_path, result.returncode)
 
     if cacheable and result.success:
         manifest.record(cache_path, cache_key, result)
@@ -444,6 +470,7 @@ def _run_cab(
         run_inputs = absolutize_path_inputs(cab, prepared, workspace)
     argv = build_argv(cab, run_inputs)
     backend = get_step_backend(backend_name)
+    logger.debug("step %s: backend=%s argv: %s", label or cab.name, backend_name, " ".join(argv))
     # The backend gets the prepared dict (not a rebuilt model) so MUTABLE
     # fields reach it as the caller's own objects by reference -- rebuilding
     # a pydantic model here would deep-copy every container and break that.

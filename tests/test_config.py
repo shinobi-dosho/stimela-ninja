@@ -33,6 +33,22 @@ def test_env_overrides_config_file(tmp_path, monkeypatch):
     assert cfg.backend.default == "podman"
 
 
+def test_log_file_defaults_to_none(tmp_path):
+    cfg = AppConfig.load(config_file=tmp_path / "missing.yml")
+    assert cfg.log.file is None
+
+
+def test_log_override_merges_with_config_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("SHINOBI_LOG__DIR", raising=False)
+    config_file = tmp_path / "config.yml"
+    config_file.write_text("log:\n  dir: logs\n  level: WARNING\n")
+    cfg = AppConfig.load(config_file=config_file, log={"file": "run.log", "level": "DEBUG"})
+    # Partial overrides deep-merge with the file: untouched keys survive.
+    assert cfg.log.file == "run.log"
+    assert cfg.log.level == "DEBUG"
+    assert cfg.log.dir == "logs"
+
+
 def test_explicit_override_wins_over_everything(tmp_path, monkeypatch):
     config_file = tmp_path / "config.yml"
     config_file.write_text("backend:\n  default: docker\n")
