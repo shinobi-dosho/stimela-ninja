@@ -37,6 +37,7 @@ class Backend(ABC):
         label: str = "",
         stream: bool = True,
         pin: bool = False,
+        cwd: str | None = None,
     ) -> BackendRun:
         """Execute argv (as built by shinobi.policies.build_argv) and
         return a BackendRun. Must not raise on a non-zero exit -- that's
@@ -52,6 +53,13 @@ class Backend(ABC):
         `container` act on them today; `slurm`/`kubernetes` accept and
         ignore both (neither has any log-tailing infrastructure yet, so
         they keep reading output once after the job/pod finishes).
+
+        ``cwd`` is the working directory to run in (`shinobi.sandbox` passes
+        the step's sandbox here), defaulting to the process cwd. `slurm`/
+        `kubernetes` accept and ignore it too: they run in a remote/pod cwd
+        the dispatch layer can't scope, so a sandboxed step on those
+        backends degrades gracefully to an unsandboxed run (harvest finds
+        the outputs already in the workspace and moves nothing).
         """
 
 

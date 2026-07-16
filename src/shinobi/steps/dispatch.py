@@ -19,6 +19,7 @@ import heapq
 import importlib
 import warnings
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from pathlib import Path
 from typing import Any, Callable
 
 from shinobi.cache import compute_cache_key, get_cache_manifest
@@ -27,6 +28,7 @@ from shinobi.exceptions import ParameterError
 from shinobi.graph import build_graph
 from shinobi.policies import build_argv
 from shinobi.results import StepResult
+from shinobi.sandbox import absolutize_path_inputs, create_sandbox, discard_sandbox, harvest_outputs
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope
 from shinobi.wranglers import apply_wranglers
 
@@ -131,6 +133,7 @@ class ExecContext:
         cache_path: str = "",
         stream: bool = True,
         pin: bool = False,
+        sandbox_root: str | None = None,
     ):
         """Initialize execution state for one dispatched step.
 
@@ -148,6 +151,9 @@ class ExecContext:
             cache_dir: Directory the cache manifest lives in.
             cache_path: Dotted step path used as this run's cache/log label.
             stream: Whether to stream the step's stdout/stderr live.
+            sandbox_root: Scratch root for sandboxed execution
+                (`shinobi.sandbox`), or `None` when this step runs
+                unsandboxed -- the root doubles as the enabled flag.
         """
         self.scope = scope
         self._raw = raw_inputs
@@ -163,6 +169,9 @@ class ExecContext:
         # Provenance on -> digest-pin container images (pin-then-run). Read by
         # the pystep container path and threaded to backends via ctx.run().
         self._pin = pin
+        # Sandbox scratch root, or None when unsandboxed. Read by the pystep
+        # container path and threaded to _run_cab/_run_recipe via ctx.run().
+        self._sandbox_root = sandbox_root
 
     def prepare_inputs(self) -> dict[str, Any]:
         """Validated + mutability-processed inputs, with no overrides applied
@@ -228,7 +237,7 @@ class ExecContext:
         if isinstance(self.scope, Cab):
             result = _run_cab(
                 self.scope, prepared, backend_name, label=self._cache_path, stream=self._stream,
-                pin=self._pin,
+                pin=self._pin, sandbox_root=self._sandbox_root,
             )
         elif isinstance(self.scope, Recipe):
             result = _run_recipe(
@@ -241,6 +250,7 @@ class ExecContext:
                 self._cache_path,
                 self._stream,
                 provenance=self._pin,
+                sandbox=self._sandbox_root is not None,
             )
         else:
             raise TypeError(
@@ -278,11 +288,13 @@ def _dispatch(
     cache_dir: str | None = None,
     stream: bool | None = None,
     provenance: bool | None = None,
+    sandbox: bool | None = None,
     _recipe_backend: str | None = None,
     _recipe_cache: bool | None = None,
     _recipe_cache_dir: str | None = None,
     _recipe_stream: bool | None = None,
     _recipe_provenance: bool | None = None,
+    _recipe_sandbox: bool | None = None,
     _cache_path: str | None = None,
     _config: AppConfig | None = None,
     _provenance_target: str | None = None,
@@ -313,6 +325,18 @@ def _dispatch(
         if _recipe_provenance is not None
         else config.provenance.enabled
     )
+    # Sandbox resolves like cache: explicit arg > the scope's own value >
+    # inherited-from-recipe > config default. The resolved switch travels as
+    # the scratch root itself (None = disabled).
+    sandbox_enabled = (
+        sandbox
+        if sandbox is not None
+        else scope.sandbox
+        if scope.sandbox is not None
+        else _recipe_sandbox
+        if _recipe_sandbox is not None
+        else config.sandbox.enabled
+    )
     # A Recipe-shaped scope is never itself cached -- its own sub-steps
     # each get their own cache check via their own recursive _dispatch
     # call (see shinobi.cache's module docstring for why).
@@ -329,6 +353,7 @@ def _dispatch(
         cache_path=cache_path,
         stream=stream_enabled,
         pin=provenance_enabled,
+        sandbox_root=config.sandbox.dir if sandbox_enabled else None,
     )
 
     manifest = None
@@ -403,17 +428,42 @@ def _resolve_implicit_template(
 
 def _run_cab(
     cab: Cab, prepared: dict[str, Any], backend_name: str, *, label: str = "", stream: bool = True,
-    pin: bool = False,
+    pin: bool = False, sandbox_root: str | None = None,
 ) -> StepResult:
-    argv = build_argv(cab, prepared)
+    # Sandboxed run (shinobi.sandbox): the tool's cwd is a private scratch
+    # dir; path-typed inputs are anchored back at the workspace so the tool
+    # still reads/mutates the caller's real files. argv and the backend's
+    # bind mounts are built from the anchored values, but output filling
+    # below keeps the caller's original (workspace-relative) values, so
+    # declared output paths stay stable whether or not a sandbox was used.
+    sandbox_dir = None
+    run_inputs = prepared
+    if sandbox_root is not None:
+        workspace = Path.cwd()
+        sandbox_dir = create_sandbox(sandbox_root, label or cab.name)
+        run_inputs = absolutize_path_inputs(cab, prepared, workspace)
+    argv = build_argv(cab, run_inputs)
     backend = get_step_backend(backend_name)
     # The backend gets the prepared dict (not a rebuilt model) so MUTABLE
     # fields reach it as the caller's own objects by reference -- rebuilding
     # a pydantic model here would deep-copy every container and break that.
-    run = backend.run(cab, argv, prepared, label=label or cab.name, stream=stream, pin=pin)
+    run = backend.run(
+        cab, argv, run_inputs, label=label or cab.name, stream=stream, pin=pin,
+        cwd=str(sandbox_dir) if sandbox_dir is not None else None,
+    )
     lines = run.stdout.splitlines() + run.stderr.splitlines()
     wrangled = apply_wranglers(cab.wranglers, lines)
     outputs = _fill_outputs(cab, prepared, run, wrangled)
+    if sandbox_dir is not None:
+        if run.returncode == 0:
+            harvest_outputs(cab, outputs, prepared, sandbox_dir, workspace)
+            discard_sandbox(sandbox_dir)
+        else:
+            warnings.warn(
+                f"step '{label or cab.name}' failed (returncode {run.returncode}); "
+                f"its sandbox is kept for post-mortem at {sandbox_dir}",
+                stacklevel=2,
+            )
     return StepResult(
         name=cab.name,
         returncode=run.returncode,
@@ -471,6 +521,7 @@ def _run_recipe(
     cache_path: str = "",
     stream: bool = True,
     provenance: bool = False,
+    sandbox: bool = False,
 ) -> StepResult:
     """Topological wavefront scheduler over the recipe's declared DAG.
 
@@ -519,6 +570,7 @@ def _run_recipe(
                     _recipe_cache_dir=cache_dir,
                     _recipe_stream=stream,
                     _recipe_provenance=provenance,
+                    _recipe_sandbox=sandbox,
                     _cache_path=f"{cache_path}.{ref.name}",
                     _config=config,
                     **sub_kwargs,

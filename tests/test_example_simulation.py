@@ -63,15 +63,19 @@ def test_dryrun_dag_renders():
         assert name in rendered
 
 
-def test_recipe_dispatches_with_correct_argv_shape():
+def test_recipe_dispatches_with_correct_argv_shape(monkeypatch):
     mod = load_example()
     recorder = RecordingBackend()
     # telsim/skysim have backend="native" baked onto the Cab (no docker
     # image exists for simms yet) -- that beats any backend override
     # passed to _dispatch, so intercept "native" too, not just a custom
     # name, to guarantee this test never shells out regardless of whether
-    # simms happens to be installed in the current environment.
-    register_step_backend("native", recorder)
+    # simms happens to be installed in the current environment. Shadow it
+    # via monkeypatch so the override can't leak into later tests that run
+    # real native commands (the _STEP_BACKENDS registry is module-global).
+    from shinobi.steps.dispatch import _STEP_BACKENDS
+
+    monkeypatch.setitem(_STEP_BACKENDS, "native", recorder)
     register_step_backend("recording", recorder)
 
     res = _dispatch(mod.recipe, None, backend="recording")

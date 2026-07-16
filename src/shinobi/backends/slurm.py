@@ -132,6 +132,7 @@ class SlurmBackend(Backend):
     def run(
         self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True,
         pin: bool = False,
+        cwd: str | None = None,  # accepted for the Backend protocol; the job runs in Slurm's own cwd
     ) -> BackendRun:
         """Submit a cab as a Slurm job and block until it terminates.
 
@@ -143,6 +144,8 @@ class SlurmBackend(Backend):
             label: Unused; slurm has no log-tailing/streaming support.
             stream: Unused; slurm has no log-tailing/streaming support.
             pin: Digest-pin the container image before submitting (provenance).
+            cwd: Unused; a sandboxed step degrades to an unsandboxed run here
+                (see `Backend.run`).
 
         Returns:
             A `BackendRun` with the job's exit code and captured stdout/stderr.

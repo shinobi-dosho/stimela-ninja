@@ -62,6 +62,22 @@ class LogConfig(BaseModel):
     stream: bool = True
 
 
+class SandboxConfig(BaseModel):
+    """Settings controlling per-step sandbox execution (`shinobi.sandbox`)."""
+
+    # Opt-in. When enabled, each subprocess-backed step (native cabs,
+    # containerized cabs/pysteps) runs with its cwd inside a private scratch
+    # directory; on success only declared outputs (path-typed output fields
+    # plus `Scope.harvest` globs) are moved back to the workspace and the
+    # rest is deleted. Off by default -- same opt-in shape as cache/provenance.
+    enabled: bool = False
+    # Scratch root the per-step directories are created under. Relative to
+    # the invocation cwd so it lives on the same filesystem as the workspace
+    # -- harvest moves outputs by rename, and multi-GB products must never
+    # pay a cross-filesystem copy.
+    dir: str = ".shinobi/work"
+
+
 class ProvenanceConfig(BaseModel):
     """Settings controlling reproducible-run provenance (`shinobi.provenance`)."""
 
@@ -124,6 +140,7 @@ class AppConfig(BaseSettings):
     log: LogConfig = Field(default_factory=LogConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     provenance: ProvenanceConfig = Field(default_factory=ProvenanceConfig)
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
     @classmethod
     def settings_customise_sources(

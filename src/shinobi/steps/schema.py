@@ -301,6 +301,16 @@ class Scope(BaseModel):
     # default (itself disabled by default).
     cache: bool | None = None
     cache_dir: str | None = None
+    # Per-step sandbox execution (shinobi.sandbox), same precedence shape as
+    # `cache`: explicit call-time `sandbox=` kwarg > this Scope's own value >
+    # the enclosing recipe's > `AppConfig.sandbox.enabled`.
+    sandbox: bool | None = None
+    # Extra files to rescue from the sandbox besides declared path-typed
+    # outputs: glob patterns relative to the step's cwd, `str.format`-resolved
+    # against the step's own prepared inputs (e.g. `"{prefix}-*.fits"` for a
+    # tool whose dynamically-named output family can't be enumerated as
+    # literal output fields). Only consulted when the step runs sandboxed.
+    harvest: list[str] = Field(default_factory=list)
 
     @field_serializer("inputs_model", "outputs_model")
     def _serialize_param_model(self, model: type[BaseModel]) -> dict[str, Any]:
@@ -319,11 +329,11 @@ class Scope(BaseModel):
             for name, field in model.model_fields.items()
         }
 
-    def __call__(self, *, backend: str | None = None, cache: bool | None = None, cache_dir: str | None = None, **kwargs: Any):
+    def __call__(self, *, backend: str | None = None, cache: bool | None = None, cache_dir: str | None = None, sandbox: bool | None = None, **kwargs: Any):
         """Bare execution -- no orchestration function."""
         from shinobi.steps.dispatch import _dispatch
 
-        return _dispatch(self, None, backend=backend, cache=cache, cache_dir=cache_dir, **kwargs)
+        return _dispatch(self, None, backend=backend, cache=cache, cache_dir=cache_dir, sandbox=sandbox, **kwargs)
 
     def mutability_of(self, field: str) -> Mutability:
         """Look up the declared mutability of an input field.
@@ -474,19 +484,21 @@ class StepRef(BaseModel):
         cache: bool | None = None,
         cache_dir: str | None = None,
         provenance: bool | None = None,
+        sandbox: bool | None = None,
         **kwargs: Any,
     ):
         """Standalone execution. `params` are merged under caller kwargs;
         wiring is ignored (it can only be resolved inside a running
         Recipe), so any wired-only fields must be supplied as kwargs --
         input validation catches omissions. `provenance` opts this run into
-        image pinning + manifest emission, overriding the config default.
+        image pinning + manifest emission, overriding the config default;
+        `sandbox` likewise opts into (or out of) sandboxed execution.
         """
         from shinobi.steps.dispatch import _dispatch
 
         return _dispatch(
             self.step, self.func, backend=backend, cache=cache, cache_dir=cache_dir,
-            provenance=provenance, **{**self.params, **kwargs},
+            provenance=provenance, sandbox=sandbox, **{**self.params, **kwargs},
         )
 
 

@@ -15,6 +15,14 @@ def _seed(tmp_path, monkeypatch):
     return runs, cache
 
 
+def _seed_sandboxes(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+    (work / "step-abc123").mkdir(parents=True)
+    (work / "step-abc123" / "junk.log").write_text("junk")
+    monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(work))
+    return work
+
+
 def test_clean_removes_runs_and_cache(tmp_path, monkeypatch):
     runs, cache = _seed(tmp_path, monkeypatch)
     result = CliRunner().invoke(main, ["clean"])
@@ -36,6 +44,22 @@ def test_clean_selective(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert not runs.exists()
     assert cache.exists()  # --no-cache left it alone
+
+
+def test_clean_removes_leftover_sandboxes_by_default(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch)
+    work = _seed_sandboxes(tmp_path, monkeypatch)
+    result = CliRunner().invoke(main, ["clean"])
+    assert result.exit_code == 0, result.output
+    assert not work.exists()
+
+
+def test_clean_no_sandboxes_leaves_them(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch)
+    work = _seed_sandboxes(tmp_path, monkeypatch)
+    result = CliRunner().invoke(main, ["clean", "--no-sandboxes"])
+    assert result.exit_code == 0, result.output
+    assert work.exists()
 
 
 def test_clean_missing_dirs_is_graceful(tmp_path, monkeypatch):

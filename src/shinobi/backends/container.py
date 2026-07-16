@@ -518,14 +518,15 @@ class ContainerBackend(Backend):
         )
 
     def _wrap(
-        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, pin: bool = False
+        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, pin: bool = False,
+        cwd: str | None = None,
     ) -> tuple[list[str], str | None]:
         return build_container_argv(
             self.runtime,
             cab,
             argv,
             inputs,
-            self.workdir,
+            cwd or self.workdir,
             run_as_host_user=self.run_as_host_user,
             pin=pin,
         )
@@ -539,6 +540,7 @@ class ContainerBackend(Backend):
         label: str = "",
         stream: bool = True,
         pin: bool = False,
+        cwd: str | None = None,
     ) -> BackendRun:
         """Run a cab's argv inside the configured container runtime.
 
@@ -549,11 +551,13 @@ class ContainerBackend(Backend):
             label: Label used for streamed output lines. Defaults to `cab.name`.
             stream: Whether to stream stdout/stderr live as the process runs.
             pin: Digest-pin the image before running (provenance enabled).
+            cwd: Working directory to bind-mount and run inside (e.g. a step
+                sandbox), overriding the backend's `workdir` for this run.
 
         Returns:
             The completed `BackendRun` (never raises on non-zero exit).
         """
-        full_argv, image_digest = self._wrap(cab, argv, inputs, pin=pin)
+        full_argv, image_digest = self._wrap(cab, argv, inputs, pin=pin, cwd=cwd)
         run = run_streaming(full_argv, label=label or cab.name, stream=stream)
         run.image_digest = image_digest
         run.containerized = True

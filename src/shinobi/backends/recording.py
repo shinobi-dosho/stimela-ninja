@@ -24,10 +24,15 @@ class RecordingBackend(Backend):
     def __init__(self) -> None:
         """Initialize the backend with an empty call log."""
         self.calls: list[tuple[Cab, list[str], dict[str, Any]]] = []
+        # Per-call `cwd` the dispatch layer passed (a sandbox path, or None),
+        # index-aligned with `calls` -- kept separate so the long-standing
+        # 3-tuple shape of `calls` stays unpickable-compatible for tests.
+        self.cwds: list[str | None] = []
 
     def run(
         self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True,
         pin: bool = False,  # accepted for the Backend protocol; recording backend runs nothing
+        cwd: str | None = None,
     ) -> BackendRun:
         """Record the call and return an empty, successful `BackendRun`.
 
@@ -37,9 +42,11 @@ class RecordingBackend(Backend):
             inputs: Prepared inputs dict.
             label: Unused.
             stream: Unused.
+            cwd: Recorded in `self.cwds`; nothing runs, so nothing chdirs.
 
         Returns:
             A `BackendRun` with returncode 0 and empty stdout/stderr.
         """
         self.calls.append((cab, argv, inputs))
+        self.cwds.append(cwd)
         return BackendRun(returncode=0, stdout="", stderr="")

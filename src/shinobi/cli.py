@@ -241,6 +241,15 @@ def _run_remote(
     "default -- overrides AppConfig.provenance.enabled for this invocation.",
 )
 @click.option(
+    "--sandbox/--no-sandbox",
+    "sandbox",
+    default=None,
+    help="Run each step with its cwd inside a private scratch dir (AppConfig.sandbox.dir); on "
+    "success only declared outputs are moved back to the workspace and auxiliary droppings "
+    "(tool logfiles etc.) are deleted with the scratch dir. Off by default -- overrides "
+    "AppConfig.sandbox.enabled for this invocation.",
+)
+@click.option(
     "--remote",
     "remote",
     default=None,
@@ -272,6 +281,7 @@ def run(
     no_cache: bool,
     quiet: bool,
     provenance: bool | None,
+    sandbox: bool | None,
     remote: str | None,
     add_venv: bool,
     include_paths: tuple[str, ...],
@@ -332,7 +342,8 @@ def run(
         stream_enabled = False if quiet else config.log.stream
         result = _dispatch(
             scope, func, backend=backend, cache=cache, cache_dir=cache_dir, stream=stream,
-            provenance=provenance, _config=ctx.obj, _provenance_target=target, **call_kwargs
+            provenance=provenance, sandbox=sandbox, _config=ctx.obj, _provenance_target=target,
+            **call_kwargs
         )
         # When streaming happened, every line already printed live as it
         # ran -- dumping the same captured text again here would just
@@ -459,6 +470,13 @@ def replay(ctx: click.Context, run_manifest: str, target_override: str | None, a
 @click.option("--runs/--no-runs", "runs", default=True, help="Remove run manifests (AppConfig.provenance.dir).")
 @click.option("--cache/--no-cache", "cache", default=True, help="Remove the step cache (AppConfig.cache.dir).")
 @click.option(
+    "--sandboxes/--no-sandboxes",
+    "sandboxes",
+    default=True,
+    help="Remove leftover step sandboxes (AppConfig.sandbox.dir) -- a failed sandboxed step "
+    "keeps its scratch dir for post-mortem; this is how it eventually gets cleaned up.",
+)
+@click.option(
     "--launches/--no-launches",
     "launches",
     default=False,
@@ -476,15 +494,15 @@ def replay(ctx: click.Context, run_manifest: str, target_override: str | None, a
 )
 @click.option("--dry-run", "dry_run", is_flag=True, help="Show what would be removed without deleting.")
 @click.pass_context
-def clean(ctx: click.Context, runs: bool, cache: bool, launches: bool, workdir: str | None, dry_run: bool) -> None:
-    """Remove shinobi runtime artifacts: run manifests, the step cache, and
-    (opt-in) detached-run launch dirs.
+def clean(ctx: click.Context, runs: bool, cache: bool, sandboxes: bool, launches: bool, workdir: str | None, dry_run: bool) -> None:
+    """Remove shinobi runtime artifacts: run manifests, the step cache,
+    leftover step sandboxes, and (opt-in) detached-run launch dirs.
 
-    Run manifests and the step cache come from the active config
-    (AppConfig.provenance.dir and AppConfig.cache.dir) and are removed by
-    default. Launch dirs (.shinobi/<recipe>/, written by `ninja compile
-    --submit` / `ninja run --remote`) are opt-in via --launches. Use
-    --dry-run to preview.
+    Run manifests, the step cache, and leftover sandboxes come from the
+    active config (AppConfig.provenance.dir, AppConfig.cache.dir, and
+    AppConfig.sandbox.dir) and are removed by default. Launch dirs
+    (.shinobi/<recipe>/, written by `ninja compile --submit` / `ninja run
+    --remote`) are opt-in via --launches. Use --dry-run to preview.
     """
     config = ctx.obj or AppConfig.load()
     targets: list[tuple[str, Path]] = []
@@ -492,6 +510,8 @@ def clean(ctx: click.Context, runs: bool, cache: bool, launches: bool, workdir: 
         targets.append(("run manifests", Path(config.provenance.dir)))
     if cache:
         targets.append(("step cache", Path(config.cache.dir)))
+    if sandboxes:
+        targets.append(("sandboxes", Path(config.sandbox.dir)))
     if launches:
         base = Path(workdir or os.getcwd())
         found = [p.parent for p in sorted(base.glob(".shinobi/*/handle.json"))]
@@ -499,8 +519,8 @@ def clean(ctx: click.Context, runs: bool, cache: bool, launches: bool, workdir: 
             targets.extend((f"launch ({p.name})", p) for p in found)
         else:
             click.echo(f"launches: nothing at {base / '.shinobi'}/*/handle.json")
-    if not runs and not cache and not launches:
-        raise click.ClickException("nothing selected: pass --runs/--cache/--launches")
+    if not runs and not cache and not sandboxes and not launches:
+        raise click.ClickException("nothing selected: pass --runs/--cache/--sandboxes/--launches")
 
     for label, path in targets:
         if not path.exists():
