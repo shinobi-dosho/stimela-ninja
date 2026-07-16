@@ -470,7 +470,8 @@ def _run_cab(
         run_inputs = absolutize_path_inputs(cab, prepared, workspace)
     argv = build_argv(cab, run_inputs)
     backend = get_step_backend(backend_name)
-    logger.debug("step %s: backend=%s argv: %s", label or cab.name, backend_name, " ".join(argv))
+    import shlex
+    logger.debug("step %s: backend=%s argv: %s", label or cab.name, backend_name, shlex.join(argv))
     # The backend gets the prepared dict (not a rebuilt model) so MUTABLE
     # fields reach it as the caller's own objects by reference -- rebuilding
     # a pydantic model here would deep-copy every container and break that.
