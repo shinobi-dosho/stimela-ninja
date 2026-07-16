@@ -64,6 +64,7 @@ reinventing.
    concepts/loaders
    concepts/config
    concepts/provenance
+   concepts/sandbox
 
 .. toctree::
    :maxdepth: 2

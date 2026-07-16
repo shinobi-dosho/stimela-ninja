@@ -136,6 +136,7 @@ class KubernetesBackend(Backend):
     def run(
         self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True,
         pin: bool = False,  # accepted for the Backend protocol; not yet wired for k8s
+        cwd: str | None = None,  # accepted for the Backend protocol; the pod runs in its image's cwd
     ) -> BackendRun:
         """Run a cab as a Kubernetes Job and block until it completes.
 
@@ -145,6 +146,8 @@ class KubernetesBackend(Backend):
             inputs: Prepared inputs dict used to derive hostPath volume mounts.
             label: Unused; kubernetes has no log-tailing/streaming support.
             stream: Unused; kubernetes has no log-tailing/streaming support.
+            cwd: Unused; a sandboxed step degrades to an unsandboxed run here
+                (see `Backend.run`).
 
         Returns:
             A `BackendRun` with the pod's exit code and captured stdout.

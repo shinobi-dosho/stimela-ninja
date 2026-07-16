@@ -62,6 +62,7 @@ import json
 import os
 import pickle
 import tempfile
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, get_type_hints
 
@@ -70,6 +71,7 @@ from pydantic import BaseModel, create_model
 from shinobi.backends._stream import run_streaming
 from shinobi.config import AppConfig
 from shinobi.results import StepResult
+from shinobi.sandbox import absolutize_path_inputs, create_sandbox, discard_sandbox, harvest_outputs
 from shinobi.steps.schema import Scope, StepRef
 
 if TYPE_CHECKING:
@@ -321,12 +323,23 @@ def _run_pystep_container(
     # stay Paths inside the container.
     prepared = ctx.prepare_inputs()
 
+    # Sandboxed run (shinobi.sandbox): the container's workdir is a private
+    # scratch dir, with path-typed inputs anchored back at the workspace --
+    # the containerized-cab counterpart in `dispatch._run_cab` documents the
+    # scheme. `prepared` (the caller's original values) is kept for harvest.
+    workspace = os.getcwd()
+    sandbox_dir: Path | None = None
+    run_prepared = prepared
+    if ctx._sandbox_root is not None:
+        sandbox_dir = create_sandbox(ctx._sandbox_root, ctx._cache_path or scope.name)
+        run_prepared = absolutize_path_inputs(scope, prepared, Path(workspace))
+
     with tempfile.TemporaryDirectory(prefix="shinobi_pystep_") as tmpdir:
         io_dir = Path(tmpdir) / "io"
         io_dir.mkdir()
 
         inputs_path = io_dir / "inputs.pkl"
-        inputs_path.write_bytes(pickle.dumps(prepared, protocol=4))
+        inputs_path.write_bytes(pickle.dumps(run_prepared, protocol=4))
 
         outputs_path = io_dir / "outputs.json"
 
@@ -344,7 +357,7 @@ def _run_pystep_container(
             )
         )
 
-        workdir = os.getcwd()
+        workdir = str(sandbox_dir) if sandbox_dir is not None else workspace
         # Mount only the target file's own directory (identity bind), not the
         # whole package root -- the runner loads the file by path and never
         # puts it on sys.path, so nothing else in the tree is read.
@@ -356,7 +369,7 @@ def _run_pystep_container(
             backend_name,
             ctx.scope,
             inner_argv,
-            prepared,
+            run_prepared,
             workdir,
             extra_dirs=extra_dirs,
             run_as_host_user=AppConfig.load().backend.run_as_host_user,
@@ -367,6 +380,12 @@ def _run_pystep_container(
         run.image_digest = image_digest
 
         if run.returncode != 0:
+            if sandbox_dir is not None:
+                warnings.warn(
+                    f"pystep '{scope.name}' failed (returncode {run.returncode}); "
+                    f"its sandbox is kept for post-mortem at {sandbox_dir}",
+                    stacklevel=2,
+                )
             # Best-effort outputs on the failure path: try a full
             # construction (fills defaults), fall back to model_construct
             # (skips validation -- required fields stay unset). Both are
@@ -418,6 +437,10 @@ def _run_pystep_container(
                     f"{type(output_data).__name__!r} from the container"
                 )
             outputs = outputs_model(**output_data)
+
+        if sandbox_dir is not None:
+            harvest_outputs(scope, outputs, prepared, sandbox_dir, Path(workspace))
+            discard_sandbox(sandbox_dir)
 
         return StepResult(
             name=scope.name,
@@ -492,6 +515,8 @@ def pystep(
     info: str | None = None,
     image: str | None = None,
     backend: str | None = None,
+    sandbox: bool | None = None,
+    harvest: list[str] | None = None,
     **params: Any,
 ) -> Callable[[Callable], StepRef]:
     """Decorate (or directly call on an existing function, matching
@@ -507,6 +532,12 @@ def pystep(
     `backend` sets the default backend for this step (same as on any
     `Scope`). With `image`, this is typically a container backend name
     like ``"docker"`` or ``"apptainer"``.
+
+    `sandbox`/`harvest` opt this step into sandboxed execution and declare
+    extra keep-globs (see `shinobi.sandbox` and the fields on `Scope`).
+    Sandboxing only applies to the container path -- an in-process run
+    ignores it (`os.chdir` is process-global, and recipes run steps on a
+    thread pool), executing in the caller's cwd as always.
 
     `**params` are per-call constants, same as `@shinobi.step`.
     """
@@ -539,6 +570,8 @@ def pystep(
             outputs_model=outputs_model,
             image=image,
             backend=backend,
+            sandbox=sandbox,
+            harvest=harvest or [],
         )
         return StepRef(name=step_name, step=scope, func=adapter, params=params)
 

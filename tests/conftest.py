@@ -11,6 +11,15 @@ def _isolate_run_manifests(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_sandboxes(tmp_path_factory, monkeypatch):
+    # Step sandboxes (and `ninja clean`'s default --sandboxes target) resolve
+    # AppConfig.sandbox.dir, which is cwd-relative by default; point it at a
+    # throwaway dir so no test can ever create or delete .shinobi/work in the
+    # repo. Tests that care about the location override this env var.
+    monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(tmp_path_factory.mktemp("work")))
+
+
+@pytest.fixture(autouse=True)
 def _offline_digest_resolution(monkeypatch):
     # Image-digest resolution shells out to a registry/daemon. Neutralize all
     # resolvers by default so the suite never touches the network (steps run
