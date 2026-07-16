@@ -6,7 +6,7 @@ global options followed by a subcommand:
 
 .. code-block:: console
 
-    $ ninja [--config FILE] [--backend NAME] COMMAND ...
+    $ ninja [--config FILE] [--backend NAME] [--log-file NAME] [--log-dir DIR] [--log-level LEVEL] COMMAND ...
 
 Global options
 --------------
@@ -17,6 +17,19 @@ Global options
 
 ``--backend NAME``
     Override the default backend for this invocation.
+
+``--log-file NAME``
+    Write a run log to this file, created under the log directory. File
+    logging is off unless a filename is set here or via
+    ``AppConfig.log.file``. See :doc:`concepts/config` for what gets logged.
+
+``--log-dir DIR``
+    Directory log files are written to (default: the current directory).
+    Overrides ``AppConfig.log.dir``.
+
+``--log-level LEVEL``
+    Run-log verbosity: one of ``DEBUG``, ``INFO``, ``WARNING``, ``ERROR``,
+    ``CRITICAL`` (case-insensitive). Overrides ``AppConfig.log.level``.
 
 Targets
 -------
