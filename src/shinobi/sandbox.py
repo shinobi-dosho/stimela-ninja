@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -109,12 +110,25 @@ def _relative_targets(scope: Scope, outputs: Any, prepared: dict[str, Any], sand
             raise ParameterError(
                 f"'{scope.name}' harvest pattern {pattern!r} references unknown input {exc}"
             ) from exc
-        if Path(resolved).is_absolute() or ".." in Path(resolved).parts:
-            raise ParameterError(
-                f"'{scope.name}' harvest pattern {pattern!r} must be a relative "
-                "glob without '..' -- harvest only rescues files from inside "
-                "the step's own sandbox"
+        # A pattern that *resolves* absolute (e.g. `"{prefix}-*"` with an
+        # absolute prefix) is skipped, same as an absolute declared output:
+        # the tool wrote those files straight to their absolute destination,
+        # so there is nothing inside the sandbox to rescue -- raising here
+        # would fail a successful run on ordinary input. A `..` escape can't
+        # be harvested either (it points outside the sandbox), but unlike the
+        # absolute case the tool's relative writes landed *next to* the
+        # sandbox, not at their intended destination -- warn so the stranded
+        # files can be found.
+        if Path(resolved).is_absolute():
+            continue
+        if ".." in Path(resolved).parts:
+            warnings.warn(
+                f"'{scope.name}' harvest pattern {pattern!r} resolved to {resolved!r}, "
+                "which escapes the sandbox -- skipped; any files the tool wrote "
+                "there were left outside both the sandbox and the workspace",
+                stacklevel=3,
             )
+            continue
         for match in sandbox_dir.glob(resolved):
             targets.append(str(match.relative_to(sandbox_dir)))
     return targets

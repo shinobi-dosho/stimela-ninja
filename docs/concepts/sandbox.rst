@@ -63,7 +63,10 @@ Two declarations feed the harvest allowlist:
   to its declared destination;
 * the scope's ``harvest`` globs, for dynamically-named output families that
   can't be enumerated as literal fields. Patterns are resolved against the
-  step's own inputs and must stay inside the sandbox (relative, no ``..``):
+  step's own inputs; a pattern that resolves absolute is skipped (the tool
+  wrote those files straight to their absolute destination, same as an
+  absolute declared output), and one that resolves to a ``..`` escape is
+  skipped with a warning:
 
 .. code-block:: python
 
