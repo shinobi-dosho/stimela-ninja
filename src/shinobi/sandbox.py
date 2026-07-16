@@ -122,10 +122,10 @@ def _relative_targets(scope: Scope, outputs: Any, prepared: dict[str, Any], sand
         if Path(resolved).is_absolute():
             continue
         if ".." in Path(resolved).parts:
+            escaped = (sandbox_dir / resolved).resolve()
             warnings.warn(
-                f"'{scope.name}' harvest pattern {pattern!r} resolved to {resolved!r}, "
-                "which escapes the sandbox -- skipped; any files the tool wrote "
-                "there were left outside both the sandbox and the workspace",
+                f"'{scope.name}' harvest pattern {pattern!r} resolved to {resolved!r} (-> {escaped}), "
+                "which escapes the sandbox -- skipped; any matching files were left outside the sandbox",
                 stacklevel=3,
             )
             continue
