@@ -34,6 +34,9 @@ Settings
     provenance:
       enabled: false              # image pinning + run manifests, off by default
       dir: ".shinobi/runs"        # where run manifests are written
+    sandbox:
+      enabled: false              # per-step sandbox execution, off by default
+      dir: ".shinobi/work"        # scratch root for per-step sandbox dirs
 
 ``execution.max_workers`` defaults to ``1``: parallelism is opt-in. At ``1``
 the scheduler reproduces exact declaration-order execution and no ``MUTABLE``
@@ -80,6 +83,13 @@ are digest-pinned before running (pin-then-run) and a run manifest is written
 per top-level run under ``provenance.dir``. It's off by default because
 pinning changes how containers execute. ``ninja run --provenance``/
 ``--no-provenance`` override this per invocation. See :doc:`provenance`.
+
+``sandbox.enabled`` turns on per-step sandbox execution: each
+subprocess-backed step runs with its cwd inside a private scratch directory
+under ``sandbox.dir``, and on success only declared outputs are moved back to
+the workspace -- auxiliary droppings (tool logfiles etc.) are deleted with the
+scratch dir. It's off by default. ``ninja run --sandbox``/``--no-sandbox``
+override this per invocation. See :doc:`sandbox`.
 
 Config file location
 ---------------------
