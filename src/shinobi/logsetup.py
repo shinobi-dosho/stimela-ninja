@@ -48,9 +48,8 @@ def setup_file_logging(log: LogConfig) -> Path | None:
     if not log.file:
         return None
 
-    log_dir = Path(log.dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    path = log_dir / log.file
+    path = Path(log.dir) / log.file
+    path.parent.mkdir(parents=True, exist_ok=True)
     handler = logging.FileHandler(path)
     handler.setLevel(log.level)
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
