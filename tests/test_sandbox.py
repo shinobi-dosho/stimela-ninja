@@ -130,12 +130,22 @@ def test_harvest_moves_directory_outputs(tmp_path):
     assert (workspace / "gains.tbl/data.bin").read_text() == "gains.tbl/data.bin"
 
 
-@pytest.mark.parametrize("pattern", ["../escape-*", "/abs/*"])
-def test_harvest_rejects_escaping_patterns(tmp_path, pattern):
-    scope = make_scope(harvest=[pattern])
+def test_harvest_skips_absolutely_resolved_patterns(tmp_path):
+    # `"{prefix}-*"` with an absolute prefix: the tool wrote straight to the
+    # absolute destination, so there's nothing in the sandbox to rescue --
+    # a successful run must not fail on ordinary input.
+    scope = make_scope(harvest=["{prefix}-*"])
     sandbox = _sandbox_with(tmp_path)
-    with pytest.raises(ParameterError, match="relative glob"):
-        harvest_outputs(scope, scope.outputs_model(), {}, sandbox, tmp_path)
+    moved = harvest_outputs(scope, scope.outputs_model(), {"prefix": "/data/img"}, sandbox, tmp_path)
+    assert moved == []
+
+
+def test_harvest_warns_and_skips_dotdot_escapes(tmp_path):
+    scope = make_scope(harvest=["../escape-*"])
+    sandbox = _sandbox_with(tmp_path)
+    with pytest.warns(UserWarning, match="escapes the sandbox"):
+        moved = harvest_outputs(scope, scope.outputs_model(), {}, sandbox, tmp_path)
+    assert moved == []
 
 
 def test_harvest_rejects_pattern_with_unknown_input(tmp_path):
