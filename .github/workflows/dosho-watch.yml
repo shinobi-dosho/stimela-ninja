@@ -2,7 +2,8 @@ name: dosho watch
 
 # Daily monitor of shinobi-dosho/dosho main branch. Opens an issue here when
 # there are new commits, tags, or releases, classified by conventional-commit
-# markers. 00:00 SAST == 22:00 UTC.
+# markers, and runs the CI tests (--group dev) against dosho@main to surface
+# obvious breakage. 00:00 SAST == 22:00 UTC.
 on:
   schedule:
     - cron: "0 22 * * *"
@@ -24,7 +25,12 @@ jobs:
       - name: Clone dosho
         run: git clone --filter=blob:none https://github.com/shinobi-dosho/dosho dosho
 
-      - name: Build digest and open issue
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build digest, run CI tests, open issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash stimela-ninja/.github/scripts/dosho-watch.sh
