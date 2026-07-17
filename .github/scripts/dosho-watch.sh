@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Heuristic fallback for the dosho-watch workflow. Runs when the Claude
-# analysis step fails (no credits, rate limit, outage). Produces a digest
-# issue from conventional-commit markers only — no impact analysis — and
-# keeps the same "Last checked dosho commit:" marker contract so the next
-# Claude run picks up from the right place.
+# Daily dosho-watch digest. Classifies new commits on dosho main by
+# conventional-commit markers (type!: subjects, BREAKING CHANGE footers,
+# feat:) plus new tags/releases, and opens an issue on stimela-ninja.
+# The issue body ends with a "Last checked dosho commit: <sha>" marker
+# that the next run reads to know where to resume.
 #
 # Expects: cwd containing ./dosho (clone of shinobi-dosho/dosho, main
 # checked out) and GH_TOKEN with issues:write on stimela-ninja.
@@ -51,9 +51,9 @@ fi
 
 body="$RUNNER_TEMP/dosho-watch-body.md"
 {
-    echo "Fallback digest: the Claude analysis step failed, so this is a" \
-         "conventional-commit classification only — impact on stimela-ninja" \
-         "has NOT been assessed. Review the commits below manually."
+    echo "Automated digest of new activity on shinobi-dosho/dosho main," \
+         "classified by conventional-commit markers. Impact on stimela-ninja" \
+         "has not been assessed — review the commits below."
     echo
     section() {
         [[ -z "$2" ]] && return 0
@@ -77,5 +77,5 @@ n_commits=$(printf '%s\n' "$subjects" | grep -c . || true)
 gh label create dosho-watch --repo "$REPO" \
     --color D93F0B --description "automated dosho monitoring" 2>/dev/null || true
 gh issue create --repo "$REPO" --label dosho-watch \
-    --title "dosho watch $(date -u +%F): $n_commits new commits (fallback digest)" \
+    --title "dosho watch $(date -u +%F): $n_commits new commits" \
     --body-file "$body"

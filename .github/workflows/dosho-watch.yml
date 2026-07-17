@@ -1,17 +1,12 @@
 name: dosho watch
 
 # Daily monitor of shinobi-dosho/dosho main branch. Opens an issue here when
-# there are breaking changes, features we should adapt to, or new releases.
-# 00:00 SAST == 22:00 UTC.
+# there are new commits, tags, or releases, classified by conventional-commit
+# markers. 00:00 SAST == 22:00 UTC.
 on:
   schedule:
     - cron: "0 22 * * *"
   workflow_dispatch:
-    inputs:
-      force_fallback:
-        description: "Skip Claude and run the heuristic fallback digest"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -29,81 +24,7 @@ jobs:
       - name: Clone dosho
         run: git clone --filter=blob:none https://github.com/shinobi-dosho/dosho dosho
 
-      - name: Analyze dosho changes and open issue
-        id: claude
-        if: ${{ !inputs.force_fallback }}
-        # If this fails (no API credits, rate limit, outage), the heuristic
-        # fallback step below still produces a digest issue.
-        continue-on-error: true
-        uses: anthropics/claude-code-action@v1
+      - name: Build digest and open issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_args: |
-            --model claude-sonnet-5
-            --allowedTools "Bash(gh:*),Bash(git:*),Read,Grep,Glob"
-          prompt: |
-            You are the daily dosho watcher for shinobi-dosho/stimela-ninja.
-            The workspace contains two checkouts: ./stimela-ninja (this repo)
-            and ./dosho (a fresh clone of shinobi-dosho/dosho, branch main).
-
-            1. Find the last checked dosho commit. Run:
-                 gh issue list --repo shinobi-dosho/stimela-ninja \
-                   --label dosho-watch --state all --limit 1 --json body
-               and extract the SHA from the line
-               "Last checked dosho commit: <sha>". If no such issue exists,
-               treat commits from the last 7 days as new (bootstrap).
-
-            2. In ./dosho, list new commits on main since that SHA
-               (git log <sha>..HEAD, or --since for the bootstrap case).
-               Inspect the actual diffs of the interesting ones
-               (git show <commit>), not just the messages.
-
-            3. Check for new releases and tags on shinobi-dosho/dosho created
-               since the last checked commit's date:
-                 gh api repos/shinobi-dosho/dosho/releases
-                 gh api repos/shinobi-dosho/dosho/tags
-
-            4. Classify what you found, from stimela-ninja's point of view:
-               - BREAKING: removed/renamed cabs or parameters, changed
-                 defaults or schemas, image tag changes — anything that would
-                 break an existing stimela-ninja recipe or config that uses
-                 dosho cabs. Grep ./stimela-ninja for usage of the affected
-                 names to confirm real impact and cite the affected files.
-               - ADAPT: new features, new cabs, or new parameters that
-                 stimela-ninja should adopt or could benefit from.
-               - RELEASES: any new release or tag, with its notes.
-               - ROUTINE: everything else (docs, CI, refactors) — one line
-                 each, no analysis needed.
-
-            5. Decide the outcome:
-               - If there are NO new commits and NO new releases, print
-                 "dosho unchanged since last check" and stop. Do not open
-                 an issue.
-               - Otherwise open ONE issue on shinobi-dosho/stimela-ninja.
-                 First ensure the label exists (ignore the error if it does):
-                   gh label create dosho-watch --repo shinobi-dosho/stimela-ninja \
-                     --color D93F0B --description "automated dosho monitoring" || true
-                 Then create the issue with:
-                 - title: "dosho watch YYYY-MM-DD: <one-line gist>" (today's
-                   date; gist like "2 breaking changes, new release v0.3.0"
-                   or "routine changes only")
-                 - label: dosho-watch
-                 - body sections in order: Breaking changes, Needs
-                   adaptation, New releases, Routine — omit empty sections.
-                   For breaking/adapt items include the dosho commit SHA and
-                   the stimela-ninja files affected. Keep it concise and
-                   actionable; write for a maintainer deciding what to do
-                   next, and mark anything you are unsure about as such
-                   rather than overstating impact.
-                 - final line of the body, exactly:
-                   "Last checked dosho commit: <current HEAD sha of ./dosho>"
-                   (this is the marker step 1 reads tomorrow — never omit it)
-
-      - name: Fallback heuristic digest
-        if: ${{ steps.claude.outcome == 'failure' || inputs.force_fallback }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash stimela-ninja/.github/scripts/dosho-watch-fallback.sh
+        run: bash stimela-ninja/.github/scripts/dosho-watch.sh
