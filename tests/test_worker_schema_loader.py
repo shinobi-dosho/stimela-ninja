@@ -55,6 +55,18 @@ def test_include_and_use_produce_merged_base_and_ms_base_fields():
     assert "output" in outputs
 
 
+def test_writable_false_is_carried_onto_the_field_json_schema_extra():
+    # `input` (Directory, writable: false) in caracal_base.yaml -> the container
+    # backend mounts it read-only. writable: true / unmarked fields carry nothing.
+    from shinobi.steps.schema import readonly_path_fields
+
+    schema = load_worker_schema(FIXTURES / "obsconf_schema.yaml")
+    inputs = schema.inputs_model.model_fields
+    assert inputs["input"].json_schema_extra == {"writable": False}
+    assert inputs["msdir"].json_schema_extra == {"writable": True}
+    assert readonly_path_fields(schema.inputs_model) == {"input"}
+
+
 def test_use_missing_path_raises_config_load_error(tmp_path):
     bad = tmp_path / "bad.yaml"
     bad.write_text("name: bad\ninputs:\n  _use: does.not.exist\n")

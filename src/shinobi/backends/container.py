@@ -11,6 +11,10 @@ directory bind-mounted at the same path inside the container, so the tool
 sees the same paths the caller used. This is why Backend.run() is handed
 the validated inputs model, not just argv -- argv is just strings by that
 point, with no memory of which of them are paths.
+
+A directory contributed *only* by input fields marked ``writable: false`` in
+the schema (``readonly_path_fields``) is bind-mounted read-only (``:ro``); any
+writable contributor makes the shared mount read-write. See ``bind_dir_modes``.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ from shinobi.config import AppConfig
 from shinobi.exceptions import BackendError
 from shinobi.loaders._modelgen import is_file_dtype
 from shinobi.results import BackendRun
-from shinobi.steps.schema import Cab, Scope, path_fields
+from shinobi.steps.schema import Cab, Scope, path_fields, readonly_path_fields
 
 _DOCKER_LIKE = {"docker", "podman"}
 _APPTAINER_LIKE = {"apptainer"}
@@ -368,21 +372,30 @@ def _pin_image(runtime: str, image: str) -> tuple[str, str | None]:
     return ref, None
 
 
-def bind_dirs(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[str]:
-    """Parent directories of every File/MS-valued input, plus the working
-    directory itself. Order-preserving, de-duplicated.
+def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[tuple[str, bool]]:
+    """`(directory, writable)` for every bind mount: the parent directory of
+    each File/MS-valued input, plus the working directory itself (always
+    writable). Order-preserving, de-duplicated.
 
-    Covers both declared fields (via `path_fields`, which inspects the
-    type annotation) and dynamically-named `ParamPattern` inputs (which
-    have no declared field/annotation -- `cab.match_pattern` and
-    `ParamMeta.dtype` are the only way to tell those are file-like).
-    Pattern-matched inputs are only checked for `Cab` scopes (which have
-    `match_pattern`); bare `Scope` instances (e.g. from `@shinobi.pystep`)
-    have fully-typed signatures so all inputs are declared.
+    A directory is read-only (`writable=False`) only when *every* input that
+    contributed it is a path field explicitly marked `writable: false` in its
+    schema (`readonly_path_fields`). Any writable contributor -- including the
+    default for an unmarked field, or a Python-typed pystep input, or a
+    dynamically-named `ParamPattern` cab input (which carries no `writable`
+    metadata) -- makes the shared directory read-write. This means an in-place
+    MS in a writable `msdir` stays writable even if a read-only input happens to
+    resolve to the same parent.
+
+    Covers both declared fields (via `path_fields`, which inspects the type
+    annotation) and dynamically-named `ParamPattern` inputs. Pattern-matched
+    inputs are only checked for `Cab` scopes (which have `match_pattern`); bare
+    `Scope` instances (e.g. from `@shinobi.pystep`) have fully-typed signatures
+    so all inputs are declared.
     """
-    dirs = [workdir]
-    seen = {workdir}
+    modes: dict[str, bool] = {workdir: True}  # workdir is always writable
+    order: list[str] = [workdir]
     declared = path_fields(scope.inputs_model)
+    readonly = readonly_path_fields(scope.inputs_model)
     # Only Cabs carry dynamically-named `ParamPattern` inputs; bare Scopes
     # (e.g. from `@shinobi.pystep`) are fully typed, so every input is
     # already in `declared`.
@@ -395,6 +408,9 @@ def bind_dirs(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[str]:
             meta = match_pattern(name)
             if meta is None or meta.dtype is None or not is_file_dtype(meta.dtype):
                 continue
+            writable = True  # dynamic inputs carry no writable metadata
+        else:
+            writable = name not in readonly
         if value is None:
             continue
         for item in value if isinstance(value, (list, tuple)) else [value]:
@@ -402,11 +418,22 @@ def bind_dirs(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[str]:
             if not path.is_absolute():
                 path = Path(workdir) / path
             parent = str(path.parent)
-            if parent not in seen:
-                seen.add(parent)
-                dirs.append(parent)
+            if parent not in modes:
+                modes[parent] = writable
+                order.append(parent)
+            else:
+                modes[parent] = modes[parent] or writable  # writable wins
 
-    return dirs
+    return [(d, modes[d]) for d in order]
+
+
+def bind_dirs(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[str]:
+    """Parent directories of every File/MS-valued input, plus the working
+    directory itself. Order-preserving, de-duplicated. See `bind_dir_modes`
+    for the read-only/read-write classification (this drops it, returning just
+    the directories -- used by callers that mount everything read-write, e.g.
+    the Kubernetes backend)."""
+    return [d for d, _ in bind_dir_modes(scope, inputs, workdir)]
 
 
 def build_container_argv(
@@ -465,23 +492,23 @@ def build_container_argv(
         run_ref = image if runtime in _DOCKER_LIKE else _apptainer_image_uri(image)
         digest = None
 
-    dirs = bind_dirs(scope, inputs, workdir)
+    dir_modes = bind_dir_modes(scope, inputs, workdir)
     if extra_dirs:
-        seen = set(dirs)
+        seen = {d for d, _ in dir_modes}
         for d in extra_dirs:
             if d not in seen:
                 seen.add(d)
-                dirs.append(d)
+                dir_modes.append((d, True))  # extra dirs (runner/module) mount read-write
 
     if runtime in _DOCKER_LIKE:
-        mounts = [flag for d in dirs for flag in ("-v", f"{d}:{d}")]
+        mounts = [flag for d, w in dir_modes for flag in ("-v", f"{d}:{d}" if w else f"{d}:{d}:ro")]
         user_flags: list[str] = []
         if run_as_host_user:
             user_flags = ["--user", f"{os.getuid()}:{os.getgid()}", "-e", f"HOME={workdir}"]
         return [runtime, "run", "--rm", *user_flags, *mounts, "-w", workdir, run_ref, *argv], digest
 
     # apptainer
-    binds = [flag for d in dirs for flag in ("--bind", f"{d}:{d}")]
+    binds = [flag for d, w in dir_modes for flag in ("--bind", f"{d}:{d}" if w else f"{d}:{d}:ro")]
     return [runtime, "exec", *binds, "--pwd", workdir, run_ref, *argv], digest
 
 

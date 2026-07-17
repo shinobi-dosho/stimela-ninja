@@ -33,9 +33,11 @@ Dialect, as actually used by caracal2 (see its `caracal/schemas/`):
   into the dict it appears in, with that dict's own sibling keys winning
   -- same convention as `loaders.cultcargo`, extended to accept a list.
 
-Deliberately NOT modelled (v1 drops these silently -- add only when a real
-worker needs them): `writable`/`must_exist`/`path_policies` (seen in
-caracal2's `caracal_base.yaml`, path-behaviour hints with no consumer yet).
+`writable` (seen in caracal2's `caracal_base.yaml`) is carried onto the
+generated field's `json_schema_extra`: a `writable: false` directory input is
+bind-mounted read-only by the container backend (see `_leaf_field` and
+`backends.container.bind_dirs`). `must_exist`/`path_policies` are still dropped
+(path-behaviour hints with no consumer yet).
 """
 
 from __future__ import annotations
@@ -211,5 +213,11 @@ def _leaf_field(value: dict[str, Any]) -> tuple[Any, Any]:
     required = bool(value.get("required", False)) and implicit is None
     default = value.get("default")
 
+    # `writable` is carried onto the field (via json_schema_extra) so the
+    # container backend can mount a `writable: false` directory input read-only
+    # (`readonly_path_fields` + `bind_dirs`). It's the one path-behaviour hint
+    # with a consumer; `must_exist`/`path_policies` are still dropped.
+    extra = {"writable": bool(value["writable"])} if "writable" in value else None
+
     annotation, field_default = required_field_spec(py_type, required, default)
-    return (annotation, Field(field_default, description=value.get("info")))
+    return (annotation, Field(field_default, description=value.get("info"), json_schema_extra=extra))

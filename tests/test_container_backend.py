@@ -151,6 +151,73 @@ def test_apptainer_uses_bind_and_exec():
     assert argv[pwd_index + 2] == "docker://tool:latest"
 
 
+# ---- read-only bind mounts (writable: false) --------------------------------
+
+from pathlib import Path  # noqa: E402
+from typing import Optional  # noqa: E402
+
+from pydantic import Field, create_model  # noqa: E402
+
+from shinobi.backends.container import bind_dir_modes  # noqa: E402
+
+
+def make_cab_with_paths(ro_fields=(), rw_fields=(), image="tool:latest") -> Cab:
+    """A Cab whose inputs_model has Path fields, some marked writable: false
+    (as the YAML loader would via json_schema_extra)."""
+    defs: dict = {}
+    for f in ro_fields:
+        defs[f] = (Optional[Path], Field(None, json_schema_extra={"writable": False}))
+    for f in rw_fields:
+        defs[f] = (Optional[Path], Field(None, json_schema_extra={"writable": True}))
+    return Cab(name="tool", command="tool", image=image, inputs_model=create_model("In", **defs), outputs_model=OUT)
+
+
+def test_docker_mounts_writable_false_directory_read_only():
+    cab = make_cab_with_paths(ro_fields=["raw_ms"])
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(
+        cab, ["tool", "--raw-ms", "/rawdata/obs.ms"], {"raw_ms": "/rawdata/obs.ms"}
+    )
+    mounts = {argv[i + 1] for i, a in enumerate(argv) if a == "-v"}
+    assert mounts == {"/work:/work", "/rawdata:/rawdata:ro"}  # workdir stays writable
+
+
+def test_apptainer_mounts_writable_false_directory_read_only():
+    cab = make_cab_with_paths(ro_fields=["raw_ms"])
+    argv, _ = ApptainerBackend(workdir="/work")._wrap(
+        cab, ["tool", "--raw-ms", "/rawdata/obs.ms"], {"raw_ms": "/rawdata/obs.ms"}
+    )
+    binds = {argv[i + 1] for i, a in enumerate(argv) if a == "--bind"}
+    assert binds == {"/work:/work", "/rawdata:/rawdata:ro"}
+
+
+def test_shared_parent_stays_writable_when_any_contributor_is_writable():
+    # a read-only and a writable input resolving to the same parent -> writable
+    # wins (an in-place MS in msdir must stay writable).
+    cab = make_cab_with_paths(ro_fields=["raw"], rw_fields=["work_ms"])
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(
+        cab, ["tool"], {"raw": "/shared/a.ms", "work_ms": "/shared/b.ms"}
+    )
+    mounts = {argv[i + 1] for i, a in enumerate(argv) if a == "-v"}
+    assert "/shared:/shared" in mounts
+    assert "/shared:/shared:ro" not in mounts
+
+
+def test_unmarked_path_field_mounts_read_write():
+    # no writable marker -> writable (the default; preserves prior behaviour).
+    cab = make_cab({"restored_image": ("File", False, None)})
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(
+        cab, ["tool", "--restored-image", "/data/img.fits"], {"restored_image": "/data/img.fits"}
+    )
+    mounts = {argv[i + 1] for i, a in enumerate(argv) if a == "-v"}
+    assert mounts == {"/work:/work", "/data:/data"}
+
+
+def test_bind_dir_modes_classifies_read_only_and_workdir():
+    cab = make_cab_with_paths(ro_fields=["raw_ms"], rw_fields=["out_ms"])
+    modes = dict(bind_dir_modes(cab, {"raw_ms": "/rawdata/obs.ms", "out_ms": "/msdir/obs.ms"}, "/work"))
+    assert modes == {"/work": True, "/rawdata": False, "/msdir": True}
+
+
 def test_apptainer_image_uri_scheme_handling():
     from shinobi.backends.container import _apptainer_image_uri
 
