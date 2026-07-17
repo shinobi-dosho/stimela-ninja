@@ -10,6 +10,15 @@ named output families that can't be enumerated as literal fields). An
 undeclared output simply doesn't survive -- "fully-defined I/O" enforced by
 construction rather than by a validator.
 
+The same declarations drive setup: parent directories of relative declared
+outputs (and the literal directory prefix of harvest patterns) are
+pre-created inside the fresh sandbox before the run
+(`prepare_output_parents`), because tools generally don't ``mkdir -p``
+their own output stems and would otherwise crash on e.g. ``plots/gain.html``.
+The ones the tool never used are removed again before harvesting
+(`prune_unused_parents`), preserving harvest's invariant that everything
+present in the sandbox was written by the tool.
+
 Boundaries of the mechanism, by design:
 
 * Inputs are never copied in. Path-typed inputs are rewritten to absolute
@@ -54,6 +63,100 @@ def create_sandbox(root: str, label: str) -> Path:
     root_path.mkdir(parents=True, exist_ok=True)
     safe_label = label.replace("/", "_") or "step"
     return Path(tempfile.mkdtemp(prefix=f"{safe_label}-", dir=root_path)).resolve()
+
+
+_GLOB_CHARS = frozenset("*?[")
+
+
+def prepare_output_parents(scope: Scope, prepared: dict[str, Any], sandbox_dir: Path) -> list[Path]:
+    """Pre-create, inside the fresh sandbox, the parent directories of every
+    relative output path knowable before the run. Tools generally don't
+    ``mkdir -p`` their own output stems (wsclean's ``-name``, ragavi's
+    ``htmlname``), so a relative output like ``plots/gain.html`` that works
+    in the workspace -- where the caller made ``plots/`` -- crashes the tool
+    inside an empty sandbox. Knowable pre-run means: a declared path-typed
+    output's value taken from the same-named input, its resolved ``implicit``
+    template, or its field default (the same priority as output filling);
+    plus the literal (glob-free) directory prefix of each ``harvest``
+    pattern -- the declaration through which string-typed output stems say
+    where their files land. Best-effort by design: a template that fails to
+    resolve is skipped here, not raised -- output filling and harvest report
+    those errors with full context.
+
+    Returns every directory it created, for `prune_unused_parents`: harvest
+    assumes anything present in the sandbox was written by the tool, so the
+    dirs the tool never used must be removed again before harvesting.
+    """
+    dirs: set[Path] = set()
+
+    def collect(value: Any) -> None:
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            path = Path(str(item))
+            if path.is_absolute() or ".." in path.parts:
+                continue
+            if path.parent != Path("."):
+                dirs.add(path.parent)
+
+    field_meta = getattr(scope, "field_meta", {})
+    for name in path_fields(scope.outputs_model):
+        # Same priority as `_fill_outputs`: a same-named input -- even one
+        # that is present but None -- beats `implicit`, which beats the
+        # field default.
+        value = None
+        if name in prepared:
+            value = prepared[name]
+        else:
+            meta = field_meta.get(name)
+            if meta is not None and isinstance(meta.implicit, str):
+                try:
+                    value = meta.implicit.format(**prepared)
+                except Exception:  # noqa: BLE001 -- best-effort; output filling reports the real error
+                    pass
+            else:
+                field = scope.outputs_model.model_fields[name]
+                if not field.is_required():
+                    value = field.get_default(call_default_factory=True)
+        if value is not None:
+            collect(value)
+    for pattern in scope.harvest:
+        try:
+            resolved = Path(pattern.format(**prepared))
+        except Exception:  # noqa: BLE001 -- best-effort; harvest reports the real error
+            continue
+        if resolved.is_absolute() or ".." in resolved.parts:
+            continue
+        literal: list[str] = []
+        for part in resolved.parts[:-1]:
+            if _GLOB_CHARS & set(part):
+                break
+            literal.append(part)
+        if literal:
+            dirs.add(Path(*literal))
+    created: list[Path] = []
+    for rel in sorted(dirs):
+        path = sandbox_dir
+        for part in rel.parts:
+            path = path / part
+            if not path.is_dir():
+                path.mkdir()
+                created.append(path)
+    return created
+
+
+def prune_unused_parents(created: list[Path]) -> None:
+    """Remove the `prepare_output_parents` directories the tool never wrote
+    into, deepest first, restoring harvest's invariant that everything
+    present in the sandbox was written by the tool -- otherwise a leftover
+    empty dir could be rescued over real workspace content (`_move` replaces
+    the destination wholesale). A dir the tool did use is non-empty and
+    survives the rmdir; tool-created dirs (even empty ones) are untouched
+    and harvest exactly as they would have unsandboxed.
+    """
+    for path in sorted(created, reverse=True):
+        try:
+            path.rmdir()
+        except OSError:
+            pass
 
 
 def _anchor(value: Any, workspace: Path) -> Any:
@@ -154,13 +257,15 @@ def harvest_outputs(
     that were moved. A declared output the tool never wrote (e.g. an
     optional product, or a same-named input passthrough that already lives
     in the workspace) is silently skipped.
+
+    Targets move parent-first: one nested inside a directory-valued target
+    travels with its parent's move and is then skipped as no-longer-present.
+    Child-first order would move the child, then `_move` the parent dir over
+    the same destination -- rmtree-ing the just-harvested child.
     """
     moved: list[Path] = []
-    seen: set[str] = set()
-    for rel in _relative_targets(scope, outputs, prepared, sandbox_dir):
-        if rel in seen:
-            continue
-        seen.add(rel)
+    for rel in sorted(set(_relative_targets(scope, outputs, prepared, sandbox_dir)),
+                      key=lambda rel: Path(rel).parts):
         src = sandbox_dir / rel
         if not src.exists() and not src.is_symlink():
             continue

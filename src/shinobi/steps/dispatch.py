@@ -29,7 +29,14 @@ from shinobi.exceptions import ParameterError
 from shinobi.graph import build_graph
 from shinobi.policies import build_argv
 from shinobi.results import StepResult
-from shinobi.sandbox import absolutize_path_inputs, create_sandbox, discard_sandbox, harvest_outputs
+from shinobi.sandbox import (
+    absolutize_path_inputs,
+    create_sandbox,
+    discard_sandbox,
+    harvest_outputs,
+    prepare_output_parents,
+    prune_unused_parents,
+)
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope
 from shinobi.wranglers import apply_wranglers
 
@@ -467,6 +474,7 @@ def _run_cab(
     if sandbox_root is not None:
         workspace = Path.cwd()
         sandbox_dir = create_sandbox(sandbox_root, label or cab.name)
+        precreated = prepare_output_parents(cab, prepared, sandbox_dir)
         run_inputs = absolutize_path_inputs(cab, prepared, workspace)
     argv = build_argv(cab, run_inputs)
     backend = get_step_backend(backend_name)
@@ -484,6 +492,7 @@ def _run_cab(
     outputs = _fill_outputs(cab, prepared, run, wrangled)
     if sandbox_dir is not None:
         if run.returncode == 0:
+            prune_unused_parents(precreated)
             harvest_outputs(cab, outputs, prepared, sandbox_dir, workspace)
             discard_sandbox(sandbox_dir)
         else:
