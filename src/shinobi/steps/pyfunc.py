@@ -71,7 +71,14 @@ from pydantic import BaseModel, create_model
 from shinobi.backends._stream import run_streaming
 from shinobi.config import AppConfig
 from shinobi.results import StepResult
-from shinobi.sandbox import absolutize_path_inputs, create_sandbox, discard_sandbox, harvest_outputs
+from shinobi.sandbox import (
+    absolutize_path_inputs,
+    create_sandbox,
+    discard_sandbox,
+    harvest_outputs,
+    prepare_output_parents,
+    prune_unused_parents,
+)
 from shinobi.steps.schema import Scope, StepRef
 
 if TYPE_CHECKING:
@@ -329,9 +336,11 @@ def _run_pystep_container(
     # scheme. `prepared` (the caller's original values) is kept for harvest.
     workspace = os.getcwd()
     sandbox_dir: Path | None = None
+    precreated: list[Path] = []
     run_prepared = prepared
     if ctx._sandbox_root is not None:
         sandbox_dir = create_sandbox(ctx._sandbox_root, ctx._cache_path or scope.name)
+        precreated = prepare_output_parents(scope, prepared, sandbox_dir)
         run_prepared = absolutize_path_inputs(scope, prepared, Path(workspace))
 
     with tempfile.TemporaryDirectory(prefix="shinobi_pystep_") as tmpdir:
@@ -439,6 +448,7 @@ def _run_pystep_container(
             outputs = outputs_model(**output_data)
 
         if sandbox_dir is not None:
+            prune_unused_parents(precreated)
             harvest_outputs(scope, outputs, prepared, sandbox_dir, Path(workspace))
             discard_sandbox(sandbox_dir)
 

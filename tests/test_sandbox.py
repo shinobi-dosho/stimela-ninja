@@ -17,9 +17,11 @@ from shinobi.sandbox import (
     create_sandbox,
     discard_sandbox,
     harvest_outputs,
+    prepare_output_parents,
+    prune_unused_parents,
 )
 from shinobi.steps.dispatch import register_step_backend
-from shinobi.steps.schema import Cab, Recipe, Scope, StepRef
+from shinobi.steps.schema import Cab, ParamMeta, Recipe, Scope, StepRef
 
 WORK_ROOT = ".shinobi/work"
 
@@ -130,6 +132,44 @@ def test_harvest_moves_directory_outputs(tmp_path):
     assert (workspace / "gains.tbl/data.bin").read_text() == "gains.tbl/data.bin"
 
 
+def test_harvest_moves_nested_target_with_its_parent(tmp_path):
+    # A declared output living inside a directory-valued declared output:
+    # the parent moves wholesale and the child travels inside it. Field-name
+    # order used to move the child first, then rmtree it again when the
+    # parent dir landed on the same destination (data loss).
+    scope = make_scope(
+        outputs={
+            "htmlname": ("File", False, "plots/gain.html"),
+            "outdir": ("Directory", False, "plots"),
+        }
+    )
+    sandbox = _sandbox_with(tmp_path, "plots/gain.html")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    moved = harvest_outputs(scope, scope.outputs_model(), {}, sandbox, workspace)
+
+    assert moved == [workspace / "plots"]
+    assert (workspace / "plots/gain.html").read_text() == "plots/gain.html"
+
+
+def test_harvest_glob_matches_travel_with_declared_dir_parent(tmp_path):
+    # Same hazard via the glob route: matches inside a directory-valued
+    # declared output ride along with the parent's move.
+    scope = make_scope(
+        outputs={"outdir": ("Directory", False, "plots")}, harvest=["plots/*.html"]
+    )
+    sandbox = _sandbox_with(tmp_path, "plots/gain.html", "plots/phase.html")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    moved = harvest_outputs(scope, scope.outputs_model(), {}, sandbox, workspace)
+
+    assert moved == [workspace / "plots"]
+    assert (workspace / "plots/gain.html").exists()
+    assert (workspace / "plots/phase.html").exists()
+
+
 def test_harvest_skips_absolutely_resolved_patterns(tmp_path):
     # `"{prefix}-*"` with an absolute prefix: the tool wrote straight to the
     # absolute destination, so there's nothing in the sandbox to rescue --
@@ -153,6 +193,107 @@ def test_harvest_rejects_pattern_with_unknown_input(tmp_path):
     sandbox = _sandbox_with(tmp_path)
     with pytest.raises(ParameterError, match="unknown input"):
         harvest_outputs(scope, scope.outputs_model(), {}, sandbox, tmp_path)
+
+
+# ------------------------------------------------- unit: output parent pre-creation
+
+
+def test_prepare_parents_for_relative_output_from_same_named_input(tmp_path):
+    # The ragavi shape: a string-typed stem input feeding a same-named
+    # path-typed output -- the stem stays relative so the tool writes in the
+    # sandbox, which means its parent dir must exist there before the run.
+    scope = make_scope(
+        inputs={"htmlname": ("str", True, None)},
+        outputs={"htmlname": ("File", False, None)},
+    )
+    prepare_output_parents(scope, {"htmlname": "plots/gain.html"}, tmp_path)
+    assert (tmp_path / "plots").is_dir()
+
+
+def test_prepare_parents_resolves_implicit_output_templates(tmp_path):
+    # The wsclean shape: `-name img/run1` with implicit output templates.
+    cab = Cab(
+        name="imager",
+        command="/bin/true",
+        inputs_model=build_model("In", {"prefix": ("str", True, None)}),
+        outputs_model=build_model("Out", {"image": ("File", False, None)}),
+        field_meta={"image": ParamMeta(implicit="{prefix}-MFS-image.fits")},
+    )
+    prepare_output_parents(cab, {"prefix": "img/run1"}, tmp_path)
+    assert (tmp_path / "img").is_dir()
+
+
+def test_prepare_parents_uses_output_field_defaults(tmp_path):
+    scope = make_scope(outputs={"result": ("File", False, "sub/out.dat")})
+    prepare_output_parents(scope, {}, tmp_path)
+    assert (tmp_path / "sub").is_dir()
+
+
+def test_prepare_parents_creates_literal_prefix_of_harvest_patterns(tmp_path):
+    scope = make_scope(harvest=["{prefix}-*.fits", "logs/*/detail-*.txt"])
+    prepare_output_parents(scope, {"prefix": "img/run1"}, tmp_path)
+    assert (tmp_path / "img").is_dir()
+    assert (tmp_path / "logs").is_dir()
+    # The glob part and anything under it is the tool's to create.
+    assert list((tmp_path / "logs").iterdir()) == []
+
+
+def test_prepare_parents_none_input_suppresses_implicit_like_fill_outputs(tmp_path):
+    # `_fill_outputs` lets a same-named input that is present-but-None win
+    # over `implicit`; pre-creation must agree and create nothing.
+    cab = Cab(
+        name="c",
+        command="/bin/true",
+        inputs_model=build_model("In", {"image": ("str", False, None)}),
+        outputs_model=build_model("Out", {"image": ("File", False, None)}),
+        field_meta={"image": ParamMeta(implicit="img/{image}.fits")},
+    )
+    prepare_output_parents(cab, {"image": None}, tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_prepare_parents_skips_malformed_implicit_templates(tmp_path):
+    # A bad format spec raises ValueError, not KeyError -- best-effort means
+    # no crash here; `_fill_outputs` reports the real error post-run.
+    cab = Cab(
+        name="c",
+        command="/bin/true",
+        inputs_model=build_model("In", {"prefix": ("str", True, None)}),
+        outputs_model=build_model("Out", {"image": ("File", False, None)}),
+        field_meta={"image": ParamMeta(implicit="{prefix:d}-img.fits")},
+    )
+    prepare_output_parents(cab, {"prefix": "img/run1"}, tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_prune_removes_only_unused_precreated_dirs(tmp_path):
+    scope = make_scope(
+        inputs={"a": ("str", True, None), "b": ("str", True, None)},
+        outputs={"a": ("File", False, None), "b": ("File", False, None)},
+    )
+    created = prepare_output_parents(
+        scope, {"a": "used/x.dat", "b": "unused/deep/y.dat"}, tmp_path
+    )
+    (tmp_path / "used/x.dat").write_text("x")
+
+    prune_unused_parents(created)
+
+    assert (tmp_path / "used/x.dat").exists()
+    assert not (tmp_path / "unused").exists()  # pruned bottom-up, deep first
+
+
+def test_prepare_parents_skips_absolute_escapes_and_bare_names(tmp_path):
+    scope = make_scope(
+        inputs={"stem": ("str", True, None)},
+        outputs={
+            "abs_out": ("File", False, "/elsewhere/x.dat"),
+            "flat": ("File", False, "out.dat"),
+            "stem": ("File", False, None),
+        },
+        harvest=["../escape-*", "{missing}-*"],
+    )
+    prepare_output_parents(scope, {"stem": "../up/x.dat"}, tmp_path)
+    assert list(tmp_path.iterdir()) == []  # nothing created, nothing raised
 
 
 def test_create_and_discard_sandbox(tmp_path, monkeypatch):
@@ -249,6 +390,87 @@ def test_sandboxed_run_harvest_globs_end_to_end(workspace):
     assert result.success
     assert (workspace / "img-0000.fits").exists()
     assert not (workspace / "junk.log").exists()
+
+
+def test_sandboxed_tool_can_write_relative_output_in_fresh_subdir(workspace):
+    # Regression: a tool that doesn't `mkdir -p` its own output stem (ragavi's
+    # htmlname, wsclean's -name) must not crash on a relative output like
+    # `plots/gain.html` just because the sandbox starts empty.
+    script = _script(workspace, "echo report > plots/gain.html\necho junk > junk.log\n")
+    cab = Cab(
+        name="plotter",
+        command=str(script),
+        inputs_model=build_model("In", {"htmlname": ("str", True, None)}),
+        outputs_model=build_model("Out", {"htmlname": ("File", False, None)}),
+        sandbox=True,
+    )
+    result = cab(backend="native", htmlname="plots/gain.html")
+
+    assert result.success
+    assert (workspace / "plots/gain.html").read_text() == "report\n"
+    assert not (workspace / "junk.log").exists()
+    assert list((workspace / WORK_ROOT).iterdir()) == []  # sandbox discarded
+
+
+def test_unused_precreated_dir_never_clobbers_workspace_dir_output(workspace):
+    # A directory-typed passthrough output whose value equals a pre-created
+    # parent: if the tool writes nothing (no-op run), the empty pre-created
+    # dir must not be harvested over the workspace's real `plots/`.
+    script = _script(workspace, "true\n")
+    (workspace / "plots").mkdir()
+    (workspace / "plots/precious.txt").write_text("keep me")
+    cab = Cab(
+        name="noop",
+        command=str(script),
+        inputs_model=build_model(
+            "In", {"outdir": ("str", True, None), "htmlname": ("str", True, None)}
+        ),
+        outputs_model=build_model(
+            "Out", {"outdir": ("Directory", False, None), "htmlname": ("File", False, None)}
+        ),
+        sandbox=True,
+    )
+    result = cab(backend="native", outdir="plots", htmlname="plots/gain.html")
+
+    assert result.success
+    assert (workspace / "plots/precious.txt").read_text() == "keep me"
+
+
+def test_harvest_glob_never_rescues_unused_precreated_dirs(workspace):
+    # `logs/x/*.txt` pre-creates `logs/x`; the broader `logs/*` glob must not
+    # then rescue that empty dir over the workspace's populated `logs/x`.
+    script = _script(workspace, "true\n")
+    (workspace / "logs/x").mkdir(parents=True)
+    (workspace / "logs/x/old.txt").write_text("keep me")
+    cab = Cab(
+        name="noop",
+        command=str(script),
+        inputs_model=build_model("In", {}),
+        outputs_model=build_model("Out", {}),
+        sandbox=True,
+        harvest=["logs/x/*.txt", "logs/*"],
+    )
+    result = cab(backend="native")
+
+    assert result.success
+    assert (workspace / "logs/x/old.txt").read_text() == "keep me"
+
+
+def test_tool_created_empty_dir_output_still_harvests(workspace):
+    # Pruning only touches pre-created dirs: an empty dir the tool itself
+    # made is a real output and harvests as it would have unsandboxed.
+    script = _script(workspace, "mkdir emptydir\n")
+    cab = Cab(
+        name="dirmaker",
+        command=str(script),
+        inputs_model=build_model("In", {}),
+        outputs_model=build_model("Out", {"d": ("Directory", False, "emptydir")}),
+        sandbox=True,
+    )
+    result = cab(backend="native")
+
+    assert result.success
+    assert (workspace / "emptydir").is_dir()
 
 
 def test_sandbox_absolutizes_path_inputs_and_passes_cwd_to_backend(workspace):

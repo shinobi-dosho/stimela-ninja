@@ -43,11 +43,20 @@ How a sandboxed step runs
    drive container bind mounts) are rewritten to absolute paths anchored at
    the workspace, so the tool reads -- and, for ``MUTABLE`` inputs like a
    measurement set, writes -- the caller's real files in place.
+#. **Parent directories of relative outputs are pre-created** inside the
+   sandbox -- from declared output values (including resolved ``implicit``
+   templates) and the literal directory prefix of each ``harvest`` glob.
+   Tools generally don't ``mkdir -p`` their own output stems (wsclean's
+   ``-name img/run1``, ragavi's ``htmlname``), so without this a relative
+   output like ``plots/gain.html`` that works in the workspace would crash
+   in the empty sandbox.
 #. The tool runs; relative outputs land inside the sandbox.
 #. On success, declared outputs are **harvested**: moved (by rename -- the
    scratch root lives on the workspace's filesystem precisely so this is
-   never a copy) back to the workspace at their declared relative paths.
-   Everything else is deleted with the sandbox.
+   never a copy) back to the workspace at their declared relative paths,
+   parents before anything nested inside them. Pre-created directories the
+   tool never wrote into are removed first, so only what the tool actually
+   produced comes back. Everything else is deleted with the sandbox.
 #. On failure, nothing is harvested and the sandbox is deliberately *kept*
    for post-mortem; a warning reports its path. ``ninja clean`` removes
    leftover sandboxes (it targets ``sandbox.dir`` by default).
