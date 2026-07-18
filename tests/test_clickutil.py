@@ -97,3 +97,42 @@ def test_unflatten_kwargs_reconstructs_nested_dict_for_model_construction():
     assert inputs.refant == "auto"
     assert inputs.obsinfo.plotelev.enable is True  # submodel's own default, since omitted
     assert inputs.obsinfo.plotelev.plotter == "plotms"
+
+
+class _TupleInputs(BaseModel):
+    ms: str
+    channel_range: tuple[int, int] | None = None
+    weight: str | tuple[str, float] | None = None
+    tags: list[str] | None = None
+
+
+def test_unflatten_kwargs_drops_click_multiple_empty_tuple_default():
+    # build_options renders every list/tuple field as a `multiple=True`
+    # click option, which defaults to `()` when the user omits it. That `()`
+    # must be treated as "not provided" -- otherwise it reaches the model and
+    # an optional Tuple/Union-of-tuple field rejects it instead of falling
+    # back to its own default. (Regression: wsclean's channel-range/interval/
+    # weight failing validation when left unset.)
+    flat = {
+        "ms": "test.ms",
+        "channel_range": (),
+        "weight": (),
+        "tags": (),
+    }
+    nested = unflatten_kwargs(_TupleInputs, flat)
+    assert nested == {"ms": "test.ms"}
+    inputs = _TupleInputs(**nested)
+    assert inputs.channel_range is None
+    assert inputs.weight is None
+    assert inputs.tags is None
+
+
+def test_unflatten_kwargs_keeps_populated_multiple_values():
+    # a non-empty tuple from a `multiple=True` option is a real value and
+    # must survive unflattening.
+    flat = {"ms": "test.ms", "channel_range": (10, 20), "weight": ("briggs", 0.5)}
+    nested = unflatten_kwargs(_TupleInputs, flat)
+    assert nested == {"ms": "test.ms", "channel_range": (10, 20), "weight": ("briggs", 0.5)}
+    inputs = _TupleInputs(**nested)
+    assert inputs.channel_range == (10, 20)
+    assert inputs.weight == ("briggs", 0.5)
