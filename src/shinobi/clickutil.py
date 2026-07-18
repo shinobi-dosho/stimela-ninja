@@ -173,13 +173,20 @@ def unflatten_kwargs(model: type[BaseModel], flat_kwargs: dict[str, Any]) -> dic
     """The inverse of `build_options`' flattening: turn flat
     `--parent-child`-style kwargs back into the nested dict
     `model(**nested)` expects (pydantic coerces a plain nested dict into
-    its submodel automatically). A key absent or `None` in `flat_kwargs`
-    (the user didn't pass that option) is omitted entirely, so the
-    model's/submodel's own default applies instead of an explicit `None`.
+    its submodel automatically). A key absent, `None`, or an empty tuple
+    in `flat_kwargs` (the user didn't pass that option) is omitted
+    entirely, so the model's/submodel's own default applies instead of an
+    explicit `None`.
     """
     nested: dict[str, Any] = {}
     for flat_name, path, _field in iter_leaf_fields(model):
-        if flat_kwargs.get(flat_name) is None:
+        value = flat_kwargs.get(flat_name)
+        # click renders every list/tuple field as a `multiple=True` option,
+        # which defaults to `()` when unset; treat that empty tuple like an
+        # absent option so an optional non-list field (e.g. `Tuple[int, int]`
+        # or `Union[str, Tuple[str, float]]`) falls back to its own default
+        # instead of being handed an invalid `()`.
+        if value is None or value == ():
             continue
         node = nested
         for part in path[:-1]:
