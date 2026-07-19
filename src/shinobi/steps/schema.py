@@ -461,6 +461,27 @@ class OutputRef(BaseModel):
     field: str
 
 
+class ScatterSpec(BaseModel):
+    """Declaration that a step should fan out over one or more list-typed
+    input fields. Each listed field must be a list at runtime and all
+    listed fields must have the same length. The step is executed once per
+    index, with slice `i` receiving element `i` of every scattered field.
+
+    The step's own `inputs_model`/`outputs_model` describe one slice. A
+    downstream step sees the scattered step's outputs gathered into lists
+    (one element per slice), so it can scatter over them in turn or consume
+    the whole list as a gathered result.
+    """
+
+    fields: list[str]
+
+    @model_validator(mode="after")
+    def _non_empty(self) -> "ScatterSpec":
+        if not self.fields:
+            raise ValueError("ScatterSpec must declare at least one field to fan out over")
+        return self
+
+
 class StepRef(BaseModel):
     """A named, executable binding of a Scope: orchestration function,
     wiring (meaningful only inside a Recipe), and per-step constants.
@@ -490,6 +511,7 @@ class StepRef(BaseModel):
         default_factory=dict
     )
     params: dict[str, Any] = Field(default_factory=dict)
+    scatter: ScatterSpec | None = None
 
     @field_serializer("func")
     def _serialize_func(self, func: Callable | None) -> str | None:
@@ -514,9 +536,11 @@ class StepRef(BaseModel):
         """Standalone execution. `params` are merged under caller kwargs;
         wiring is ignored (it can only be resolved inside a running
         Recipe), so any wired-only fields must be supplied as kwargs --
-        input validation catches omissions. `provenance` opts this run into
-        image pinning + manifest emission, overriding the config default;
-        `sandbox` likewise opts into (or out of) sandboxed execution.
+        input validation catches omissions. `scatter` is likewise ignored
+        outside a Recipe; to run one slice, pass its scalar inputs directly.
+        `provenance` opts this run into image pinning + manifest emission,
+        overriding the config default; `sandbox` likewise opts into (or out
+        of) sandboxed execution.
         """
         from shinobi.steps.dispatch import _dispatch
 
@@ -704,12 +728,26 @@ class Recipe(Scope):
         params = {k: v for k, v in kwargs.items() if k not in wiring}
         return wiring, params
 
-    def add_step(self, name: str, scope: "Scope | StepRef", **kwargs: Any) -> "Recipe":
+    def add_step(
+        self,
+        name: str,
+        scope: "Scope | StepRef",
+        *,
+        scatter: list[str] | ScatterSpec | None = None,
+        **kwargs: Any,
+    ) -> "Recipe":
         """Add a step. `scope` is usually a bare `Scope`/`Cab`/`Recipe`, but
         can also be an already-built `StepRef` (e.g. from `@shinobi.pystep`
         or `@shinobi.step`) -- its `func` is carried over so the step keeps
         its orchestration function, not just its schema.
+
+        Args:
+            scatter: Fields to fan out over. Each must be a field of the
+                step's `inputs_model`; at runtime the corresponding value
+                must be a list, and every scattered field must have the same
+                length.
         """
+        scatter_spec = ScatterSpec(fields=scatter) if isinstance(scatter, list) else scatter
         wiring, params = self._split_kwargs(kwargs)
         if isinstance(scope, StepRef):
             ref = scope.model_copy(
@@ -717,19 +755,28 @@ class Recipe(Scope):
                     "name": name,
                     "wiring": {**scope.wiring, **wiring},
                     "params": {**scope.params, **params},
+                    "scatter": scatter_spec if scatter_spec is not None else scope.scatter,
                 }
             )
         else:
-            ref = StepRef(name=name, step=scope, wiring=wiring, params=params)
+            ref = StepRef(name=name, step=scope, wiring=wiring, params=params, scatter=scatter_spec)
         self.steps.append(ref)
         return self
 
-    def step(self, scope: Scope, *, backend: str | None = None, **kwargs: Any):
+    def step(
+        self,
+        scope: Scope,
+        *,
+        backend: str | None = None,
+        scatter: list[str] | ScatterSpec | None = None,
+        **kwargs: Any,
+    ):
         """Decorate a function as a new step appended to this recipe.
 
         Args:
             scope: The Cab, Recipe, or bare Scope to bind as this step.
             backend: Backend override for this step.
+            scatter: Fields to fan out over (see `add_step`).
             **kwargs: Split into wiring (`InputRef`/`OutputRef` values) and
                 per-step constant params via `_split_kwargs`.
 
@@ -737,6 +784,8 @@ class Recipe(Scope):
             A decorator that binds the given function, appends the
             resulting `StepRef` to `self.steps`, and returns it.
         """
+
+        scatter_spec = ScatterSpec(fields=scatter) if isinstance(scatter, list) else scatter
 
         def decorator(func: Callable) -> StepRef:
             """Bind `func` as this step's orchestration function.
@@ -749,7 +798,14 @@ class Recipe(Scope):
             """
             bound = scope.with_backend(backend)
             wiring, params = self._split_kwargs(kwargs)
-            ref = StepRef(name=func.__name__, step=bound, func=func, wiring=wiring, params=params)
+            ref = StepRef(
+                name=func.__name__,
+                step=bound,
+                func=func,
+                wiring=wiring,
+                params=params,
+                scatter=scatter_spec,
+            )
             self.steps.append(ref)
             return ref
 

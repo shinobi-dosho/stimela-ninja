@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from shinobi.steps.schema import Scope, StepRef
+from shinobi.steps.schema import Scope, ScatterSpec, StepRef
 
 
 def step(
@@ -23,6 +23,7 @@ def step(
     *,
     backend: str | None = None,
     name: str | None = None,
+    scatter: list[str] | ScatterSpec | None = None,
     **params: Any,
 ) -> Callable[[Callable], StepRef]:
     """Decorate a function with an existing Scope (Cab or Recipe). See the
@@ -37,9 +38,17 @@ def step(
                 never introspected.
 
         Returns:
-            A `StepRef` carrying `scope`, `func`, and the step's params.
+            A `StepRef` carrying `scope`, `func`, the step's params, and
+            its scatter spec.
         """
         bound_scope = scope.with_backend(backend)
-        return StepRef(name=name or func.__name__, step=bound_scope, func=func, params=params)
+        scatter_spec = ScatterSpec(fields=scatter) if isinstance(scatter, list) else scatter
+        return StepRef(
+            name=name or func.__name__,
+            step=bound_scope,
+            func=func,
+            params=params,
+            scatter=scatter_spec,
+        )
 
     return decorator

@@ -23,6 +23,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Callable
 
+from pydantic import BaseModel, Field, create_model
 from shinobi.cache import compute_cache_key, get_cache_manifest
 from shinobi.config import AppConfig
 from shinobi.exceptions import ParameterError
@@ -37,7 +38,7 @@ from shinobi.sandbox import (
     prepare_output_parents,
     prune_unused_parents,
 )
-from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope
+from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope, StepRef
 from shinobi.wranglers import apply_wranglers
 
 # Run-log records (step lifecycle + captured tool output) go through the
@@ -548,6 +549,147 @@ def _resolve_wiring(
     return {**ref.params, **wired}  # wiring overrides params
 
 
+class ScatterError(ValueError):
+    """A scattered step received inconsistent inputs: a scatter field is not
+    a list, or two scatter fields declared for the same step have different
+    lengths.
+    """
+
+
+def _build_scatter_slices(ref: StepRef, sub_kwargs: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build per-slice kwargs for a scattered step.
+
+    Every scatter field must be a list and all must have the same length.
+    Each returned slice is a copy of `sub_kwargs` with the scattered fields
+    replaced by their element at that index.
+    """
+    spec = ref.scatter
+    assert spec is not None
+    fields = spec.fields
+    lengths: set[int] = set()
+    for field in fields:
+        if field not in sub_kwargs:
+            raise ScatterError(
+                f"step '{ref.name}' scatters over '{field}' but no value was supplied "
+                f"for it (wiring or params must provide '{field}')"
+            )
+        value = sub_kwargs[field]
+        if not isinstance(value, list):
+            raise ScatterError(
+                f"step '{ref.name}' scatters over '{field}' but the resolved value is "
+                f"{type(value).__name__}, not a list"
+            )
+        lengths.add(len(value))
+    if len(lengths) != 1:
+        lengths_str = ", ".join(sorted(str(length) for length in lengths))
+        raise ScatterError(
+            f"step '{ref.name}' scatter fields {fields} have different lengths: {lengths_str}"
+        )
+    n = lengths.pop()
+    slices: list[dict[str, Any]] = []
+    for i in range(n):
+        slice_kwargs = dict(sub_kwargs)
+        for field in fields:
+            slice_kwargs[field] = sub_kwargs[field][i]
+        slices.append(slice_kwargs)
+    return slices
+
+
+def _scatter_inputs_model(scope: Scope, scatter_fields: set[str]) -> type[BaseModel]:
+    """Model for the aggregated inputs of a scattered step.
+
+    Scattered fields become lists of their element type; non-scattered
+    fields keep their original type and declared default.
+    """
+    original = scope.inputs_model
+    fields: dict[str, tuple[Any, Any]] = {}
+    for name, field in original.model_fields.items():
+        if name in scatter_fields:
+            inner = field.annotation if field.annotation is not None else Any
+            fields[name] = (list[inner], ...)
+        elif field.is_required():
+            fields[name] = (field.annotation, ...)
+        elif field.default_factory is not None:
+            fields[name] = (field.annotation, Field(default_factory=field.default_factory))
+        else:
+            fields[name] = (field.annotation, field.default)
+    return create_model(f"{original.__name__}ScatterInputs", **fields)
+
+
+def _scatter_outputs_model(scope: Scope) -> type[BaseModel]:
+    """Model for the gathered outputs of a scattered step.
+
+    Every output field becomes a list of its original type, with one element
+    per slice.
+    """
+    original = scope.outputs_model
+    fields: dict[str, tuple[Any, Any]] = {}
+    for name, field in original.model_fields.items():
+        inner = field.annotation if field.annotation is not None else Any
+        fields[name] = (list[inner], ...)
+    return create_model(f"{original.__name__}ScatterOutputs", **fields)
+
+
+def _scatter_kind(scope: Scope) -> str:
+    """The `StepResult.kind` value for an empty/zero-length scatter step."""
+    if isinstance(scope, Recipe):
+        return "recipe"
+    if isinstance(scope, Cab):
+        return "cab"
+    return "pyfunc"
+
+
+def _aggregate_scatter_results(
+    scope: Scope,
+    scatter_fields: list[str],
+    sub_kwargs: dict[str, Any],
+    slices: list[StepResult],
+) -> StepResult:
+    """Gather per-slice results into a single StepResult.
+
+    Outputs are gathered into lists (one element per slice). Inputs are the
+    list-valued scatter fields plus the shared scalar fields. If any slice
+    failed, outputs are empty lists and the returncode is the first failure
+    by slice index.
+    """
+    scatter_set = set(scatter_fields)
+    InputsModel = _scatter_inputs_model(scope, scatter_set)
+    OutputsModel = _scatter_outputs_model(scope)
+
+    if any(s.returncode != 0 for s in slices):
+        outputs_data = {name: [] for name in scope.outputs_model.model_fields}
+        returncode = next(s.returncode for s in slices if s.returncode != 0)
+    else:
+        outputs_data = {
+            name: [getattr(s.outputs, name) for s in slices]
+            for name in scope.outputs_model.model_fields
+        }
+        returncode = 0
+
+    inputs_data = {
+        name: value for name, value in sub_kwargs.items() if name in scope.inputs_model.model_fields
+    }
+
+    outputs = OutputsModel(**outputs_data)
+    inputs = InputsModel(**inputs_data)
+
+    stdout = "\n".join(s.stdout for s in slices if s.stdout)
+    stderr = "\n".join(s.stderr for s in slices if s.stderr)
+    return StepResult(
+        name=scope.name,
+        returncode=returncode,
+        outputs=outputs,
+        inputs=inputs,
+        stdout=stdout,
+        stderr=stderr,
+        kind=slices[0].kind if slices else _scatter_kind(scope),
+        backend=slices[0].backend if slices else None,
+        image=scope.image,
+        image_digest=slices[0].image_digest if slices else None,
+        containerized=any(s.containerized for s in slices),
+    )
+
+
 def _run_recipe(
     recipe: Recipe,
     prepared: dict[str, Any],
@@ -564,13 +706,18 @@ def _run_recipe(
 
     Steps run on a `ThreadPoolExecutor` (threads park on the blocking
     `Backend.run`); a step becomes ready only once every step it wires an
-    output from has completed. The ready set is drained lowest-declaration-
-    index first, so `max_workers=1` reproduces exact sequential declaration
-    order. On the first failure (non-zero returncode) or worker exception,
-    no further steps are submitted, but already-running steps drain (a
-    launched job can't be honestly cancelled). All aggregation -- stdout,
-    stderr, outputs, the winning returncode -- is done in declaration order
-    regardless of completion order, so results are deterministic.
+    output from has completed. A step declared with `scatter` expands into
+    N parallel slices at runtime; the step only completes when every slice
+    has finished, and its outputs are gathered into lists (one element per
+    slice).
+
+    The ready set is drained lowest-declaration-index first, so
+    `max_workers=1` reproduces exact sequential declaration order. On the
+    first failure (non-zero returncode) or worker exception, no further
+    steps are submitted, but already-running steps drain (a launched job
+    can't be honestly cancelled). All aggregation -- stdout, stderr,
+    outputs, the winning returncode -- is done in declaration order regardless
+    of completion order, so results are deterministic.
     """
     config = config or AppConfig.load()  # resolve once; workers never call load()
     graph = build_graph(recipe)
@@ -584,20 +731,63 @@ def _run_recipe(
     errors: list[tuple[int, BaseException]] = []
     stop = False
 
+    # State for in-flight scattered steps: the original list-valued sub_kwargs
+    # (needed to build the aggregated inputs model) and per-slice results.
+    scatter_sub_kwargs: dict[int, dict[str, Any]] = {}
+    slice_results: dict[int, list[StepResult | None]] = {}
+
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures: dict[Future, int] = {}
+        futures: dict[Future, tuple[int, int | None]] = {}
 
-        def submit_ready() -> None:
-            """Submit as many ready steps as there is worker capacity for.
+        def _release_dependents(i: int) -> None:
+            for dependent in graph.dependents[i]:
+                indeg[dependent] -= 1
+                if indeg[dependent] == 0:
+                    heapq.heappush(ready, dependent)
 
-            Pops from `ready` (a min-heap of step indices, so lowest
-            declaration-index steps are drained first) until `ready` is
-            empty, `stop` is set, or `futures` is at `max_workers` capacity.
-            """
-            while ready and not stop and len(futures) < max_workers:
-                i = heapq.heappop(ready)
-                ref = recipe.steps[i]
-                sub_kwargs = _resolve_wiring(ref, prepared, results)
+        def _step_completed(i: int, res: StepResult) -> None:
+            nonlocal stop
+            results[recipe.steps[i].name] = res
+            if res.returncode != 0:
+                failures.append((i, res))
+                stop = True
+                return
+            _release_dependents(i)
+
+        def _submit_step(i: int) -> None:
+            ref = recipe.steps[i]
+            sub_kwargs = _resolve_wiring(ref, prepared, results)
+            if ref.scatter is not None:
+                slices = _build_scatter_slices(ref, sub_kwargs)
+                if not slices:
+                    # Zero-length scatter: produce an empty aggregated result
+                    # and immediately release dependents.
+                    _step_completed(
+                        i,
+                        _aggregate_scatter_results(
+                            ref.step, ref.scatter.fields, sub_kwargs, []
+                        ),
+                    )
+                    return
+                scatter_sub_kwargs[i] = sub_kwargs
+                slice_results[i] = [None] * len(slices)
+                for slice_idx, slice_kwargs in enumerate(slices):
+                    fut = pool.submit(
+                        _dispatch,
+                        ref.step,
+                        ref.func,
+                        _recipe_backend=backend_name,
+                        _recipe_cache=cache_enabled,
+                        _recipe_cache_dir=cache_dir,
+                        _recipe_stream=stream,
+                        _recipe_provenance=provenance,
+                        _recipe_sandbox=sandbox,
+                        _cache_path=f"{cache_path}.{ref.name}[{slice_idx}]",
+                        _config=config,
+                        **slice_kwargs,
+                    )
+                    futures[fut] = (i, slice_idx)
+            else:
                 fut = pool.submit(
                     _dispatch,
                     ref.step,
@@ -612,28 +802,46 @@ def _run_recipe(
                     _config=config,
                     **sub_kwargs,
                 )
-                futures[fut] = i
+                futures[fut] = (i, None)
+
+        def submit_ready() -> None:
+            """Submit as many ready steps as there is worker capacity for.
+
+            Pops from `ready` (a min-heap of step indices, so lowest
+            declaration-index steps are drained first) until `ready` is
+            empty, `stop` is set, or `futures` is at `max_workers` capacity.
+            """
+            while ready and not stop and len(futures) < max_workers:
+                i = heapq.heappop(ready)
+                _submit_step(i)
 
         submit_ready()
         while futures:
             done, _ = wait(futures, return_when=FIRST_COMPLETED)
             for fut in done:
-                i = futures.pop(fut)
+                i, slice_idx = futures.pop(fut)
                 try:
                     res = fut.result()
                 except BaseException as exc:  # noqa: BLE001 -- re-raised below
                     errors.append((i, exc))
                     stop = True
                     continue
-                results[recipe.steps[i].name] = res
-                if res.returncode != 0:
-                    failures.append((i, res))
-                    stop = True
-                    continue
-                for dependent in graph.dependents[i]:
-                    indeg[dependent] -= 1
-                    if indeg[dependent] == 0:
-                        heapq.heappush(ready, dependent)
+                if slice_idx is None:
+                    _step_completed(i, res)
+                else:
+                    slice_results[i][slice_idx] = res
+                    completed = slice_results[i]
+                    if all(r is not None for r in completed):
+                        ref = recipe.steps[i]
+                        aggregated = _aggregate_scatter_results(
+                            ref.step,
+                            ref.scatter.fields,
+                            scatter_sub_kwargs[i],
+                            [r for r in completed if r is not None],
+                        )
+                        _step_completed(i, aggregated)
+                        del slice_results[i]
+                        del scatter_sub_kwargs[i]
             submit_ready()
 
     # A worker exception (e.g. a bad override's ValidationError) propagates

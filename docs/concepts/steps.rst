@@ -74,3 +74,7 @@ Both return a :class:`~shinobi.StepRef`: a named, executable binding. There is
 no global function registry -- the function travels on the ``StepRef`` itself,
 so two functions over one scope never collide. A ``StepRef`` is a valid
 ``ninja run`` target and a valid recipe step.
+
+A ``StepRef`` may also carry a ``scatter`` specification, so a single step can
+fan out over one or more list inputs when it is part of a recipe. See
+:doc:`recipes`.
