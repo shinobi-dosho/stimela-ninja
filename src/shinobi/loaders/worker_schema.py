@@ -217,7 +217,13 @@ def _leaf_field(value: dict[str, Any]) -> tuple[Any, Any]:
     # container backend can mount a `writable: false` directory input read-only
     # (`readonly_path_fields` + `bind_dirs`). It's the one path-behaviour hint
     # with a consumer; `must_exist`/`path_policies` are still dropped.
-    extra = {"writable": bool(value["writable"])} if "writable" in value else None
+    # `abbreviation` rides the same channel so `clickutil.build_options` can
+    # emit a `-<abbrev>` short flag (see `steps.schema.ParamMeta`).
+    extra: dict[str, Any] = {}
+    if "writable" in value:
+        extra["writable"] = bool(value["writable"])
+    if value.get("abbreviation"):
+        extra["abbreviation"] = value["abbreviation"]
 
     annotation, field_default = required_field_spec(py_type, required, default)
-    return (annotation, Field(field_default, description=value.get("info"), json_schema_extra=extra))
+    return (annotation, Field(field_default, description=value.get("info"), json_schema_extra=extra or None))

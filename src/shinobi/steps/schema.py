@@ -76,6 +76,13 @@ class ParamMeta(BaseModel):
     declared model field for a dynamically-matched name -- can still carry
     it.
 
+    `abbreviation`: a short single-dash CLI alias for the field's generated
+    `--long-flag` (cult-cargo/classic's `abbreviation` key, e.g. simms'
+    `ascii-sky` -> `-as`). Purely a `ninja run` convenience -- carried onto
+    the field's `json_schema_extra` by the loaders so `clickutil.build_options`
+    can emit the alias; it never affects the argv the tool actually receives
+    (that still uses `nom_de_guerre`).
+
     On an *output* field, a string `implicit` containing `{name}`
     placeholders is resolved by `steps.dispatch._fill_outputs` as a
     `str.format` template against the step's prepared (validated) input
@@ -94,6 +101,7 @@ class ParamMeta(BaseModel):
     repeat_as_tokens: bool = False
     dtype: str | None = None
     choices: list[Any] | None = None
+    abbreviation: str | None = None
 
 
 class Policies(BaseModel):

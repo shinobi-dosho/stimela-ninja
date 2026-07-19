@@ -67,6 +67,24 @@ def test_writable_false_is_carried_onto_the_field_json_schema_extra():
     assert readonly_path_fields(schema.inputs_model) == {"input"}
 
 
+def test_abbreviation_is_carried_onto_the_field_json_schema_extra(tmp_path):
+    # `abbreviation` rides the same json_schema_extra channel as `writable`,
+    # so clickutil.build_options can emit a short flag for a worker-config CLI.
+    schema_file = tmp_path / "abbrev.yaml"
+    schema_file.write_text(
+        "name: thing\n"
+        "inputs:\n"
+        "  refant:\n"
+        "    dtype: str\n"
+        "    abbreviation: ra\n"
+        "  plain:\n"
+        "    dtype: str\n"
+    )
+    inputs = load_worker_schema(schema_file).inputs_model.model_fields
+    assert inputs["refant"].json_schema_extra == {"abbreviation": "ra"}
+    assert inputs["plain"].json_schema_extra is None
+
+
 def test_use_missing_path_raises_config_load_error(tmp_path):
     bad = tmp_path / "bad.yaml"
     bad.write_text("name: bad\ninputs:\n  _use: does.not.exist\n")

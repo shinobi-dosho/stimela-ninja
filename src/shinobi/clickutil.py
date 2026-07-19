@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import types
 from pathlib import Path
-from typing import Any, Union, get_args, get_origin
+from typing import Any, Literal, Union, get_args, get_origin
 
 import click
 from pydantic import BaseModel
@@ -69,6 +69,24 @@ def _is_path_annotation(annotation) -> bool:
     return any(isinstance(leaf, type) and issubclass(leaf, Path) for leaf in _unwrap_annotation(annotation))
 
 
+def _literal_choices(annotation) -> tuple[Any, ...] | None:
+    """The allowed values of a `typing.Literal` named by `annotation`
+    (unwrapping `Optional`/`Union`), or `None` if it names no `Literal`. A
+    cab's `choices:` key narrows the field's annotation to
+    `Literal[*choices]` (see `loaders._modelgen.narrow_choices`), so this is
+    how `click_type` recovers those values to build a `click.Choice`.
+    """
+    origin = get_origin(annotation)
+    if origin is Literal:
+        return get_args(annotation)
+    if origin is Union or origin is types.UnionType:
+        for arg in get_args(annotation):
+            found = _literal_choices(arg)
+            if found is not None:
+                return found
+    return None
+
+
 def click_type(annotation, is_path: bool):
     """Pick the `click` parameter type for a field's annotation.
 
@@ -78,11 +96,19 @@ def click_type(annotation, is_path: bool):
             `_is_path_annotation`); takes priority over the leaf type.
 
     Returns:
-        A `click.Path()` if `is_path`, otherwise the `click` type
-        matching the annotation's leaf type (`click.STRING` as fallback).
+        A `click.Path()` if `is_path`; a `click.Choice` if the annotation
+        is a `typing.Literal` (a cab's `choices:` -- so an out-of-set value
+        is rejected by click itself, with the allowed values listed in
+        `--help` and the error); otherwise the `click` type matching the
+        annotation's leaf type (`click.STRING` as fallback). Choice values
+        are stringified: every real cab `choices:` list is strings, and the
+        model's own `Literal` still validates the coerced value.
     """
     if is_path:
         return click.Path()
+    choices = _literal_choices(annotation)
+    if choices is not None:
+        return click.Choice([str(c) for c in choices])
     for leaf in _unwrap_annotation(annotation):
         if leaf in (int, float, bool, str):
             return {int: click.INT, float: click.FLOAT, bool: click.BOOL, str: click.STRING}[leaf]
@@ -146,7 +172,11 @@ def build_options(model: type[BaseModel]) -> list[click.Option]:
     Returns:
         A list of `click.Option` instances, one per leaf field. Boolean
         fields become `--flag/--no-flag` options; list/tuple fields become
-        `multiple=True` options.
+        `multiple=True` options; a field carrying an `abbreviation` on its
+        `json_schema_extra` (a cab's `abbreviation:` key, threaded by the
+        loaders) also gets a `-<abbrev>` short alias. click always derives
+        the callback kwarg name from the long flag, so the short alias
+        never affects the round-trip to `flat_name`.
     """
     options = []
     for flat_name, _path, field in iter_leaf_fields(model):
@@ -165,8 +195,21 @@ def build_options(model: type[BaseModel]) -> list[click.Option]:
             if field_is_list:
                 kwargs["multiple"] = True
             flag = option_flag(flat_name)
-        options.append(click.Option([flag], **kwargs))
+        options.append(click.Option([flag, *_abbreviation_opts(field)], **kwargs))
     return options
+
+
+def _abbreviation_opts(field: FieldInfo) -> list[str]:
+    """`["-<abbrev>"]` if `field` carries an `abbreviation` on its
+    `json_schema_extra` (a cab's `abbreviation:` key), else `[]`. A
+    secondary short-option alias for the field's long flag; multi-character
+    single-dash names (`-as`, `-sublist`) are fine -- click matches the
+    whole token, only rejecting glued forms like `-asVALUE`.
+    """
+    extra = field.json_schema_extra
+    if isinstance(extra, dict) and extra.get("abbreviation"):
+        return [f"-{extra['abbreviation']}"]
+    return []
 
 
 def unflatten_kwargs(model: type[BaseModel], flat_kwargs: dict[str, Any]) -> dict[str, Any]:

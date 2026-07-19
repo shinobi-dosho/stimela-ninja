@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from pydantic import ConfigDict, create_model
+from pydantic import ConfigDict, Field, create_model
 
 
 def sanitize(name: str) -> str:
@@ -179,6 +179,7 @@ def build_model(
     *,
     allow_extra: bool = False,
     choices: dict[str, list[Any]] | None = None,
+    extras: dict[str, dict[str, Any]] | None = None,
 ) -> type:
     """Create a pydantic model class named `name`.
 
@@ -186,11 +187,26 @@ def build_model(
     `required_field_spec` for the required/default rule applied to each.
     `choices` maps a field name to its allowed values (see
     `narrow_choices`) -- omitted or absent for a field means its plain
-    `dtype`-derived type applies unchanged.
+    `dtype`-derived type applies unchanged. `extras` maps a field name to a
+    `json_schema_extra` dict carried onto that field (e.g. `abbreviation`
+    for the CLI); a field absent from `extras` gets none. Mirrors what
+    `worker_schema._leaf_field` builds per field, so both scabha-dialect
+    loaders attach field-level hints the same way.
     """
     choices = choices or {}
+    extras = extras or {}
+
+    def _spec(field_name: str, dtype: str, required: bool, default: Any) -> tuple[Any, Any]:
+        annotation, field_default = required_field_spec(
+            narrow_choices(dtype_to_type(dtype), choices.get(field_name)), required, default
+        )
+        extra = extras.get(field_name)
+        if extra:
+            return (annotation, Field(field_default, json_schema_extra=extra))
+        return (annotation, field_default)
+
     definitions: dict[str, tuple[Any, Any]] = {
-        field_name: required_field_spec(narrow_choices(dtype_to_type(dtype), choices.get(field_name)), required, default)
+        field_name: _spec(field_name, dtype, required, default)
         for field_name, (dtype, required, default) in fields.items()
     }
     config = ConfigDict(extra="allow") if allow_extra else None
@@ -260,6 +276,7 @@ COMMON_LEAF_KEYS = {
     "required",
     "implicit",
     "choices",
+    "abbreviation",
     "policies",
     "writable",
     "must_exist",

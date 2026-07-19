@@ -238,6 +238,15 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
     in_choices = {field: meta.choices for field, meta in field_meta.items() if meta.choices}
     out_choices = {field: meta.choices for field, meta in out_meta.items() if meta.choices}
 
+    # `abbreviation` is a CLI-only alias -- carried onto the field's
+    # json_schema_extra so `clickutil.build_options` can emit a `-<abbrev>`
+    # short flag. Only meaningful on inputs (outputs aren't CLI options).
+    in_extras = {
+        field: {"abbreviation": meta.abbreviation}
+        for field, meta in field_meta.items()
+        if meta.abbreviation
+    }
+
     return Cab(
         name=name,
         command=spec["command"],
@@ -245,7 +254,7 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
         image=image,
         flavour=flavour,
         policies=Policies(**policies_spec),
-        inputs_model=build_model(f"{name}_Inputs", in_fields, choices=in_choices),
+        inputs_model=build_model(f"{name}_Inputs", in_fields, choices=in_choices, extras=in_extras),
         outputs_model=build_model(f"{name}_Outputs", out_fields, choices=out_choices),
         field_meta=field_meta,
         wranglers=wranglers,
@@ -304,6 +313,7 @@ def _collect(
         positional_head = bool(param_policies.get("positional_head", False))
         repeat_as_tokens = param_policies.get("repeat") == "list"
         choices = validate_choices(value.get("choices"), error=CabLoadError)
+        abbreviation = value.get("abbreviation")
         if (
             nom
             or implicit is not None
@@ -312,6 +322,7 @@ def _collect(
             or positional_head
             or repeat_as_tokens
             or choices
+            or abbreviation
         ):
             metas[field] = ParamMeta(
                 nom_de_guerre=nom,
@@ -321,5 +332,6 @@ def _collect(
                 positional_head=positional_head,
                 repeat_as_tokens=repeat_as_tokens,
                 choices=choices,
+                abbreviation=abbreviation,
             )
     return fields, metas

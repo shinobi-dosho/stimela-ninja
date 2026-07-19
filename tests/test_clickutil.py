@@ -1,8 +1,17 @@
+from typing import Literal
+
 import click
 from click.testing import CliRunner
 from pydantic import BaseModel, Field
 
-from shinobi.clickutil import bool_option_flag, build_options, iter_leaf_fields, option_flag, unflatten_kwargs
+from shinobi.clickutil import (
+    bool_option_flag,
+    build_options,
+    click_type,
+    iter_leaf_fields,
+    option_flag,
+    unflatten_kwargs,
+)
 
 
 class _Plotelev(BaseModel):
@@ -125,6 +134,83 @@ def test_unflatten_kwargs_drops_click_multiple_empty_tuple_default():
     assert inputs.channel_range is None
     assert inputs.weight is None
     assert inputs.tags is None
+
+
+class _ChoiceInputs(BaseModel):
+    ms: str
+    mode: Literal["sim", "add", "subtract"] = "sim"
+    # a choice field with a default is Optional -> Literal[...] | None, the
+    # shape narrow_choices produces for an optional/default cab `choices:` field.
+    interp: Literal["nearest", "linear", "cubic"] | None = "nearest"
+
+
+def test_click_type_maps_literal_to_choice():
+    # a bare Literal and an Optional[Literal] (choice-with-default) both map
+    # to a click.Choice listing exactly the allowed values.
+    bare = click_type(Literal["sim", "add", "subtract"], is_path=False)
+    optional = click_type(Literal["nearest", "linear", "cubic"] | None, is_path=False)
+    assert isinstance(bare, click.Choice) and list(bare.choices) == ["sim", "add", "subtract"]
+    assert isinstance(optional, click.Choice) and list(optional.choices) == ["nearest", "linear", "cubic"]
+
+
+def test_build_options_choice_field_becomes_click_choice():
+    options = build_options(_ChoiceInputs)
+    by_name = {opt.name: opt for opt in options}
+    assert isinstance(by_name["mode"].type, click.Choice)
+    assert list(by_name["mode"].type.choices) == ["sim", "add", "subtract"]
+    assert isinstance(by_name["interp"].type, click.Choice)
+
+
+def test_build_options_choice_field_rejects_out_of_set_value_via_cli():
+    options = build_options(_ChoiceInputs)
+
+    @click.command()
+    def cmd(**kwargs):
+        click.echo(kwargs["mode"])
+
+    for opt in options:
+        cmd.params.append(opt)
+
+    runner = CliRunner()
+    assert runner.invoke(cmd, ["--ms", "x", "--mode", "add"]).output.strip() == "add"
+    rejected = runner.invoke(cmd, ["--ms", "x", "--mode", "bogus"])
+    assert rejected.exit_code != 0
+    assert "not one of" in rejected.output
+
+
+class _AbbrevInputs(BaseModel):
+    ms: str
+    ascii_sky: str | None = Field(default=None, json_schema_extra={"abbreviation": "as"})
+    polarisation: bool = Field(default=True, json_schema_extra={"abbreviation": "pol"})
+    refant: str | None = "auto"  # no abbreviation
+
+
+def test_build_options_emits_short_alias_from_abbreviation():
+    options = build_options(_AbbrevInputs)
+    by_name = {opt.name: opt for opt in options}
+    assert "-as" in by_name["ascii_sky"].opts
+    assert "--ascii-sky" in by_name["ascii_sky"].opts
+    # the bool field's abbreviation rides alongside its --flag/--no-flag pair
+    assert "-pol" in by_name["polarisation"].opts
+    # a field with no abbreviation gets only its long flag
+    assert by_name["refant"].opts == ["--refant"]
+
+
+def test_short_alias_round_trips_to_same_field_as_long_flag():
+    options = build_options(_AbbrevInputs)
+
+    @click.command()
+    def cmd(**kwargs):
+        click.echo(f"{kwargs['ascii_sky']!r} {kwargs['polarisation']!r}")
+
+    for opt in options:
+        cmd.params.append(opt)
+
+    runner = CliRunner()
+    via_long = runner.invoke(cmd, ["--ms", "x", "--ascii-sky", "cat.txt"])
+    via_short = runner.invoke(cmd, ["--ms", "x", "-as", "cat.txt", "-pol"])
+    assert via_long.output.strip() == "'cat.txt' True"
+    assert via_short.output.strip() == "'cat.txt' True"
 
 
 def test_unflatten_kwargs_keeps_populated_multiple_values():
