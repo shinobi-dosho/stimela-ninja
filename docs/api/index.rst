@@ -29,6 +29,9 @@ Supporting types used when defining cabs, not re-exported at the top level.
 .. autoclass:: shinobi.steps.schema.Policies
    :members:
 
+.. autoclass:: shinobi.steps.schema.ScatterSpec
+   :members:
+
 .. autofunction:: shinobi.steps.schema.path_fields
 
 Execution

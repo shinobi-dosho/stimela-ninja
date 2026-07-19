@@ -84,6 +84,14 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
     dependents: list[set[int]] = [set() for _ in names]
 
     for i, ref in enumerate(recipe.steps):
+        if ref.scatter is not None:
+            step_inputs = set(ref.step.inputs_model.model_fields)
+            for field in ref.scatter.fields:
+                if field not in step_inputs:
+                    raise RecipeGraphError(
+                        f"step '{ref.name}' declares scatter over '{field}', which is not a "
+                        f"field of {ref.step.inputs_model.__name__}"
+                    )
         for field, source in ref.wiring.items():
             sources = source if isinstance(source, list) else [source]
             for one_source in sources:
@@ -190,6 +198,11 @@ def check_offloadable(recipe: "Recipe") -> RecipeGraph:
 
     for ref in recipe.steps:
         scope = ref.step
+        if ref.scatter is not None:
+            reasons.append(
+                f"step '{ref.name}' declares scatter over {ref.scatter.fields} -- "
+                "scatter is not supported by offloaded engines in this version"
+            )
         if ref.func is not None:
             reasons.append(
                 f"step '{ref.name}' has an orchestration function -- run it locally"

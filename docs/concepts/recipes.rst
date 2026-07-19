@@ -127,6 +127,47 @@ raised exception -- no further steps are submitted; steps already running are
 allowed to finish (a launched job cannot be honestly cancelled), and the first
 failure by declaration order is the one reported.
 
+Scatter / fan-out
+-----------------
+
+A step can declare that one or more of its inputs are lists at the *recipe*
+level and should be fanned out into multiple independent executions. Each slice
+receives the element at the same index from every scattered field. The step's
+own ``inputs_model``/``outputs_model`` describe a single slice; downstream
+steps see the scattered step's outputs gathered into lists.
+
+Use the ``scatter=`` argument of ``add_step`` or the decorators:
+
+.. code-block:: python
+
+    from pydantic import BaseModel
+    from shinobi import Recipe
+
+    class Inputs(BaseModel):
+        mss: list[str]
+
+    class Outputs(BaseModel):
+        images: list[str]
+
+    recipe = Recipe(name="image_all", inputs_model=Inputs, outputs_model=Outputs)
+    recipe.add_step(
+        "image",
+        wsclean,            # wsclean.inputs_model has ms: str
+        scatter=["ms"],
+        ms=recipe.inputs.mss,
+    )
+    recipe.set_output("images", recipe.outputs.image.image)
+
+Rules:
+
+* every scattered field must be a list at runtime;
+* all scattered fields for one step must have the same length;
+* the step's schema describes one slice (e.g. ``ms: str``), not the list;
+* a downstream step can scatter over a gathered output in turn, or consume the
+  whole list as a single input.
+
+Scattered recipes are not offloadable in v1.
+
 Orchestration functions
 ------------------------
 
