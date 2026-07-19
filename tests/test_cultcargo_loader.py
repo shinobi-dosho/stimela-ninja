@@ -155,6 +155,56 @@ def test_param_repeat_list_policy_parsed_into_meta():
     )
 
 
+ABBREV_CHOICE_YAML = """
+cabs:
+    skysim:
+        command: simms skysim
+        inputs:
+            ms:
+                dtype: MS
+                required: true
+            ascii-sky:
+                dtype: File
+                abbreviation: as
+            mode:
+                dtype: str
+                default: sim
+                choices: [sim, add, subtract]
+                abbreviation: m
+            column:
+                dtype: str
+                default: DATA
+"""
+
+
+def test_abbreviation_flows_to_meta_and_field_json_schema_extra():
+    skysim = loads(ABBREV_CHOICE_YAML)["skysim"]
+    # captured on the ParamMeta ...
+    assert skysim.field_meta["ascii_sky"].abbreviation == "as"
+    assert skysim.field_meta["mode"].abbreviation == "m"
+    # ... and carried onto the model field so build_options can read it.
+    fields = skysim.inputs_model.model_fields
+    assert fields["ascii_sky"].json_schema_extra == {"abbreviation": "as"}
+    assert fields["mode"].json_schema_extra == {"abbreviation": "m"}
+    # a field with no abbreviation carries no extra
+    assert fields["column"].json_schema_extra is None
+
+
+def test_choices_narrow_field_annotation_to_literal():
+    from typing import get_args
+
+    skysim = loads(ABBREV_CHOICE_YAML)["skysim"]
+    # mode is a choice-with-default -> Optional[Literal[...]]; the Literal's
+    # allowed values are exactly the `choices:` list.
+    assert set(get_args(get_args(skysim.inputs_model.model_fields["mode"].annotation)[0])) == {
+        "sim", "add", "subtract",
+    }
+    assert skysim.field_meta["mode"].choices == ["sim", "add", "subtract"]
+    # an out-of-set value fails pydantic validation
+    with pytest.raises(pydantic.ValidationError):
+        skysim.inputs_model(ms="x.ms", mode="bogus")
+
+
 # -- _use / _include resolution --
 
 USE_ON_IMAGE_YAML = """
