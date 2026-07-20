@@ -291,3 +291,75 @@ def test_offload_check_reports_all_reasons_at_once():
         check_offloadable(recipe)
     msg = str(exc.value)
     assert "MUTABLE" in msg and "orchestration function" in msg
+
+
+# -- additional wiring/field validation --
+
+
+def test_wiring_field_not_on_consumer_inputs_is_rejected():
+    make = _cab("make", In, PathOut)
+    use = _cab("use", UseIn, OkOut)
+    with pytest.raises(RecipeGraphError, match="step 'use' wires input 'nope'"):
+        build_graph(
+            _recipe(
+                [
+                    StepRef(name="make", step=make, wiring={"name": InputRef(field="name")}),
+                    StepRef(name="use", step=use, wiring={"nope": OutputRef(step="make", field="path")}),
+                ]
+            )
+        )
+
+
+def test_output_ref_to_missing_field_is_rejected():
+    make = _cab("make", In, PathOut)
+    use = _cab("use", UseIn, OkOut)
+    with pytest.raises(RecipeGraphError, match="output 'nope' of step 'make'"):
+        build_graph(
+            _recipe(
+                [
+                    StepRef(name="make", step=make, wiring={"name": InputRef(field="name")}),
+                    StepRef(name="use", step=use, wiring={"path": OutputRef(step="make", field="nope")}),
+                ]
+            )
+        )
+
+
+def test_output_wiring_field_not_on_recipe_outputs_is_rejected():
+    make = _cab("make", In, PathOut)
+    with pytest.raises(RecipeGraphError, match="output 'nope' is not a field of OkOut"):
+        build_graph(
+            _recipe(
+                [StepRef(name="make", step=make, wiring={"name": InputRef(field="name")})],
+                output_wiring={"nope": OutputRef(step="make", field="path")},
+            )
+        )
+
+
+def test_output_wiring_to_missing_step_field_is_rejected():
+    make = _cab("make", In, PathOut)
+    with pytest.raises(RecipeGraphError, match="output 'ok' is wired from output 'nope' of step 'make'"):
+        build_graph(
+            _recipe(
+                [StepRef(name="make", step=make, wiring={"name": InputRef(field="name")})],
+                output_wiring={"ok": OutputRef(step="make", field="nope")},
+            )
+        )
+
+
+def test_constant_param_not_on_step_inputs_is_rejected():
+    make = _cab("make", In, PathOut)
+    use = _cab("use", UseIn, OkOut)
+    with pytest.raises(RecipeGraphError, match="step 'use' sets constant param 'nope'"):
+        build_graph(
+            _recipe(
+                [
+                    StepRef(name="make", step=make, wiring={"name": InputRef(field="name")}),
+                    StepRef(
+                        name="use",
+                        step=use,
+                        wiring={"path": OutputRef(step="make", field="path")},
+                        params={"nope": "x"},
+                    ),
+                ]
+            )
+        )

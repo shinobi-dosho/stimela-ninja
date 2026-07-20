@@ -23,10 +23,10 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Callable
 
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, Field, ValidationError, create_model
 from shinobi.cache import compute_cache_key, get_cache_manifest
 from shinobi.config import AppConfig
-from shinobi.exceptions import ParameterError
+from shinobi.exceptions import CabRunError, ParameterError, ShinobiError, StepError
 from shinobi.graph import build_graph
 from shinobi.policies import build_argv
 from shinobi.results import StepResult
@@ -104,7 +104,12 @@ def _prepare_inputs(
     validation pass for no new information.
     """
     if validated is None:
-        validated = scope.inputs_model(**kwargs)
+        try:
+            validated = scope.inputs_model(**kwargs)
+        except ValidationError as exc:
+            raise ParameterError(
+                f"{scope.name}: parameter validation failed:\n{exc}"
+            ) from exc
     prepared: dict[str, Any] = {}
     for name in type(validated).model_fields:
         if scope.mutability_of(name) is Mutability.MUTABLE:
@@ -172,7 +177,12 @@ class ExecContext:
         """
         self.scope = scope
         self._raw = raw_inputs
-        self.inputs = scope.inputs_model(**raw_inputs)
+        try:
+            self.inputs = scope.inputs_model(**raw_inputs)
+        except ValidationError as exc:
+            raise ParameterError(
+                f"{scope.name}: parameter validation failed:\n{exc}"
+            ) from exc
         self.outputs = None
         self._backend_override = backend_override
         self._recipe_backend = recipe_backend
@@ -445,7 +455,12 @@ def _fill_outputs(cab: Cab, prepared: dict[str, Any], run, wrangled: dict[str, A
             meta = cab.field_meta.get(name)
             if meta is not None and isinstance(meta.implicit, str):
                 values[name] = _resolve_implicit_template(cab, name, meta.implicit, prepared)
-    return cab.outputs_model(**values)
+    try:
+        return cab.outputs_model(**values)
+    except ValidationError as exc:
+        raise ParameterError(
+            f"{cab.name}: output validation failed:\n{exc}"
+        ) from exc
 
 
 def _resolve_implicit_template(
@@ -526,7 +541,7 @@ def _resolve_wiring(
     already -- the scheduler only makes a step ready once all its upstream
     dependencies have completed.
     """
-    def resolve_one(source: InputRef | OutputRef) -> Any:
+    def resolve_one(field: str, source: InputRef | OutputRef) -> Any:
         """Resolve a single wiring source to its concrete value.
 
         Args:
@@ -538,14 +553,20 @@ def _resolve_wiring(
         """
         if isinstance(source, InputRef):
             return prepared[source.field]
-        return getattr(results[source.step].outputs, source.field)
+        try:
+            return getattr(results[source.step].outputs, source.field)
+        except AttributeError as exc:
+            raise StepError(
+                f"step '{ref.name}' cannot resolve wiring for input '{field}': "
+                f"step '{source.step}' has no output '{source.field}'"
+            ) from exc
 
     wired: dict[str, Any] = {}
     for field, source in ref.wiring.items():
         if isinstance(source, list):
-            wired[field] = [resolve_one(s) for s in source]
+            wired[field] = [resolve_one(field, s) for s in source]
         else:
-            wired[field] = resolve_one(source)
+            wired[field] = resolve_one(field, source)
     return {**ref.params, **wired}  # wiring overrides params
 
 
@@ -845,11 +866,28 @@ def _run_recipe(
             submit_ready()
 
     # A worker exception (e.g. a bad override's ValidationError) propagates
-    # out of the recipe, first-by-declaration if several occurred.
+    # out of the recipe, first-by-declaration if several occurred. Add the
+    # recipe step context to the message so the caller can tell *which* step
+    # failed, without losing the original exception type for Shinobi errors.
     if errors:
-        raise min(errors, key=lambda e: e[0])[1]
+        i, exc = min(errors, key=lambda e: e[0])
+        ref_name = recipe.steps[i].name
+        msg = f"step '{ref_name}' in recipe '{recipe.name}' failed: {exc}"
+        if isinstance(exc, ShinobiError):
+            raise type(exc)(msg) from exc
+        raise StepError(msg) from exc
 
-    returncode = min(failures, key=lambda f: f[0])[1].returncode if failures else 0
+    # If any step failed, surface its error before we try to collect declared
+    # outputs -- a failed step's outputs model may be hollow and missing the
+    # field, which would mask the real failure behind an AttributeError.
+    if failures:
+        i, failed = min(failures, key=lambda f: f[0])
+        ref_name = recipe.steps[i].name
+        raise CabRunError(
+            f"step '{ref_name}' in recipe '{recipe.name}' failed "
+            f"(returncode {failed.returncode})"
+        )
+
     ordered = [ref.name for ref in recipe.steps if ref.name in results]
     outputs = {
         field: getattr(results[out_ref.step].outputs, out_ref.field)
@@ -858,7 +896,7 @@ def _run_recipe(
     }
     return StepResult(
         name=recipe.name,
-        returncode=returncode,
+        returncode=0,
         outputs=recipe.outputs_model(**outputs),
         inputs=recipe.inputs_model(**prepared),
         stdout="\n".join(s for name in ordered if (s := results[name].stdout)),

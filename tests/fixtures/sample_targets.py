@@ -107,6 +107,15 @@ chained = Recipe(
 )
 
 
+fail_recipe = Recipe(
+    name="fail_recipe",
+    inputs_model=NoInputs,
+    outputs_model=CommandOutputs,
+    steps=[StepRef(name="fail", step=fail)],
+    output_wiring={"returncode": OutputRef(step="fail", field="returncode")},
+)
+
+
 # -- offloadable recipe target for `ninja compile` (Path-typed data flow) --
 
 
