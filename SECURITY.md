@@ -26,18 +26,66 @@ and credit you in the release notes if you'd like.
 
 ## Security posture
 
-The threat model and defensive design are documented in
-[`AGENTS.md`](AGENTS.md) — see the *"Never eval()/exec() a cab's `command`"*
-section. In short:
+Cab definitions — especially cult-cargo YAML, which shinobi loads from
+arbitrary files — are effectively untrusted content that can contain
+executable code as data. Real cult-cargo cabs exist where `command:` is
+inline Python/shell source (e.g. `bdsf.catalog`) or a dotted reference to a
+function to import and call (e.g. `msutils.copycol`'s `flavour: python`);
+these are non-`"binary"` flavours.
 
-- **Cab definitions are treated as untrusted content.** cult-cargo / stimela-
-  classic YAML can come from anywhere, so it is never `eval`/`exec`-ed.
-- Only the `binary` cab flavour is executed; other flavours are rejected by
-  `build_argv()` with `UnsupportedFlavourError` *before* any argv is built.
-- Backends invoke commands with **list-form** `subprocess.run` — never
-  `shell=True`, never string interpolation into a shell.
-- Compiled offload scripts embed exec-form argv only (via `shlex.join`) with
-  charset-validated job names.
+### Never eval()/exec() a cab's `command`
+
+shinobi never treats a non-`"binary"` cab's `command` as code to run: every
+backend shells out via `subprocess.run(argv_list, ...)` with a **list**
+(never `shell=True`, never `eval()`/`exec()`), and
+`shinobi.policies.build_argv()` explicitly rejects any cab whose `flavour`
+isn't `"binary"` with `UnsupportedFlavourError`, *before* argv is ever built
+— so a non-executable `command` can never reach subprocess as `argv[0]` in
+the first place, let alone be interpreted as code. This check runs even
+during `ninja run --dryrun` (it's in `build_argv()`, which dispatch always
+calls before touching the backend), so a recipe hitting an
+unsupported-flavour cab is reported clearly rather than silently mishandled.
+
+If proper support for a code-carrying flavour is ever added: don't
+`eval()`/`exec()` the embedded string in-process. The safe shape is to write
+it to a temp file and invoke a real subprocess on it (`python /tmp/x.py
+--args`, still a list argv, no shell) — same sandboxing boundary as every
+other cab, no in-process code execution.
+
+### `dynamic_schema` and package-scoped includes are not resolved
+
+`dynamic_schema: dotted.path` (real cult-cargo's `wsclean.yml` uses this) is
+a related, separate risk — resolving it means *importing* an arbitrary
+module and *calling* a function it names, at cab-load time. Not implemented;
+`shinobi.loaders.cultcargo` warns when it sees the key rather than silently
+producing a possibly-incomplete schema (a cab relying solely on
+`dynamic_schema` with no static `inputs:`/`outputs:` loads empty).
+
+The same boundary extends to "never import a cab package": resolving
+cult-cargo's package-scoped `_include` form would normally mean importing
+the named package (`importlib`) to find its data directory, but that risks
+executing arbitrary code from *any* `__init__.py` on the path. Instead,
+callers pass an explicit `package_roots={"cultcargo": Path(...)}` mapping
+into `load_file()`/`loads()`, and a dotted name is resolved against the
+longest registered prefix as a plain filesystem lookup — never through
+Python's import machinery.
+
+### Backends never shell out through a shell
+
+Backends invoke commands with **list-form** `subprocess.run` — never
+`shell=True`, never string interpolation into a shell.
+
+### Offload scripts are charset-validated before interpolation
+
+Compiled offload scripts (`shinobi.offload.slurm` and the `slurm` step
+backend share one script-writing module, `shinobi.backends.slurm_script`, so
+the hardening below can't drift between the two) embed **exec-form argv
+only** (via `shlex.join`, never a shell template), and `cab.name`/job-name/
+sbatch-option keys are charset-validated before being interpolated into a
+`#SBATCH` line — a newline in a cab name pulled from untrusted cult-cargo
+YAML would otherwise be able to smuggle in an extra `#SBATCH` directive. The
+non-`"binary"` flavour guard is inherited via `build_argv()`, so an offloaded
+recipe gets the same guarantee as a locally-run one.
 
 If you find a way around any of these guarantees, it's a security issue — please
 report it as above.

@@ -20,7 +20,7 @@ step's output.
   `parameters.json` definitions (examples/stimela_classic/, vendored) via
   `shinobi.loaders.stimela_classic`. The CASA-task cabs load with
   `flavour="casa-task"` (not `"binary"`), so they're schema-complete but
-  raise `UnsupportedFlavourError` if actually executed -- see AGENTS.md's
+  raise `UnsupportedFlavourError` if actually executed -- see SECURITY.md's
   "Never eval()/exec() a cab's `command`". `msutils` is a real binary.
 * `breizorro`/`cubical` are hand-declared here. cubical's per-Jones-term
   parameters (`g1-solvable`, `g-time-int`, ...) use `input_patterns=

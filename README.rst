@@ -59,8 +59,9 @@ Architecture
   is reused as-is, including its ``_include`` (file composition) and ``_use``
   (dotted-path deep-merge) mechanisms, verified against real upstream cab
   files. The ``=config.x.y`` expression language and package-scoped includes
-  are deliberately not implemented -- see the module docstring and
-  ``AGENTS.md``.
+  are deliberately not implemented -- see the module docstring and, for the
+  security rationale behind the package-scoped-include restriction,
+  ``SECURITY.md``.
 
 - **Steps** (``shinobi.step``, ``shinobi.pystep``) -- a step binds an
   orchestration function to a scope. ``@shinobi.step`` decorates a function
@@ -73,13 +74,14 @@ Architecture
   out to the relevant CLI rather than a Python SDK: ``native`` (subprocess),
   ``docker``/``podman``/``apptainer``, ``slurm`` (``sbatch``/``sacct``),
   ``kubernetes`` (``kubectl``, batch ``Job``\ s). Every backend blocks until
-  the job finishes and returns a ``Result`` -- no async mode, recipes are
-  plain Python. Container/cluster backends derive bind mounts from the cab's
-  own schema (File/MS-dtype params get their parent dir mounted).
-  ``native``/container backends were verified against a real
-  ``quay.io/stimela/wsclean`` image; ``kubernetes`` against a real ``kind``
-  cluster; ``slurm`` was not live-verified (no cluster was available in the
-  dev environment) -- see ``AGENTS.md`` for what that means in practice.
+  the job finishes and returns a ``BackendRun`` -- no async mode, steps are
+  scheduled by dispatch, not left to fire-and-forget. Container/cluster
+  backends derive bind mounts from the cab's own schema (File/MS-dtype
+  params get their parent dir mounted). ``native``/container backends were
+  verified against a real ``quay.io/stimela/wsclean`` image; ``kubernetes``
+  against a real ``kind`` cluster; the ``slurm`` step backend has no live
+  test yet (covered only by mocked-CLI tests) -- see
+  ``docs/concepts/backends.rst`` for the full verification status.
 
 - **Recipes** (``shinobi.Recipe``) -- just Python. A ``Recipe`` composes
   steps, wiring one step's output into the next either declaratively (via
@@ -114,13 +116,14 @@ running anything::
         v
     [ mask ]
 
-This actually runs the recipe's real Python code (so its ``if``/``for`` do
-whatever they'd really do for the given options), just with every cab swapped
-for a no-op that records the call instead of executing it -- so it only ever
-shows the *one* path taken for these inputs, never an untaken branch.
-Fan-out/fan-in appear when the recipe genuinely threads one step's output into
-two later ones (or vice versa); see ``AGENTS.md`` for how that's detected and
-why ``pipefunc`` (a static, declared-pipeline library) wasn't a fit for this.
+Nothing is executed to produce this: a ``Recipe`` is a declared graph -- a
+list of steps plus their ``InputRef``/``OutputRef`` wiring, built once when
+the recipe module runs -- and ``--dryrun`` simply renders that graph. The
+same validation (``shinobi.graph.build_graph``) backs both the renderer and
+the real executor, so a cyclic or mis-wired recipe is rejected identically
+either way, and the diagram never disagrees with what a real run would do.
+Steps that share the same declared dependencies render on one row (a
+**fan-out**); a step fed by several upstream outputs is a **fan-in**.
 
 A purely-declarative recipe (no orchestration functions, no MUTABLE inputs,
 only paths crossing between steps) can be **offloaded** to a cluster with
@@ -130,7 +133,8 @@ only paths crossing between steps) can be **offloaded** to a cluster with
     ninja compile myrecipe.py:pipe --target /scratch/made.ms --submit
     ninja status /scratch/.shinobi/pipe/handle.json
 
-See ``AGENTS.md`` for design conventions and what's deliberately left out.
+See ``docs/design.rst`` for the design philosophy behind the declared-DAG
+model and what's deliberately left out.
 
 Status
 ------

@@ -5,7 +5,7 @@ of script; unifying the grammar here means the security-hardening around
 what may be interpolated into it can't drift between the two the way it
 had -- the offload compiler charset-validated `cab.name`/sbatch-option
 keys before writing them into a `#SBATCH` line, the backend didn't, so a
-cab name from untrusted cult-cargo YAML (see AGENTS.md's "never eval()/
+cab name from untrusted cult-cargo YAML (see SECURITY.md's "never eval()/
 exec()" note) could smuggle a newline into a real Slurm submission that
 never goes through the offload compiler.
 """

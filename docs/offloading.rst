@@ -118,11 +118,16 @@ persistent process to keep alive:
 
 Once a run is done, remove its handle file and Slurm job logs with
 ``ninja clean --launches --workdir <workdir>`` (or run it from ``<workdir>``;
-see :ref:`ninja-clean`) -- unlike run manifests
-and the step cache, this is opt-in, since deleting a handle for a
+see :ref:`ninja-clean`) -- unlike run manifests and the step cache, this is
+opt-in, since deleting a handle for a still-running detached job doesn't
+stop it, but does destroy ``ninja status``'s only local record of it.
 
 .. note::
 
-   The Slurm engine was **not** live-verified against a real cluster in the
-   development environment. See ``AGENTS.md`` in the repository for what that
-   means in practice.
+   ``compile``/``submit_slurm``/``status_slurm`` are live-verified
+   single-node against a real Slurm controller (``tests/test_slurm_live.py``,
+   plus the throwaway all-in-one cluster under ``tests/slurm_live/``) -- not
+   proven multi-node, since only a single controller+node was available. The
+   plain ``slurm`` *step* backend used by ``ninja run`` (as opposed to
+   ``ninja compile``) is a separate code path with no live test yet; see
+   :doc:`concepts/backends`.

@@ -171,12 +171,14 @@ Scattered recipes are not offloadable in v1.
 Orchestration functions
 ------------------------
 
-Wiring does not have to be fully declarative. Because a recipe is plain
-Python, its orchestration can be a function whose body uses ordinary ``if`` and
-``for``. The graph a ``--dryrun`` shows is then the *one* path actually taken
-for the given inputs -- the dry run executes the real control flow with each
-cab swapped for a no-op that records the call, so it never shows an untaken
-branch.
+A step's own body can still be arbitrary Python. ``@shinobi.step``/
+``@recipe.step`` bind a plain function that receives ``ctx`` and decides how
+(or how many times) to call ``ctx.run()`` -- to retry, post-process a
+result, or auto-run with ``None``. That function only runs when the step
+actually dispatches, though: it has no effect on the recipe's *declared*
+graph, which is fixed by the ``InputRef``/``OutputRef`` wiring passed to
+``add_step``/``@recipe.step`` when the recipe is built, and is exactly what
+``--dryrun`` renders -- nothing is executed to produce it.
 
 The rendered graph groups independent steps that share the same set of
 dependencies onto a single row (a **fan-out**), and shows steps that several

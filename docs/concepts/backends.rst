@@ -68,6 +68,14 @@ Verification status
 
 The ``native`` and container backends were verified against a real
 ``quay.io/stimela/wsclean`` image, and ``kubernetes`` against a real ``kind``
-cluster. The ``slurm`` backend was **not** live-verified -- no cluster was
-available in the development environment. See ``AGENTS.md`` in the repository
-for what that means in practice.
+cluster (``hostPath`` volumes there only work if the node running the pod
+has the path -- fine for a single-node dev cluster or nodes with shared
+storage, not a general multi-node cluster without a shared filesystem, which
+would need ``PersistentVolumeClaim``\ s instead).
+
+The ``slurm`` step backend has no live test yet -- it's covered only by
+tests that mock the ``sbatch``/``sacct`` calls
+(``tests/test_slurm_backend.py``), not proven against a real scheduler.
+Verify against a real cluster before relying on it. The separate
+compile-and-offload Slurm path (:doc:`../offloading`) *does* have live
+single-node coverage; this step backend doesn't share it.

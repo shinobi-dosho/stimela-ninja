@@ -32,7 +32,7 @@ Tool choices, differing from the original stimela-classic script:
   `dosho.cabs.cubical`'s real per-Jones-term `ParamPattern`.
 * `cab/casa_listobs`/`cab/casa_rmtables` are dropped entirely: both are
   CASA tasks, and shinobi deliberately never executes a non-"binary"
-  flavour `Cab` (`UnsupportedFlavourError` -- see AGENTS.md, "Never
+  flavour `Cab` (`UnsupportedFlavourError` -- see SECURITY.md, "Never
   eval()/exec() a cab's command"). An MS-info listing and MS teardown
   aren't needed for a smoke test. (dosho does have a real `listobs`
   pystep, `dosho.cabs.casatasks.listobs` -- a `StepRef`, not a `Cab` --

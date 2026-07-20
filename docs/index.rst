@@ -6,11 +6,11 @@ reproducible radio astronomy pipelines.
 
 A spiritual successor to `Stimela classic
 <https://github.com/ratt-ru/Stimela-classic>`_, built around the same core
-philosophy. Recipes are plain Python: a step is a function call, and a step's
-output is a Python value you wire into the next call. There is no YAML
-expression/substitution language, no alias-propagation system, and no stacked
-config libraries -- control flow is just Python, and it doesn't need
-reinventing.
+philosophy (see :doc:`design` for the full rationale). Recipes are plain
+Python: a step is a function call, and a step's output is a Python value you
+wire into the next call. There is no YAML expression/substitution language,
+no alias-propagation system, and no stacked config libraries -- control flow
+is just Python, and it doesn't need reinventing.
 
 .. note::
 
@@ -83,6 +83,8 @@ reinventing.
    :maxdepth: 2
    :caption: Project
 
+   design
+   security
    contributing
 
 

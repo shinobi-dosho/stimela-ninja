@@ -39,7 +39,7 @@ Field mapping (into a generated `inputs_model` + `field_meta`):
 (mstransform/listobs/flagdata/...), invoked by wrapping it in a CASA
 script, not `subprocess.run(["mstransform", ...])`. These load with
 `flavour="casa-task"` (shinobi's existing non-executable flavour,
-`UnsupportedFlavourError`-guarded in `shinobi.policies` -- see AGENTS.md's
+`UnsupportedFlavourError`-guarded in `shinobi.policies` -- see SECURITY.md's
 "Never eval()/exec() a cab's command" section), not `"binary"`, so they
 can't be silently misrun as if they were real binaries. Cabs with any
 other `base` (msutils, wsclean, cubical, ...) are real CLI tools and load

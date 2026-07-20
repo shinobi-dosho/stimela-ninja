@@ -59,9 +59,12 @@ Add ``--dryrun`` to render the execution graph without running anything:
         v
     [ mask ]
 
-The dry run executes the recipe's real Python control flow with every cab
-swapped for a no-op that records the call, so it shows the one path taken for
-the given inputs -- never an untaken branch.
+Nothing is executed to produce this: a ``Recipe`` is a declared graph (its
+steps and their ``InputRef``/``OutputRef`` wiring), and ``--dryrun`` renders
+that graph through the same builder (``shinobi.graph.build_graph``) the real
+executor uses -- so a cyclic or mis-wired recipe is rejected identically
+either way, and the diagram can never disagree with what a real run would
+do.
 
 Add ``--cache-dir DIR`` / ``--no-cache`` to control step-level result caching
 (a step must also opt in via its own ``Scope.cache``, an enclosing recipe's,

@@ -29,7 +29,7 @@ implements a deliberately minimal version of:
   a dotted package name to a filesystem directory would normally mean
   importing the package (``importlib``), but that risks executing arbitrary
   code from *any* ``__init__.py`` on the path -- shinobi never imports a
-  cab package for any reason (see AGENTS.md's "never eval()/exec() a cab's
+  cab package for any reason (see SECURITY.md's "never eval()/exec() a cab's
   command" boundary, which this extends to "never import a cab package").
   Instead, callers pass ``package_roots={"cultcargo": Path(...)}`` to
   ``load_file()``/``loads()``: an explicit, caller-supplied mapping from a
@@ -42,7 +42,7 @@ implements a deliberately minimal version of:
   ``_include`` naming a package with no registered root raises a clear
   ``CabLoadError``.
 
-Deliberately NOT implemented (this is the boundary -- see AGENTS.md):
+Deliberately NOT implemented (this is the boundary -- see SECURITY.md):
 
 * The ``=config.x.y``/``${...}`` expression language cult-cargo values
   can contain -- left as literal strings.

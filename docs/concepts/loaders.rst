@@ -30,7 +30,9 @@ real upstream cab files:
 
 The ``=config.x.y`` expression language and package-scoped includes are
 **deliberately not implemented** -- control flow belongs in Python, not in the
-cab definition. See the module docstring and ``AGENTS.md`` for the rationale.
+cab definition. See the module docstring for the rationale; the
+package-scoped-include restriction is part of the threat model documented in
+``SECURITY.md``.
 
 Stimela classic parameter files
 --------------------------------

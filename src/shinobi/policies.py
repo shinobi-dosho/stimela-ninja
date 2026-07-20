@@ -64,7 +64,7 @@ def build_argv(cab: Cab, resolved: dict[str, Any]) -> list[str]:
 
     Rejects any non-"binary" flavour before building argv -- so a
     non-executable `command` can never reach subprocess as argv[0] (see
-    AGENTS.md, "Never eval()/exec() a cab's command").
+    SECURITY.md).
     """
     if cab.flavour not in _EXECUTABLE_FLAVOURS:
         raise UnsupportedFlavourError(
