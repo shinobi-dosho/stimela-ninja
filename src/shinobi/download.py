@@ -40,10 +40,7 @@ def resolve_latest_version() -> str:
             tags_data = json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         if e.code in (403, 429):
-            raise RuntimeError(
-                "GitHub API rate limit exceeded. "
-                "Try specifying --version <tag-or-branch> to skip the API call."
-            ) from e
+            raise RuntimeError("GitHub API rate limit exceeded. Try specifying --version <tag-or-branch> to skip the API call.") from e
         raise RuntimeError(f"Failed to query GitHub tags: {e}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"Network error querying GitHub: {e}") from e
@@ -61,10 +58,7 @@ def resolve_latest_version() -> str:
                 continue
 
     if not v_tags:
-        raise RuntimeError(
-            f"No v* semver tags found in {CULTCARGO_REPO}. "
-            f"Try specifying --version <branch-or-tag>."
-        )
+        raise RuntimeError(f"No v* semver tags found in {CULTCARGO_REPO}. Try specifying --version <branch-or-tag>.")
 
     # Sort by version, return the tag name
     v_tags.sort(key=lambda x: x[1], reverse=True)
@@ -101,10 +95,7 @@ def download_cultcargo(
             tarball_data = resp.read()
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            raise RuntimeError(
-                f"Version '{version}' not found in {CULTCARGO_REPO}. "
-                f"Check the tag/branch/commit SHA."
-            ) from e
+            raise RuntimeError(f"Version '{version}' not found in {CULTCARGO_REPO}. Check the tag/branch/commit SHA.") from e
         raise RuntimeError(f"Failed to download {archive_url}: {e}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"Network error downloading tarball: {e}") from e
@@ -128,10 +119,7 @@ def download_cultcargo(
             raise RuntimeError(f"Failed to extract tarball: {e}") from e
 
         # Find extracted directory (name varies: cult-cargo-v0.2.1/, cult-cargo-master/, etc.)
-        extracted_dirs = [
-            d for d in Path(tmpdir).iterdir()
-            if d.is_dir() and d.name.startswith("cult-cargo-")
-        ]
+        extracted_dirs = [d for d in Path(tmpdir).iterdir() if d.is_dir() and d.name.startswith("cult-cargo-")]
         if not extracted_dirs:
             raise RuntimeError("No cult-cargo directory found in tarball")
         if len(extracted_dirs) > 1:

@@ -97,9 +97,7 @@ def get_backend(name: str, **opts) -> Backend:
     try:
         backend_cls = _REGISTRY[name]
     except KeyError:
-        raise ValueError(
-            f"unknown backend '{name}' (available: {sorted(_REGISTRY)})"
-        ) from None
+        raise ValueError(f"unknown backend '{name}' (available: {sorted(_REGISTRY)})") from None
     return backend_cls(**opts)
 
 

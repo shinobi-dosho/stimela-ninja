@@ -7,9 +7,7 @@ from shinobi.steps.schema import Cab, ParamMeta, ParamPattern, ParamSegment, Pol
 
 
 def make_cab(model, **kwargs) -> Cab:
-    return Cab(
-        name="tool", command="tool", inputs_model=model, outputs_model=build_model("Out", {}), **kwargs
-    )
+    return Cab(name="tool", command="tool", inputs_model=model, outputs_model=build_model("Out", {}), **kwargs)
 
 
 def test_scalar_value_becomes_flag_and_value():
@@ -295,11 +293,7 @@ def test_key_value_policy_applies_to_pattern_matched_dynamic_fields_too():
         inputs_model=build_model("In", {"input_ms.path": ("MS", True, None)}, allow_extra=True),
         outputs_model=build_model("Out", {}),
         policies=Policies(prefix="", key_value=True, repeat="[]"),
-        input_patterns=[
-            ParamPattern(
-                segments=[ParamSegment(regex=r".+?"), ParamSegment(attrs={"type": ParamMeta()})]
-            )
-        ],
+        input_patterns=[ParamPattern(segments=[ParamSegment(regex=r".+?"), ParamSegment(attrs={"type": ParamMeta()})])],
     )
     argv = build_argv(cab, {"input_ms.path": "foo.ms", "K.type": "diag_complex"})
     assert "K.type=diag_complex" in argv
@@ -326,9 +320,7 @@ def make_cubical_like_cab() -> Cab:
     return Cab(
         name="cubical",
         command="gocubical",
-        inputs_model=build_model(
-            "In", {"out_overwrite": ("bool", False, None), "out_derotate": ("bool", False, None)}, allow_extra=True
-        ),
+        inputs_model=build_model("In", {"out_overwrite": ("bool", False, None), "out_derotate": ("bool", False, None)}, allow_extra=True),
         outputs_model=build_model("Out", {}),
         policies=Policies(prefix="--", explicit_true=True, explicit_false=False),
         input_patterns=[

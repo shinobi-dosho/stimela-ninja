@@ -57,10 +57,7 @@ def parse_output_action(action: str) -> tuple[str, str] | None:
         return None
     parts = action.split(":")
     if len(parts) != 3:
-        raise ValueError(
-            f"malformed PARSE_OUTPUT action {action!r} -- expected "
-            "'PARSE_OUTPUT:<groupname>:<type>'"
-        )
+        raise ValueError(f"malformed PARSE_OUTPUT action {action!r} -- expected 'PARSE_OUTPUT:<groupname>:<type>'")
     return parts[1], parts[2]
 
 

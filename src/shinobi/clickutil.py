@@ -142,9 +142,7 @@ def bool_option_flag(field_name: str) -> str:
     return f"--{flag}/--no-{flag}"
 
 
-def iter_leaf_fields(
-    model: type[BaseModel], *, _prefix: str = "", _path: tuple[str, ...] = ()
-) -> list[tuple[str, tuple[str, ...], FieldInfo]]:
+def iter_leaf_fields(model: type[BaseModel], *, _prefix: str = "", _path: tuple[str, ...] = ()) -> list[tuple[str, tuple[str, ...], FieldInfo]]:
     """`(flat_name, path, field)` for every leaf (non-`BaseModel`) field in
     `model`, recursing into nested `BaseModel` fields and flattening names
     with `_` -- e.g. `obsinfo.plotelev.enable` yields flat_name

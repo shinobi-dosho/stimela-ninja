@@ -34,8 +34,7 @@ class _Inputs(BaseModel):
 def test_iter_leaf_fields_flattens_nested_groups_with_dotted_path():
     leaves = iter_leaf_fields(_Inputs)
     flat_names = {name for name, _path, _field in leaves}
-    assert flat_names == {"ms", "obsinfo_enable", "obsinfo_listobs", "obsinfo_plotelev_enable",
-                           "obsinfo_plotelev_plotter", "refant"}
+    assert flat_names == {"ms", "obsinfo_enable", "obsinfo_listobs", "obsinfo_plotelev_enable", "obsinfo_plotelev_plotter", "refant"}
     paths = {name: path for name, path, _field in leaves}
     assert paths["obsinfo_plotelev_plotter"] == ("obsinfo", "plotelev", "plotter")
 
@@ -60,9 +59,7 @@ def test_build_options_produces_dotted_flag_names_for_nested_fields():
 
 def test_option_flag_round_trips_through_click_kwarg_naming():
     # click derives the callback kwarg name from the flag by replacing "-" -> "_"
-    assert option_flag("obsinfo_plotelev_plotter").replace("--", "").replace("-", "_") == (
-        "obsinfo_plotelev_plotter"
-    )
+    assert option_flag("obsinfo_plotelev_plotter").replace("--", "").replace("-", "_") == ("obsinfo_plotelev_plotter")
 
 
 def test_bool_option_flag_produces_negatable_pair():

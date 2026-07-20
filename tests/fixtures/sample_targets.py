@@ -22,8 +22,7 @@ class CommandOutputs(BaseModel):
     stderr: str = ""
 
 
-greet = Cab(name="greet", command="/bin/echo", info="Echo TEXT back.", inputs_model=GreetInputs,
-            outputs_model=CommandOutputs)
+greet = Cab(name="greet", command="/bin/echo", info="Echo TEXT back.", inputs_model=GreetInputs, outputs_model=CommandOutputs)
 
 
 class GreetImageInputs(BaseModel):
@@ -43,8 +42,7 @@ class NoInputs(BaseModel):
     pass
 
 
-fail = Cab(name="fail", command="/bin/false", info="Always fails.", inputs_model=NoInputs,
-           outputs_model=CommandOutputs)
+fail = Cab(name="fail", command="/bin/false", info="Always fails.", inputs_model=NoInputs, outputs_model=CommandOutputs)
 
 
 class SubGroup(BaseModel):
@@ -62,8 +60,7 @@ class GroupInputs(BaseModel):
     sub: SubGroup = SubGroup()
 
 
-group_cab = Cab(name="group_cab", command="/bin/echo", info="A cab with a nested-group input.",
-                inputs_model=GroupInputs, outputs_model=CommandOutputs)
+group_cab = Cab(name="group_cab", command="/bin/echo", info="A cab with a nested-group input.", inputs_model=GroupInputs, outputs_model=CommandOutputs)
 
 
 @step(scope=greet)

@@ -77,9 +77,7 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
     index: dict[str, int] = {}
     for i, name in enumerate(names):
         if name in index:
-            raise RecipeGraphError(
-                f"recipe '{recipe.name}' has more than one step named '{name}'"
-            )
+            raise RecipeGraphError(f"recipe '{recipe.name}' has more than one step named '{name}'")
         index[name] = i
 
     input_fields = set(recipe.inputs_model.model_fields)
@@ -102,37 +100,24 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
         if ref.scatter is not None:
             for field in ref.scatter.fields:
                 if not _is_input_field(step_scope, field):
-                    raise RecipeGraphError(
-                        f"step '{ref.name}' declares scatter over '{field}', which is not a "
-                        f"field of {step_scope.inputs_model.__name__}"
-                    )
+                    raise RecipeGraphError(f"step '{ref.name}' declares scatter over '{field}', which is not a field of {step_scope.inputs_model.__name__}")
         for field in ref.params:
             if not _is_input_field(step_scope, field):
-                raise RecipeGraphError(
-                    f"step '{ref.name}' sets constant param '{field}', which is not a "
-                    f"field of {step_scope.inputs_model.__name__}"
-                )
+                raise RecipeGraphError(f"step '{ref.name}' sets constant param '{field}', which is not a field of {step_scope.inputs_model.__name__}")
         for field, source in ref.wiring.items():
             if not _is_input_field(step_scope, field):
-                raise RecipeGraphError(
-                    f"step '{ref.name}' wires input '{field}', which is not a "
-                    f"field of {step_scope.inputs_model.__name__}"
-                )
+                raise RecipeGraphError(f"step '{ref.name}' wires input '{field}', which is not a field of {step_scope.inputs_model.__name__}")
             sources = source if isinstance(source, list) else [source]
             for one_source in sources:
                 if isinstance(one_source, InputRef):
                     if one_source.field not in input_fields:
                         raise RecipeGraphError(
-                            f"step '{ref.name}' wires input '{field}' from recipe "
-                            f"input '{one_source.field}', which is not a field of "
-                            f"{recipe.inputs_model.__name__}"
+                            f"step '{ref.name}' wires input '{field}' from recipe input '{one_source.field}', which is not a field of {recipe.inputs_model.__name__}"
                         )
                 elif isinstance(one_source, OutputRef):
                     if one_source.step not in index:
                         raise RecipeGraphError(
-                            f"step '{ref.name}' wires input '{field}' from the "
-                            f"output of step '{one_source.step}', which does not "
-                            f"exist in recipe '{recipe.name}'"
+                            f"step '{ref.name}' wires input '{field}' from the output of step '{one_source.step}', which does not exist in recipe '{recipe.name}'"
                         )
                     producer_scope = recipe.steps[index[one_source.step]].step
                     if not _is_output_field(producer_scope, one_source.field):
@@ -147,15 +132,9 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
 
     for field, source in recipe.output_wiring.items():
         if field not in output_fields:
-            raise RecipeGraphError(
-                f"recipe '{recipe.name}' output '{field}' is not a field of "
-                f"{recipe.outputs_model.__name__}"
-            )
+            raise RecipeGraphError(f"recipe '{recipe.name}' output '{field}' is not a field of {recipe.outputs_model.__name__}")
         if source.step not in index:
-            raise RecipeGraphError(
-                f"recipe '{recipe.name}' output '{field}' is wired from step "
-                f"'{source.step}', which does not exist"
-            )
+            raise RecipeGraphError(f"recipe '{recipe.name}' output '{field}' is wired from step '{source.step}', which does not exist")
         producer_scope = recipe.steps[index[source.step]].step
         if not _is_output_field(producer_scope, source.field):
             raise RecipeGraphError(
@@ -168,9 +147,7 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
     return RecipeGraph(names=names, deps=deps, dependents=dependents)
 
 
-def _check_acyclic(
-    recipe_name: str, names: list[str], deps: list[set[int]], dependents: list[set[int]]
-) -> None:
+def _check_acyclic(recipe_name: str, names: list[str], deps: list[set[int]], dependents: list[set[int]]) -> None:
     """Kahn's algorithm: drain zero-in-degree nodes; any that never drain
     are part of (or downstream of) a cycle.
     """
@@ -186,10 +163,7 @@ def _check_acyclic(
                 ready.append(d)
     if drained != len(names):
         stuck = sorted(names[i] for i, d in enumerate(indeg) if d > 0)
-        raise RecipeGraphError(
-            f"recipe '{recipe_name}' has a dependency cycle involving: "
-            f"{', '.join(stuck)}"
-        )
+        raise RecipeGraphError(f"recipe '{recipe_name}' has a dependency cycle involving: {', '.join(stuck)}")
 
 
 def _wrangler_output_fields(cab: Cab) -> set[str]:
@@ -243,30 +217,15 @@ def check_offloadable(recipe: "Recipe") -> RecipeGraph:
     for ref in recipe.steps:
         scope = ref.step
         if ref.scatter is not None:
-            reasons.append(
-                f"step '{ref.name}' declares scatter over {ref.scatter.fields} -- "
-                "scatter is not supported by offloaded engines in this version"
-            )
+            reasons.append(f"step '{ref.name}' declares scatter over {ref.scatter.fields} -- scatter is not supported by offloaded engines in this version")
         if ref.func is not None:
-            reasons.append(
-                f"step '{ref.name}' has an orchestration function -- run it locally"
-            )
+            reasons.append(f"step '{ref.name}' has an orchestration function -- run it locally")
         if not isinstance(scope, Cab):
-            reasons.append(
-                f"step '{ref.name}' is a {type(scope).__name__}, not a Cab -- only "
-                "atomic Cab steps can be compiled to an external workflow"
-            )
+            reasons.append(f"step '{ref.name}' is a {type(scope).__name__}, not a Cab -- only atomic Cab steps can be compiled to an external workflow")
             continue
-        mutable = sorted(
-            name
-            for name, m in scope.input_mutability.items()
-            if m is Mutability.MUTABLE
-        )
+        mutable = sorted(name for name, m in scope.input_mutability.items() if m is Mutability.MUTABLE)
         if mutable:
-            reasons.append(
-                f"step '{ref.name}' has MUTABLE input(s) {mutable} -- pass-by-"
-                "reference cannot cross node boundaries"
-            )
+            reasons.append(f"step '{ref.name}' has MUTABLE input(s) {mutable} -- pass-by-reference cannot cross node boundaries")
 
     def check_output_ref(label: str, src: OutputRef) -> None:
         """Append a reason to `reasons` if `src` can't cross a node boundary.
@@ -282,15 +241,9 @@ def check_offloadable(recipe: "Recipe") -> RecipeGraph:
             return  # unknown/non-Cab producer already reported elsewhere
         cab = producer.step
         if src.field in _wrangler_output_fields(cab):
-            reasons.append(
-                f"{label} reads wrangler-derived output '{src.step}.{src.field}' -- "
-                "not populated when the step runs offloaded"
-            )
+            reasons.append(f"{label} reads wrangler-derived output '{src.step}.{src.field}' -- not populated when the step runs offloaded")
         elif src.field not in path_fields(cab.outputs_model):
-            reasons.append(
-                f"{label} reads non-path output '{src.step}.{src.field}' -- only "
-                "filesystem paths can flow between offloaded steps"
-            )
+            reasons.append(f"{label} reads non-path output '{src.step}.{src.field}' -- only filesystem paths can flow between offloaded steps")
 
     for ref in recipe.steps:
         for field, source in ref.wiring.items():
@@ -300,8 +253,5 @@ def check_offloadable(recipe: "Recipe") -> RecipeGraph:
                     check_output_ref(f"step '{ref.name}' input '{field}'", one_source)
 
     if reasons:
-        raise RecipeNotOffloadableError(
-            f"recipe '{recipe.name}' cannot be offloaded to an external engine:\n"
-            + "\n".join(f"  - {r}" for r in reasons)
-        )
+        raise RecipeNotOffloadableError(f"recipe '{recipe.name}' cannot be offloaded to an external engine:\n" + "\n".join(f"  - {r}" for r in reasons))
     return graph

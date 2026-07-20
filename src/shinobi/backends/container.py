@@ -538,14 +538,15 @@ class ContainerBackend(Backend):
             raise ValueError(f"unsupported container runtime '{runtime}'")
         self.runtime = runtime
         self.workdir = workdir or os.getcwd()
-        self.run_as_host_user = (
-            AppConfig.load().backend.run_as_host_user
-            if run_as_host_user is None
-            else run_as_host_user
-        )
+        self.run_as_host_user = AppConfig.load().backend.run_as_host_user if run_as_host_user is None else run_as_host_user
 
     def _wrap(
-        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, pin: bool = False,
+        self,
+        cab: Cab,
+        argv: list[str],
+        inputs: dict[str, Any],
+        *,
+        pin: bool = False,
         cwd: str | None = None,
     ) -> tuple[list[str], str | None]:
         return build_container_argv(

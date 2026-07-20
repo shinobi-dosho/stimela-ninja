@@ -43,9 +43,7 @@ def run_streaming(argv: list[str], *, label: str, stream: bool, **popen_kwargs: 
         proc = subprocess.run(argv, capture_output=True, text=True, **popen_kwargs)
         return BackendRun(returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
 
-    proc = subprocess.Popen(
-        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **popen_kwargs
-    )
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **popen_kwargs)
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
     threads = [

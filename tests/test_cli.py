@@ -89,9 +89,7 @@ def test_run_with_no_args_shows_help():
 
 
 def test_option_flag_name_roundtrips_underscore():
-    result = CliRunner().invoke(
-        main, ["run", f"{FIXTURES}:greet_image", "--restored-image", "/data/img.fits"]
-    )
+    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet_image", "--restored-image", "/data/img.fits"])
     assert result.exit_code == 0, result.output
     assert "/data/img.fits" in result.output
 
@@ -107,9 +105,7 @@ def test_run_failing_recipe_reports_nonzero_exit():
 
 
 def test_run_cab_target_dryrun_shows_argv_and_does_not_execute():
-    result = CliRunner().invoke(
-        main, ["run", f"{FIXTURES}:greet", "--dryrun", "--text", "echo-me"]
-    )
+    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet", "--dryrun", "--text", "echo-me"])
     assert result.exit_code == 0, result.output
     # a bare Cab dryrun echoes its build_argv (see AGENTS.md), not a box graph
     assert "/bin/echo" in result.output
@@ -134,9 +130,7 @@ def test_run_flattened_group_option_reaches_the_nested_model():
     documented as reusable by a downstream project's own CLI, so the gap
     was real even if unexercised.
     """
-    result = CliRunner().invoke(
-        main, ["run", f"{FIXTURES}:group_cab", "--dryrun", "--sub-value", "hi-nested"]
-    )
+    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:group_cab", "--dryrun", "--sub-value", "hi-nested"])
     assert result.exit_code == 0, result.output
     assert "hi-nested" in result.output
 
@@ -168,9 +162,7 @@ def test_run_default_streams_live_with_label_prefix():
 
 
 def test_run_quiet_flag_suppresses_streaming_and_dumps_at_end():
-    result = CliRunner().invoke(
-        main, ["run", f"{FIXTURES}:greet", "--text", "hello there", "--quiet"]
-    )
+    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet", "--text", "hello there", "--quiet"])
     assert result.exit_code == 0, result.output
     assert "[greet]" not in result.output
     assert "hello there" in result.output
@@ -183,9 +175,7 @@ def test_run_help_shows_quiet_option():
 
 
 def test_run_with_cache_dir_option_still_executes(tmp_path):
-    result = CliRunner().invoke(
-        main, ["run", f"{FIXTURES}:greet", "--text", "hi", "--cache-dir", str(tmp_path)]
-    )
+    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet", "--text", "hi", "--cache-dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
 
 
@@ -193,33 +183,25 @@ def test_run_with_cache_dir_option_still_executes(tmp_path):
 
 
 def test_run_remote_rejects_dotted_module_target():
-    result = CliRunner().invoke(
-        main, ["run", "shinobi.cli:main", "--remote", "user@host:/path"]
-    )
+    result = CliRunner().invoke(main, ["run", "shinobi.cli:main", "--remote", "user@host:/path"])
     assert result.exit_code != 0
     assert "local file target" in result.output
 
 
 def test_run_remote_rejects_dryrun_combo():
-    result = CliRunner().invoke(
-        main, ["run", f"{FIXTURES}:greet", "--remote", "user@host:/path", "--dryrun"]
-    )
+    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet", "--remote", "user@host:/path", "--dryrun"])
     assert result.exit_code != 0
     assert "mutually exclusive" in result.output
 
 
 def test_run_remote_rejects_cache_options():
-    result = CliRunner().invoke(
-        main, ["run", f"{FIXTURES}:greet", "--remote", "user@host:/path", "--no-cache"]
-    )
+    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet", "--remote", "user@host:/path", "--no-cache"])
     assert result.exit_code != 0
     assert "local runs only" in result.output
 
 
 def test_run_remote_rejects_malformed_spec():
-    result = CliRunner().invoke(
-        main, ["run", f"{FIXTURES}:greet", "--remote", "no-colon-here"]
-    )
+    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet", "--remote", "no-colon-here"])
     assert result.exit_code != 0
     assert "user@host:/path" in result.output
 
@@ -255,9 +237,7 @@ def _invoke_with_config_probe(args):
 def test_log_options_override_config(tmp_path):
     cfg = tmp_path / "config.yml"
     cfg.write_text("log:\n  dir: from-file\n  level: WARNING\n")
-    result = _invoke_with_config_probe(
-        ["--config", str(cfg), "--log-file", "run.log", "--log-dir", "logs", "--log-level", "debug"]
-    )
+    result = _invoke_with_config_probe(["--config", str(cfg), "--log-file", "run.log", "--log-dir", "logs", "--log-level", "debug"])
     assert result.exit_code == 0, result.output
     # --log-level is case-insensitive and normalizes to the canonical name.
     assert result.output.strip() == "run.log logs DEBUG"
@@ -294,8 +274,7 @@ def _detach_file_logging():
 def test_run_writes_log_file(tmp_path, _detach_file_logging):
     result = CliRunner().invoke(
         main,
-        ["--log-file", "run.log", "--log-dir", str(tmp_path),
-         "run", f"{FIXTURES}:greet", "--text", "hello log"],
+        ["--log-file", "run.log", "--log-dir", str(tmp_path), "run", f"{FIXTURES}:greet", "--text", "hello log"],
     )
     assert result.exit_code == 0, result.output
     text = (tmp_path / "run.log").read_text()
@@ -307,8 +286,7 @@ def test_run_writes_log_file(tmp_path, _detach_file_logging):
 def test_run_log_debug_includes_argv(tmp_path, _detach_file_logging):
     result = CliRunner().invoke(
         main,
-        ["--log-file", "run.log", "--log-dir", str(tmp_path), "--log-level", "DEBUG",
-         "run", f"{FIXTURES}:greet", "--text", "hi"],
+        ["--log-file", "run.log", "--log-dir", str(tmp_path), "--log-level", "DEBUG", "run", f"{FIXTURES}:greet", "--text", "hi"],
     )
     assert result.exit_code == 0, result.output
     text = (tmp_path / "run.log").read_text()
@@ -328,8 +306,7 @@ def test_run_log_records_failure_as_error(tmp_path, _detach_file_logging):
 def test_run_log_recipe_logs_each_substep_once(tmp_path, _detach_file_logging):
     result = CliRunner().invoke(
         main,
-        ["--log-file", "run.log", "--log-dir", str(tmp_path),
-         "run", f"{FIXTURES}:chained", "--name", "obs"],
+        ["--log-file", "run.log", "--log-dir", str(tmp_path), "run", f"{FIXTURES}:chained", "--name", "obs"],
     )
     assert result.exit_code == 0, result.output
     text = (tmp_path / "run.log").read_text()

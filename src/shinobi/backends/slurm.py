@@ -78,9 +78,7 @@ class SlurmBackend(Backend):
         self.sbatch_opts = sbatch_opts or {}
         self.poll_interval = poll_interval
 
-    def _inner_argv(
-        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, pin: bool = False
-    ) -> tuple[list[str], str | None]:
+    def _inner_argv(self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, pin: bool = False) -> tuple[list[str], str | None]:
         """The argv the job runs, and the pinned image digest (or `None` for
         a non-container or unpinned run). Digest resolution is memoized, so
         resolving it here and again in `run` is a single registry round-trip.
@@ -130,7 +128,13 @@ class SlurmBackend(Backend):
             time.sleep(self.poll_interval)
 
     def run(
-        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True,
+        self,
+        cab: Cab,
+        argv: list[str],
+        inputs: dict[str, Any],
+        *,
+        label: str = "",
+        stream: bool = True,
         pin: bool = False,
         cwd: str | None = None,  # accepted for the Backend protocol; the job runs in Slurm's own cwd
     ) -> BackendRun:

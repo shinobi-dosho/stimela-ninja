@@ -212,9 +212,7 @@ def find_cab_deps(pyfile: Path) -> tuple[list[Path], list[str]]:
             continue
         resolved = _eval_path_expr(call.args[0], env, pyfile)
         if not isinstance(resolved, (Path, str)):
-            warnings.append(
-                f"{pyfile}:{call.lineno}: could not statically resolve this load_file() argument"
-            )
+            warnings.append(f"{pyfile}:{call.lineno}: could not statically resolve this load_file() argument")
             continue
         dep = Path(resolved).resolve()
         if not dep.is_file():
@@ -296,9 +294,7 @@ class RemoteHandle:
     exit_file: str
 
 
-def launch_remote(
-    remote: RemoteSpec, remote_target: str, argv: list[str], *, add_venv: bool
-) -> RemoteHandle:
+def launch_remote(remote: RemoteSpec, remote_target: str, argv: list[str], *, add_venv: bool) -> RemoteHandle:
     """Launch `ninja run <remote_target> <argv...>` detached on
     `remote.host`, under `remote.path`. See the module docstring for the
     detach mechanism. Returns a `RemoteHandle` for later `status_ssh`
@@ -323,10 +319,7 @@ def launch_remote(
         # `inner` string already runs inside `wrapped`'s own subshell, so
         # the source just needs to stay in that same shell, not be nested
         # in another one.
-        venv_snippet = (
-            "test -f venv/bin/activate && source venv/bin/activate || "
-            "test -f .venv/bin/activate && source .venv/bin/activate; "
-        )
+        venv_snippet = "test -f venv/bin/activate && source venv/bin/activate || test -f .venv/bin/activate && source .venv/bin/activate; "
 
     inner = f"cd {shlex.quote(remote.path)}; {venv_snippet}ninja run {shlex.quote(remote_target)} {shlex.join(argv)}"
     wrapped = f"({inner}); echo $? > {shlex.quote(exit_path)}"
@@ -350,10 +343,7 @@ def status_ssh(handle: dict[str, Any]) -> str:
     host, path, pid = handle["host"], handle["path"], handle["pid"]
     log_file, exit_file = handle["log_file"], handle["exit_file"]
     exit_path = f"{path.rstrip('/')}/{exit_file}"
-    check = (
-        f"if [ -f {shlex.quote(exit_path)} ]; then cat {shlex.quote(exit_path)}; "
-        f"else kill -0 {shlex.quote(pid)} 2>/dev/null && echo RUNNING || echo UNKNOWN; fi"
-    )
+    check = f"if [ -f {shlex.quote(exit_path)} ]; then cat {shlex.quote(exit_path)}; else kill -0 {shlex.quote(pid)} 2>/dev/null && echo RUNNING || echo UNKNOWN; fi"
     proc = _ssh(host, check)
     if proc.returncode != 0:
         raise BackendError(f"could not query status on {host}: {proc.stderr.strip()}")

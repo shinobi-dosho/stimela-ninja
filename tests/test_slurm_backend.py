@@ -68,7 +68,8 @@ def test_submit_returns_bare_job_id(monkeypatch):
 def test_submit_failure_raises_backend_error(monkeypatch):
     backend = SlurmBackend()
     monkeypatch.setattr(
-        subprocess, "run",
+        subprocess,
+        "run",
         lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, stdout="", stderr="bad script"),
     )
     with pytest.raises(BackendError):
@@ -100,10 +101,7 @@ def test_run_end_to_end_returns_backendrun(monkeypatch):
     def fake_run(argv, **kwargs):
         if argv[0] == "sbatch":
             script_text = Path(argv[-1]).read_text()
-            out_path = next(
-                line.split("=", 1)[1] for line in script_text.splitlines()
-                if line.startswith("#SBATCH --output=")
-            )
+            out_path = next(line.split("=", 1)[1] for line in script_text.splitlines() if line.startswith("#SBATCH --output="))
             Path(out_path).write_text("answer=99\n")
             return subprocess.CompletedProcess(argv, 0, stdout="7;cluster\n", stderr="")
         if argv[0] == "sacct":

@@ -71,15 +71,7 @@ def test_abbreviation_is_carried_onto_the_field_json_schema_extra(tmp_path):
     # `abbreviation` rides the same json_schema_extra channel as `writable`,
     # so clickutil.build_options can emit a short flag for a worker-config CLI.
     schema_file = tmp_path / "abbrev.yaml"
-    schema_file.write_text(
-        "name: thing\n"
-        "inputs:\n"
-        "  refant:\n"
-        "    dtype: str\n"
-        "    abbreviation: ra\n"
-        "  plain:\n"
-        "    dtype: str\n"
-    )
+    schema_file.write_text("name: thing\ninputs:\n  refant:\n    dtype: str\n    abbreviation: ra\n  plain:\n    dtype: str\n")
     inputs = load_worker_schema(schema_file).inputs_model.model_fields
     assert inputs["refant"].json_schema_extra == {"abbreviation": "ra"}
     assert inputs["plain"].json_schema_extra is None
@@ -103,9 +95,7 @@ def test_plain_relative_include_merges_files(tmp_path):
     base = tmp_path / "base.yaml"
     base.write_text("shared:\n  x:\n    dtype: int\n    default: 1\n")
     main = tmp_path / "main.yaml"
-    main.write_text(
-        "libs:\n  _include: base.yaml\nname: thing\ninputs:\n  _use: libs.shared\n"
-    )
+    main.write_text("libs:\n  _include: base.yaml\nname: thing\ninputs:\n  _use: libs.shared\n")
     schema = load_worker_schema(main)
     assert "x" in schema.inputs_model.model_fields
     assert schema.inputs_model.model_fields["x"].default == 1
@@ -120,9 +110,7 @@ def test_package_scoped_include_resolves_via_importlib(tmp_path, monkeypatch):
     schema_dir = tmp_path / "schemas"
     schema_dir.mkdir()
     main = schema_dir / "main.yaml"
-    main.write_text(
-        "libs:\n  _include: (mypkg)shared.yaml\nname: thing\ninputs:\n  _use: libs.shared\n"
-    )
+    main.write_text("libs:\n  _include: (mypkg)shared.yaml\nname: thing\ninputs:\n  _use: libs.shared\n")
 
     monkeypatch.syspath_prepend(str(tmp_path))
     schema = load_worker_schema(main)
@@ -134,15 +122,7 @@ def test_sibling_keys_win_over_use_merged_keys(tmp_path):
     base = tmp_path / "base.yaml"
     base.write_text("shared:\n  x:\n    dtype: int\n    default: 1\n")
     main = tmp_path / "main.yaml"
-    main.write_text(
-        "libs:\n  _include: base.yaml\n"
-        "name: thing\n"
-        "inputs:\n"
-        "  _use: libs.shared\n"
-        "  x:\n"
-        "    dtype: int\n"
-        "    default: 99\n"
-    )
+    main.write_text("libs:\n  _include: base.yaml\nname: thing\ninputs:\n  _use: libs.shared\n  x:\n    dtype: int\n    default: 99\n")
     schema = load_worker_schema(main)
     assert schema.inputs_model.model_fields["x"].default == 99
 

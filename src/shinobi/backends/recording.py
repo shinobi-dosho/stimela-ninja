@@ -30,7 +30,13 @@ class RecordingBackend(Backend):
         self.cwds: list[str | None] = []
 
     def run(
-        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True,
+        self,
+        cab: Cab,
+        argv: list[str],
+        inputs: dict[str, Any],
+        *,
+        label: str = "",
+        stream: bool = True,
         pin: bool = False,  # accepted for the Backend protocol; recording backend runs nothing
         cwd: str | None = None,
     ) -> BackendRun:

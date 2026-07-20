@@ -30,9 +30,7 @@ class PathOutputs(BaseModel):
     path: str | None = None
 
 
-make_value_cab = Cab(
-    name="make_value", command="/bin/echo", inputs_model=NameInputs, outputs_model=PathOutputs
-)
+make_value_cab = Cab(name="make_value", command="/bin/echo", inputs_model=NameInputs, outputs_model=PathOutputs)
 
 
 class UseValueInputs(BaseModel):
@@ -43,9 +41,7 @@ class OkOutputs(BaseModel):
     ok: bool = True
 
 
-use_value_cab = Cab(
-    name="use_value", command="/bin/echo", inputs_model=UseValueInputs, outputs_model=OkOutputs
-)
+use_value_cab = Cab(name="use_value", command="/bin/echo", inputs_model=UseValueInputs, outputs_model=OkOutputs)
 
 
 chained_recipe = Recipe(
@@ -67,9 +63,7 @@ class ListInputs(BaseModel):
     items: list[int] = []
 
 
-immutable_list_cab = Cab(
-    name="immutable_list", command="/bin/true", inputs_model=ListInputs, outputs_model=PathOutputs
-)
+immutable_list_cab = Cab(name="immutable_list", command="/bin/true", inputs_model=ListInputs, outputs_model=PathOutputs)
 
 mutable_list_cab = Cab(
     name="mutable_list",

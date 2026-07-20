@@ -153,9 +153,7 @@ def test_harvest_globs_rescue_dynamic_output_families(tmp_path):
 
 
 def test_harvest_skips_absolute_and_never_written_outputs(tmp_path):
-    scope = make_scope(
-        outputs={"abs_out": ("File", False, "/elsewhere/x.dat"), "ghost": ("File", False, "ghost.dat")}
-    )
+    scope = make_scope(outputs={"abs_out": ("File", False, "/elsewhere/x.dat"), "ghost": ("File", False, "ghost.dat")})
     sandbox = _sandbox_with(tmp_path)
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -209,9 +207,7 @@ def test_harvest_moves_nested_target_with_its_parent(tmp_path):
 def test_harvest_glob_matches_travel_with_declared_dir_parent(tmp_path):
     # Same hazard via the glob route: matches inside a directory-valued
     # declared output ride along with the parent's move.
-    scope = make_scope(
-        outputs={"outdir": ("Directory", False, "plots")}, harvest=["plots/*.html"]
-    )
+    scope = make_scope(outputs={"outdir": ("Directory", False, "plots")}, harvest=["plots/*.html"])
     sandbox = _sandbox_with(tmp_path, "plots/gain.html", "plots/phase.html")
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -324,9 +320,7 @@ def test_prune_removes_only_unused_precreated_dirs(tmp_path):
         inputs={"a": ("str", True, None), "b": ("str", True, None)},
         outputs={"a": ("File", False, None), "b": ("File", False, None)},
     )
-    created = prepare_output_parents(
-        scope, {"a": "used/x.dat", "b": "unused/deep/y.dat"}, tmp_path
-    )
+    created = prepare_output_parents(scope, {"a": "used/x.dat", "b": "unused/deep/y.dat"}, tmp_path)
     (tmp_path / "used/x.dat").write_text("x")
 
     prune_unused_parents(created)
@@ -475,12 +469,8 @@ def test_unused_precreated_dir_never_clobbers_workspace_dir_output(workspace):
     cab = Cab(
         name="noop",
         command=str(script),
-        inputs_model=build_model(
-            "In", {"outdir": ("str", True, None), "htmlname": ("str", True, None)}
-        ),
-        outputs_model=build_model(
-            "Out", {"outdir": ("Directory", False, None), "htmlname": ("File", False, None)}
-        ),
+        inputs_model=build_model("In", {"outdir": ("str", True, None), "htmlname": ("str", True, None)}),
+        outputs_model=build_model("Out", {"outdir": ("Directory", False, None), "htmlname": ("File", False, None)}),
         sandbox=True,
     )
     result = cab(backend="native", outdir="plots", htmlname="plots/gain.html")

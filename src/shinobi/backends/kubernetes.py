@@ -63,9 +63,7 @@ class KubernetesBackend(Backend):
         self.workdir = workdir or os.getcwd()
         self.poll_interval = poll_interval
 
-    def _manifest(
-        self, cab: Cab, argv: list[str], inputs: dict[str, Any], job_name: str
-    ) -> dict[str, Any]:
+    def _manifest(self, cab: Cab, argv: list[str], inputs: dict[str, Any], job_name: str) -> dict[str, Any]:
         if not cab.image:
             raise BackendError(f"cab '{cab.name}' has no image, cannot run on kubernetes")
 
@@ -98,9 +96,7 @@ class KubernetesBackend(Backend):
         }
 
     def _kubectl(self, *args: str, input: str | None = None) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ["kubectl", *args, "-n", self.namespace], input=input, capture_output=True, text=True
-        )
+        return subprocess.run(["kubectl", *args, "-n", self.namespace], input=input, capture_output=True, text=True)
 
     def _wait(self, job_name: str) -> str:
         while True:
@@ -114,9 +110,7 @@ class KubernetesBackend(Backend):
             time.sleep(self.poll_interval)
 
     def _pod_name(self, job_name: str) -> str:
-        proc = self._kubectl(
-            "get", "pods", "-l", f"job-name={job_name}", "-o", "jsonpath={.items[0].metadata.name}"
-        )
+        proc = self._kubectl("get", "pods", "-l", f"job-name={job_name}", "-o", "jsonpath={.items[0].metadata.name}")
         if proc.returncode != 0 or not proc.stdout.strip():
             raise BackendError(f"could not find pod for job '{job_name}': {proc.stderr.strip()}")
         return proc.stdout.strip()
@@ -134,7 +128,13 @@ class KubernetesBackend(Backend):
         return 1
 
     def run(
-        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True,
+        self,
+        cab: Cab,
+        argv: list[str],
+        inputs: dict[str, Any],
+        *,
+        label: str = "",
+        stream: bool = True,
         pin: bool = False,  # accepted for the Backend protocol; not yet wired for k8s
         cwd: str | None = None,  # accepted for the Backend protocol; the pod runs in its image's cwd
     ) -> BackendRun:

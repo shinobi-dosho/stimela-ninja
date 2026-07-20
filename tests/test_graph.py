@@ -132,9 +132,7 @@ def test_input_ref_to_unknown_recipe_field_is_rejected():
 def test_output_ref_to_unknown_step_is_rejected():
     use = _cab("use", UseIn, OkOut)
     with pytest.raises(RecipeGraphError, match="output of step 'ghost'"):
-        build_graph(
-            _recipe([StepRef(name="use", step=use, wiring={"path": OutputRef(step="ghost", field="path")})])
-        )
+        build_graph(_recipe([StepRef(name="use", step=use, wiring={"path": OutputRef(step="ghost", field="path")})]))
 
 
 def test_output_wiring_to_unknown_step_is_rejected():

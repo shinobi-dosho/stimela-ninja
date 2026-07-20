@@ -17,9 +17,7 @@ class Outputs(BaseModel):
 def make_recording_cab(**kwargs) -> tuple[Cab, RecordingBackend]:
     recorder = RecordingBackend()
     register_step_backend("record", recorder)
-    cab = Cab(
-        name="tool", command="tool", inputs_model=Inputs, outputs_model=Outputs, backend="record", **kwargs
-    )
+    cab = Cab(name="tool", command="tool", inputs_model=Inputs, outputs_model=Outputs, backend="record", **kwargs)
     return cab, recorder
 
 

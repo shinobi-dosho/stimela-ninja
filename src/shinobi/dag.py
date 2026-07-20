@@ -97,9 +97,7 @@ def _ticks(width: int, cols: list[str] | list[int], ch: str = "|") -> str:
     return "".join(line)
 
 
-def _bracket(
-    width: int, cols: list[int], junction: str, left_corner: str, right_corner: str, junction_col: int | None = None
-) -> str:
+def _bracket(width: int, cols: list[int], junction: str, left_corner: str, right_corner: str, junction_col: int | None = None) -> str:
     """A horizontal bar spanning cols, with `junction` at the given
     column (or the bar's own midpoint if not given) and the corner
     characters at the two ends (a no-op, single '|', if there's only one
@@ -124,9 +122,7 @@ def _arrows(width: int, cols: list[int]) -> str:
     return "".join(line)
 
 
-def _connector(
-    prev_batch: list[TraceStep], prev_centers: list[int], batch: list[TraceStep], centers: list[int], width: int
-) -> list[str]:
+def _connector(prev_batch: list[TraceStep], prev_centers: list[int], batch: list[TraceStep], centers: list[int], width: int) -> list[str]:
     prev_ids = {s.id for s in prev_batch}
     shared_deps = batch[0].depends_on
     clean = shared_deps == prev_ids and bool(shared_deps)
@@ -161,9 +157,7 @@ def _connector(
         # already at this exact column.
         if len(prev_centers) > 1:
             lines.append(_ticks(width, [spine]))
-        lines.append(
-            _bracket(width, centers, junction="+", left_corner="+", right_corner="+", junction_col=spine)
-        )
+        lines.append(_bracket(width, centers, junction="+", left_corner="+", right_corner="+", junction_col=spine))
         lines.append(_arrows(width, centers))
     else:
         lines.append(_ticks(width, [spine], "v"))

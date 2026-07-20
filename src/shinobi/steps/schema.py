@@ -507,9 +507,7 @@ class StepRef(BaseModel):
     name: str
     step: Scope
     func: Callable | None = None
-    wiring: dict[str, "InputRef | OutputRef | list[InputRef | OutputRef]"] = Field(
-        default_factory=dict
-    )
+    wiring: dict[str, "InputRef | OutputRef | list[InputRef | OutputRef]"] = Field(default_factory=dict)
     params: dict[str, Any] = Field(default_factory=dict)
     scatter: ScatterSpec | None = None
 
@@ -545,8 +543,14 @@ class StepRef(BaseModel):
         from shinobi.steps.dispatch import _dispatch
 
         return _dispatch(
-            self.step, self.func, backend=backend, cache=cache, cache_dir=cache_dir,
-            provenance=provenance, sandbox=sandbox, **{**self.params, **kwargs},
+            self.step,
+            self.func,
+            backend=backend,
+            cache=cache,
+            cache_dir=cache_dir,
+            provenance=provenance,
+            sandbox=sandbox,
+            **{**self.params, **kwargs},
         )
 
 
@@ -586,9 +590,7 @@ class _InputsProxy:
             AttributeError: If `field` isn't a field of `recipe.inputs_model`.
         """
         if field not in self._recipe.inputs_model.model_fields:
-            raise AttributeError(
-                f"'{field}' is not a field of {self._recipe.inputs_model.__name__}"
-            )
+            raise AttributeError(f"'{field}' is not a field of {self._recipe.inputs_model.__name__}")
         return InputRef(field=field)
 
 
@@ -629,10 +631,7 @@ class _StepOutputsProxy:
             return OutputRef(step=self._step, field=field)
         if self._cab is not None and self._cab.match_output_pattern(field) is not None:
             return OutputRef(step=self._step, field=field)
-        raise AttributeError(
-            f"'{field}' is not an output of step '{self._step}' "
-            f"({self._outputs_model.__name__})"
-        )
+        raise AttributeError(f"'{field}' is not an output of step '{self._step}' ({self._outputs_model.__name__})")
 
 
 class _OutputsProxy:

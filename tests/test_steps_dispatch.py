@@ -31,9 +31,7 @@ class Outputs(BaseModel):
 def make_recording_cab(**kwargs) -> tuple[Cab, RecordingBackend]:
     recorder = RecordingBackend()
     register_step_backend("record", recorder)
-    cab = Cab(
-        name="tool", command="tool", inputs_model=Inputs, outputs_model=Outputs, backend="record", **kwargs
-    )
+    cab = Cab(name="tool", command="tool", inputs_model=Inputs, outputs_model=Outputs, backend="record", **kwargs)
     return cab, recorder
 
 
@@ -82,9 +80,7 @@ def test_dynamic_pattern_param_warns_it_is_unvalidated():
         inputs_model=build_model("In", {"x": ("int", True, None)}, allow_extra=True),
         outputs_model=Outputs,
         backend="record",
-        input_patterns=[
-            ParamPattern(segments=[ParamSegment(regex=r".+?"), ParamSegment(attrs={"solvable": ParamMeta()})])
-        ],
+        input_patterns=[ParamPattern(segments=[ParamSegment(regex=r".+?"), ParamSegment(attrs={"solvable": ParamMeta()})])],
     )
 
     with pytest.warns(UserWarning, match=r"g1\.solvable"):
@@ -355,9 +351,7 @@ def test_recipe_wires_a_real_output_value_into_next_steps_input():
         backend="fixed-output",
         wranglers={r"result=(?P<path>\S+)": ["PARSE_OUTPUT:path:str"]},
     )
-    use_cab = Cab(
-        name="use", command="x", inputs_model=UseInputs, outputs_model=OkOut, backend="use-recorder"
-    )
+    use_cab = Cab(name="use", command="x", inputs_model=UseInputs, outputs_model=OkOut, backend="use-recorder")
     recipe = Recipe(
         name="r",
         inputs_model=MakeInputs,
@@ -613,9 +607,7 @@ def test_failure_stops_dependents_but_drains_independent_inflight():
 
     fail_cab = _cab("fail", "fail")
     ok_cab = _cab("ok", "ok")
-    down_cab = Cab(
-        name="down", command="t", inputs_model=Outputs, outputs_model=Outputs, backend="down"
-    )
+    down_cab = Cab(name="down", command="t", inputs_model=Outputs, outputs_model=Outputs, backend="down")
     recipe = Recipe(
         name="r",
         inputs_model=Inputs,
@@ -662,9 +654,7 @@ def test_worker_exception_propagates_out_of_recipe():
         max_workers=2,
         steps=[StepRef(name="a", step=cab, func=bad_override, wiring={"x": InputRef(field="x")})],
     )
-    with pytest.raises(
-        ParameterError, match="step 'a' in recipe 'r' failed: tool: parameter validation failed"
-    ):
+    with pytest.raises(ParameterError, match="step 'a' in recipe 'r' failed: tool: parameter validation failed"):
         _dispatch(recipe, None, x=1)
 
 

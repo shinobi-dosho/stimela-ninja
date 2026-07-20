@@ -97,9 +97,7 @@ skysim = skysim.model_copy(update={"outputs_model": _SIMMS_MS_OUTPUT, "backend":
 # cab and only need its real `image` output.
 wsclean_with_model = wsclean.model_copy(
     update={
-        "outputs_model": create_model(
-            "wsclean_sim_Outputs", __base__=wsclean.outputs_model, input_ms=(Path | None, None)
-        ),
+        "outputs_model": create_model("wsclean_sim_Outputs", __base__=wsclean.outputs_model, input_ms=(Path | None, None)),
         "field_meta": {**wsclean.field_meta, "input_ms": ParamMeta(implicit="{ms[0]}")},
     }
 )

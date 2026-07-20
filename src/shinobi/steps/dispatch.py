@@ -80,9 +80,7 @@ def get_step_backend(name: str) -> Any:
     return get_backend(name)
 
 
-def _prepare_inputs(
-    scope: Scope, kwargs: dict[str, Any], *, validated: Any = None
-) -> dict[str, Any]:
+def _prepare_inputs(scope: Scope, kwargs: dict[str, Any], *, validated: Any = None) -> dict[str, Any]:
     """Validate kwargs through inputs_model, then deep-copy every field
     not explicitly marked MUTABLE -- the actual enforcement mechanism.
     Re-validating an already-validated instance of the exact type through
@@ -108,9 +106,7 @@ def _prepare_inputs(
         try:
             validated = scope.inputs_model(**kwargs)
         except ValidationError as exc:
-            raise ParameterError(
-                f"{scope.name}: parameter validation failed:\n{exc}"
-            ) from exc
+            raise ParameterError(f"{scope.name}: parameter validation failed:\n{exc}") from exc
     prepared: dict[str, Any] = {}
     for name in type(validated).model_fields:
         if scope.mutability_of(name) is Mutability.MUTABLE:
@@ -181,9 +177,7 @@ class ExecContext:
         try:
             self.inputs = scope.inputs_model(**raw_inputs)
         except ValidationError as exc:
-            raise ParameterError(
-                f"{scope.name}: parameter validation failed:\n{exc}"
-            ) from exc
+            raise ParameterError(f"{scope.name}: parameter validation failed:\n{exc}") from exc
         self.outputs = None
         self._backend_override = backend_override
         self._recipe_backend = recipe_backend
@@ -214,13 +208,7 @@ class ExecContext:
         adapter) can inspect which backend is active without duplicating
         the precedence logic.
         """
-        return (
-            override
-            or self._backend_override
-            or self.scope.backend
-            or self._recipe_backend
-            or (self._config or AppConfig.load()).backend.default
-        )
+        return override or self._backend_override or self.scope.backend or self._recipe_backend or (self._config or AppConfig.load()).backend.default
 
     def import_func(self, func: str, module: str | None = None) -> Callable:
         """Import and return a callable by name.
@@ -262,8 +250,13 @@ class ExecContext:
         backend_name = self.resolve_backend_name(backend)
         if isinstance(self.scope, Cab):
             result = _run_cab(
-                self.scope, prepared, backend_name, label=self._cache_path, stream=self._stream,
-                pin=self._pin, sandbox_root=self._sandbox_root,
+                self.scope,
+                prepared,
+                backend_name,
+                label=self._cache_path,
+                stream=self._stream,
+                pin=self._pin,
+                sandbox_root=self._sandbox_root,
             )
         elif isinstance(self.scope, Recipe):
             result = _run_recipe(
@@ -289,7 +282,10 @@ class ExecContext:
 
 
 def _emit_run_manifest(
-    result: StepResult, ctx: "ExecContext", config: AppConfig, backend: str | None,
+    result: StepResult,
+    ctx: "ExecContext",
+    config: AppConfig,
+    backend: str | None,
     target: str | None = None,
 ) -> None:
     """Write the run manifest for a completed top-level run. Callers gate on
@@ -327,42 +323,18 @@ def _dispatch(
     **kwargs: Any,
 ) -> StepResult:
     config = _config or AppConfig.load()
-    cache_enabled = (
-        cache
-        if cache is not None
-        else scope.cache
-        if scope.cache is not None
-        else _recipe_cache
-        if _recipe_cache is not None
-        else config.cache.enabled
-    )
+    cache_enabled = cache if cache is not None else scope.cache if scope.cache is not None else _recipe_cache if _recipe_cache is not None else config.cache.enabled
     cache_dir_value = cache_dir or scope.cache_dir or _recipe_cache_dir or config.cache.dir
     cache_path = _cache_path or scope.name
-    stream_enabled = (
-        stream if stream is not None else _recipe_stream if _recipe_stream is not None else config.log.stream
-    )
+    stream_enabled = stream if stream is not None else _recipe_stream if _recipe_stream is not None else config.log.stream
     # Provenance (image pinning + manifest emission) is one opt-in switch,
     # resolved highest-priority-first like cache: explicit arg (CLI
     # --provenance) > inherited-from-recipe > config default.
-    provenance_enabled = (
-        provenance
-        if provenance is not None
-        else _recipe_provenance
-        if _recipe_provenance is not None
-        else config.provenance.enabled
-    )
+    provenance_enabled = provenance if provenance is not None else _recipe_provenance if _recipe_provenance is not None else config.provenance.enabled
     # Sandbox resolves like cache: explicit arg > the scope's own value >
     # inherited-from-recipe > config default. The resolved switch travels as
     # the scratch root itself (None = disabled).
-    sandbox_enabled = (
-        sandbox
-        if sandbox is not None
-        else scope.sandbox
-        if scope.sandbox is not None
-        else _recipe_sandbox
-        if _recipe_sandbox is not None
-        else config.sandbox.enabled
-    )
+    sandbox_enabled = sandbox if sandbox is not None else scope.sandbox if scope.sandbox is not None else _recipe_sandbox if _recipe_sandbox is not None else config.sandbox.enabled
     # A Recipe-shaped scope is never itself cached -- its own sub-steps
     # each get their own cache check via their own recursive _dispatch
     # call (see shinobi.cache's module docstring for why).
@@ -396,7 +368,8 @@ def _dispatch(
             return hit
 
     logger.info(
-        "step %s: starting%s", cache_path,
+        "step %s: starting%s",
+        cache_path,
         " (sandboxed)" if sandbox_enabled else "",
     )
     try:
@@ -407,10 +380,7 @@ def _dispatch(
             if result is None:
                 result = ctx.run()
             elif not isinstance(result, StepResult):
-                raise TypeError(
-                    f"step function {getattr(func, '__name__', func)!r} must return "
-                    f"StepResult or None, got {type(result).__name__}"
-                )
+                raise TypeError(f"step function {getattr(func, '__name__', func)!r} must return StepResult or None, got {type(result).__name__}")
     except Exception:
         logger.exception("step %s: raised", cache_path)
         raise
@@ -462,26 +432,25 @@ def _fill_outputs(cab: Cab, prepared: dict[str, Any], run, wrangled: dict[str, A
     try:
         return cab.outputs_model(**values)
     except ValidationError as exc:
-        raise ParameterError(
-            f"{cab.name}: output validation failed:\n{exc}"
-        ) from exc
+        raise ParameterError(f"{cab.name}: output validation failed:\n{exc}") from exc
 
 
-def _resolve_implicit_template(
-    cab: Cab, field: str, template: str, prepared: dict[str, Any]
-) -> str:
+def _resolve_implicit_template(cab: Cab, field: str, template: str, prepared: dict[str, Any]) -> str:
     try:
         return template.format(**prepared)
     except KeyError as exc:
-        raise ParameterError(
-            f"cab {cab.name!r} output {field!r} implicit template {template!r} "
-            f"references unknown input {exc}"
-        ) from exc
+        raise ParameterError(f"cab {cab.name!r} output {field!r} implicit template {template!r} references unknown input {exc}") from exc
 
 
 def _run_cab(
-    cab: Cab, prepared: dict[str, Any], backend_name: str, *, label: str = "", stream: bool = True,
-    pin: bool = False, sandbox_root: str | None = None,
+    cab: Cab,
+    prepared: dict[str, Any],
+    backend_name: str,
+    *,
+    label: str = "",
+    stream: bool = True,
+    pin: bool = False,
+    sandbox_root: str | None = None,
 ) -> StepResult:
     # Sandboxed run (shinobi.sandbox): the tool's cwd is a private scratch
     # dir; path-typed inputs are anchored back at the workspace so the tool
@@ -499,12 +468,18 @@ def _run_cab(
     argv = build_argv(cab, run_inputs)
     backend = get_step_backend(backend_name)
     import shlex
+
     logger.debug("step %s: backend=%s argv: %s", label or cab.name, backend_name, shlex.join(argv))
     # The backend gets the prepared dict (not a rebuilt model) so MUTABLE
     # fields reach it as the caller's own objects by reference -- rebuilding
     # a pydantic model here would deep-copy every container and break that.
     run = backend.run(
-        cab, argv, run_inputs, label=label or cab.name, stream=stream, pin=pin,
+        cab,
+        argv,
+        run_inputs,
+        label=label or cab.name,
+        stream=stream,
+        pin=pin,
         cwd=str(sandbox_dir) if sandbox_dir is not None else None,
     )
     lines = run.stdout.splitlines() + run.stderr.splitlines()
@@ -518,8 +493,7 @@ def _run_cab(
             discard_sandbox(sandbox_dir)
         else:
             warnings.warn(
-                f"step '{label or cab.name}' failed (returncode {run.returncode}); "
-                f"its sandbox is kept for post-mortem at {sandbox_dir}",
+                f"step '{label or cab.name}' failed (returncode {run.returncode}); its sandbox is kept for post-mortem at {sandbox_dir}",
                 stacklevel=2,
             )
     return StepResult(
@@ -538,15 +512,14 @@ def _run_cab(
     )
 
 
-def _resolve_wiring(
-    ref, prepared: dict[str, Any], results: dict[str, StepResult]
-) -> dict[str, Any]:
+def _resolve_wiring(ref, prepared: dict[str, Any], results: dict[str, StepResult]) -> dict[str, Any]:
     """A sub-step's effective kwargs: its per-step `params`, with wiring
     (recipe inputs via `InputRef`, upstream outputs via `OutputRef`) merged
     on top. Every `OutputRef.step` here is guaranteed to be in `results`
     already -- the scheduler only makes a step ready once all its upstream
     dependencies have completed.
     """
+
     def resolve_one(field: str, source: InputRef | OutputRef) -> Any:
         """Resolve a single wiring source to its concrete value.
 
@@ -562,10 +535,7 @@ def _resolve_wiring(
         try:
             return getattr(results[source.step].outputs, source.field)
         except AttributeError as exc:
-            raise StepError(
-                f"step '{ref.name}' cannot resolve wiring for input '{field}': "
-                f"step '{source.step}' has no output '{source.field}'"
-            ) from exc
+            raise StepError(f"step '{ref.name}' cannot resolve wiring for input '{field}': step '{source.step}' has no output '{source.field}'") from exc
 
     wired: dict[str, Any] = {}
     for field, source in ref.wiring.items():
@@ -596,22 +566,14 @@ def _build_scatter_slices(ref: StepRef, sub_kwargs: dict[str, Any]) -> list[dict
     lengths: set[int] = set()
     for field in fields:
         if field not in sub_kwargs:
-            raise ScatterError(
-                f"step '{ref.name}' scatters over '{field}' but no value was supplied "
-                f"for it (wiring or params must provide '{field}')"
-            )
+            raise ScatterError(f"step '{ref.name}' scatters over '{field}' but no value was supplied for it (wiring or params must provide '{field}')")
         value = sub_kwargs[field]
         if not isinstance(value, list):
-            raise ScatterError(
-                f"step '{ref.name}' scatters over '{field}' but the resolved value is "
-                f"{type(value).__name__}, not a list"
-            )
+            raise ScatterError(f"step '{ref.name}' scatters over '{field}' but the resolved value is {type(value).__name__}, not a list")
         lengths.add(len(value))
     if len(lengths) != 1:
         lengths_str = ", ".join(sorted(str(length) for length in lengths))
-        raise ScatterError(
-            f"step '{ref.name}' scatter fields {fields} have different lengths: {lengths_str}"
-        )
+        raise ScatterError(f"step '{ref.name}' scatter fields {fields} have different lengths: {lengths_str}")
     n = lengths.pop()
     slices: list[dict[str, Any]] = []
     for i in range(n):
@@ -687,15 +649,10 @@ def _aggregate_scatter_results(
         outputs_data = {name: [] for name in scope.outputs_model.model_fields}
         returncode = next(s.returncode for s in slices if s.returncode != 0)
     else:
-        outputs_data = {
-            name: [getattr(s.outputs, name) for s in slices]
-            for name in scope.outputs_model.model_fields
-        }
+        outputs_data = {name: [getattr(s.outputs, name) for s in slices] for name in scope.outputs_model.model_fields}
         returncode = 0
 
-    inputs_data = {
-        name: value for name, value in sub_kwargs.items() if name in scope.inputs_model.model_fields
-    }
+    inputs_data = {name: value for name, value in sub_kwargs.items() if name in scope.inputs_model.model_fields}
 
     outputs = OutputsModel(**outputs_data)
     inputs = InputsModel(**inputs_data)
@@ -792,9 +749,7 @@ def _run_recipe(
                     # and immediately release dependents.
                     _step_completed(
                         i,
-                        _aggregate_scatter_results(
-                            ref.step, ref.scatter.fields, sub_kwargs, []
-                        ),
+                        _aggregate_scatter_results(ref.step, ref.scatter.fields, sub_kwargs, []),
                     )
                     return
                 scatter_sub_kwargs[i] = sub_kwargs
@@ -890,17 +845,10 @@ def _run_recipe(
     if failures:
         i, failed = min(failures, key=lambda f: f[0])
         ref_name = recipe.steps[i].name
-        raise CabRunError(
-            f"step '{ref_name}' in recipe '{recipe.name}' failed "
-            f"(returncode {failed.returncode})"
-        )
+        raise CabRunError(f"step '{ref_name}' in recipe '{recipe.name}' failed (returncode {failed.returncode})")
 
     ordered = [ref.name for ref in recipe.steps if ref.name in results]
-    outputs = {
-        field: getattr(results[out_ref.step].outputs, out_ref.field)
-        for field, out_ref in recipe.output_wiring.items()
-        if out_ref.step in results
-    }
+    outputs = {field: getattr(results[out_ref.step].outputs, out_ref.field) for field, out_ref in recipe.output_wiring.items() if out_ref.step in results}
     return StepResult(
         name=recipe.name,
         returncode=0,

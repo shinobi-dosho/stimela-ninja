@@ -1,4 +1,3 @@
-
 from pathlib import Path
 
 import pydantic
@@ -131,10 +130,7 @@ cabs:
 def test_param_positional_head_policy_parsed_into_meta():
     cubical = loads(POSITIONAL_HEAD_YAML)["cubical"]
     assert cubical.field_meta["parset"].positional_head is True
-    assert (
-        "data_ms" not in cubical.field_meta
-        or cubical.field_meta["data_ms"].positional_head is False
-    )
+    assert "data_ms" not in cubical.field_meta or cubical.field_meta["data_ms"].positional_head is False
 
 
 def test_positional_head_policy_produces_head_positional_in_argv():
@@ -149,10 +145,7 @@ def test_param_repeat_list_policy_parsed_into_meta():
     wsclean = loads(REPEAT_YAML)["wsclean"]
     assert wsclean.field_meta["size"].repeat_as_tokens is True
     # a field with no `policies.repeat: list` is unaffected (default comma-join)
-    assert (
-        "multiscale_scales" not in wsclean.field_meta
-        or wsclean.field_meta["multiscale_scales"].repeat_as_tokens is False
-    )
+    assert "multiscale_scales" not in wsclean.field_meta or wsclean.field_meta["multiscale_scales"].repeat_as_tokens is False
 
 
 ABBREV_CHOICE_YAML = """
@@ -197,7 +190,9 @@ def test_choices_narrow_field_annotation_to_literal():
     # mode is a choice-with-default -> Optional[Literal[...]]; the Literal's
     # allowed values are exactly the `choices:` list.
     assert set(get_args(get_args(skysim.inputs_model.model_fields["mode"].annotation)[0])) == {
-        "sim", "add", "subtract",
+        "sim",
+        "add",
+        "subtract",
     }
     assert skysim.field_meta["mode"].choices == ["sim", "add", "subtract"]
     # an out-of-set value fails pydantic validation
@@ -258,10 +253,7 @@ def test_include_merges_files_relative_to_including_file(tmp_path):
     base = tmp_path / "base.yml"
     base.write_text("vars:\n  cult-cargo:\n    images:\n      registry: quay.io/stimela2\n")
     main = tmp_path / "main.yml"
-    main.write_text(
-        "_include:\n  - base.yml\ncabs:\n  breizorro:\n    command: breizorro\n"
-        "    image:\n      _use: vars.cult-cargo.images\n      name: breizorro\n"
-    )
+    main.write_text("_include:\n  - base.yml\ncabs:\n  breizorro:\n    command: breizorro\n    image:\n      _use: vars.cult-cargo.images\n      name: breizorro\n")
     cabs = load_file(main)
     assert cabs["breizorro"].command == "breizorro"
     assert cabs["breizorro"].image == "breizorro"
@@ -280,10 +272,7 @@ def test_shared_include_is_only_read_from_disk_once(tmp_path, monkeypatch):
 
     def make_main(cab_name: str) -> Path:
         main = tmp_path / f"{cab_name}.yml"
-        main.write_text(
-            f"_include:\n  - shared_base.yml\ncabs:\n  {cab_name}:\n    command: {cab_name}\n"
-            "    image:\n      _use: vars.cult-cargo.images\n      name: x\n"
-        )
+        main.write_text(f"_include:\n  - shared_base.yml\ncabs:\n  {cab_name}:\n    command: {cab_name}\n    image:\n      _use: vars.cult-cargo.images\n      name: x\n")
         return main
 
     read_calls = []
@@ -306,10 +295,7 @@ def test_shared_include_is_only_read_from_disk_once(tmp_path, monkeypatch):
 
 def test_package_scoped_include_raises_clear_error_without_package_roots(tmp_path):
     main = tmp_path / "main.yml"
-    main.write_text(
-        "_include:\n  - (cultcargo):\n      - genesis/cult-cargo-base.yml\n"
-        "cabs:\n  plain:\n    command: echo\n"
-    )
+    main.write_text("_include:\n  - (cultcargo):\n      - genesis/cult-cargo-base.yml\ncabs:\n  plain:\n    command: echo\n")
     with pytest.raises(CabLoadError, match="package_roots"):
         load_file(main)
 
@@ -317,9 +303,7 @@ def test_package_scoped_include_raises_clear_error_without_package_roots(tmp_pat
 def test_package_scoped_include_resolves_via_explicit_package_roots(tmp_path):
     pkg_dir = tmp_path / "cultcargo"
     (pkg_dir / "genesis").mkdir(parents=True)
-    (pkg_dir / "genesis" / "cult-cargo-base.yml").write_text(
-        "vars:\n  cult-cargo:\n    images:\n      registry: quay.io/stimela2\n"
-    )
+    (pkg_dir / "genesis" / "cult-cargo-base.yml").write_text("vars:\n  cult-cargo:\n    images:\n      registry: quay.io/stimela2\n")
     main = tmp_path / "main.yml"
     main.write_text(
         "_include:\n  - (cultcargo):\n      - genesis/cult-cargo-base.yml\n"
@@ -333,33 +317,22 @@ def test_package_scoped_include_resolves_via_explicit_package_roots(tmp_path):
 def test_package_scoped_include_via_combined_string_form(tmp_path):
     pkg_dir = tmp_path / "cultcargo"
     (pkg_dir / "genesis" / "cubical").mkdir(parents=True)
-    (pkg_dir / "genesis" / "cubical" / "schema.yaml").write_text(
-        "data:\n  ms:\n    dtype: MS\n    required: true\n"
-    )
+    (pkg_dir / "genesis" / "cubical" / "schema.yaml").write_text("data:\n  ms:\n    dtype: MS\n    required: true\n")
     main = tmp_path / "main.yml"
-    main.write_text(
-        "cabs:\n  cubical:\n    command: gocubical\n"
-        "    inputs:\n      _include: (cultcargo.genesis.cubical)schema.yaml\n"
-    )
+    main.write_text("cabs:\n  cubical:\n    command: gocubical\n    inputs:\n      _include: (cultcargo.genesis.cubical)schema.yaml\n")
     cabs = load_file(main, package_roots={"cultcargo": pkg_dir})
     assert "data_ms" in cabs["cubical"].inputs_model.model_fields
 
 
 def test_dynamic_schema_warns_but_still_loads_static_inputs():
-    text = (
-        "cabs:\n  tool:\n    command: tool\n    dynamic_schema: some.module.make_schema\n"
-        "    inputs:\n      size:\n        dtype: int\n"
-    )
+    text = "cabs:\n  tool:\n    command: tool\n    dynamic_schema: some.module.make_schema\n    inputs:\n      size:\n        dtype: int\n"
     with pytest.warns(UserWarning, match="dynamic_schema"):
         cabs = loads(text)
     assert "size" in cabs["tool"].inputs_model.model_fields
 
 
 def test_nested_package_scoped_include_inside_inputs_raises_clear_error_without_roots():
-    text = (
-        "cabs:\n  cubical:\n    command: gocubical\n"
-        "    inputs:\n      _include: (cultcargo.genesis.cubical)schema.yaml\n"
-    )
+    text = "cabs:\n  cubical:\n    command: gocubical\n    inputs:\n      _include: (cultcargo.genesis.cubical)schema.yaml\n"
     with pytest.raises(CabLoadError, match="package_roots"):
         loads(text)
 
@@ -414,9 +387,7 @@ def test_dynamic_schema_cab_gets_no_special_case_treatment(tmp_path):
     """
     pkg_dir = tmp_path / "cultcargo"
     (pkg_dir / "genesis" / "cubical").mkdir(parents=True)
-    (pkg_dir / "genesis" / "cubical" / "schema.yaml").write_text(
-        "data:\n  ms:\n    dtype: MS\n    required: true\n"
-    )
+    (pkg_dir / "genesis" / "cubical" / "schema.yaml").write_text("data:\n  ms:\n    dtype: MS\n    required: true\n")
     main = tmp_path / "cubical.yml"
     main.write_text(
         "cabs:\n  cubical:\n    command: gocubical\n"

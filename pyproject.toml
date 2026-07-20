@@ -34,8 +34,8 @@ dev = [
 # sibling-checkout override used during development (dosho isn't on PyPI
 # yet either).
 examples = [
-    "simms @ git+https://github.com/wits-cfa/simms.git@7511d435348d05b816d2ff4ec1f7bdd652dec6a1 ; python_version >= '3.11'",
-    "dosho @ git+https://github.com/SpheMakh/dosho ; python_version >= '3.11'",
+    "simms @ git+https://github.com/wits-cfa/simms.git ; python_version >= '3.11'",
+    "dosho @ git+https://github.com/shinobi-dosho/dosho.git ; python_version >= '3.11'",
 ]
 # Documentation build (Sphinx + Furo + autodoc). `uv sync --group docs`.
 docs = [
@@ -46,10 +46,10 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/SpheMakh/stimela-ninja"
-Repository = "https://github.com/SpheMakh/stimela-ninja"
+Homepage = "https://github.com/shinobi/stimela-ninja"
+Repository = "https://github.com/shinobi-dosho/stimela-ninja"
 Documentation = "https://stimela-ninja.readthedocs.io"
-Issues = "https://github.com/SpheMakh/stimela-ninja/issues"
+Issues = "https://github.com/shinobi-dosho/stimela-ninja/issues"
 
 [project.scripts]
 ninja = "shinobi.cli:main"

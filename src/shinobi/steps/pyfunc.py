@@ -115,16 +115,10 @@ def _inputs_model_from_signature(func: Callable) -> tuple[type[BaseModel], bool]
     for pname, param in params:
         if param.kind in _UNSUPPORTED_KINDS:
             raise TypeError(
-                f"pystep {func.__name__!r}: parameter {pname!r} is "
-                f"{param.kind.description} -- only plain positional-or-keyword "
-                "parameters (with a real type hint) are supported"
+                f"pystep {func.__name__!r}: parameter {pname!r} is {param.kind.description} -- only plain positional-or-keyword parameters (with a real type hint) are supported"
             )
         if pname not in hints:
-            raise TypeError(
-                f"pystep {func.__name__!r}: parameter {pname!r} has no type "
-                "hint -- every parameter needs one so its inputs_model can be "
-                "derived from the signature"
-            )
+            raise TypeError(f"pystep {func.__name__!r}: parameter {pname!r} has no type hint -- every parameter needs one so its inputs_model can be derived from the signature")
         required = param.default is inspect.Parameter.empty
         fields[pname] = (hints[pname], ... if required else param.default)
     return create_model(f"{_pascal(func.__name__)}Inputs", **fields), wants_ctx
@@ -158,11 +152,7 @@ def _ctx_shim() -> str:
     """
     from shinobi.steps.dispatch import ExecContext
 
-    return (
-        "import builtins\n\n\nclass _Ctx:\n"
-        + inspect.getsource(ExecContext.import_func)
-        + "\n\nctx = _Ctx()\n"
-    )
+    return "import builtins\n\n\nclass _Ctx:\n" + inspect.getsource(ExecContext.import_func) + "\n\nctx = _Ctx()\n"
 
 
 # All paths in the runner (`inputs_path`, `outputs_path`, the script's own
@@ -307,11 +297,7 @@ def _run_pystep_container(
     from shinobi.backends.container import build_container_argv
 
     if "<locals>" in func.__qualname__:
-        raise TypeError(
-            f"pystep {func.__name__!r}: a function defined inside another "
-            "function has no importable module path, so it cannot run in a "
-            "container"
-        )
+        raise TypeError(f"pystep {func.__name__!r}: a function defined inside another function has no importable module path, so it cannot run in a container")
 
     source_file = Path(inspect.getfile(func)).resolve()
 
@@ -393,13 +379,8 @@ def _run_pystep_container(
             stderr_tail = (run.stderr or "").strip()
             detail = f"\nstderr:\n{stderr_tail}" if stderr_tail else ""
             if sandbox_dir is not None:
-                raise CabRunError(
-                    f"pystep '{scope.name}' failed (returncode {run.returncode}); "
-                    f"its sandbox is kept for post-mortem at {sandbox_dir}{detail}"
-                )
-            raise CabRunError(
-                f"pystep '{scope.name}' failed (returncode {run.returncode}){detail}"
-            )
+                raise CabRunError(f"pystep '{scope.name}' failed (returncode {run.returncode}); its sandbox is kept for post-mortem at {sandbox_dir}{detail}")
+            raise CabRunError(f"pystep '{scope.name}' failed (returncode {run.returncode}){detail}")
 
         # Exit 0 means the runner ran to completion, and it always writes
         # the outputs file -- so a missing/unreadable one is a broken
@@ -408,26 +389,15 @@ def _run_pystep_container(
         try:
             output_data = json.loads(outputs_path.read_text())
         except (OSError, json.JSONDecodeError) as exc:
-            raise TypeError(
-                f"pystep {func.__name__!r}: container run exited 0 but left "
-                f"no readable outputs file ({exc})"
-            ) from exc
+            raise TypeError(f"pystep {func.__name__!r}: container run exited 0 but left no readable outputs file ({exc})") from exc
 
         if is_empty:
             if output_data is not None:
-                raise TypeError(
-                    f"pystep {func.__name__!r} has no declared outputs (no "
-                    "return annotation, or -> None) but returned "
-                    f"{type(output_data).__name__!r} instead of None"
-                )
+                raise TypeError(f"pystep {func.__name__!r} has no declared outputs (no return annotation, or -> None) but returned {type(output_data).__name__!r} instead of None")
             outputs = outputs_model()
         else:
             if not isinstance(output_data, dict):
-                raise TypeError(
-                    f"pystep {func.__name__!r} must return "
-                    f"{outputs_model.__name__!r}, got "
-                    f"{type(output_data).__name__!r} from the container"
-                )
+                raise TypeError(f"pystep {func.__name__!r} must return {outputs_model.__name__!r}, got {type(output_data).__name__!r} from the container")
             outputs = outputs_model(**output_data)
 
         if sandbox_dir is not None:
@@ -452,9 +422,7 @@ def _run_pystep_container(
         )
 
 
-def _make_adapter(
-    func: Callable, outputs_model: type[BaseModel], is_empty: bool, wants_ctx: bool
-) -> Callable[[ExecContext], StepResult]:
+def _make_adapter(func: Callable, outputs_model: type[BaseModel], is_empty: bool, wants_ctx: bool) -> Callable[[ExecContext], StepResult]:
     def _adapter(ctx: ExecContext) -> StepResult:
         # Check the cheap field first: resolving the backend name can fall
         # through to a config-file read, which image-less pysteps (the
@@ -478,18 +446,11 @@ def _make_adapter(
         ret = func(ctx, **prepared) if wants_ctx else func(**prepared)
         if is_empty:
             if ret is not None:
-                raise TypeError(
-                    f"pystep {func.__name__!r} has no declared outputs (no return "
-                    f"annotation, or -> None) but returned {type(ret).__name__!r} "
-                    "instead of None"
-                )
+                raise TypeError(f"pystep {func.__name__!r} has no declared outputs (no return annotation, or -> None) but returned {type(ret).__name__!r} instead of None")
             outputs: BaseModel = outputs_model()
         else:
             if not isinstance(ret, outputs_model):
-                raise TypeError(
-                    f"pystep {func.__name__!r} must return {outputs_model.__name__!r}, "
-                    f"got {type(ret).__name__!r}"
-                )
+                raise TypeError(f"pystep {func.__name__!r} must return {outputs_model.__name__!r}, got {type(ret).__name__!r}")
             outputs = ret
         return StepResult(
             name=ctx.scope.name,

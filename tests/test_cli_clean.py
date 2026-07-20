@@ -82,9 +82,7 @@ def test_clean_launches_removes_handle_dir(tmp_path, monkeypatch):
     launch_dir = _seed_launch(tmp_path, "myrecipe")
     monkeypatch.setenv("SHINOBI_PROVENANCE__DIR", str(tmp_path / "nope"))
     monkeypatch.setenv("SHINOBI_CACHE__DIR", str(tmp_path / "gone"))
-    result = CliRunner().invoke(
-        main, ["clean", "--no-runs", "--no-cache", "--launches", "--workdir", str(tmp_path)]
-    )
+    result = CliRunner().invoke(main, ["clean", "--no-runs", "--no-cache", "--launches", "--workdir", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert not launch_dir.exists()
 
@@ -116,9 +114,7 @@ def test_clean_launches_multiple_recipes(tmp_path, monkeypatch):
     b = _seed_launch(tmp_path, "recipe-b")
     monkeypatch.setenv("SHINOBI_PROVENANCE__DIR", str(tmp_path / "nope"))
     monkeypatch.setenv("SHINOBI_CACHE__DIR", str(tmp_path / "gone"))
-    result = CliRunner().invoke(
-        main, ["clean", "--no-runs", "--no-cache", "--launches", "--workdir", str(tmp_path)]
-    )
+    result = CliRunner().invoke(main, ["clean", "--no-runs", "--no-cache", "--launches", "--workdir", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert not a.exists() and not b.exists()
 
@@ -126,8 +122,6 @@ def test_clean_launches_multiple_recipes(tmp_path, monkeypatch):
 def test_clean_launches_no_matches_is_graceful(tmp_path, monkeypatch):
     monkeypatch.setenv("SHINOBI_PROVENANCE__DIR", str(tmp_path / "nope"))
     monkeypatch.setenv("SHINOBI_CACHE__DIR", str(tmp_path / "gone"))
-    result = CliRunner().invoke(
-        main, ["clean", "--no-runs", "--no-cache", "--launches", "--workdir", str(tmp_path)]
-    )
+    result = CliRunner().invoke(main, ["clean", "--no-runs", "--no-cache", "--launches", "--workdir", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "nothing at" in result.output

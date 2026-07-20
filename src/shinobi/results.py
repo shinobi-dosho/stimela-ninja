@@ -107,6 +107,4 @@ class StepResult:
         try:
             return getattr(self.__dict__["outputs"], name)
         except (KeyError, AttributeError):
-            raise AttributeError(
-                f"StepResult for '{self.__dict__.get('name')}' has no attribute '{name}'"
-            ) from None
+            raise AttributeError(f"StepResult for '{self.__dict__.get('name')}' has no attribute '{name}'") from None

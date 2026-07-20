@@ -182,10 +182,7 @@ def apply_manifest_pins(scope: "Scope", record: StepRecord) -> "Scope":
         by_name = {rec.name: rec for rec in record.steps}
         current = {ref.name for ref in scope.steps}
         if extra := sorted(set(by_name) - current):
-            raise ReplayError(
-                f"manifest step(s) {extra} no longer exist in recipe {scope.name!r} -- "
-                "the recipe has changed since this manifest was written"
-            )
+            raise ReplayError(f"manifest step(s) {extra} no longer exist in recipe {scope.name!r} -- the recipe has changed since this manifest was written")
         if missing := sorted(current - set(by_name)):
             raise ReplayError(
                 f"recipe {scope.name!r} step(s) {missing} are not in the manifest -- "
@@ -193,16 +190,11 @@ def apply_manifest_pins(scope: "Scope", record: StepRecord) -> "Scope":
                 "recorded run failed/stopped before reaching them; such a run cannot "
                 "be replayed exactly"
             )
-        new_steps = [
-            ref.model_copy(update={"step": apply_manifest_pins(ref.step, by_name[ref.name])})
-            for ref in scope.steps
-        ]
+        new_steps = [ref.model_copy(update={"step": apply_manifest_pins(ref.step, by_name[ref.name])}) for ref in scope.steps]
         # `output_wiring` is the rest of Recipe's mutable builder surface --
         # give the copy its own dict so `set_output` on one can't leak into
         # the other.
-        return scope.model_copy(
-            update={"steps": new_steps, "output_wiring": dict(scope.output_wiring)}
-        )
+        return scope.model_copy(update={"steps": new_steps, "output_wiring": dict(scope.output_wiring)})
     if record.containerized and record.image_digest and record.image:
         if not record.image.endswith(".sif"):
             return scope.model_copy(update={"image": _with_digest(record.image, record.image_digest)})

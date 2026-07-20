@@ -252,9 +252,7 @@ def _relative_targets(scope: Scope, outputs: Any, prepared: dict[str, Any], sand
         try:
             resolved = pattern.format(**prepared)
         except KeyError as exc:
-            raise ParameterError(
-                f"'{scope.name}' harvest pattern {pattern!r} references unknown input {exc}"
-            ) from exc
+            raise ParameterError(f"'{scope.name}' harvest pattern {pattern!r} references unknown input {exc}") from exc
         # A pattern that *resolves* absolute (e.g. `"{prefix}-*"` with an
         # absolute prefix) is skipped, same as an absolute declared output:
         # the tool wrote those files straight to their absolute destination,
@@ -291,9 +289,7 @@ def _move(src: Path, dst: Path) -> None:
     shutil.move(str(src), str(dst))
 
 
-def harvest_outputs(
-    scope: Scope, outputs: Any, prepared: dict[str, Any], sandbox_dir: Path, workspace: Path
-) -> list[Path]:
+def harvest_outputs(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbox_dir: Path, workspace: Path) -> list[Path]:
     """Move the step's declared outputs from `sandbox_dir` to `workspace`,
     preserving their relative paths, and return the workspace-side paths
     that were moved. A declared output the tool never wrote (e.g. an
@@ -306,8 +302,7 @@ def harvest_outputs(
     the same destination -- rmtree-ing the just-harvested child.
     """
     moved: list[Path] = []
-    for rel in sorted(set(_relative_targets(scope, outputs, prepared, sandbox_dir)),
-                      key=lambda rel: Path(rel).parts):
+    for rel in sorted(set(_relative_targets(scope, outputs, prepared, sandbox_dir)), key=lambda rel: Path(rel).parts):
         src = sandbox_dir / rel
         if not src.exists() and not src.is_symlink():
             continue

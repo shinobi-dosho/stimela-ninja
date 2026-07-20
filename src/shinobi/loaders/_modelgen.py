@@ -48,10 +48,7 @@ def sanitize_unique(name: str, seen: dict[str, str]) -> str:
     """
     field = sanitize(name)
     if field in seen and seen[field] != name:
-        raise ValueError(
-            f"parameter names {seen[field]!r} and {name!r} both sanitize to "
-            f"{field!r} -- rename one to avoid a silent collision"
-        )
+        raise ValueError(f"parameter names {seen[field]!r} and {name!r} both sanitize to {field!r} -- rename one to avoid a silent collision")
     seen[field] = name
     return field
 
@@ -197,18 +194,13 @@ def build_model(
     extras = extras or {}
 
     def _spec(field_name: str, dtype: str, required: bool, default: Any) -> tuple[Any, Any]:
-        annotation, field_default = required_field_spec(
-            narrow_choices(dtype_to_type(dtype), choices.get(field_name)), required, default
-        )
+        annotation, field_default = required_field_spec(narrow_choices(dtype_to_type(dtype), choices.get(field_name)), required, default)
         extra = extras.get(field_name)
         if extra:
             return (annotation, Field(field_default, json_schema_extra=extra))
         return (annotation, field_default)
 
-    definitions: dict[str, tuple[Any, Any]] = {
-        field_name: _spec(field_name, dtype, required, default)
-        for field_name, (dtype, required, default) in fields.items()
-    }
+    definitions: dict[str, tuple[Any, Any]] = {field_name: _spec(field_name, dtype, required, default) for field_name, (dtype, required, default) in fields.items()}
     config = ConfigDict(extra="allow") if allow_extra else None
     return create_model(name, __config__=config, **definitions)
 

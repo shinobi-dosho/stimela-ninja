@@ -15,7 +15,13 @@ class NativeBackend(Backend):
     name = "native"
 
     def run(
-        self, cab: Cab, argv: list[str], inputs: dict[str, Any], *, label: str = "", stream: bool = True,
+        self,
+        cab: Cab,
+        argv: list[str],
+        inputs: dict[str, Any],
+        *,
+        label: str = "",
+        stream: bool = True,
         pin: bool = False,  # accepted for the Backend protocol; native runs no container to pin
         cwd: str | None = None,
     ) -> BackendRun:

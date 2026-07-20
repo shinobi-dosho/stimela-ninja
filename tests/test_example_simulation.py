@@ -102,9 +102,7 @@ def test_recipe_dispatches_with_correct_argv_shape(monkeypatch):
     assert skysim_argv[:2] == ["simms", "skysim"]
     assert "--ms" not in skysim_argv
     assert "--ascii-sky" in skysim_argv
-    assert skysim_argv[skysim_argv.index("--ascii-sky") + 1] == str(
-        mod._INPUT_DIR / "testsky.txt"
-    )
+    assert skysim_argv[skysim_argv.index("--ascii-sky") + 1] == str(mod._INPUT_DIR / "testsky.txt")
     # skysim's ms is wired from telsim's own (positional) ms output.
     assert skysim_argv[-1] == "example-simulation.ms"
 

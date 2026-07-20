@@ -28,10 +28,7 @@ def safe_slurm_name(name: str, kind: str, *, error: type[Exception] = ValueError
     this one shared rule.
     """
     if not _SAFE_NAME.match(name):
-        raise error(
-            f"{kind} {name!r} contains characters unsafe for a Slurm script "
-            f"(allowed: letters, digits, '.', '_', '-')"
-        )
+        raise error(f"{kind} {name!r} contains characters unsafe for a Slurm script (allowed: letters, digits, '.', '_', '-')")
     return name
 
 

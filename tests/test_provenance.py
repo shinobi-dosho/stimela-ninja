@@ -163,8 +163,11 @@ def _image_cab():
     from shinobi.steps.schema import Cab
 
     return Cab(
-        name="t", command="t", image="alpine:3.19",
-        inputs_model=build_model("I", {}), outputs_model=build_model("O", {}),
+        name="t",
+        command="t",
+        image="alpine:3.19",
+        inputs_model=build_model("I", {}),
+        outputs_model=build_model("O", {}),
     )
 
 
@@ -190,8 +193,11 @@ def _true_cab(name):
     from shinobi.steps.schema import Cab
 
     return Cab(
-        name=name, command="true", backend="native",
-        inputs_model=build_model("I", {}), outputs_model=build_model("O", {}),
+        name=name,
+        command="true",
+        backend="native",
+        inputs_model=build_model("I", {}),
+        outputs_model=build_model("O", {}),
     )
 
 
@@ -357,9 +363,16 @@ def _rec(name, *, kind="cab", image=None, digest=None, containerized=False, step
     from shinobi.provenance import StepRecord
 
     return StepRecord(
-        name=name, kind=kind, returncode=0, cached=False,
-        image=image, image_digest=digest, containerized=containerized,
-        inputs=inputs or {}, outputs={}, steps=list(steps),
+        name=name,
+        kind=kind,
+        returncode=0,
+        cached=False,
+        image=image,
+        image_digest=digest,
+        containerized=containerized,
+        inputs=inputs or {},
+        outputs={},
+        steps=list(steps),
     )
 
 
@@ -367,11 +380,15 @@ def test_unpinned_steps_names_offenders():
     from shinobi.provenance import unpinned_steps
 
     d = "sha256:" + "a" * 64
-    root = _rec("outer", kind="recipe", steps=[
-        _rec("ok", image="a:1", digest=d, containerized=True),
-        _rec("inner", kind="recipe", steps=[_rec("bad", image="b:1", containerized=True)]),
-        _rec("native"),  # not containerized; never an offender
-    ])
+    root = _rec(
+        "outer",
+        kind="recipe",
+        steps=[
+            _rec("ok", image="a:1", digest=d, containerized=True),
+            _rec("inner", kind="recipe", steps=[_rec("bad", image="b:1", containerized=True)]),
+            _rec("native"),  # not containerized; never an offender
+        ],
+    )
     assert unpinned_steps(root) == ["bad"]
 
 
@@ -431,10 +448,14 @@ def test_apply_pins_recipe_matches_by_name_and_recurses():
 
     d1, d2 = "sha256:" + "1" * 64, "sha256:" + "2" * 64
     outer = _nested_recipe()
-    root = _rec("outer", kind="recipe", steps=[
-        _rec("a", image="alpine:3.19", digest=d1, containerized=True),
-        _rec("b", kind="recipe", steps=[_rec("c", image="quay.io/x/y:1", digest=d2, containerized=True)]),
-    ])
+    root = _rec(
+        "outer",
+        kind="recipe",
+        steps=[
+            _rec("a", image="alpine:3.19", digest=d1, containerized=True),
+            _rec("b", kind="recipe", steps=[_rec("c", image="quay.io/x/y:1", digest=d2, containerized=True)]),
+        ],
+    )
     pinned = apply_manifest_pins(outer, root)
     assert pinned.steps[0].step.image == f"alpine@{d1}"
     assert pinned.steps[1].step.steps[0].step.image == f"quay.io/x/y@{d2}"
@@ -463,9 +484,15 @@ def test_apply_pins_shape_mismatches_error():
     outer = _nested_recipe()
 
     # a manifest step the recipe no longer has
-    extra = _rec("outer", kind="recipe", steps=[
-        _rec("a", containerized=False), _rec("b", kind="recipe"), _rec("gone"),
-    ])
+    extra = _rec(
+        "outer",
+        kind="recipe",
+        steps=[
+            _rec("a", containerized=False),
+            _rec("b", kind="recipe"),
+            _rec("gone"),
+        ],
+    )
     with pytest.raises(ReplayError, match="gone"):
         apply_manifest_pins(outer, extra)
 

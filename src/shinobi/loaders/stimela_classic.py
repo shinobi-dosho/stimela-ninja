@@ -117,9 +117,7 @@ def _build_cabdef(spec: dict[str, Any]) -> Cab:
     )
 
 
-def _build_param(
-    param: dict[str, Any], *, original: str, field: str
-) -> tuple[tuple[str, bool, Any], ParamMeta | None]:
+def _build_param(param: dict[str, Any], *, original: str, field: str) -> tuple[tuple[str, bool, Any], ParamMeta | None]:
     dtype = param.get("dtype", "str")
     if isinstance(dtype, list):
         dtype = dtype[0] if dtype else "str"

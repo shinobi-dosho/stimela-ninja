@@ -48,11 +48,7 @@ def main(
     overrides: dict = {}
     if backend:
         overrides["backend"] = {"default": backend}
-    log_overrides = {
-        key: value
-        for key, value in (("file", log_file), ("dir", log_dir), ("level", log_level))
-        if value is not None
-    }
+    log_overrides = {key: value for key, value in (("file", log_file), ("dir", log_dir), ("level", log_level)) if value is not None}
     if log_overrides:
         overrides["log"] = log_overrides
     ctx.obj = AppConfig.load(config_file=config_file, **overrides)
@@ -161,18 +157,12 @@ def _run_remote(
     if dryrun:
         raise click.ClickException("--remote and --dryrun are mutually exclusive")
     if cache_dir or no_cache:
-        raise click.ClickException(
-            "--cache-dir/--no-cache apply to local runs only; configure caching via the "
-            "remote host's own AppConfig"
-        )
+        raise click.ClickException("--cache-dir/--no-cache apply to local runs only; configure caching via the remote host's own AppConfig")
     if ":" not in target:
         raise click.ClickException(f"target must be 'path:name', got {target!r}")
     location, attr = target.rsplit(":", 1)
     if not os.path.isfile(location):
-        raise click.ClickException(
-            "--remote only supports a local file target ('path/to/file.py:name'), not a "
-            "dotted module path"
-        )
+        raise click.ClickException("--remote only supports a local file target ('path/to/file.py:name'), not a dotted module path")
 
     from shinobi.offload.ssh import find_cab_deps, launch_remote, parse_remote, sync_to_remote
 
@@ -185,8 +175,7 @@ def _run_remote(
         click.echo(f"warning: {w} -- pass it via --include if it must be synced", err=True)
     if not deps:
         click.echo(
-            "note: only the target file and any statically-discovered cab deps are synced; "
-            "use --include for anything else the recipe reads",
+            "note: only the target file and any statically-discovered cab deps are synced; use --include for anything else the recipe reads",
             err=True,
         )
 
@@ -200,10 +189,7 @@ def _run_remote(
     if base_dir.is_file():
         base_dir = base_dir.parent
     if str(base_dir) == base_dir.anchor:
-        raise click.ClickException(
-            "target file and its deps don't share a common directory; pass a narrower "
-            "--include or restructure the recipe"
-        )
+        raise click.ClickException("target file and its deps don't share a common directory; pass a narrower --include or restructure the recipe")
 
     try:
         remote_spec = parse_remote(remote)
@@ -279,15 +265,13 @@ def _run_remote(
     "--remote",
     "remote",
     default=None,
-    help="Launch on a remote host instead of locally: 'user@host:/path'. Syncs the target "
-    "file and its statically-discoverable cab deps, then runs detached -- see `ninja status`.",
+    help="Launch on a remote host instead of locally: 'user@host:/path'. Syncs the target file and its statically-discoverable cab deps, then runs detached -- see `ninja status`.",
 )
 @click.option(
     "--add-venv/--no-add-venv",
     "add_venv",
     default=True,
-    help="With --remote, source venv/bin/activate or .venv/bin/activate under the remote "
-    "path before running, if present.",
+    help="With --remote, source venv/bin/activate or .venv/bin/activate under the remote path before running, if present.",
 )
 @click.option(
     "--include",
@@ -324,8 +308,14 @@ def run(
 
     if remote:
         _run_remote(
-            ctx, target, dryrun=dryrun, cache_dir=cache_dir, no_cache=no_cache,
-            remote=remote, add_venv=add_venv, include_paths=include_paths,
+            ctx,
+            target,
+            dryrun=dryrun,
+            cache_dir=cache_dir,
+            no_cache=no_cache,
+            remote=remote,
+            add_venv=add_venv,
+            include_paths=include_paths,
         )
         return
 
@@ -338,9 +328,7 @@ def run(
     elif isinstance(obj, Scope):
         scope, func, params = obj, None, {}
     else:
-        raise click.ClickException(
-            f"{target!r} is neither a Cab, Recipe, nor a @shinobi.step function"
-        )
+        raise click.ClickException(f"{target!r} is neither a Cab, Recipe, nor a @shinobi.step function")
 
     def _callback(**kwargs):
         # Drop options the user didn't provide (None) so the inputs_model's
@@ -368,9 +356,17 @@ def run(
         stream_enabled = False if quiet else config.log.stream
         try:
             result = _dispatch(
-                scope, func, backend=backend, cache=cache, cache_dir=cache_dir, stream=stream,
-                provenance=provenance, sandbox=sandbox, _config=ctx.obj, _provenance_target=target,
-                **call_kwargs
+                scope,
+                func,
+                backend=backend,
+                cache=cache,
+                cache_dir=cache_dir,
+                stream=stream,
+                provenance=provenance,
+                sandbox=sandbox,
+                _config=ctx.obj,
+                _provenance_target=target,
+                **call_kwargs,
             )
         except (ShinobiError, RecipeGraphError) as exc:
             raise click.ClickException(str(exc)) from None
@@ -386,9 +382,7 @@ def run(
             if result.stderr:
                 click.echo(result.stderr, err=True)
         if not result.success:
-            raise click.ClickException(
-                f"'{scope.name}' exited with status {result.returncode}"
-            )
+            raise click.ClickException(f"'{scope.name}' exited with status {result.returncode}")
 
     inner = click.Command(
         name=target,
@@ -413,9 +407,7 @@ def run(
     "--allow-unpinned",
     "allow_unpinned",
     is_flag=True,
-    help="Replay even when the manifest is not fully digest-pinned (pinned: false). "
-    "Unpinned steps run their original image reference, so exact reproduction is "
-    "not guaranteed.",
+    help="Replay even when the manifest is not fully digest-pinned (pinned: false). Unpinned steps run their original image reference, so exact reproduction is not guaranteed.",
 )
 @click.pass_context
 def replay(ctx: click.Context, run_manifest: str, target_override: str | None, allow_unpinned: bool) -> None:
@@ -440,8 +432,7 @@ def replay(ctx: click.Context, run_manifest: str, target_override: str | None, a
     target = target_override or manifest.target
     if target is None:
         raise click.ClickException(
-            "manifest has no 'target' (written by an older shinobi, or a programmatic "
-            "run) -- pass --target 'path/to/file.py:name' to identify the recipe/cab"
+            "manifest has no 'target' (written by an older shinobi, or a programmatic run) -- pass --target 'path/to/file.py:name' to identify the recipe/cab"
         )
 
     if not manifest.pinned and not allow_unpinned:
@@ -460,9 +451,7 @@ def replay(ctx: click.Context, run_manifest: str, target_override: str | None, a
     elif isinstance(obj, Scope):
         scope, func = obj, None
     else:
-        raise click.ClickException(
-            f"{target!r} is neither a Cab, Recipe, nor a @shinobi.step function"
-        )
+        raise click.ClickException(f"{target!r} is neither a Cab, Recipe, nor a @shinobi.step function")
 
     try:
         scope = apply_manifest_pins(scope, manifest.root)
@@ -481,10 +470,7 @@ def replay(ctx: click.Context, run_manifest: str, target_override: str | None, a
     config = ctx.obj or AppConfig.load()
     backend = ctx.meta.get("backend_override") or manifest.backend
     try:
-        result = _dispatch(
-            scope, func, backend=backend, provenance=True,
-            _config=ctx.obj, _provenance_target=target, **manifest.root.inputs
-        )
+        result = _dispatch(scope, func, backend=backend, provenance=True, _config=ctx.obj, _provenance_target=target, **manifest.root.inputs)
     except (ShinobiError, RecipeGraphError) as exc:
         raise click.ClickException(str(exc)) from None
     # Same output policy as `run`: streaming already echoed everything live;
@@ -505,8 +491,7 @@ def replay(ctx: click.Context, run_manifest: str, target_override: str | None, a
     "--sandboxes/--no-sandboxes",
     "sandboxes",
     default=True,
-    help="Remove leftover step sandboxes (AppConfig.sandbox.dir) -- a failed sandboxed step "
-    "keeps its scratch dir for post-mortem; this is how it eventually gets cleaned up.",
+    help="Remove leftover step sandboxes (AppConfig.sandbox.dir) -- a failed sandboxed step keeps its scratch dir for post-mortem; this is how it eventually gets cleaned up.",
 )
 @click.option(
     "--launches/--no-launches",
@@ -696,9 +681,7 @@ def download(cult_cargo: bool, dest_dir: str, version: str) -> None:
       ninja download --cult-cargo --dest-dir ./my-cabs  # Custom destination
     """
     if not cult_cargo:
-        raise click.ClickException(
-            "No source specified. Use --cult-cargo to download cult-cargo cabs."
-        )
+        raise click.ClickException("No source specified. Use --cult-cargo to download cult-cargo cabs.")
 
     from shinobi.download import download_cultcargo
 

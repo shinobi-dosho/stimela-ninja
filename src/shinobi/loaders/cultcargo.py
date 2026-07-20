@@ -162,10 +162,7 @@ def _include_entry_to_dict(entry: Any, base_dir: Path | None, package_roots: dic
             pkg_dir = _resolve_package_root(m.group("pkg"), package_roots)
             return _load_raw((pkg_dir / m.group("rest")).resolve(), package_roots)
         if base_dir is None:
-            raise CabLoadError(
-                f"relative-path _include {entry!r} has no base directory to resolve "
-                "against (loads() only supports package-scoped _include entries)"
-            )
+            raise CabLoadError(f"relative-path _include {entry!r} has no base directory to resolve against (loads() only supports package-scoped _include entries)")
         return _load_raw((base_dir / entry).resolve(), package_roots)
     if isinstance(entry, dict) and len(entry) == 1:
         ((key, files),) = entry.items()
@@ -198,9 +195,7 @@ def _load_raw(path: Path, package_roots: dict[str, Path]) -> dict[str, Any]:
 def _load_raw_cached(path: Path, roots_key: tuple[tuple[str, Path], ...]) -> dict[str, Any]:
     package_roots = dict(roots_key)
     data = yaml.safe_load(path.read_text()) or {}
-    return resolve_directive(
-        data, "_include", lambda entry: _include_entry_to_dict(entry, path.parent, package_roots)
-    )
+    return resolve_directive(data, "_include", lambda entry: _include_entry_to_dict(entry, path.parent, package_roots))
 
 
 _LEAF_SPEC_KEYS = COMMON_LEAF_KEYS | {"nom_de_guerre", "mkdir", "element_choices"}
@@ -241,11 +236,7 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
     # `abbreviation` is a CLI-only alias -- carried onto the field's
     # json_schema_extra so `clickutil.build_options` can emit a `-<abbrev>`
     # short flag. Only meaningful on inputs (outputs aren't CLI options).
-    in_extras = {
-        field: {"abbreviation": meta.abbreviation}
-        for field, meta in field_meta.items()
-        if meta.abbreviation
-    }
+    in_extras = {field: {"abbreviation": meta.abbreviation} for field, meta in field_meta.items() if meta.abbreviation}
 
     return Cab(
         name=name,
@@ -314,16 +305,7 @@ def _collect(
         repeat_as_tokens = param_policies.get("repeat") == "list"
         choices = validate_choices(value.get("choices"), error=CabLoadError)
         abbreviation = value.get("abbreviation")
-        if (
-            nom
-            or implicit is not None
-            or value.get("info")
-            or positional
-            or positional_head
-            or repeat_as_tokens
-            or choices
-            or abbreviation
-        ):
+        if nom or implicit is not None or value.get("info") or positional or positional_head or repeat_as_tokens or choices or abbreviation:
             metas[field] = ParamMeta(
                 nom_de_guerre=nom,
                 implicit=implicit,

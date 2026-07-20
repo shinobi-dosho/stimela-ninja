@@ -63,13 +63,25 @@ def _manifest(recipe_file, *, target=..., digest=_DIGEST, inputs=None):
         backend="record",
         returncode=0,
         root=StepRecord(
-            name="rec", kind="recipe", returncode=0, cached=False,
-            inputs=inputs or {"x": 3}, outputs={},
-            steps=[StepRecord(
-                name="step1", kind="cab", returncode=0, cached=False,
-                image="alpine:3.19", image_digest=digest, containerized=True,
-                inputs={"x": 3}, outputs={},
-            )],
+            name="rec",
+            kind="recipe",
+            returncode=0,
+            cached=False,
+            inputs=inputs or {"x": 3},
+            outputs={},
+            steps=[
+                StepRecord(
+                    name="step1",
+                    kind="cab",
+                    returncode=0,
+                    cached=False,
+                    image="alpine:3.19",
+                    image_digest=digest,
+                    containerized=True,
+                    inputs={"x": 3},
+                    outputs={},
+                )
+            ],
         ),
     )
 
@@ -82,7 +94,7 @@ def test_replay_forces_pinned_image_and_recorded_inputs(tmp_path, recipe_file, r
     mpath = _write(_manifest(recipe_file), tmp_path)
     result = CliRunner().invoke(main, ["replay", str(mpath)])
     assert result.exit_code == 0, result.output
-    (cab, _argv, inputs), = recorder.calls
+    ((cab, _argv, inputs),) = recorder.calls
     assert cab.image == f"alpine@{_DIGEST}"  # the digest that originally ran
     assert inputs["x"] == 3  # the manifest's recorded inputs
 
@@ -114,15 +126,22 @@ def test_replay_allow_unpinned_runs_original_ref(tmp_path, recipe_file, recorder
     mpath = _write(_manifest(recipe_file, digest=None), tmp_path)
     result = CliRunner().invoke(main, ["replay", str(mpath), "--allow-unpinned"])
     assert result.exit_code == 0, result.output
-    (cab, _argv, _inputs), = recorder.calls
+    ((cab, _argv, _inputs),) = recorder.calls
     assert cab.image == "alpine:3.19"  # unpinned step keeps its original ref
 
 
 def test_replay_recipe_shape_mismatch_errors(tmp_path, recipe_file, recorder):
     manifest = _manifest(recipe_file)
-    manifest.root.steps.append(StepRecord(
-        name="gone", kind="cab", returncode=0, cached=False, inputs={}, outputs={},
-    ))
+    manifest.root.steps.append(
+        StepRecord(
+            name="gone",
+            kind="cab",
+            returncode=0,
+            cached=False,
+            inputs={},
+            outputs={},
+        )
+    )
     mpath = _write(manifest, tmp_path)
     result = CliRunner().invoke(main, ["replay", str(mpath)])
     assert result.exit_code != 0

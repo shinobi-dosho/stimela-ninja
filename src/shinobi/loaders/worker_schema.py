@@ -130,8 +130,7 @@ def _resolve_includes(node: Any, base_dir: Path) -> Any:
         """
         if not isinstance(entry, str):
             warnings.warn(
-                f"skipping unsupported _include entry {entry!r} in {base_dir} "
-                "(only plain-path or (module)file strings are supported)",
+                f"skipping unsupported _include entry {entry!r} in {base_dir} (only plain-path or (module)file strings are supported)",
                 stacklevel=2,
             )
             return {}
@@ -184,9 +183,7 @@ def _build_group(model_name: str, spec: dict[str, Any]) -> type[BaseModel]:
     seen: dict[str, str] = {}
     for key, value in spec.items():
         if value is not None and not isinstance(value, dict):
-            raise ConfigLoadError(
-                f"expected a param/group mapping for '{key}' in '{model_name}', got {value!r}"
-            )
+            raise ConfigLoadError(f"expected a param/group mapping for '{key}' in '{model_name}', got {value!r}")
         value = value or {}
         field = sanitize_unique(key, seen)
         if _LEAF_KEYS & value.keys():

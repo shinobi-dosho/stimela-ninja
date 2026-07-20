@@ -93,7 +93,5 @@ def test_job_cleaned_up_after_run():
     backend = KubernetesBackend(namespace="default")
     backend.run(cab, ["/bin/echo", "hi"], {})
 
-    proc = subprocess.run(
-        ["kubectl", "get", "jobs", "-n", "default", "-o", "name"], capture_output=True, text=True
-    )
+    proc = subprocess.run(["kubectl", "get", "jobs", "-n", "default", "-o", "name"], capture_output=True, text=True)
     assert proc.stdout.strip() == ""

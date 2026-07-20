@@ -69,9 +69,7 @@ def _run_runner_on_host(argv, *args, **kwargs):
     path/import/ctx-shim breakage without needing a container runtime.
     """
     runner = next(a for a in argv if a.endswith("runner.py"))
-    return _REAL_SUBPROCESS_RUN(
-        [sys.executable, runner], capture_output=True, text=True
-    )
+    return _REAL_SUBPROCESS_RUN([sys.executable, runner], capture_output=True, text=True)
 
 
 def _fake_container_run(outputs_data, capture_inputs=None, stdout=""):
@@ -86,9 +84,7 @@ def _fake_container_run(outputs_data, capture_inputs=None, stdout=""):
         runner = next(a for a in argv if a.endswith("runner.py"))
         io_dir = Path(runner).parent
         if capture_inputs is not None:
-            capture_inputs.update(
-                pickle.loads((io_dir / "inputs.pkl").read_bytes())
-            )
+            capture_inputs.update(pickle.loads((io_dir / "inputs.pkl").read_bytes()))
         (io_dir / "outputs.json").write_text(json.dumps(outputs_data))
         proc = MagicMock()
         proc.returncode = 0
@@ -175,7 +171,7 @@ def test_pystep_container_generates_correct_argv():
     assert "python3" in argv
 
     image_idx = argv.index("casa:latest")
-    inner_argv = argv[image_idx + 1:]
+    inner_argv = argv[image_idx + 1 :]
     assert inner_argv[0] == "python3"
 
     # The runner path must be a real path that is identity-bind-mounted into
@@ -322,9 +318,7 @@ def test_pystep_container_path_inputs_stay_paths():
     ref = pystep(image="casa:latest", backend="docker")(path_func)
 
     captured_inputs = {}
-    fake = _fake_container_run(
-        {"basename": "test.ms"}, capture_inputs=captured_inputs
-    )
+    fake = _fake_container_run({"basename": "test.ms"}, capture_inputs=captured_inputs)
     with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
         ref(vis="/data/test.ms")
 
@@ -377,9 +371,7 @@ def test_pystep_container_stdout_noise_does_not_corrupt_outputs():
     # to stdout is irrelevant to output parsing.
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
-    fake = _fake_container_run(
-        {"result": "from-file"}, stdout="some log line\nanother log\n"
-    )
+    fake = _fake_container_run({"result": "from-file"}, stdout="some log line\nanother log\n")
     with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
         result = ref(ms="test.ms")
 
@@ -552,9 +544,7 @@ def test_pystep_runner_references_real_io_paths_not_shinobi_io():
 def test_pystep_container_runner_executes_end_to_end():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
-    with patch(
-        "shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host
-    ):
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host):
         result = ref(ms="real.ms", niter=7)
 
     assert result.success, result.stderr
@@ -603,9 +593,7 @@ def test_pystep_container_runs_without_framework_in_container():
 def test_pystep_container_runner_executes_ctx_end_to_end():
     ref = pystep(image="casa:latest", backend="docker")(ctx_func)
 
-    with patch(
-        "shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host
-    ):
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host):
         result = ref(a="/x", b="y")
 
     assert result.success, result.stderr
@@ -618,9 +606,7 @@ def test_pystep_container_runner_executes_path_inputs_end_to_end():
     # if the runner hands it a real Path.
     ref = pystep(image="casa:latest", backend="docker")(path_func)
 
-    with patch(
-        "shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host
-    ):
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host):
         result = ref(vis="/data/real.ms")
 
     assert result.success, result.stderr
@@ -638,9 +624,7 @@ def decorated_container_func(ms: str, niter: int = 100) -> ContainerOutputs:
 
 
 def test_pystep_decorator_form_runner_executes_end_to_end():
-    with patch(
-        "shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host
-    ):
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host):
         result = decorated_container_func(ms="dec.ms", niter=5)
 
     assert result.success, result.stderr

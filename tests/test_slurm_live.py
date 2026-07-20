@@ -35,9 +35,7 @@ _TERMINAL = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"}
 def _cluster_ready() -> bool:
     if not WORKDIR or not shutil.which("docker"):
         return False
-    return (
-        subprocess.run(["docker", "exec", CONTAINER, "sinfo"], capture_output=True).returncode == 0
-    )
+    return subprocess.run(["docker", "exec", CONTAINER, "sinfo"], capture_output=True).returncode == 0
 
 
 requires_slurm_cluster = pytest.mark.skipif(
@@ -70,15 +68,23 @@ def _touch_then_cat_recipe() -> Recipe:
     # mk writes a file at a path; use reads that same path (wired from mk's
     # output). If afterok + the shared workdir both work, use succeeds.
     mk = Cab(
-        name="mk", command="/bin/touch", inputs_model=_TouchIn, outputs_model=_PathOut,
+        name="mk",
+        command="/bin/touch",
+        inputs_model=_TouchIn,
+        outputs_model=_PathOut,
         field_meta={"out": ParamMeta(positional=True)},
     )
     use = Cab(
-        name="use", command="/bin/cat", inputs_model=_CatIn, outputs_model=_OkOut,
+        name="use",
+        command="/bin/cat",
+        inputs_model=_CatIn,
+        outputs_model=_OkOut,
         field_meta={"f": ParamMeta(positional=True)},
     )
     return Recipe(
-        name="livepipe", inputs_model=_RecipeIn, outputs_model=_OkOut,
+        name="livepipe",
+        inputs_model=_RecipeIn,
+        outputs_model=_OkOut,
         steps=[
             StepRef(name="mk", step=mk, wiring={"out": InputRef(field="target")}),
             StepRef(name="use", step=use, wiring={"f": OutputRef(step="mk", field="out")}),
@@ -93,9 +99,7 @@ def test_offloaded_dependency_chain_runs_on_a_real_slurm(monkeypatch):
     target = f"{WORKDIR}/made-{os.getpid()}.ms"
     Path(target).unlink(missing_ok=True)
 
-    workflow = compile_slurm(
-        _touch_then_cat_recipe(), {"target": target}, workdir=WORKDIR, container_runtime=None
-    )
+    workflow = compile_slurm(_touch_then_cat_recipe(), {"target": target}, workdir=WORKDIR, container_runtime=None)
     assert [j.name for j in workflow.jobs] == ["mk", "use"]
     assert workflow.jobs[1].depends_on == ["mk"]
 

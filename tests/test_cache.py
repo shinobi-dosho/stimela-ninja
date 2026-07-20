@@ -319,7 +319,8 @@ def test_sandboxed_field_is_recorded_and_restored(tmp_path):
     outputs = CounterOutputs(count=1)
 
     manifest.record(
-        "s", "key1",
+        "s",
+        "key1",
         StepResult(name="s", returncode=0, outputs=outputs, inputs=NoInputs(), sandboxed=True),
     )
     hit = manifest.check("s", "key1", scope, {})
@@ -327,7 +328,8 @@ def test_sandboxed_field_is_recorded_and_restored(tmp_path):
     assert hit.sandboxed is True
 
     manifest.record(
-        "s", "key2",
+        "s",
+        "key2",
         StepResult(name="s", returncode=0, outputs=outputs, inputs=NoInputs(), sandboxed=False),
     )
     hit2 = manifest.check("s", "key2", scope, {})

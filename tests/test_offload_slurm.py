@@ -71,9 +71,7 @@ def test_script_has_sbatch_directives_and_logs():
 
 
 def test_sbatch_opts_are_emitted():
-    wf = compile_slurm(
-        _linear_recipe(), {"ms": "/x.ms"}, workdir="/work", container_runtime=None, sbatch_opts={"partition": "gpu"}
-    )
+    wf = compile_slurm(_linear_recipe(), {"ms": "/x.ms"}, workdir="/work", container_runtime=None, sbatch_opts={"partition": "gpu"})
     assert "#SBATCH --partition=gpu" in wf.jobs[0].script
 
 
@@ -104,8 +102,7 @@ def test_unresolvable_inter_step_path_raises_compile_error():
         outputs_model=OkOut,
         steps=[
             StepRef(name="make", step=make, wiring={"where": InputRef(field="ms")}),
-            StepRef(name="use", step=Cab(name="use", command="use", inputs_model=UseIn, outputs_model=OkOut),
-                    wiring={"ms": OutputRef(step="make", field="ms")}),
+            StepRef(name="use", step=Cab(name="use", command="use", inputs_model=UseIn, outputs_model=OkOut), wiring={"ms": OutputRef(step="make", field="ms")}),
         ],
     )
     with pytest.raises(OffloadCompileError, match="isn't statically known"):
@@ -135,8 +132,7 @@ def test_diamond_dependencies_are_captured():
             StepRef(name="a", step=a, wiring={"ms": InputRef(field="ms")}),
             StepRef(name="b", step=mid, wiring={"ms": OutputRef(step="a", field="ms")}),
             StepRef(name="c", step=mid, wiring={"ms": OutputRef(step="a", field="ms")}),
-            StepRef(name="d", step=join,
-                    wiring={"left": OutputRef(step="b", field="ms"), "right": OutputRef(step="c", field="ms")}),
+            StepRef(name="d", step=join, wiring={"left": OutputRef(step="b", field="ms"), "right": OutputRef(step="c", field="ms")}),
         ],
     )
     wf = compile_slurm(recipe, {"ms": "/x.ms"}, container_runtime=None)
@@ -166,7 +162,8 @@ def test_status_slurm_ignores_batch_and_extern_rows(monkeypatch):
 
 def test_status_slurm_reports_unknown_for_missing_job(monkeypatch):
     monkeypatch.setattr(
-        subprocess, "run",
+        subprocess,
+        "run",
         lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, stdout="", stderr=""),
     )
     assert status_slurm({"step": "42"}) == {"step": "UNKNOWN"}
@@ -195,7 +192,8 @@ def test_submit_slurm_removes_script_dir_on_failure(tmp_path, monkeypatch):
     wf = compile_slurm(_linear_recipe(), {"ms": "/x.ms"}, workdir=str(tmp_path), container_runtime=None)
 
     monkeypatch.setattr(
-        subprocess, "run",
+        subprocess,
+        "run",
         lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, stdout="", stderr="boom"),
     )
     with pytest.raises(BackendError):

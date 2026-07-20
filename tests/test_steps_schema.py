@@ -67,15 +67,11 @@ def test_parampattern_requires_last_segment_to_have_attrs():
 
 def test_parampattern_rejects_attrs_on_a_non_terminal_segment():
     with pytest.raises(ValueError):
-        ParamPattern(
-            segments=[ParamSegment(attrs={"a": ParamMeta()}), ParamSegment(attrs={"b": ParamMeta()})]
-        )
+        ParamPattern(segments=[ParamSegment(attrs={"a": ParamMeta()}), ParamSegment(attrs={"b": ParamMeta()})])
 
 
 def test_parampattern_two_level_matches_and_returns_terminal_meta():
-    pattern = ParamPattern(
-        segments=[ParamSegment(regex=r".+?"), ParamSegment(attrs={"type": ParamMeta(dtype="str")})]
-    )
+    pattern = ParamPattern(segments=[ParamSegment(regex=r".+?"), ParamSegment(attrs={"type": ParamMeta(dtype="str")})])
     assert pattern.matches("K.type") is pattern.segments[-1].attrs["type"]
     assert pattern.matches("no-separator-here") is None
     assert pattern.matches(".type") is None  # prefix must be non-empty
@@ -84,9 +80,7 @@ def test_parampattern_two_level_matches_and_returns_terminal_meta():
 def test_parampattern_soft_validates_a_middle_segment_shape():
     # term name must look like an identifier -- a genuinely dynamic,
     # non-enumerable level, but not an "anything goes" free-for-all.
-    pattern = ParamPattern(
-        segments=[ParamSegment(regex=r"[A-Za-z_]\w*"), ParamSegment(attrs={"type": ParamMeta()})]
-    )
+    pattern = ParamPattern(segments=[ParamSegment(regex=r"[A-Za-z_]\w*"), ParamSegment(attrs={"type": ParamMeta()})])
     assert pattern.matches("K.type") is not None
     assert pattern.matches("K1.type") is not None
     assert pattern.matches("1K.type") is None  # leading digit -- not identifier-shaped
@@ -96,9 +90,7 @@ def test_parampattern_allows_attrs_on_the_first_segment():
     # wsclean's dynamic output names are the opposite shape from
     # cubical/QuartiCal's: a known/enumerable imagetype first, an
     # open-ended qualifier tail after (`dirty.per-band`).
-    pattern = ParamPattern(
-        segments=[ParamSegment(attrs={"dirty": ParamMeta(dtype="File")}), ParamSegment(regex=r".+")]
-    )
+    pattern = ParamPattern(segments=[ParamSegment(attrs={"dirty": ParamMeta(dtype="File")}), ParamSegment(regex=r".+")])
     meta = pattern.matches("dirty.per-band")
     assert meta is pattern.segments[0].attrs["dirty"]
     assert pattern.matches("residual.per-band") is None  # not a known imagetype
@@ -217,13 +209,7 @@ def test_outputs_proxy_validates_step_and_field_names():
 
 
 def test_outputs_proxy_falls_back_to_output_patterns_for_dynamic_names():
-    cab = make_cab(
-        output_patterns=[
-            ParamPattern(
-                segments=[ParamSegment(attrs={"dirty": ParamMeta(dtype="File")}), ParamSegment(regex=r".+")]
-            )
-        ]
-    )
+    cab = make_cab(output_patterns=[ParamPattern(segments=[ParamSegment(attrs={"dirty": ParamMeta(dtype="File")}), ParamSegment(regex=r".+")])])
     recipe = Recipe(name="r", inputs_model=Inputs, outputs_model=Outputs)
     recipe.add_step("a", cab)
     # a name matched by output_patterns is accepted even though it's not a
@@ -256,9 +242,7 @@ def test_builder_treats_a_list_of_refs_as_one_wiring_value():
     recipe.add_step("a", cab)
     recipe.add_step("b", cab)
     recipe.add_step("c", cab, x=[recipe.outputs.a.y, recipe.outputs.b.y])
-    assert recipe.steps[2].wiring == {
-        "x": [OutputRef(step="a", field="y"), OutputRef(step="b", field="y")]
-    }
+    assert recipe.steps[2].wiring == {"x": [OutputRef(step="a", field="y"), OutputRef(step="b", field="y")]}
     assert recipe.steps[2].params == {}
 
 

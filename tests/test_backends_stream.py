@@ -48,8 +48,6 @@ def test_stream_false_echoes_nothing(capsys):
 
 
 def test_nonzero_returncode_preserved_when_streaming():
-    result = run_streaming(
-        [sys.executable, "-c", "import sys; sys.exit(3)"], label="t", stream=True
-    )
+    result = run_streaming([sys.executable, "-c", "import sys; sys.exit(3)"], label="t", stream=True)
     assert result.returncode == 3
     assert not result.success
