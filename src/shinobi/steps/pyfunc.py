@@ -78,6 +78,7 @@ from shinobi.sandbox import (
     harvest_outputs,
     prepare_output_parents,
     prune_unused_parents,
+    relativize_path_outputs,
 )
 from shinobi.steps.schema import Scope, StepRef
 
@@ -430,6 +431,7 @@ def _run_pystep_container(
             outputs = outputs_model(**output_data)
 
         if sandbox_dir is not None:
+            outputs = relativize_path_outputs(scope, outputs, Path(workspace))
             prune_unused_parents(precreated)
             harvest_outputs(scope, outputs, prepared, sandbox_dir, Path(workspace))
             discard_sandbox(sandbox_dir)
@@ -446,6 +448,7 @@ def _run_pystep_container(
             image=scope.image,
             image_digest=image_digest,
             containerized=True,
+            sandboxed=sandbox_dir is not None,
         )
 
 

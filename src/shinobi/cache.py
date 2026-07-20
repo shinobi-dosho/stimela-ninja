@@ -197,6 +197,7 @@ class CacheManifest:
             image=entry.get("image"),
             image_digest=entry.get("image_digest"),
             containerized=entry.get("containerized", False),
+            sandboxed=entry.get("sandboxed", False),
         )
 
     def record(self, step_path: str, cache_key: str, result) -> None:
@@ -216,6 +217,7 @@ class CacheManifest:
                 "image": result.image,
                 "image_digest": result.image_digest,
                 "containerized": result.containerized,
+                "sandboxed": result.sandboxed,
             }
             self._write_atomic(data)
 

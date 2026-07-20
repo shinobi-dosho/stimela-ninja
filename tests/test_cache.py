@@ -298,3 +298,77 @@ def test_caching_through_a_nested_recipe_only_skips_unchanged_leaf_steps():
 
     assert calls["a"] == 1
     assert calls["b"] == 1
+
+
+# -- sandbox path normalization (issue #28: sandbox state must not affect
+# cache entry portability -- outputs are normalized to workspace-relative
+# paths regardless of whether the step ran sandboxed) --
+
+
+def test_sandboxed_field_is_recorded_and_restored(tmp_path):
+    """The `sandboxed` field travels through the cache round-trip, so a
+    later hit carries the same provenance as the original run."""
+    from shinobi.cache import CacheManifest
+    from shinobi.results import StepResult
+
+    class NoInputs(BaseModel):
+        pass
+
+    scope = Cab(name="s", command="s", inputs_model=NoInputs, outputs_model=CounterOutputs)
+    manifest = CacheManifest(tmp_path / "manifest.json")
+    outputs = CounterOutputs(count=1)
+
+    manifest.record(
+        "s", "key1",
+        StepResult(name="s", returncode=0, outputs=outputs, inputs=NoInputs(), sandboxed=True),
+    )
+    hit = manifest.check("s", "key1", scope, {})
+    assert hit is not None
+    assert hit.sandboxed is True
+
+    manifest.record(
+        "s", "key2",
+        StepResult(name="s", returncode=0, outputs=outputs, inputs=NoInputs(), sandboxed=False),
+    )
+    hit2 = manifest.check("s", "key2", scope, {})
+    assert hit2 is not None
+    assert hit2.sandboxed is False
+
+
+def test_sandboxed_cab_result_is_marked_sandboxed(tmp_path, monkeypatch):
+    """A cab that ran with sandbox=True reports sandboxed=True."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(tmp_path / ".shinobi/work"))
+
+    recorder = RecordingBackend()
+    register_step_backend("sandbox-rec", recorder)
+
+    class FileOut(BaseModel):
+        result: Path | None = None
+
+    cab = Cab(
+        name="tool",
+        command="/bin/true",
+        inputs_model=Inputs,
+        outputs_model=FileOut,
+        backend="sandbox-rec",
+        sandbox=True,
+    )
+    result = _dispatch(cab, None, x=1)
+    assert result.sandboxed is True
+
+
+def test_unsandboxed_cab_result_is_not_marked_sandboxed(tmp_path):
+    """A cab that ran without sandboxing reports sandboxed=False."""
+    recorder = RecordingBackend()
+    register_step_backend("no-sandbox-rec", recorder)
+
+    cab = Cab(
+        name="tool",
+        command="tool",
+        inputs_model=Inputs,
+        outputs_model=Outputs,
+        backend="no-sandbox-rec",
+    )
+    result = _dispatch(cab, None, x=1)
+    assert result.sandboxed is False

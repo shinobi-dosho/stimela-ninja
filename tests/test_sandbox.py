@@ -19,6 +19,7 @@ from shinobi.sandbox import (
     harvest_outputs,
     prepare_output_parents,
     prune_unused_parents,
+    relativize_path_outputs,
 )
 from shinobi.steps.dispatch import register_step_backend
 from shinobi.steps.schema import Cab, ParamMeta, Recipe, Scope, StepRef
@@ -57,6 +58,58 @@ def test_absolutize_handles_list_valued_path_inputs(tmp_path):
     scope = make_scope(inputs={"vis": ("List[File]", True, None)})
     anchored = absolutize_path_inputs(scope, {"vis": [Path("a.ms"), Path("/abs/b.ms")]}, tmp_path)
     assert anchored["vis"] == [tmp_path / "a.ms", Path("/abs/b.ms")]
+
+
+# --------------------------------------------------------- unit: output relativization
+
+
+def test_relativize_converts_absolute_paths_within_workspace(tmp_path):
+    scope = make_scope(outputs={"result": ("File", False, None)})
+    outputs = scope.outputs_model(result=tmp_path / "out.dat")
+    relativized = relativize_path_outputs(scope, outputs, tmp_path)
+    assert relativized.result == Path("out.dat")
+
+
+def test_relativize_leaves_paths_outside_workspace_absolute(tmp_path):
+    scope = make_scope(outputs={"result": ("File", False, None)})
+    outputs = scope.outputs_model(result=Path("/elsewhere/out.dat"))
+    relativized = relativize_path_outputs(scope, outputs, tmp_path)
+    assert relativized.result == Path("/elsewhere/out.dat")
+
+
+def test_relativize_leaves_relative_paths_unchanged(tmp_path):
+    scope = make_scope(outputs={"result": ("File", False, None)})
+    outputs = scope.outputs_model(result=Path("out.dat"))
+    relativized = relativize_path_outputs(scope, outputs, tmp_path)
+    assert relativized.result == Path("out.dat")
+
+
+def test_relativize_handles_list_valued_outputs(tmp_path):
+    scope = make_scope(outputs={"files": ("List[File]", False, None)})
+    outputs = scope.outputs_model(files=[tmp_path / "a.dat", Path("/elsewhere/b.dat")])
+    relativized = relativize_path_outputs(scope, outputs, tmp_path)
+    assert relativized.files == [Path("a.dat"), Path("/elsewhere/b.dat")]
+
+
+def test_relativize_ignores_non_path_outputs(tmp_path):
+    scope = make_scope(outputs={"note": ("str", False, None)})
+    outputs = scope.outputs_model(note="hello")
+    relativized = relativize_path_outputs(scope, outputs, tmp_path)
+    assert relativized.note == "hello"
+
+
+def test_relativize_returns_same_instance_when_nothing_changed(tmp_path):
+    scope = make_scope(outputs={"result": ("File", False, None)})
+    outputs = scope.outputs_model(result=Path("out.dat"))
+    relativized = relativize_path_outputs(scope, outputs, tmp_path)
+    assert relativized is outputs
+
+
+def test_relativize_handles_none_values(tmp_path):
+    scope = make_scope(outputs={"result": ("File", False, None)})
+    outputs = scope.outputs_model(result=None)
+    relativized = relativize_path_outputs(scope, outputs, tmp_path)
+    assert relativized.result is None
 
 
 # --------------------------------------------------------------- unit: harvest

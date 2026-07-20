@@ -192,6 +192,48 @@ def absolutize_path_inputs(scope: Scope, prepared: dict[str, Any], workspace: Pa
     return anchored
 
 
+def _relativize(value: Any, workspace: Path) -> Any:
+    """Convert an absolute path value to workspace-relative, if applicable.
+    Handles single paths and lists/tuples of paths. Non-path values and
+    paths outside the workspace pass through unchanged."""
+    if isinstance(value, (list, tuple)):
+        return type(value)(_relativize(item, workspace) for item in value)
+    path = Path(str(value))
+    if not path.is_absolute():
+        return value
+    try:
+        relative = path.relative_to(workspace)
+    except ValueError:
+        return value
+    return relative
+
+
+def relativize_path_outputs(scope: Scope, outputs: Any, workspace: Path) -> Any:
+    """A copy of `outputs` with absolute path-typed output values converted
+    to workspace-relative paths. Inverse of `absolutize_path_inputs` --
+    ensures cache entries use consistent relative paths regardless of
+    whether the step ran sandboxed (where inputs were anchored absolute)
+    or unsandboxed (where they stayed relative). A path outside the
+    workspace (e.g. an absolute output the caller explicitly requested)
+    passes through unchanged.
+    """
+    declared = path_fields(scope.outputs_model)
+    values: dict[str, Any] = {}
+    changed = False
+    for name in scope.outputs_model.model_fields:
+        value = getattr(outputs, name, None)
+        if value is None or name not in declared:
+            values[name] = value
+            continue
+        relativized = _relativize(value, workspace)
+        values[name] = relativized
+        if relativized is not value:
+            changed = True
+    if not changed:
+        return outputs
+    return scope.outputs_model(**values)
+
+
 def _relative_targets(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbox_dir: Path) -> list[str]:
     """The sandbox-relative paths harvest should rescue: declared path-typed
     output field values (absolute ones already live at their destination and

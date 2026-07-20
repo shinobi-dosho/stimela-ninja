@@ -78,6 +78,11 @@ class StepResult:
     # the backend name -- is what distinguishes a native cab (image is just
     # metadata) from a Slurm-under-apptainer run that must be pinned.
     containerized: bool = False
+    # Whether the step ran with sandboxing enabled (see `shinobi.sandbox`).
+    # Recorded for diagnostics -- sandbox state affects path anchoring but
+    # not the cache key, so output paths are normalized before recording
+    # (see `sandbox.relativize_path_outputs`).
+    sandboxed: bool = False
     sub_results: "dict[str, StepResult] | None" = None
 
     @property

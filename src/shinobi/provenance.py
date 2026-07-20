@@ -53,6 +53,7 @@ class StepRecord(BaseModel):
     image: str | None = None
     image_digest: str | None = None
     containerized: bool = False
+    sandboxed: bool = False
     inputs: dict[str, Any]
     outputs: dict[str, Any]
     steps: list["StepRecord"] = []
@@ -116,6 +117,7 @@ def _record(result: StepResult, name: str | None = None) -> StepRecord:
         image=result.image,
         image_digest=result.image_digest,
         containerized=result.containerized,
+        sandboxed=result.sandboxed,
         inputs=_jsonable(result.inputs),
         outputs=_jsonable(result.outputs),
         steps=[_record(sub, name=key) for key, sub in (result.sub_results or {}).items()],

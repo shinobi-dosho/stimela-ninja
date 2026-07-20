@@ -645,3 +645,76 @@ def test_pystep_decorator_form_runner_executes_end_to_end():
 
     assert result.success, result.stderr
     assert result.outputs.result == "dec.ms:5"
+
+
+# -- sandbox path normalization (issue #28: containerized pysteps with
+# sandboxing must normalize output paths to workspace-relative, so cache
+# entries are portable across sandbox states) --
+
+
+class PathEchoOutputs(BaseModel):
+    target: Path
+
+
+def path_echo(target: Path) -> PathEchoOutputs:
+    """A pystep that echoes its input path back as an output -- the exact
+    shape that exposed issue #28: sandboxing absolutizes the input, the
+    function echoes it, and the output ends up absolute unless normalized."""
+    return PathEchoOutputs(target=target)
+
+
+def test_sandboxed_container_pystep_relativizes_path_outputs(tmp_path, monkeypatch):
+    """A sandboxed container pystep that echoes a relative path input back
+    as an output must produce a relative path in the result -- not the
+    absolutized workspace-anchored value the container received."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(tmp_path / ".shinobi/work"))
+
+    ref = pystep(image="test:latest", backend="docker", sandbox=True)(path_echo)
+
+    captured_inputs = {}
+    fake = _fake_container_run(
+        {"target": str(tmp_path / "out/probe.txt")},
+        capture_inputs=captured_inputs,
+    )
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
+        result = ref(target=Path("out/probe.txt"))
+
+    assert result.success, result.stderr
+    assert result.outputs.target == Path("out/probe.txt")
+    assert result.sandboxed is True
+    # The container received the absolute path (sandbox anchoring worked)
+    assert Path(captured_inputs["target"]).is_absolute()
+
+
+def test_unsandboxed_container_pystep_keeps_relative_path_outputs(tmp_path, monkeypatch):
+    """An unsandboxed container pystep that echoes a relative path input
+    back as an output must also produce a relative path -- same result as
+    the sandboxed case, so cache entries are interchangeable."""
+    monkeypatch.chdir(tmp_path)
+
+    ref = pystep(image="test:latest", backend="docker")(path_echo)
+
+    fake = _fake_container_run({"target": "out/probe.txt"})
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
+        result = ref(target=Path("out/probe.txt"))
+
+    assert result.success, result.stderr
+    assert result.outputs.target == Path("out/probe.txt")
+    assert result.sandboxed is False
+
+
+def test_sandboxed_container_pystep_keeps_absolute_paths_outside_workspace(tmp_path, monkeypatch):
+    """An absolute output path outside the workspace passes through
+    unchanged -- only paths within the workspace are relativized."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(tmp_path / ".shinobi/work"))
+
+    ref = pystep(image="test:latest", backend="docker", sandbox=True)(path_echo)
+
+    fake = _fake_container_run({"target": "/elsewhere/data.txt"})
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
+        result = ref(target=Path("/elsewhere/data.txt"))
+
+    assert result.success, result.stderr
+    assert result.outputs.target == Path("/elsewhere/data.txt")
