@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stimela-ninja"
-version = "0.1.0b3"
+version = "0.1.0b4"
 description = "Stimela 3.0 -- A robust, flexible and simple framework for reproducible radio astronomy pipelines"
 readme = "README.rst"
 license = "MIT"
