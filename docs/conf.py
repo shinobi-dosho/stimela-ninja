@@ -60,6 +60,11 @@ autodoc_inherit_docstrings = False
 
 napoleon_google_docstring = True
 napoleon_numpy_docstring = True
+# Render Google-style "Attributes:" sections as an :ivar: field list on the
+# class docstring instead of standalone `.. attribute::` directives -- the
+# latter collides with autodoc's own scan of annotated class attributes
+# (e.g. Backend.name), producing "duplicate object description" warnings.
+napoleon_use_ivar = True
 
 # -- Intersphinx -------------------------------------------------------------
 

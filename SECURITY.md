@@ -7,8 +7,8 @@ stimela-ninja is early-beta software. Security fixes are applied to the latest
 
 | Version | Supported |
 | ------- | --------- |
-| latest `0.x` | :white_check_mark: |
-| older       | :x: |
+| latest `0.x` | ✅ |
+| older       | ❌ |
 
 ## Reporting a vulnerability
 
