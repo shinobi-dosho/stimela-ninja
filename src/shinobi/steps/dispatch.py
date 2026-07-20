@@ -37,6 +37,7 @@ from shinobi.sandbox import (
     harvest_outputs,
     prepare_output_parents,
     prune_unused_parents,
+    relativize_path_outputs,
 )
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope, StepRef
 from shinobi.wranglers import apply_wranglers
@@ -394,7 +395,10 @@ def _dispatch(
                 _emit_run_manifest(hit, ctx, config, backend, target=_provenance_target)
             return hit
 
-    logger.info("step %s: starting", cache_path)
+    logger.info(
+        "step %s: starting%s", cache_path,
+        " (sandboxed)" if sandbox_enabled else "",
+    )
     try:
         if func is None:
             result = ctx.run()
@@ -507,6 +511,7 @@ def _run_cab(
     wrangled = apply_wranglers(cab.wranglers, lines)
     outputs = _fill_outputs(cab, prepared, run, wrangled)
     if sandbox_dir is not None:
+        outputs = relativize_path_outputs(cab, outputs, workspace)
         if run.returncode == 0:
             prune_unused_parents(precreated)
             harvest_outputs(cab, outputs, prepared, sandbox_dir, workspace)
@@ -529,6 +534,7 @@ def _run_cab(
         image=cab.image,
         image_digest=run.image_digest,
         containerized=run.containerized,
+        sandboxed=sandbox_dir is not None,
     )
 
 
@@ -708,6 +714,7 @@ def _aggregate_scatter_results(
         image=scope.image,
         image_digest=slices[0].image_digest if slices else None,
         containerized=any(s.containerized for s in slices),
+        sandboxed=any(s.sandboxed for s in slices),
     )
 
 

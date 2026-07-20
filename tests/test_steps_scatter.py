@@ -420,6 +420,33 @@ def test_scatter_aggregates_containerized_flag():
     assert result.sub_results["a"].image == "x"
 
 
+def test_scatter_aggregates_sandboxed_flag(tmp_path, monkeypatch):
+    class SandboxEchoBackend:
+        def run(self, cab, argv, inputs, **kwargs):
+            return BackendRun(0, f"out={inputs['item']}", "")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(tmp_path / ".shinobi/work"))
+
+    register_step_backend("scatter-sandbox", SandboxEchoBackend())
+    cab = Cab(
+        name="tool",
+        command="tool",
+        inputs_model=ScalarIn,
+        outputs_model=ScalarOut,
+        backend="scatter-sandbox",
+        sandbox=True,
+        wranglers={r"out=(?P<out>\d+)": ["PARSE_OUTPUT:out:int"]},
+    )
+    recipe = Recipe(name="r", inputs_model=ListIn, outputs_model=ListOut)
+    recipe.add_step("a", cab, scatter=["item"], item=recipe.inputs.items)
+    recipe.set_output("outs", recipe.outputs.a.out)
+    result = _dispatch(recipe, None, items=[1, 2])
+    assert result.success
+    assert result.outputs.outs == [1, 2]
+    assert result.sub_results["a"].sandboxed is True
+
+
 # -- outputs wiring from scatter --
 
 
