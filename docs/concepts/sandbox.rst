@@ -73,7 +73,7 @@ Two declarations feed the harvest allowlist:
 * the scope's ``harvest`` globs, for dynamically-named output families that
   can't be enumerated as literal fields. Patterns are resolved against the
   step's own inputs; a pattern that resolves absolute is skipped (the tool
-  wrote those files straight to their absolute destination, same as an
+  wrote those files straight to its absolute destination, same as an
   absolute declared output), and one that resolves to a ``..`` escape is
   skipped with a warning:
 
@@ -84,6 +84,22 @@ Two declarations feed the harvest allowlist:
         sandbox=True,
         harvest=["{prefix}-*.fits"],   # the per-band/interval image family
     )
+
+Sandboxed state and cache portability
+-------------------------------------
+
+The ``StepResult`` records whether a step ran sandboxed in its
+``sandboxed`` boolean field. The flag is carried through the step cache and
+written into the run manifest's ``StepRecord`` so provenance records can
+show which steps executed inside a scratch directory.
+
+Because sandboxing rewrites relative path inputs to absolute workspace paths
+before the tool runs, the same step can produce absolute or relative output
+paths depending on whether sandboxing was enabled. Before a result is cached,
+path-typed outputs are normalized back to workspace-relative paths, so a
+later cache hit is valid regardless of whether the original run used a
+sandbox. Absolute outputs requested explicitly by the caller are left
+unchanged.
 
 Limits, by design
 -----------------

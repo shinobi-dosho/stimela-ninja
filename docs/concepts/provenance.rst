@@ -84,6 +84,7 @@ It freezes the resolved run as a tree of steps:
         "image": "quay.io/stimela/wsclean:latest",
         "image_digest": "sha256:6baf435...",
         "containerized": true,
+        "sandboxed": false,
         "inputs": { "ms": "data.ms", "prefix": "out" },
         "outputs": { "image": "out-MFS-image.fits" },
         "steps": []
@@ -102,6 +103,11 @@ A recipe's sub-steps appear, in declaration order, under ``steps``.
 
 ``image_digest``
     The ``sha256:...`` that actually ran, or ``null`` when unpinned.
+
+``sandboxed``
+    ``true`` when the step ran with per-step sandbox execution enabled
+    (see :doc:`sandbox`), otherwise ``false``. This is recorded for
+    diagnostics; it does not affect whether a manifest can be replayed.
 
 ``target``
     The CLI target string (``path/to/file.py:name`` or ``pkg.mod:name``) that
