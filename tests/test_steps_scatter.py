@@ -2,6 +2,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from shinobi.backends.recording import RecordingBackend
+from shinobi.exceptions import CabRunError
 from shinobi.results import BackendRun
 from shinobi.steps import (
     Cab,
@@ -345,8 +346,8 @@ def test_scatter_failure_stops_dependents_and_drains_slices():
     recipe.add_step("b", down_cab, item=recipe.outputs.a.out)
     recipe.set_output("ok", recipe.outputs.b.ok)
 
-    result = _dispatch(recipe, None, items=[10, 20, 30])
-    assert result.returncode == 1
+    with pytest.raises(CabRunError, match="step 'a'.*returncode 1"):
+        _dispatch(recipe, None, items=[10, 20, 30])
     assert len(down_recorder.calls) == 0
 
 

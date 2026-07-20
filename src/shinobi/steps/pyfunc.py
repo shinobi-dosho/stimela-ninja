@@ -62,7 +62,6 @@ import json
 import os
 import pickle
 import tempfile
-import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, get_type_hints
 
@@ -70,6 +69,7 @@ from pydantic import BaseModel, create_model
 
 from shinobi.backends._stream import run_streaming
 from shinobi.config import AppConfig
+from shinobi.exceptions import CabRunError
 from shinobi.results import StepResult
 from shinobi.sandbox import (
     absolutize_path_inputs,
@@ -389,33 +389,15 @@ def _run_pystep_container(
         run.image_digest = image_digest
 
         if run.returncode != 0:
+            stderr_tail = (run.stderr or "").strip()
+            detail = f"\nstderr:\n{stderr_tail}" if stderr_tail else ""
             if sandbox_dir is not None:
-                warnings.warn(
+                raise CabRunError(
                     f"pystep '{scope.name}' failed (returncode {run.returncode}); "
-                    f"its sandbox is kept for post-mortem at {sandbox_dir}",
-                    stacklevel=2,
+                    f"its sandbox is kept for post-mortem at {sandbox_dir}{detail}"
                 )
-            # Best-effort outputs on the failure path: try a full
-            # construction (fills defaults), fall back to model_construct
-            # (skips validation -- required fields stay unset). Both are
-            # acceptable because success=False; the point is to carry
-            # stdout/stderr out, not to report valid outputs.
-            try:
-                outputs: BaseModel = outputs_model()
-            except Exception:
-                outputs = outputs_model.model_construct()
-            return StepResult(
-                name=scope.name,
-                returncode=run.returncode,
-                outputs=outputs,
-                inputs=ctx.inputs,
-                stdout=run.stdout,
-                stderr=run.stderr,
-                kind="pyfunc",
-                backend=backend_name,
-                image=scope.image,
-                image_digest=image_digest,
-                containerized=True,
+            raise CabRunError(
+                f"pystep '{scope.name}' failed (returncode {run.returncode}){detail}"
             )
 
         # Exit 0 means the runner ran to completion, and it always writes

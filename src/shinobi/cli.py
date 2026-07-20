@@ -15,6 +15,7 @@ from shinobi.clickutil import build_options, unflatten_kwargs
 from shinobi.config import AppConfig
 from shinobi.dag import graph_nodes, render_dag
 from shinobi.logsetup import setup_file_logging
+from shinobi.exceptions import ShinobiError
 from shinobi.graph import RecipeGraphError, RecipeNotOffloadableError
 from shinobi.offload import OffloadCompileError, compile_slurm, status_slurm, status_ssh, submit_slurm
 from shinobi.policies import build_argv
@@ -365,11 +366,14 @@ def run(
         config = ctx.obj or AppConfig.load()
         stream = False if quiet else None
         stream_enabled = False if quiet else config.log.stream
-        result = _dispatch(
-            scope, func, backend=backend, cache=cache, cache_dir=cache_dir, stream=stream,
-            provenance=provenance, sandbox=sandbox, _config=ctx.obj, _provenance_target=target,
-            **call_kwargs
-        )
+        try:
+            result = _dispatch(
+                scope, func, backend=backend, cache=cache, cache_dir=cache_dir, stream=stream,
+                provenance=provenance, sandbox=sandbox, _config=ctx.obj, _provenance_target=target,
+                **call_kwargs
+            )
+        except (ShinobiError, RecipeGraphError) as exc:
+            raise click.ClickException(str(exc)) from None
         # When streaming happened, every line already printed live as it
         # ran -- dumping the same captured text again here would just
         # repeat it. Only fall back to the old one-shot dump when
@@ -476,10 +480,13 @@ def replay(ctx: click.Context, run_manifest: str, target_override: str | None, a
 
     config = ctx.obj or AppConfig.load()
     backend = ctx.meta.get("backend_override") or manifest.backend
-    result = _dispatch(
-        scope, func, backend=backend, provenance=True,
-        _config=ctx.obj, _provenance_target=target, **manifest.root.inputs
-    )
+    try:
+        result = _dispatch(
+            scope, func, backend=backend, provenance=True,
+            _config=ctx.obj, _provenance_target=target, **manifest.root.inputs
+        )
+    except (ShinobiError, RecipeGraphError) as exc:
+        raise click.ClickException(str(exc)) from None
     # Same output policy as `run`: streaming already echoed everything live;
     # only dump captured output when streaming was off or nothing ran.
     if not config.log.stream or result.cached:

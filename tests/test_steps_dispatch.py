@@ -2,10 +2,11 @@ import threading
 import time
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from shinobi.backends.recording import RecordingBackend
 from shinobi.config import AppConfig, ExecutionConfig
+from shinobi.exceptions import CabRunError, ParameterError, StepError
 from shinobi.results import BackendRun
 from shinobi.steps import Cab, InputRef, OutputRef, Recipe, StepRef, register_step_backend
 from shinobi.steps.dispatch import _dispatch
@@ -53,7 +54,7 @@ class MutatingBackend:
 
 def test_missing_required_field_raises_before_backend_runs():
     cab, recorder = make_recording_cab()
-    with pytest.raises(ValidationError):
+    with pytest.raises(ParameterError, match="tool: parameter validation failed"):
         _dispatch(cab, None)
     assert recorder.calls == []
 
@@ -64,7 +65,7 @@ def test_bad_override_raises_at_the_step_boundary():
     def orchestrate(ctx):
         return ctx.run(x="not an int")
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ParameterError, match="tool: parameter validation failed"):
         _dispatch(cab, orchestrate, x=1)
     assert recorder.calls == []
 
@@ -576,7 +577,7 @@ def test_default_max_workers_is_sequential():
     register_step_backend("barrier", BarrierBackend())
     cab = _cab("t", "barrier")
     recipe = _two_independent_recipe(cab, cab)  # max_workers None -> config default 1
-    with pytest.raises(threading.BrokenBarrierError):
+    with pytest.raises(StepError, match="step 'a' in recipe 'r' failed"):
         _dispatch(recipe, None, x=1)
 
 
@@ -627,8 +628,8 @@ def test_failure_stops_dependents_but_drains_independent_inflight():
             StepRef(name="down", step=down_cab, wiring={"y": OutputRef(step="fail", field="y")}),
         ],
     )
-    result = _dispatch(recipe, None, x=1)
-    assert result.returncode == 2
+    with pytest.raises(CabRunError, match="step 'fail'.*returncode 2"):
+        _dispatch(recipe, None, x=1)
     assert down_recorder.calls == []  # dependent of the failed step never ran
 
 
@@ -644,8 +645,8 @@ def test_first_failure_by_declaration_order_wins():
     register_step_backend("rc2", RC2Backend())
     register_step_backend("rc3", RC3Backend())
     recipe = _two_independent_recipe(_cab("a", "rc2"), _cab("b", "rc3"), max_workers=2)
-    result = _dispatch(recipe, None, x=1)
-    assert result.returncode == 2  # 'a' is declared first
+    with pytest.raises(CabRunError, match="step 'a'.*returncode 2"):
+        _dispatch(recipe, None, x=1)  # 'a' is declared first
 
 
 def test_worker_exception_propagates_out_of_recipe():
@@ -661,8 +662,27 @@ def test_worker_exception_propagates_out_of_recipe():
         max_workers=2,
         steps=[StepRef(name="a", step=cab, func=bad_override, wiring={"x": InputRef(field="x")})],
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ParameterError, match="step 'a' in recipe 'r' failed: tool: parameter validation failed"
+    ):
         _dispatch(recipe, None, x=1)
+
+
+def test_output_validation_error_names_the_cab():
+    class RequiredOutput(BaseModel):
+        out: str
+
+    recorder = RecordingBackend()
+    register_step_backend("record", recorder)
+    cab = Cab(
+        name="bad_out",
+        command="x",
+        inputs_model=Inputs,
+        outputs_model=RequiredOutput,
+        backend="record",
+    )
+    with pytest.raises(ParameterError, match="bad_out: output validation failed"):
+        _dispatch(cab, None, x=1)
 
 
 def test_recipe_max_workers_overrides_config_default():

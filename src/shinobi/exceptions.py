@@ -3,7 +3,9 @@ class ShinobiError(Exception):
 
 
 class ParameterError(ShinobiError):
-    """A cab was called with invalid, missing, or unknown parameters."""
+    """A step or cab was called with invalid, missing, or unknown parameters,
+    or its outputs could not be validated against the declared schema.
+    """
 
 
 class BackendError(ShinobiError):
@@ -11,7 +13,14 @@ class BackendError(ShinobiError):
 
 
 class CabRunError(ShinobiError):
-    """A cab's underlying command exited with a non-zero/failure status."""
+    """A step's underlying command or function exited with a non-zero/failure status."""
+
+
+class StepError(ShinobiError):
+    """A step failed during execution for a reason not covered by a more
+    specific exception class. The message carries the step/recipe path so the
+    caller can tell which step failed and why.
+    """
 
 
 class CabLoadError(ShinobiError):

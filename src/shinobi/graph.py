@@ -68,7 +68,10 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
 
     Raises `RecipeGraphError` on: a duplicate step name; an `InputRef` to a
     field not on the recipe's `inputs_model`; an `OutputRef` (in a step's
-    wiring or in `output_wiring`) to an unknown step; or a dependency cycle.
+    wiring or in `output_wiring`) to an unknown step or to a field that is not
+    an output of that step; a wiring field that is not an input of the
+    consuming step; a recipe output field that is not in the recipe's outputs
+    model; or a dependency cycle.
     """
     names = [ref.name for ref in recipe.steps]
     index: dict[str, int] = {}
@@ -80,19 +83,41 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
         index[name] = i
 
     input_fields = set(recipe.inputs_model.model_fields)
+    output_fields = set(recipe.outputs_model.model_fields)
     deps: list[set[int]] = [set() for _ in names]
     dependents: list[set[int]] = [set() for _ in names]
 
+    def _is_input_field(scope, field: str) -> bool:
+        if field in scope.inputs_model.model_fields:
+            return True
+        return isinstance(scope, Cab) and scope.match_pattern(field) is not None
+
+    def _is_output_field(scope, field: str) -> bool:
+        if field in scope.outputs_model.model_fields:
+            return True
+        return isinstance(scope, Cab) and scope.match_output_pattern(field) is not None
+
     for i, ref in enumerate(recipe.steps):
+        step_scope = ref.step
         if ref.scatter is not None:
-            step_inputs = set(ref.step.inputs_model.model_fields)
             for field in ref.scatter.fields:
-                if field not in step_inputs:
+                if not _is_input_field(step_scope, field):
                     raise RecipeGraphError(
                         f"step '{ref.name}' declares scatter over '{field}', which is not a "
-                        f"field of {ref.step.inputs_model.__name__}"
+                        f"field of {step_scope.inputs_model.__name__}"
                     )
+        for field in ref.params:
+            if not _is_input_field(step_scope, field):
+                raise RecipeGraphError(
+                    f"step '{ref.name}' sets constant param '{field}', which is not a "
+                    f"field of {step_scope.inputs_model.__name__}"
+                )
         for field, source in ref.wiring.items():
+            if not _is_input_field(step_scope, field):
+                raise RecipeGraphError(
+                    f"step '{ref.name}' wires input '{field}', which is not a "
+                    f"field of {step_scope.inputs_model.__name__}"
+                )
             sources = source if isinstance(source, list) else [source]
             for one_source in sources:
                 if isinstance(one_source, InputRef):
@@ -109,15 +134,34 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
                             f"output of step '{one_source.step}', which does not "
                             f"exist in recipe '{recipe.name}'"
                         )
+                    producer_scope = recipe.steps[index[one_source.step]].step
+                    if not _is_output_field(producer_scope, one_source.field):
+                        raise RecipeGraphError(
+                            f"step '{ref.name}' wires input '{field}' from output "
+                            f"'{one_source.field}' of step '{one_source.step}', which is not "
+                            f"a field of {producer_scope.outputs_model.__name__}"
+                        )
                     dep = index[one_source.step]
                     deps[i].add(dep)
                     dependents[dep].add(i)
 
     for field, source in recipe.output_wiring.items():
+        if field not in output_fields:
+            raise RecipeGraphError(
+                f"recipe '{recipe.name}' output '{field}' is not a field of "
+                f"{recipe.outputs_model.__name__}"
+            )
         if source.step not in index:
             raise RecipeGraphError(
                 f"recipe '{recipe.name}' output '{field}' is wired from step "
                 f"'{source.step}', which does not exist"
+            )
+        producer_scope = recipe.steps[index[source.step]].step
+        if not _is_output_field(producer_scope, source.field):
+            raise RecipeGraphError(
+                f"recipe '{recipe.name}' output '{field}' is wired from output "
+                f"'{source.field}' of step '{source.step}', which is not a field of "
+                f"{producer_scope.outputs_model.__name__}"
             )
 
     _check_acyclic(recipe.name, names, deps, dependents)

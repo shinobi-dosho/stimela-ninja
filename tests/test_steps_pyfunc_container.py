@@ -18,6 +18,10 @@ import pytest
 from pydantic import BaseModel
 
 from shinobi import pystep
+from shinobi.backends.recording import RecordingBackend
+from shinobi.exceptions import CabRunError
+from shinobi.steps import InputRef, Recipe, register_step_backend
+from shinobi.steps.dispatch import _dispatch
 from shinobi.steps.schema import Cab, Scope
 
 # Captured before any test patches `shinobi.steps.pyfunc.run_streaming` (the
@@ -240,7 +244,7 @@ def test_pystep_container_handles_empty_outputs():
     assert type(result.outputs).model_fields == {}
 
 
-def test_pystep_container_nonzero_exit_returns_failure():
+def test_pystep_container_nonzero_exit_raises():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
     mock_proc = MagicMock()
@@ -249,11 +253,55 @@ def test_pystep_container_nonzero_exit_returns_failure():
     mock_proc.stderr = "Traceback: something went wrong"
 
     with patch("shinobi.steps.pyfunc.run_streaming", return_value=mock_proc):
-        result = ref(ms="test.ms")
+        with pytest.raises(CabRunError, match="returncode 1"):
+            ref(ms="test.ms")
 
-    assert not result.success
-    assert result.returncode == 1
-    assert "something went wrong" in result.stderr
+
+def test_failed_pystep_in_recipe_raises_not_attribute_error():
+    """Regression for issue #27: a failed container pystep must raise
+    CabRunError, not return a hollow outputs model that masks the real failure
+    behind an AttributeError when the recipe collects downstream wiring.
+    """
+
+    class RecipeInputs(BaseModel):
+        ms: str = "in.ms"
+
+    class RecipeOutputs(BaseModel):
+        result: str | None = None
+
+    class DownInputs(BaseModel):
+        path: str | None = None
+
+    class DownOutputs(BaseModel):
+        result: str | None = None
+
+    down_cab = Cab(
+        name="down",
+        command="down",
+        inputs_model=DownInputs,
+        outputs_model=DownOutputs,
+        backend="recording",
+    )
+
+    ref = pystep(image="casa:latest", backend="docker")(container_func)
+    recorder = RecordingBackend()
+    register_step_backend("recording", recorder)
+
+    recipe = Recipe(name="r", inputs_model=RecipeInputs, outputs_model=RecipeOutputs)
+    recipe.add_step("fail", ref, ms=InputRef(field="ms"))
+    recipe.add_step("down", down_cab, path=recipe.outputs("fail", "result"))
+    recipe.set_output("result", recipe.outputs("down", "result"))
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 1
+    mock_proc.stdout = ""
+    mock_proc.stderr = "boom"
+
+    with patch("shinobi.steps.pyfunc.run_streaming", return_value=mock_proc):
+        with pytest.raises(CabRunError, match="returncode 1"):
+            _dispatch(recipe, None)
+
+    assert recorder.calls == []  # downstream step never ran
 
 
 def test_pystep_container_pickles_inputs():

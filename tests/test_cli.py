@@ -101,6 +101,11 @@ def test_run_failing_cab_reports_nonzero_exit():
     assert result.exit_code != 0
 
 
+def test_run_failing_recipe_reports_nonzero_exit():
+    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:fail_recipe"])
+    assert result.exit_code != 0
+
+
 def test_run_cab_target_dryrun_shows_argv_and_does_not_execute():
     result = CliRunner().invoke(
         main, ["run", f"{FIXTURES}:greet", "--dryrun", "--text", "echo-me"]
