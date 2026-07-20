@@ -3,8 +3,10 @@ simms/wsclean/cubical actually installed (RecordingBackend intercepts every
 step, including the two that have `backend="native"` baked onto their Cab).
 
 The example itself imports `dosho` (the native shinobi cab repository) for
-its real wsclean/cubical/simms cabs -- only installed via the optional
-`examples` dependency group (`uv sync --group examples`), not CI's default
+its real wsclean/cubical/simms cabs -- only installed via a manual
+`uv pip install --no-deps -e ../dosho` (dosho pins its own stimela-ninja
+dependency to a git source, which conflicts with resolving stimela-ninja's
+own lock, so it can't be a uv dependency-group), not CI's default
 `--group dev`. Skip cleanly rather than erroring out collection when it
 isn't present.
 """

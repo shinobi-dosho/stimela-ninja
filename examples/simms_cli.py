@@ -22,7 +22,7 @@ Both cabs run under the native backend (`simms` is a plain binary with no
 container image), so the commands below actually execute once `simms` is
 installed.
 
-    uv sync --group examples
+    uv pip install --no-deps simms @ git+https://github.com/wits-cfa/simms.git
 
 See the whole schema, choices and abbreviations included, with:
 

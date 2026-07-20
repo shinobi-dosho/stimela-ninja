@@ -48,7 +48,7 @@ Run it:
 
 A real run needs `simms` installed (it has no docker image yet):
 
-    uv sync --group examples
+    uv pip install --no-deps simms @ git+https://github.com/wits-cfa/simms.git
     ninja run examples/example-simulation.py:recipe --ms sim.ms
 """
 
