@@ -300,6 +300,319 @@ def test_caching_through_a_nested_recipe_only_skips_unchanged_leaf_steps():
     assert calls["b"] == 1
 
 
+# -- upstream provenance: an in-place mutator must notice that the step which
+# *produced* its path re-ran, which mtime alone cannot tell it (see
+# shinobi.cache's module docstring) --
+
+
+class MsOut(BaseModel):
+    ms: Path
+
+
+class SpwInputs(BaseModel):
+    spw: str = "*"
+
+
+def _split_and_flag(tmp_path, calls):
+    """A two-step in-place chain: `split` writes the MS from scratch, `flag`
+    reads and rewrites that same MS. `flag`'s `ms` is on both its inputs and
+    its outputs model, so the in-place exclusion drops it from the input hash
+    entirely -- the exact shape the fix is about.
+    """
+    from shinobi.steps import InputRef, OutputRef, Recipe
+
+    ms = tmp_path / "data.ms"
+
+    @shinobi.pystep()
+    def split(ctx, spw: str = "*") -> MsOut:
+        calls["split"] += 1
+        ms.write_text(f"visibilities for {spw}")
+        return MsOut(ms=ms)
+
+    @shinobi.pystep()
+    def flag(ctx, ms: Path) -> MsOut:
+        calls["flag"] += 1
+        ms.write_text(ms.read_text() + " | flagged")
+        return MsOut(ms=ms)
+
+    return (
+        Recipe(
+            name="pipe",
+            inputs_model=SpwInputs,
+            outputs_model=MsOut,
+            steps=[
+                split.model_copy(update={"wiring": {"spw": InputRef(field="spw")}}),
+                flag.model_copy(update={"wiring": {"ms": OutputRef(step="split", field="ms")}}),
+            ],
+            output_wiring={"ms": OutputRef(step="flag", field="ms")},
+        ),
+        ms,
+    )
+
+
+def test_unchanged_rerun_still_skips_the_whole_in_place_chain(tmp_path):
+    """The property the in-place exclusion exists to protect, and which
+    provenance must not break: re-running an untouched chain skips all of it,
+    even though every step's own last run moved the shared MS's mtime.
+    """
+    calls = {"split": 0, "flag": 0}
+    pipeline, _ms = _split_and_flag(tmp_path, calls)
+    cache_dir = str(tmp_path / "cache")
+
+    pipeline(spw="*", cache=True, cache_dir=cache_dir)
+    assert calls == {"split": 1, "flag": 1}
+
+    pipeline(spw="*", cache=True, cache_dir=cache_dir)
+    assert calls == {"split": 1, "flag": 1}
+
+
+def test_changing_an_upstream_param_reruns_the_downstream_in_place_step(tmp_path):
+    """Changing `split`'s params rebuilds the MS, so `flag` must re-run --
+    even though `flag`'s own params are byte-identical and its only path
+    input is excluded from hashing. Without provenance `flag` cache-hits
+    here, leaving the MS split with new parameters but never flagged.
+    """
+    calls = {"split": 0, "flag": 0}
+    pipeline, ms = _split_and_flag(tmp_path, calls)
+    cache_dir = str(tmp_path / "cache")
+
+    pipeline(spw="*", cache=True, cache_dir=cache_dir)
+    pipeline(spw="*:880~1658MHz", cache=True, cache_dir=cache_dir)
+
+    assert calls == {"split": 2, "flag": 2}
+    assert ms.read_text() == "visibilities for *:880~1658MHz | flagged"
+
+
+def test_provenance_crosses_nested_recipe_boundaries(tmp_path):
+    """The real pipeline shape: each worker is its own Recipe, so the
+    producer and the consumer are in *different* recipes and the only link
+    between them is the outer recipe's wiring. Provenance has to survive both
+    boundary crossings -- out of the producing recipe via `output_wiring`, and
+    into the consuming recipe via its sub-step's `InputRef`.
+    """
+    from shinobi.steps import InputRef, OutputRef, Recipe
+
+    calls = {"split": 0, "flag": 0}
+    ms = tmp_path / "data.ms"
+
+    @shinobi.pystep()
+    def split(ctx, spw: str = "*") -> MsOut:
+        calls["split"] += 1
+        ms.write_text(f"visibilities for {spw}")
+        return MsOut(ms=ms)
+
+    @shinobi.pystep()
+    def flag(ctx, ms: Path) -> MsOut:
+        calls["flag"] += 1
+        ms.write_text(ms.read_text() + " | flagged")
+        return MsOut(ms=ms)
+
+    transform = Recipe(
+        name="transform",
+        inputs_model=SpwInputs,
+        outputs_model=MsOut,
+        steps=[split.model_copy(update={"wiring": {"spw": InputRef(field="spw")}})],
+        output_wiring={"ms": OutputRef(step="split", field="ms")},
+    )
+    prep = Recipe(
+        name="prep",
+        inputs_model=MsOut,
+        outputs_model=MsOut,
+        steps=[flag.model_copy(update={"wiring": {"ms": InputRef(field="ms")}})],
+        output_wiring={"ms": OutputRef(step="flag", field="ms")},
+    )
+    pipeline = (
+        Recipe(name="pipe", inputs_model=SpwInputs, outputs_model=MsOut)
+        .add_step("transform", transform, spw=InputRef(field="spw"))
+        .add_step("prep", prep, ms=OutputRef(step="transform", field="ms"))
+        .set_output("ms", OutputRef(step="prep", field="ms"))
+    )
+
+    cache_dir = str(tmp_path / "cache")
+    pipeline(spw="*", cache=True, cache_dir=cache_dir)
+    assert calls == {"split": 1, "flag": 1}
+
+    pipeline(spw="*", cache=True, cache_dir=cache_dir)
+    assert calls == {"split": 1, "flag": 1}
+
+    pipeline(spw="*:880~1658MHz", cache=True, cache_dir=cache_dir)
+    assert calls == {"split": 2, "flag": 2}
+
+
+def test_rerunning_an_unconsumed_sibling_does_not_invalidate_the_consumer(tmp_path):
+    """Provenance is per *output field*, not per recipe. A recipe's outputs
+    each come from a different sub-step, so re-running one of them must not
+    invalidate a consumer wired to a different one -- keying a whole recipe
+    off "something in here changed" would throw away most of the cache on any
+    edit.
+    """
+    from shinobi.steps import InputRef, OutputRef, Recipe
+
+    calls = {"split": 0, "listobs": 0, "flag": 0}
+    ms = tmp_path / "data.ms"
+
+    class Products(BaseModel):
+        ms: Path
+        summary: Path
+
+    class ListobsInputs(BaseModel):
+        verbose: bool = False
+
+    class ListobsOut(BaseModel):
+        summary: Path
+
+    @shinobi.pystep()
+    def split(ctx, spw: str = "*") -> MsOut:
+        calls["split"] += 1
+        ms.write_text(f"visibilities for {spw}")
+        return MsOut(ms=ms)
+
+    @shinobi.pystep()
+    def listobs(ctx, verbose: bool = False) -> ListobsOut:
+        calls["listobs"] += 1
+        summary = tmp_path / "summary.txt"
+        summary.write_text(f"verbose={verbose}")
+        return ListobsOut(summary=summary)
+
+    @shinobi.pystep()
+    def flag(ctx, ms: Path) -> MsOut:
+        calls["flag"] += 1
+        ms.write_text(ms.read_text() + " | flagged")
+        return MsOut(ms=ms)
+
+    class InnerInputs(BaseModel):
+        spw: str = "*"
+        verbose: bool = False
+
+    inner = Recipe(
+        name="transform",
+        inputs_model=InnerInputs,
+        outputs_model=Products,
+        steps=[
+            split.model_copy(update={"wiring": {"spw": InputRef(field="spw")}}),
+            listobs.model_copy(update={"wiring": {"verbose": InputRef(field="verbose")}}),
+        ],
+        output_wiring={
+            "ms": OutputRef(step="split", field="ms"),
+            "summary": OutputRef(step="listobs", field="summary"),
+        },
+    )
+    pipeline = (
+        Recipe(name="pipe", inputs_model=InnerInputs, outputs_model=MsOut)
+        .add_step("transform", inner, spw=InputRef(field="spw"), verbose=InputRef(field="verbose"))
+        .add_step("flag", flag, ms=OutputRef(step="transform", field="ms"))
+        .set_output("ms", OutputRef(step="flag", field="ms"))
+    )
+
+    cache_dir = str(tmp_path / "cache")
+    pipeline(spw="*", verbose=False, cache=True, cache_dir=cache_dir)
+    assert calls == {"split": 1, "listobs": 1, "flag": 1}
+
+    # `listobs` re-runs; `flag` consumes only `transform.ms`, so it must not.
+    pipeline(spw="*", verbose=True, cache=True, cache_dir=cache_dir)
+    assert calls == {"split": 1, "listobs": 2, "flag": 1}
+
+
+def test_a_later_in_place_step_does_not_rerun_a_pure_input_consumer(tmp_path):
+    """`listobs` reads the MS; `flag`, declared after it, rewrites that same
+    MS. Identifying a wired path by content makes `listobs` look changed on
+    every subsequent run -- and each run moves the mtime again for the next
+    one, so it re-runs forever. Its input is really "the MS as `split` left
+    it", which is what `split`'s cache key names and what an mtime cannot.
+    """
+    from shinobi.steps import InputRef, OutputRef, Recipe
+
+    calls = {"split": 0, "listobs": 0, "flag": 0}
+    ms = tmp_path / "data.ms"
+
+    class SummaryOut(BaseModel):
+        summary: Path
+
+    @shinobi.pystep()
+    def split(ctx, spw: str = "*") -> MsOut:
+        calls["split"] += 1
+        ms.write_text(f"visibilities for {spw}")
+        return MsOut(ms=ms)
+
+    @shinobi.pystep()
+    def listobs(ctx, ms: Path) -> SummaryOut:
+        calls["listobs"] += 1
+        summary = tmp_path / "summary.txt"
+        summary.write_text(ms.read_text())
+        return SummaryOut(summary=summary)
+
+    @shinobi.pystep()
+    def flag(ctx, ms: Path) -> MsOut:
+        calls["flag"] += 1
+        ms.write_text(ms.read_text() + " | flagged")
+        return MsOut(ms=ms)
+
+    pipeline = Recipe(
+        name="pipe",
+        inputs_model=SpwInputs,
+        outputs_model=MsOut,
+        steps=[
+            split.model_copy(update={"wiring": {"spw": InputRef(field="spw")}}),
+            listobs.model_copy(update={"wiring": {"ms": OutputRef(step="split", field="ms")}}),
+            flag.model_copy(update={"wiring": {"ms": OutputRef(step="split", field="ms")}}),
+        ],
+        output_wiring={"ms": OutputRef(step="flag", field="ms")},
+    )
+
+    cache_dir = str(tmp_path / "cache")
+    for _ in range(3):
+        pipeline(spw="*", cache=True, cache_dir=cache_dir)
+
+    assert calls == {"split": 1, "listobs": 1, "flag": 1}
+
+
+def test_unwired_boundary_path_is_still_content_hashed(tmp_path):
+    """The other half of the same rule: a path the DAG did *not* produce is
+    the boundary, and there is no provenance to identify it by -- so its
+    content still decides, exactly as before.
+    """
+    from shinobi.steps import InputRef, Recipe
+
+    calls = {"n": 0}
+    external = tmp_path / "external.cfg"
+    external.write_text("v1")
+
+    class CfgInputs(BaseModel):
+        cfg: Path
+
+    @shinobi.pystep()
+    def read_cfg(ctx, cfg: Path) -> CounterOutputs:
+        calls["n"] += 1
+        return CounterOutputs(count=calls["n"])
+
+    pipeline = Recipe(
+        name="pipe",
+        inputs_model=CfgInputs,
+        outputs_model=CounterOutputs,
+        steps=[read_cfg.model_copy(update={"wiring": {"cfg": InputRef(field="cfg")}})],
+    )
+
+    cache_dir = str(tmp_path / "cache")
+    pipeline(cfg=external, cache=True, cache_dir=cache_dir)
+    pipeline(cfg=external, cache=True, cache_dir=cache_dir)
+    assert calls["n"] == 1
+
+    external.write_text("v2 -- edited out of band")
+    pipeline(cfg=external, cache=True, cache_dir=cache_dir)
+    assert calls["n"] == 2
+
+
+def test_provenance_is_absent_when_a_step_has_no_wired_inputs(tmp_path):
+    """A step with nothing wired in has no provenance to contribute, so its
+    key must be exactly what it was before provenance existed -- otherwise
+    every such cache entry would be invalidated by the upgrade alone.
+    """
+    cab = Cab(name="tool", command="tool", inputs_model=Inputs, outputs_model=Outputs)
+    assert compute_cache_key(cab, None, {"x": 1}, {}) == compute_cache_key(cab, None, {"x": 1})
+    assert compute_cache_key(cab, None, {"x": 1}, None) == compute_cache_key(cab, None, {"x": 1})
+    assert compute_cache_key(cab, None, {"x": 1}, {"x": "upstreamkey"}) != compute_cache_key(cab, None, {"x": 1})
+
+
 # -- sandbox path normalization (issue #28: sandbox state must not affect
 # cache entry portability -- outputs are normalized to workspace-relative
 # paths regardless of whether the step ran sandboxed) --
