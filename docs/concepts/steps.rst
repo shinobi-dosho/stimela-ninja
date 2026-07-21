@@ -62,6 +62,86 @@ implicit wrapping of a bare scalar into an invented field name.
    module globals, so any ``BaseModel`` used in the signature or return type
    must be defined at module level, not nested inside another function.
 
+Container-only imports: ``ctx.import_func()``
+----------------------------------------------
+
+A pystep declared with ``image=`` runs *inside* that container when a container
+backend is resolved; the module defining it, however, is imported on the
+**host** every time a recipe is built. That split makes a top-level import of a
+tool package a problem: the package lives in the image, not in the host
+environment, so ``from casacore.tables import table`` at module scope raises
+``ImportError`` on the host long before the step ever runs -- and trips linters
+and type checkers there for the same reason.
+
+:meth:`ExecContext.import_func <shinobi.ExecContext.import_func>` defers the
+import to execution time, where the package really exists. Give a pystep a
+leading ``ctx`` parameter and resolve the names inside the body:
+
+.. code-block:: python
+
+    from pathlib import Path
+
+    from pydantic import BaseModel
+
+    from shinobi import pystep
+
+
+    class PhaseCentre(BaseModel):
+        ra_deg: float
+        dec_deg: float
+        sexagesimal: str
+
+
+    @pystep(image="quay.io/stimela/casa:latest")
+    def phase_centre(ctx, ms: Path, field_id: int = 0) -> PhaseCentre:
+        """Read a field's phase centre from an MS and format it for humans."""
+        table = ctx.import_func("table", "casacore.tables")
+        SkyCoord = ctx.import_func("SkyCoord", "astropy.coordinates")
+
+        field = table(f"{ms}::FIELD", ack=False)
+        try:
+            ra_rad, dec_rad = field.getcol("PHASE_DIR")[field_id][0]
+        finally:
+            field.close()
+
+        coord = SkyCoord(ra=ra_rad, dec=dec_rad, unit="rad")
+        return PhaseCentre(
+            ra_deg=float(coord.ra.deg),
+            dec_deg=float(coord.dec.deg),
+            sexagesimal=coord.to_string("hmsdms"),
+        )
+
+Neither ``python-casacore`` nor ``astropy`` needs to be installed on the host:
+the host only imports this module to *build* the recipe, and by then
+``import_func`` has resolved nothing at all.
+
+The signature is ``ctx.import_func(func, module=None)``:
+
+* With ``module``, it imports that module and returns the named attribute --
+  ``importlib.import_module(module)`` followed by ``getattr(module, func)``.
+* Without ``module``, it looks ``func`` up in :mod:`builtins`, so
+  ``ctx.import_func("print")`` and ``ctx.import_func("len")`` work.
+
+.. important::
+
+   ``import_func`` returns an **attribute of** a module, never a module. There
+   is no one-argument form for pulling in a package: ``ctx.import_func("numpy")``
+   does not import numpy, it looks for ``numpy`` in ``builtins`` and raises
+   ``AttributeError: module 'builtins' has no attribute 'numpy'``. Name the
+   attribute you actually want -- ``ctx.import_func("array", "numpy")``,
+   ``ctx.import_func("getheader", "astropy.io.fits")`` -- or bind the module
+   through one of its own attributes if you need several.
+
+The name is historical: the returned object need not be a function. Classes
+(``table`` above), and any other module attribute, resolve the same way.
+
+.. note::
+
+   Inside the container the runner stubs out ``shinobi``, ``pydantic`` and the
+   step's own top-level package, so those never load there. Only stdlib and
+   whatever the body pulls in through ``import_func`` are real -- one more
+   reason tool imports belong in the body rather than at module scope.
+
 Which to use
 ------------
 
