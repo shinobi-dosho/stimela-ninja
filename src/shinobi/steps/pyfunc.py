@@ -219,6 +219,16 @@ class _StubModel:
 
 
 def _stub_attr(name):
+    if name.startswith("__") and name.endswith("__"):
+        # Dunders must raise, exactly as a real module does for ones it does
+        # not define. Returning _ANY for `__file__` in particular poisons
+        # `inspect.getmodule`, which scans sys.modules guarded only by
+        # `hasattr(module, "__file__")` and then calls os.path.splitext on
+        # whatever it finds -- so ANY container-side library that introspects
+        # the module table dies on `expected str, bytes or os.PathLike
+        # object, not _Any`. astropy does this at import time, which takes
+        # out every simms and casacore-adjacent pystep.
+        raise AttributeError(name)
     if name == "BaseModel":
         return _StubModel
     if name == "pystep":

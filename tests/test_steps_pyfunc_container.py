@@ -702,3 +702,38 @@ def test_sandboxed_container_pystep_keeps_absolute_paths_outside_workspace(tmp_p
 
     assert result.success, result.stderr
     assert result.outputs.target == Path("/elsewhere/data.txt")
+
+
+class IntrospectOutputs(BaseModel):
+    found: str
+
+
+def introspecting_func(ms: str) -> IntrospectOutputs:
+    """A pystep whose in-container work introspects the module table.
+
+    Stands in for astropy, which does exactly this at *import* time (its
+    config machinery calls `find_current_module` -> `inspect.getmodule`), so
+    any pystep whose container-side import chain reaches astropy hits it --
+    simms and much of the casacore-adjacent stack.
+    """
+    import inspect
+
+    inspect.getmodule(inspect.currentframe())
+    return IntrospectOutputs(found="ok")
+
+
+def test_stub_modules_do_not_break_module_introspection():
+    # Regression: the stub modules answered *every* attribute with _ANY,
+    # including __file__. `inspect.getmodule` scans sys.modules guarded only
+    # by `hasattr(module, "__file__")`, then calls os.path.splitext on what
+    # it finds -- so a stub in sys.modules made any such scan die with
+    # "expected str, bytes or os.PathLike object, not _Any". Real modules
+    # raise AttributeError for dunders they don't define, and so must these.
+    ref = pystep(image="casa:latest", backend="docker")(introspecting_func)
+
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host):
+        result = ref(ms="real.ms")
+
+    assert result.success, result.stderr
+    assert "not _Any" not in result.stderr
+    assert result.outputs.found == "ok"
