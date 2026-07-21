@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field, ValidationError, create_model
-from shinobi.cache import compute_cache_key, get_cache_manifest
+from shinobi.cache import combine_keys, compute_cache_key, get_cache_manifest
 from shinobi.config import AppConfig
 from shinobi.exceptions import CabRunError, ParameterError, ShinobiError, StepError
 from shinobi.graph import build_graph
@@ -151,6 +151,7 @@ class ExecContext:
         stream: bool = True,
         pin: bool = False,
         sandbox_root: str | None = None,
+        input_keys: dict[str, Any] | None = None,
     ):
         """Initialize execution state for one dispatched step.
 
@@ -171,6 +172,10 @@ class ExecContext:
             sandbox_root: Scratch root for sandboxed execution
                 (`shinobi.sandbox`), or `None` when this step runs
                 unsandboxed -- the root doubles as the enabled flag.
+            input_keys: Per-input-field cache keys of the steps that
+                produced this step's wired inputs (see `shinobi.cache`).
+                Only an enclosing recipe can know these; a top-level call
+                has none.
         """
         self.scope = scope
         self._raw = raw_inputs
@@ -192,6 +197,11 @@ class ExecContext:
         # Sandbox scratch root, or None when unsandboxed. Read by the pystep
         # container path and threaded to _run_cab/_run_recipe via ctx.run().
         self._sandbox_root = sandbox_root
+        # Upstream provenance for this step's wired inputs. A Recipe scope is
+        # never cached itself, so it doesn't consume these -- it forwards them
+        # to _run_recipe, which resolves each sub-step's InputRef wiring
+        # against them (see shinobi.cache).
+        self._input_keys = input_keys
 
     def prepare_inputs(self) -> dict[str, Any]:
         """Validated + mutability-processed inputs, with no overrides applied
@@ -270,6 +280,7 @@ class ExecContext:
                 self._stream,
                 provenance=self._pin,
                 sandbox=self._sandbox_root is not None,
+                input_keys=self._input_keys,
             )
         else:
             raise TypeError(
@@ -320,6 +331,7 @@ def _dispatch(
     _cache_path: str | None = None,
     _config: AppConfig | None = None,
     _provenance_target: str | None = None,
+    _input_keys: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> StepResult:
     config = _config or AppConfig.load()
@@ -352,6 +364,7 @@ def _dispatch(
         stream=stream_enabled,
         pin=provenance_enabled,
         sandbox_root=config.sandbox.dir if sandbox_enabled else None,
+        input_keys=_input_keys,
     )
 
     manifest = None
@@ -359,9 +372,14 @@ def _dispatch(
     if cacheable:
         manifest = get_cache_manifest(cache_dir_value)
         prepared_for_key = ctx.prepare_inputs()
-        cache_key = compute_cache_key(scope, func, prepared_for_key)
+        cache_key = compute_cache_key(scope, func, prepared_for_key, _input_keys)
         hit = manifest.check(cache_path, cache_key, scope, prepared_for_key)
         if hit is not None:
+            # A hit stands in for the run that first produced this key, so it
+            # must advertise the same provenance -- otherwise dependents would
+            # see the producer's key vanish and their own keys would flip
+            # between runs purely on whether the producer hit or ran.
+            hit.cache_key = cache_key
             logger.info("step %s: cache hit -- skipping run", cache_path)
             if _cache_path is None and provenance_enabled:
                 _emit_run_manifest(hit, ctx, config, backend, target=_provenance_target)
@@ -398,6 +416,8 @@ def _dispatch(
     else:
         logger.error("step %s: failed (returncode %s)", cache_path, result.returncode)
 
+    if cacheable:
+        result.cache_key = cache_key
     if cacheable and result.success:
         manifest.record(cache_path, cache_key, result)
     if _cache_path is None and provenance_enabled:
@@ -546,6 +566,49 @@ def _resolve_wiring(ref, prepared: dict[str, Any], results: dict[str, StepResult
     return {**ref.params, **wired}  # wiring overrides params
 
 
+def _resolve_input_keys(ref, inbound_keys: dict[str, Any], results: dict[str, StepResult]) -> dict[str, Any]:
+    """The provenance half of `_resolve_wiring`: for each input this
+    sub-step wires, the cache key of whatever produced it (see
+    `shinobi.cache`).
+
+    An `OutputRef` resolves against the producing step's result; an
+    `InputRef` reaches past the recipe boundary to `inbound_keys` -- the
+    provenance the enclosing recipe was itself handed -- so a nested recipe
+    doesn't sever the chain. Fields whose producer has no key (caching
+    disabled, or an uncacheable producer) are omitted rather than recorded
+    as `None`, so enabling caching part-way up a pipeline doesn't rewrite
+    the keys of steps that had no provenance to begin with.
+
+    `ref.params` are deliberately absent: a constant declared on the step is
+    already hashed by value as an ordinary param, and nothing produced it.
+    """
+
+    def key_of(source: InputRef | OutputRef) -> Any:
+        if isinstance(source, InputRef):
+            return inbound_keys.get(source.field)
+        producer = results.get(source.step)
+        return producer.provenance_key(source.field) if producer is not None else None
+
+    keys: dict[str, Any] = {}
+    for field, source in ref.wiring.items():
+        if isinstance(source, list):
+            resolved = [key_of(one) for one in source]
+            # `any`, not `all`, on purpose. Presence here also suppresses the
+            # content hash (see `compute_cache_key`), and for a field that is
+            # also a declared output of this step there is no content hash to
+            # fall back to -- it is excluded either way -- so requiring every
+            # element to have a key would leave such a field keyed on nothing
+            # at all. Partial provenance still invalidates on the elements it
+            # does cover.
+            if any(key is not None for key in resolved):
+                keys[field] = resolved
+        else:
+            resolved_one = key_of(source)
+            if resolved_one is not None:
+                keys[field] = resolved_one
+    return keys
+
+
 class ScatterError(ValueError):
     """A scattered step received inconsistent inputs: a scatter field is not
     a list, or two scatter fields declared for the same step have different
@@ -672,6 +735,10 @@ def _aggregate_scatter_results(
         image_digest=slices[0].image_digest if slices else None,
         containerized=any(s.containerized for s in slices),
         sandboxed=any(s.sandboxed for s in slices),
+        # Every slice is keyed independently, but downstream wires the
+        # *gathered* result -- so its provenance is all the slices' keys
+        # together, and a change in any one of them invalidates dependents.
+        cache_key=combine_keys([s.cache_key for s in slices]),
     )
 
 
@@ -686,6 +753,7 @@ def _run_recipe(
     stream: bool = True,
     provenance: bool = False,
     sandbox: bool = False,
+    input_keys: dict[str, Any] | None = None,
 ) -> StepResult:
     """Topological wavefront scheduler over the recipe's declared DAG.
 
@@ -703,6 +771,13 @@ def _run_recipe(
     can't be honestly cancelled). All aggregation -- stdout, stderr,
     outputs, the winning returncode -- is done in declaration order regardless
     of completion order, so results are deterministic.
+
+    This is also where cache provenance is threaded (see `shinobi.cache`):
+    the recipe knows which step produced each of its sub-steps' wired
+    inputs, so it resolves that into per-field upstream cache keys
+    (`_resolve_input_keys`) and hands them to each sub-step's `_dispatch`.
+    `input_keys` is the same thing arriving from *outside*, for a recipe
+    nested in another recipe.
     """
     config = config or AppConfig.load()  # resolve once; workers never call load()
     graph = build_graph(recipe)
@@ -742,6 +817,7 @@ def _run_recipe(
         def _submit_step(i: int) -> None:
             ref = recipe.steps[i]
             sub_kwargs = _resolve_wiring(ref, prepared, results)
+            sub_input_keys = _resolve_input_keys(ref, input_keys or {}, results)
             if ref.scatter is not None:
                 slices = _build_scatter_slices(ref, sub_kwargs)
                 if not slices:
@@ -767,6 +843,7 @@ def _run_recipe(
                         _recipe_sandbox=sandbox,
                         _cache_path=f"{cache_path}.{ref.name}[{slice_idx}]",
                         _config=config,
+                        _input_keys=sub_input_keys,
                         **slice_kwargs,
                     )
                     futures[fut] = (i, slice_idx)
@@ -783,6 +860,7 @@ def _run_recipe(
                     _recipe_sandbox=sandbox,
                     _cache_path=f"{cache_path}.{ref.name}",
                     _config=config,
+                    _input_keys=sub_input_keys,
                     **sub_kwargs,
                 )
                 futures[fut] = (i, None)
@@ -849,6 +927,12 @@ def _run_recipe(
 
     ordered = [ref.name for ref in recipe.steps if ref.name in results]
     outputs = {field: getattr(results[out_ref.step].outputs, out_ref.field) for field, out_ref in recipe.output_wiring.items() if out_ref.step in results}
+    # Per-output provenance for whoever consumes this recipe's outputs: each
+    # declared output is keyed by the sub-step that actually produced it, not
+    # by the recipe as a whole -- see StepResult.provenance_key.
+    output_keys = {
+        field: key for field, out_ref in recipe.output_wiring.items() if out_ref.step in results and (key := results[out_ref.step].provenance_key(out_ref.field)) is not None
+    }
     return StepResult(
         name=recipe.name,
         returncode=0,
@@ -858,4 +942,5 @@ def _run_recipe(
         stderr="\n".join(s for name in ordered if (s := results[name].stderr)),
         kind="recipe",
         sub_results={name: results[name] for name in ordered},
+        output_keys=output_keys,
     )

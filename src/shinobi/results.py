@@ -84,11 +84,37 @@ class StepResult:
     # (see `sandbox.relativize_path_outputs`).
     sandboxed: bool = False
     sub_results: "dict[str, StepResult] | None" = None
+    # Provenance keys, for the cache's upstream-invalidation term (see
+    # `shinobi.cache`). `cache_key` is this step's own key, set by `_dispatch`
+    # whenever the step was cacheable; `output_keys` is the per-output-field
+    # override a *Recipe* carries, since a recipe is never itself cached and
+    # each of its declared outputs is really produced by a different sub-step.
+    # Read them through `provenance_key`, never directly.
+    cache_key: str | None = None
+    output_keys: "dict[str, Any] | None" = None
 
     @property
     def success(self) -> bool:
         """Whether the step exited with return code 0."""
         return self.returncode == 0
+
+    def provenance_key(self, field: str) -> Any:
+        """The cache key identifying whatever produced output `field`.
+
+        A leaf step produces all its outputs in one run, so every field
+        resolves to that step's own `cache_key`. A `Recipe` fans out to
+        `output_keys` instead -- each declared output comes from a distinct
+        sub-step, and invalidating a downstream consumer because some
+        *unrelated* sub-step re-ran would throw away most of the cache's
+        value.
+
+        `None` means "no provenance available" (caching disabled, or a step
+        that isn't cacheable) -- callers must treat that as "contribute
+        nothing", not as a key in its own right.
+        """
+        if self.output_keys is not None:
+            return self.output_keys.get(field)
+        return self.cache_key
 
     def __getattr__(self, name: str) -> Any:
         """Read through to `outputs` for convenience (`result.<output_field>`).
