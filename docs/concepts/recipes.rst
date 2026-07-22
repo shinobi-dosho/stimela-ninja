@@ -201,6 +201,11 @@ That declares steps ``selfcal.1.calibrate`` … ``selfcal.10.assess``.
 ``loop.outputs`` resolves to the final iteration, so nothing downstream has to
 mention ``max_iter``.
 
+The body does not have to be a ``Recipe``. A single ``Cab`` (or a ``StepRef``
+from ``@shinobi.pystep``) is one step per iteration -- ``selfcal.1``,
+``selfcal.2``, … -- with no name to flatten, and behaves identically in every
+other respect, ``index_input`` included.
+
 The convergence signal is a **path**, not a boolean: the body writes that file
 when it has converged, and its existence is the test. That is what lets an
 offloaded run apply the identical rule -- a boolean has no way to travel

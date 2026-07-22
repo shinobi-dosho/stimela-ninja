@@ -158,3 +158,20 @@ so two functions over one scope never collide. A ``StepRef`` is a valid
 A ``StepRef`` may also carry a ``scatter`` specification, so a single step can
 fan out over one or more list inputs when it is part of a recipe. See
 :doc:`recipes`.
+
+Two further fields matter only inside a recipe:
+
+``after``
+    Step names this one must run after, with **no data flowing**. Ordinary
+    wiring already orders steps, so reach for this only when a step must not
+    start before another has finished yet reads nothing from it.
+    :ref:`add_loop <declared-loops>` is the motivating case: an iteration's
+    first step reads nothing from its own iteration, so without an ordering
+    edge nothing would stop it starting before the previous iteration had
+    decided whether the loop had converged.
+
+``loop``
+    Set by ``add_loop`` on the steps it generates, recording which iteration a
+    step belongs to and which sentinel it should check. Bookkeeping for the
+    short-circuit decision only -- the edges that make an unrolled loop a real
+    DAG are ordinary ``wiring`` and ``after``, never this.

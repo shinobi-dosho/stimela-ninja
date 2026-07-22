@@ -22,6 +22,30 @@ orchestration: the graph is built in Python, not parsed from a markup file,
 and carries no expression language or control-flow semantics beyond the
 declared edges.
 
+The one admitted exception
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Real pipelines sometimes need to repeat a block *until a result is good
+enough* -- self-calibration is the standing example -- and the number of
+repeats is genuinely a run-time fact. :ref:`add_loop <declared-loops>` admits
+that, but in the weakest form that still works: the loop is **unrolled** to a
+declared bound, so every node exists in the graph, is wired and validated
+before anything runs, and is drawn by ``--dryrun``. The only run-time decision
+is whether an *already-declared* step does any work.
+
+That is deliberately not the same as putting a ``for`` loop in an
+orchestration function, which is also possible and is the thing to resist. A
+function's repetition is invisible: the graph shows one node, nothing can tell
+you how many cycles there might be, and the step can never be offloaded --
+:doc:`offloading` rejects orchestration functions precisely because their
+behaviour isn't statically knowable. Unrolling keeps the graph the source of
+truth; a loop in a function quietly moves the truth into Python.
+
+The cost is honest and worth stating: ``--dryrun`` shows what is *declared*,
+so it draws iterations that may never run. What actually happened belongs to
+the run manifest (:doc:`concepts/provenance`), where short-circuited steps are
+recorded with ``skipped: true``.
+
 What we deliberately left out
 ------------------------------
 
