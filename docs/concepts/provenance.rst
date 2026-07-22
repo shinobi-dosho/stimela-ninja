@@ -109,6 +109,15 @@ A recipe's sub-steps appear, in declaration order, under ``steps``.
     (see :doc:`sandbox`), otherwise ``false``. This is recorded for
     diagnostics; it does not affect whether a manifest can be replayed.
 
+``skipped``
+    ``true`` for a :ref:`loop <declared-loops>` iteration that ran after the
+    loop had already converged, so it passed the previous iteration's outputs
+    through instead of doing work. This is what makes the manifest an exact
+    record of how many cycles a run actually performed -- the graph, and
+    ``--dryrun``, only show how many were *declared*. Distinct from
+    ``cached``: nothing was looked up, and ``kind`` still reports what the
+    step is.
+
 ``target``
     The CLI target string (``path/to/file.py:name`` or ``pkg.mod:name``) that
     produced the run, recorded so :ref:`ninja replay <ninja-replay>` can find

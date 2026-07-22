@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_serializer, model_validator
+from pydantic_core import PydanticUndefined
 
 
 class Mutability(str, Enum):
@@ -482,6 +483,31 @@ class ScatterSpec(BaseModel):
         return self
 
 
+class LoopIteration(BaseModel):
+    """Marks a step as belonging to iteration `index` of the unrolled loop
+    `loop` (see `Recipe.add_loop`). Carried by every step the unrolling
+    produces; it is bookkeeping for the *skip* decision only -- the
+    dependency edges that make the unrolled chain a real DAG are ordinary
+    `wiring` plus `after`, never this.
+
+    `prev_step` is the same body step one iteration earlier (so
+    `selfcal.4.image` passes through `selfcal.3.image`), and
+    `sentinel_step`/`sentinel_field` name the previous iteration's output
+    whose existence on disk means "the loop has already converged, do no
+    work". `prev_step` and `sentinel_step` are both None for the first
+    iteration, which can never skip -- there is nothing before it to pass
+    through or to have converged. `sentinel_field` is always set: which
+    output carries the signal is a property of the loop, not of one
+    iteration.
+    """
+
+    loop: str
+    index: int
+    prev_step: str | None = None
+    sentinel_step: str | None = None
+    sentinel_field: str
+
+
 class StepRef(BaseModel):
     """A named, executable binding of a Scope: orchestration function,
     wiring (meaningful only inside a Recipe), and per-step constants.
@@ -510,6 +536,18 @@ class StepRef(BaseModel):
     wiring: dict[str, "InputRef | OutputRef | list[InputRef | OutputRef]"] = Field(default_factory=dict)
     params: dict[str, Any] = Field(default_factory=dict)
     scatter: ScatterSpec | None = None
+    # Ordering-only dependency edges: step names this one must run after,
+    # with no data flowing. `build_graph` folds these into `deps` exactly
+    # like a wiring edge, so the scheduler and the offload compiler both
+    # honour them. This exists because a declared graph sometimes has to
+    # express "not before", not just "reads from" -- `Recipe.add_loop` needs
+    # every iteration to run strictly after the previous one's convergence
+    # was decided, and no data flows along that edge. It is deliberately
+    # NOT an escape hatch for expressing arbitrary sequencing: prefer real
+    # wiring wherever a value actually flows, so the graph keeps saying what
+    # depends on what and why.
+    after: list[str] = Field(default_factory=list)
+    loop: LoopIteration | None = None
 
     @field_serializer("func")
     def _serialize_func(self, func: Callable | None) -> str | None:
@@ -678,6 +716,77 @@ class _OutputsProxy:
         raise AttributeError(f"No step named '{step}' in recipe '{self._recipe.name}'")
 
 
+class _LoopOutputsProxy:
+    """`loop.outputs.<field>` -> an `OutputRef` into the step of the *final*
+    iteration that produces that body output, so a step after the loop wires
+    from the loop without ever naming `max_iter`.
+    """
+
+    def __init__(self, loop: "LoopRef"):
+        """Bind the proxy to `loop`.
+
+        Args:
+            loop: The `LoopRef` whose final-iteration outputs this exposes.
+        """
+        self._loop = loop
+
+    def __call__(self, field: str) -> OutputRef:
+        """Same as attribute access, for a dynamic/non-identifier name.
+
+        Args:
+            field: Name of an output field of the loop body.
+
+        Returns:
+            An `OutputRef` into the final iteration's producing step.
+        """
+        return self.__getattr__(field)
+
+    def __getattr__(self, field: str) -> OutputRef:
+        """Resolve `loop.outputs.<field>` to an `OutputRef`.
+
+        Args:
+            field: Name of an output field of the loop body.
+
+        Returns:
+            An `OutputRef` into the final iteration's producing step.
+
+        Raises:
+            AttributeError: If the body declares no such output.
+        """
+        try:
+            return self._loop._final[field]
+        except KeyError:
+            raise AttributeError(f"'{field}' is not an output of loop '{self._loop.name}' (have: {sorted(self._loop._final)})") from None
+
+
+class LoopRef:
+    """What `Recipe.add_loop` returns: the loop's step names, and an
+    `outputs` proxy resolving to the final iteration's producers.
+
+    Not a `StepRef` -- a loop is not a step. It has already been unrolled
+    into the recipe's `steps` by the time this is returned; this is just a
+    handle for wiring whatever comes next.
+    """
+
+    def __init__(self, name: str, steps: list[str], final: dict[str, OutputRef]):
+        """Bind the handle to an already-unrolled loop.
+
+        Args:
+            name: The loop's name.
+            steps: Every step name the unrolling produced, in order.
+            final: Body output field -> `OutputRef` into the final
+                iteration's producing step.
+        """
+        self.name = name
+        self.steps = steps
+        self._final = final
+
+    @property
+    def outputs(self) -> _LoopOutputsProxy:
+        """Wiring proxy (definition layer) -- NOT runtime values."""
+        return _LoopOutputsProxy(self)
+
+
 class Recipe(Scope):
     """A composite step: declared sub-steps with explicit wiring.
 
@@ -761,6 +870,209 @@ class Recipe(Scope):
             ref = StepRef(name=name, step=scope, wiring=wiring, params=params, scatter=scatter_spec)
         self.steps.append(ref)
         return self
+
+    def add_loop(
+        self,
+        name: str,
+        body: "Scope | StepRef",
+        *,
+        max_iter: int,
+        until: str,
+        carry: dict[str, str],
+        index_input: str | None = None,
+        **kwargs: Any,
+    ) -> LoopRef:
+        """Unroll `body` `max_iter` times into this recipe, as a declared chain.
+
+        The loop is *bounded unrolling with short-circuit pass-through*: the
+        body's steps are flattened into this recipe once per iteration and
+        chained by real `carry` wiring, so the whole thing is an ordinary
+        statically-inspectable DAG -- `--dryrun` renders every iteration and
+        the offload compiler emits a plain dependency chain. The only runtime
+        decision is whether an already-declared step does any work: once an
+        iteration writes the `until` sentinel file, every later step passes the
+        corresponding previous iteration's outputs straight through.
+
+        A `Recipe` body is flattened (`selfcal.3.image`); any other Scope is one
+        step per iteration (`selfcal.3`).
+
+        Args:
+            name: The loop's name; every step it creates is prefixed with it.
+            body: The loop body. Its outputs must be re-consumable as its
+                inputs (see `carry`) -- a loop body is a fixed point.
+            max_iter: How many times to unroll. The upper bound on iterations,
+                not the exact count.
+            until: Name of a **path-typed** output of `body`. Once that file
+                exists, the loop has converged. A path (rather than a bool) is
+                what lets the identical predicate serve both local execution
+                and an offloaded sbatch script.
+            carry: Body output field -> body input field, the loop-carried
+                dependency. Required and explicit: these pairs *are* the edges
+                between iterations, and inferring them from matching names
+                would make the graph's shape depend on name coincidence.
+            index_input: Name of a body input to bind to the 1-based iteration
+                number. Without it every iteration resolves to identical
+                values, so a body cannot name its outputs per cycle (a
+                per-cycle image prefix, say) -- which real self-calibration
+                does. Steps consuming it must tolerate a changing value: it is
+                the one input that deliberately differs between iterations.
+            **kwargs: Iteration 1's inputs, split into wiring and constants
+                exactly as `add_step` does. Constants apply to every iteration.
+
+        Returns:
+            A `LoopRef` whose `outputs` proxy resolves to the final iteration.
+        """
+        if max_iter < 1:
+            raise ValueError(f"loop '{name}' declares max_iter={max_iter}; it must be at least 1")
+
+        # A StepRef body (e.g. from @shinobi.pystep) contributes its func and
+        # per-step constants, same as add_step carries them over.
+        body_ref = body if isinstance(body, StepRef) else None
+        body = body_ref.step if body_ref is not None else body
+        is_recipe = isinstance(body, Recipe)
+        if is_recipe:
+            for sub in body.steps:
+                if sub.scatter is not None:
+                    raise ValueError(f"loop '{name}': body step '{sub.name}' declares scatter, which is not supported inside a loop in this version")
+                if isinstance(sub.step, Recipe):
+                    raise ValueError(f"loop '{name}': body step '{sub.name}' is a nested Recipe, which is not supported inside a loop in this version")
+
+        def iteration_step(k: int, sub_name: str) -> str:
+            """The flattened name of body step `sub_name` in iteration `k`."""
+            return f"{name}.{k}.{sub_name}" if is_recipe else f"{name}.{k}"
+
+        def producer(k: int, out_field: str) -> OutputRef:
+            """Which flattened step of iteration `k` produces body output
+            `out_field`, resolved through the body's own `output_wiring`.
+            """
+            if not is_recipe:
+                return OutputRef(step=iteration_step(k, ""), field=out_field)
+            src = body.output_wiring.get(out_field)
+            if src is None:
+                raise ValueError(
+                    f"loop '{name}': body output '{out_field}' is not wired to any of the body's steps (Recipe.set_output), so the loop cannot tell which step produces it"
+                )
+            return OutputRef(step=iteration_step(k, src.step), field=src.field)
+
+        if until not in body.outputs_model.model_fields:
+            raise ValueError(f"loop '{name}': until='{until}' is not an output of {body.outputs_model.__name__}")
+        if until not in path_fields(body.outputs_model):
+            raise ValueError(
+                f"loop '{name}': until='{until}' must be a path-typed output (its existence on disk is the convergence signal), but {body.outputs_model.__name__}.{until} is not a path"
+            )
+        for out_field, in_field in carry.items():
+            if out_field not in body.outputs_model.model_fields:
+                raise ValueError(f"loop '{name}': carry key '{out_field}' is not an output of {body.outputs_model.__name__}")
+            if in_field not in body.inputs_model.model_fields:
+                raise ValueError(f"loop '{name}': carry value '{in_field}' is not an input of {body.inputs_model.__name__}")
+        if index_input is not None and index_input not in body.inputs_model.model_fields:
+            raise ValueError(f"loop '{name}': index_input='{index_input}' is not an input of {body.inputs_model.__name__}")
+        producer(1, until)  # fail now if the sentinel has no declared producer
+
+        initial, loop_params = self._split_kwargs(kwargs)
+        existing = {ref.name for ref in self.steps}
+
+        def bound_inputs(k: int) -> dict[str, InputRef | OutputRef | list[Any]]:
+            """What each of the body's own input fields is wired from, in
+            iteration `k`: the caller's wiring on the first pass, the previous
+            iteration's outputs thereafter.
+            """
+            if k == 1:
+                return dict(initial)
+            return {**initial, **{in_field: producer(k - 1, out_field) for out_field, in_field in carry.items()}}
+
+        created: list[str] = []
+        for k in range(1, max_iter + 1):
+            bound = bound_inputs(k)
+            sentinel_step = producer(k - 1, until).step if k > 1 else None
+            sentinel_field = producer(1, until).field
+            body_steps = body.steps if is_recipe else [body_ref or StepRef(name=name, step=body)]
+
+            for sub in body_steps:
+                step_name = iteration_step(k, sub.name)
+                if step_name in existing:
+                    raise ValueError(f"loop '{name}' would create a step named '{step_name}', which already exists in recipe '{self.name}'")
+                existing.add(step_name)
+
+                wiring: dict[str, Any] = {}
+                params = dict(sub.params)
+                intra_iteration = False
+
+                def rebind(source: InputRef | OutputRef, field: str) -> Any:
+                    """Rewrite one of the body's own wiring sources into the
+                    flattened graph: a reference to another body step becomes a
+                    reference to that step in *this* iteration; a reference to
+                    the body's own inputs becomes whatever the loop bound them
+                    to for this iteration.
+                    """
+                    nonlocal intra_iteration
+                    if isinstance(source, OutputRef):
+                        intra_iteration = True
+                        return OutputRef(step=iteration_step(k, source.step), field=source.field)
+                    if source.field == index_input:
+                        return k
+                    bound_source = bound.get(source.field)
+                    if bound_source is not None:
+                        return bound_source
+                    if source.field in loop_params:
+                        return loop_params[source.field]
+                    model_field = body.inputs_model.model_fields.get(source.field)
+                    default = model_field.default if model_field is not None else PydanticUndefined
+                    if default is PydanticUndefined:
+                        raise ValueError(
+                            f"loop '{name}': body step '{sub.name}' wires input '{field}' from the body input '{source.field}', but the loop was given no value for '{source.field}' and it has no default"
+                        )
+                    return default
+
+                for field, source in sub.wiring.items():
+                    if isinstance(source, list):
+                        rebound = [rebind(one, field) for one in source]
+                    else:
+                        rebound = rebind(source, field)
+                    if self._is_wiring_value(rebound):
+                        wiring[field] = rebound
+                    else:
+                        params[field] = rebound
+
+                # A non-Recipe body has no internal wiring to rewrite, so bind
+                # its inputs from the loop directly.
+                if not is_recipe:
+                    for field, source in bound.items():
+                        if field == index_input:
+                            continue
+                        wiring[field] = source
+                    if index_input is not None:
+                        params[index_input] = k
+                    for field, value in loop_params.items():
+                        params.setdefault(field, value)
+
+                self.steps.append(
+                    StepRef(
+                        name=step_name,
+                        step=sub.step,
+                        func=sub.func,
+                        wiring=wiring,
+                        params=params,
+                        # An *entry* step of the iteration reads nothing from
+                        # its own iteration, so nothing otherwise orders it
+                        # after the previous one. Without this edge it could be
+                        # scheduled before the previous iteration had decided
+                        # convergence -- and under offload it would carry no
+                        # `afterok` link at all. No data flows here, only order.
+                        after=[sentinel_step] if (sentinel_step is not None and not intra_iteration) else [],
+                        loop=LoopIteration(
+                            loop=name,
+                            index=k,
+                            prev_step=iteration_step(k - 1, sub.name) if k > 1 else None,
+                            sentinel_step=sentinel_step,
+                            sentinel_field=sentinel_field,
+                        ),
+                    )
+                )
+                created.append(step_name)
+
+        final = {field: producer(max_iter, field) for field in body.outputs_model.model_fields if not is_recipe or field in body.output_wiring}
+        return LoopRef(name=name, steps=created, final=final)
 
     def step(
         self,

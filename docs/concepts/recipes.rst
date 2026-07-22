@@ -168,6 +168,72 @@ Rules:
 
 Scattered recipes are not offloadable in v1.
 
+.. _declared-loops:
+
+Loops
+-----
+
+Some pipelines repeat a block until a result is good enough -- self-calibration
+runs a calibrate/image/assess cycle until the image fidelity stops improving.
+The number of cycles is a run-time decision, but a recipe is a graph declared
+*before* anything runs.
+
+``add_loop`` resolves that by **unrolling**: the body is flattened into the
+recipe ``max_iter`` times and the copies are chained together, so the result is
+an ordinary graph you can render and validate. Once an iteration reports
+convergence, the remaining iterations pass the converged outputs straight
+through without doing any work.
+
+.. code-block:: python
+
+    loop = recipe.add_loop(
+        "selfcal",
+        cycle,                              # a Recipe: calibrate -> image -> assess
+        max_iter=10,
+        until="converged",                  # a path output; existing == converged
+        carry={"ms": "ms"},                 # this cycle's output -> next cycle's input
+        index_input="cycle",                # binds the 1-based iteration number
+        ms=recipe.inputs.ms,                # iteration 1's inputs
+    )
+    recipe.add_step("publish", pub, image=loop.outputs.image)
+
+That declares steps ``selfcal.1.calibrate`` … ``selfcal.10.assess``.
+``loop.outputs`` resolves to the final iteration, so nothing downstream has to
+mention ``max_iter``.
+
+The body does not have to be a ``Recipe``. A single ``Cab`` (or a ``StepRef``
+from ``@shinobi.pystep``) is one step per iteration -- ``selfcal.1``,
+``selfcal.2``, … -- with no name to flatten, and behaves identically in every
+other respect, ``index_input`` included.
+
+The convergence signal is a **path**, not a boolean: the body writes that file
+when it has converged, and its existence is the test. That is what lets an
+offloaded run apply the identical rule -- a boolean has no way to travel
+between two Slurm jobs, but a file on shared storage does.
+
+Rules:
+
+* the body must be a **fixed point** -- whatever ``carry`` names must be both an
+  output and an input of the body, so one iteration can feed the next;
+* ``carry`` is explicit; it is not inferred from matching field names, because
+  those pairs are the actual edges between iterations;
+* ``index_input`` is the one input that differs between iterations; without it
+  every iteration is identical, so a body cannot name its outputs per cycle;
+* a body containing ``scatter`` or a further nested ``Recipe`` is rejected.
+
+.. note::
+
+   ``--dryrun`` shows what is **declared**, so all ``max_iter`` iterations are
+   drawn even though fewer may run. What actually happened is in the run
+   manifest, where short-circuited steps are recorded with ``skipped: true``.
+
+A loop *is* offloadable -- it compiles to a plain dependency chain, with the
+convergence test as a guard at the top of each job's script. The exception is a
+body that names its outputs per cycle (via ``index_input`` and an ``implicit``
+template): those paths cannot be known at compile time, so ``ninja compile``
+rejects the recipe rather than emitting a path no job will write. Such a loop
+still runs locally.
+
 Orchestration functions
 ------------------------
 
@@ -179,6 +245,15 @@ actually dispatches, though: it has no effect on the recipe's *declared*
 graph, which is fixed by the ``InputRef``/``OutputRef`` wiring passed to
 ``add_step``/``@recipe.step`` when the recipe is built, and is exactly what
 ``--dryrun`` renders -- nothing is executed to produce it.
+
+.. note::
+
+   A Python ``for`` loop inside such a function is the one case worth
+   resisting. It works, but the repetition is invisible: the graph shows one
+   node, ``--dryrun`` cannot tell you how many cycles there might be, and the
+   step cannot be offloaded at all (an orchestration function is never
+   compiled to a cluster workflow). Use :ref:`add_loop <declared-loops>`
+   instead -- it expresses the same thing as declared steps.
 
 The rendered graph groups independent steps that share the same set of
 dependencies onto a single row (a **fan-out**), and shows steps that several

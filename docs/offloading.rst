@@ -21,6 +21,23 @@ running any Python. A recipe is offload-eligible only when:
 Anything relying on live Python is rejected with an explanation -- run those
 recipes locally with ``ninja run`` instead.
 
+A :ref:`declared loop <declared-loops>` satisfies all of this: unrolling
+leaves a plain dependency chain of ``Cab`` steps, and its convergence test
+becomes a guard at the top of each job's script --
+
+.. code-block:: bash
+
+    if [ -e /scratch/converged.flag ]; then
+      exit 0
+    fi
+
+-- so an iteration that runs after the loop has converged exits successfully
+without doing any work, satisfying the ``afterok`` dependency so the rest of
+the chain proceeds. It needs to create nothing on the way out: every path a
+loop carries resolves to the same name in every iteration. A body that instead
+names its outputs *per cycle* is not statically knowable and is rejected, like
+anything else the compiler cannot resolve.
+
 A minimal offloadable recipe
 ----------------------------
 

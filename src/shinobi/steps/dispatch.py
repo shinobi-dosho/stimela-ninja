@@ -39,6 +39,7 @@ from shinobi.sandbox import (
     prune_unused_parents,
     relativize_path_outputs,
 )
+from shinobi.steps.loops import passthrough_result, should_skip
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope, StepRef
 from shinobi.wranglers import apply_wranglers
 
@@ -818,6 +819,16 @@ def _run_recipe(
             ref = recipe.steps[i]
             sub_kwargs = _resolve_wiring(ref, prepared, results)
             sub_input_keys = _resolve_input_keys(ref, input_keys or {}, results)
+            # An unrolled loop iteration whose predecessor already converged
+            # does no work: it hands the same body step's previous outputs
+            # on, completing immediately without occupying a worker. The
+            # sentinel producer is guaranteed complete -- add_loop gives
+            # every iteration a dependency edge to it.
+            if should_skip(ref, results):
+                prev = results[ref.loop.prev_step]
+                logger.info("step %s%s: skipped (loop '%s' converged)", f"{cache_path}." if cache_path else "", ref.name, ref.loop.loop)
+                _step_completed(i, passthrough_result(ref, prev, ref.step.inputs_model(**_prepare_inputs(ref.step, sub_kwargs))))
+                return
             if ref.scatter is not None:
                 slices = _build_scatter_slices(ref, sub_kwargs)
                 if not slices:

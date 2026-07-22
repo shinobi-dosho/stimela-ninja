@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from shinobi.exceptions import BackendError
 from shinobi.graph import RecipeNotOffloadableError
 from shinobi.offload import OffloadCompileError, compile_slurm, status_slurm, submit_slurm
-from shinobi.steps.schema import Cab, InputRef, OutputRef, Recipe, StepRef
+from shinobi.steps.schema import Cab, InputRef, OutputRef, ParamMeta, Recipe, StepRef
 
 
 class RecipeIn(BaseModel):
@@ -199,3 +199,183 @@ def test_submit_slurm_removes_script_dir_on_failure(tmp_path, monkeypatch):
     with pytest.raises(BackendError):
         submit_slurm(wf, workdir=str(tmp_path))
     assert _find_script_dir(tmp_path) is None
+
+
+# --- unrolled loops (Recipe.add_loop) ------------------------------------
+
+
+class CycleIn(BaseModel):
+    ms: Path
+    flag: Path
+
+
+class CycleOut(BaseModel):
+    ms: Path | None = None
+    converged: Path | None = None
+
+
+class AssessIn(BaseModel):
+    ms: Path
+    flag: Path
+
+
+class FlagOut(BaseModel):
+    flag: Path | None = None
+
+
+def _loop_recipe(max_iter: int = 3) -> Recipe:
+    work = Cab(name="work", command="wk", inputs_model=MakeIn, outputs_model=MSOut)
+    assess = Cab(name="assess", command="as", inputs_model=AssessIn, outputs_model=FlagOut)
+    body = Recipe(name="cycle", inputs_model=CycleIn, outputs_model=CycleOut)
+    body.add_step("work", work, ms=InputRef(field="ms"))
+    body.add_step("assess", assess, ms=OutputRef(step="work", field="ms"), flag=InputRef(field="flag"))
+    body.set_output("ms", OutputRef(step="work", field="ms"))
+    body.set_output("converged", OutputRef(step="assess", field="flag"))
+
+    recipe = Recipe(name="loop", inputs_model=RecipeIn, outputs_model=OkOut)
+    recipe.add_loop(
+        "sc",
+        body,
+        max_iter=max_iter,
+        until="converged",
+        carry={"ms": "ms"},
+        ms=InputRef(field="ms"),
+        flag=Path("/scratch/converged.flag"),
+    )
+    return recipe
+
+
+def test_loop_compiles_to_a_dependency_chain():
+    wf = compile_slurm(_loop_recipe(), {"ms": "/scratch/x.ms"}, workdir="/work", container_runtime=None)
+    assert [j.name for j in wf.jobs] == [
+        "sc.1.work",
+        "sc.1.assess",
+        "sc.2.work",
+        "sc.2.assess",
+        "sc.3.work",
+        "sc.3.assess",
+    ]
+    # The ordering edge onto the previous iteration's sentinel producer must
+    # survive into afterok, or a later iteration could start before the
+    # convergence it depends on had been decided.
+    assert wf.jobs[2].depends_on == ["sc.1.work", "sc.1.assess"]
+
+
+def test_loop_iterations_after_the_first_carry_a_sentinel_guard():
+    wf = compile_slurm(_loop_recipe(), {"ms": "/scratch/x.ms"}, workdir="/work", container_runtime=None)
+    assert "if [ -e /scratch/converged.flag ]; then" not in wf.jobs[0].script  # iteration 1 never skips
+    for job in wf.jobs[2:]:
+        assert "if [ -e /scratch/converged.flag ]; then" in job.script
+        assert "  exit 0" in job.script
+
+
+def test_loop_jobs_are_named_per_step_not_per_cab():
+    """One cab backs six steps here; per-cab naming would point every
+    iteration's --output at the same file.
+    """
+    wf = compile_slurm(_loop_recipe(), {"ms": "/scratch/x.ms"}, workdir="/work", container_runtime=None)
+    names = [j.name for j in wf.jobs]
+    assert len(set(names)) == len(names)
+    assert "#SBATCH --job-name=sc.2.work" in wf.jobs[2].script
+    assert "#SBATCH --output=/work/.shinobi/loop/sc.2.work.out" in wf.jobs[2].script
+
+
+def test_identity_carried_paths_need_no_link_on_skip():
+    """A path carried unchanged resolves to the same string every iteration,
+    so a skipped job has nothing to materialise -- the guard is a bare exit.
+    """
+    wf = compile_slurm(_loop_recipe(), {"ms": "/scratch/x.ms"}, workdir="/work", container_runtime=None)
+    assert "ln -sfn" not in wf.jobs[2].script
+
+
+class ImageIn(BaseModel):
+    ms: Path
+    cycle: int = 1
+
+
+class ImageOut(BaseModel):
+    image: Path | None = None
+
+
+def test_per_cycle_output_naming_is_rejected_not_silently_wrong():
+    """A body naming outputs per cycle (`index_input` feeding an `implicit`
+    template) cannot be resolved statically, so it is rejected with the
+    existing clear error rather than compiled into a path that no job writes.
+    This is why a skipped job never has to materialise anything.
+    """
+    work = Cab(name="work", command="wk", inputs_model=MakeIn, outputs_model=MSOut)
+    image = Cab(
+        name="image",
+        command="im",
+        inputs_model=ImageIn,
+        outputs_model=ImageOut,
+        field_meta={"image": ParamMeta(implicit="/scratch/img-cycle{cycle}.fits")},
+    )
+    assess = Cab(name="assess", command="as", inputs_model=AssessIn, outputs_model=FlagOut)
+
+    class CycleImgIn(BaseModel):
+        ms: Path
+        flag: Path
+        cycle: int = 1
+
+    class CycleImgOut(BaseModel):
+        ms: Path | None = None
+        image: Path | None = None
+        converged: Path | None = None
+
+    body = Recipe(name="cycle", inputs_model=CycleImgIn, outputs_model=CycleImgOut)
+    body.add_step("work", work, ms=InputRef(field="ms"))
+    body.add_step("image", image, ms=OutputRef(step="work", field="ms"), cycle=InputRef(field="cycle"))
+    body.add_step("assess", assess, ms=OutputRef(step="work", field="ms"), flag=InputRef(field="flag"))
+    body.set_output("ms", OutputRef(step="work", field="ms"))
+    body.set_output("image", OutputRef(step="image", field="image"))
+    body.set_output("converged", OutputRef(step="assess", field="flag"))
+
+    recipe = Recipe(name="loop", inputs_model=RecipeIn, outputs_model=OkOut)
+    recipe.add_loop(
+        "sc",
+        body,
+        max_iter=3,
+        until="converged",
+        carry={"ms": "ms"},
+        index_input="cycle",
+        ms=InputRef(field="ms"),
+        flag=Path("/scratch/f"),
+    )
+    recipe.add_step("pub", Cab(name="pub", command="pb", inputs_model=ImageOut, outputs_model=OkOut), image=OutputRef(step="sc.3.image", field="image"))
+
+    with pytest.raises(OffloadCompileError, match="isn't statically known"):
+        compile_slurm(recipe, {"ms": "/scratch/x.ms"}, workdir="/work", container_runtime=None)
+
+
+def test_index_input_varies_per_iteration_locally():
+    """`index_input` binds the 1-based cycle number, so a body can name its
+    outputs per cycle when running locally (where `_fill_outputs` resolves
+    implicit templates against real inputs).
+    """
+    work = Cab(name="work", command="wk", inputs_model=MakeIn, outputs_model=MSOut)
+    image = Cab(name="image", command="im", inputs_model=ImageIn, outputs_model=ImageOut)
+    assess = Cab(name="assess", command="as", inputs_model=AssessIn, outputs_model=FlagOut)
+
+    class CycleImgIn(BaseModel):
+        ms: Path
+        flag: Path
+        cycle: int = 1
+
+    class CycleImgOut(BaseModel):
+        ms: Path | None = None
+        converged: Path | None = None
+
+    body = Recipe(name="cycle", inputs_model=CycleImgIn, outputs_model=CycleImgOut)
+    body.add_step("work", work, ms=InputRef(field="ms"))
+    body.add_step("image", image, ms=OutputRef(step="work", field="ms"), cycle=InputRef(field="cycle"))
+    body.add_step("assess", assess, ms=OutputRef(step="work", field="ms"), flag=InputRef(field="flag"))
+    body.set_output("ms", OutputRef(step="work", field="ms"))
+    body.set_output("converged", OutputRef(step="assess", field="flag"))
+
+    recipe = Recipe(name="loop", inputs_model=RecipeIn, outputs_model=OkOut)
+    recipe.add_loop("sc", body, max_iter=3, until="converged", carry={"ms": "ms"}, index_input="cycle", ms=InputRef(field="ms"), flag=Path("/scratch/f"))
+
+    by_name = {ref.name: ref for ref in recipe.steps}
+    assert by_name["sc.1.image"].params["cycle"] == 1
+    assert by_name["sc.3.image"].params["cycle"] == 3

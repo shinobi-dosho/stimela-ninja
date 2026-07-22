@@ -47,6 +47,9 @@ Execution
 
 .. autofunction:: shinobi.steps.dispatch.get_step_backend
 
+.. automodule:: shinobi.steps.loops
+   :members:
+
 Backends
 --------
 

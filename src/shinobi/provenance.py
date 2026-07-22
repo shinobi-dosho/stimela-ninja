@@ -49,6 +49,11 @@ class StepRecord(BaseModel):
     kind: str
     returncode: int
     cached: bool
+    # True for an unrolled loop iteration that ran after the loop had
+    # converged. Defaulted so manifests written before loops existed still
+    # load. This is what makes the manifest an exact record of how many
+    # cycles a run actually performed, as opposed to how many it declared.
+    skipped: bool = False
     backend: str | None = None
     image: str | None = None
     image_digest: str | None = None
@@ -113,6 +118,7 @@ def _record(result: StepResult, name: str | None = None) -> StepRecord:
         kind=result.kind,
         returncode=result.returncode,
         cached=result.cached,
+        skipped=result.skipped,
         backend=result.backend,
         image=result.image,
         image_digest=result.image_digest,
