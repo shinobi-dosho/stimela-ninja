@@ -58,6 +58,12 @@ class StepRecord(BaseModel):
     image: str | None = None
     image_digest: str | None = None
     containerized: bool = False
+    # The venv this step ran in and its version-parity digest. A step with
+    # `venv` set is always reported unpinned (`RunManifest.pinned`) -- the
+    # digest is informational, not an OS-level pin. Defaulted so manifests
+    # written before the venv backend existed still load.
+    venv: str | None = None
+    venv_digest: str | None = None
     sandboxed: bool = False
     inputs: dict[str, Any]
     outputs: dict[str, Any]
@@ -87,13 +93,16 @@ class RunManifest(BaseModel):
     @property
     def pinned(self) -> bool:
         """False if any step that ran *inside a container* lacks a resolved
-        image digest. Keyed on `containerized` (not the backend name) so
-        Slurm-under-apptainer counts, and a native cab whose image is mere
-        metadata does not.
+        image digest, or ran in a *venv* at all. Keyed on `containerized`
+        (not the backend name) so Slurm-under-apptainer counts, and a native
+        cab whose image is mere metadata does not. A venv step is always
+        unpinned: its `venv_digest` is version-parity, not an OS-level image
+        pin, so it never earns the reproducibility claim a pinned container
+        does (see `backends.venv`).
         """
 
         def ok(record: StepRecord) -> bool:
-            self_ok = (not record.containerized) or record.image_digest is not None
+            self_ok = ((not record.containerized) or record.image_digest is not None) and record.venv is None
             return self_ok and all(ok(child) for child in record.steps)
 
         return ok(self.root)
@@ -123,6 +132,8 @@ def _record(result: StepResult, name: str | None = None) -> StepRecord:
         image=result.image,
         image_digest=result.image_digest,
         containerized=result.containerized,
+        venv=result.venv,
+        venv_digest=result.venv_digest,
         sandboxed=result.sandboxed,
         inputs=_jsonable(result.inputs),
         outputs=_jsonable(result.outputs),
@@ -148,12 +159,12 @@ def load_manifest(path: Path) -> RunManifest:
 
 
 def unpinned_steps(record: StepRecord) -> list[str]:
-    """Names of every step in `record`'s tree that ran containerized but has
-    no resolved image digest -- the steps that make `RunManifest.pinned`
-    false, named so a refusal to replay can say which ones.
+    """Names of every step in `record`'s tree that makes `RunManifest.pinned`
+    false -- ran containerized but has no resolved image digest, or ran in a
+    venv (always unpinned) -- named so a refusal to replay can say which ones.
     """
     names: list[str] = []
-    if record.containerized and record.image_digest is None:
+    if (record.containerized and record.image_digest is None) or record.venv is not None:
         names.append(record.name)
     for child in record.steps:
         names.extend(unpinned_steps(child))

@@ -207,6 +207,13 @@ def compute_cache_key(scope: Scope, func: Callable | None, prepared: dict[str, A
     wired = set(input_keys or ())
 
     parts: list[Any] = [scope.image, _identity(scope, func)]
+    # Appended conditionally rather than seeded into `parts`: a venv-less
+    # scope keys byte-identically to before this field existed, so its cache
+    # entries survive the upgrade (same reasoning as `__upstream__` below).
+    # The *declared* venv string keys the step, not its resolved freeze hash
+    # -- mirroring the image-tag stance in this module's docstring.
+    if scope.venv:
+        parts.append(["__venv__", scope.venv])
     for name in sorted(prepared):
         value = prepared[name]
         if name in input_paths and name not in mutated_paths and name not in wired and value is not None:
@@ -295,6 +302,11 @@ class CacheManifest:
             image=entry.get("image"),
             image_digest=entry.get("image_digest"),
             containerized=entry.get("containerized", False),
+            # Restore venv provenance too -- else a cache hit on a venv step
+            # comes back with venv=None and the manifest would read it as a
+            # plain native step (pinned), laundering an unverified environment.
+            venv=entry.get("venv"),
+            venv_digest=entry.get("venv_digest"),
             sandboxed=entry.get("sandboxed", False),
         )
 
@@ -315,6 +327,8 @@ class CacheManifest:
                 "image": result.image,
                 "image_digest": result.image_digest,
                 "containerized": result.containerized,
+                "venv": result.venv,
+                "venv_digest": result.venv_digest,
                 "sandboxed": result.sandboxed,
             }
             self._write_atomic(data)

@@ -17,7 +17,7 @@ class _M(BaseModel):
 _CONTAINERISH = {"docker", "podman", "apptainer", "slurm"}
 
 
-def _cab_result(name, *, backend=None, image=None, digest=None, cached=False, containerized=None):
+def _cab_result(name, *, backend=None, image=None, digest=None, cached=False, containerized=None, venv=None, venv_digest=None):
     if containerized is None:
         containerized = backend in _CONTAINERISH
     return StepResult(
@@ -30,6 +30,8 @@ def _cab_result(name, *, backend=None, image=None, digest=None, cached=False, co
         image=image,
         image_digest=digest,
         containerized=containerized,
+        venv=venv,
+        venv_digest=venv_digest,
         cached=cached,
     )
 
@@ -274,6 +276,21 @@ def test_manifest_pinned_keys_on_containerized_not_backend_name():
     assert build_manifest(slurm_pinned, backend="slurm").pinned is True
 
 
+def test_manifest_unpinned_for_venv_step_regardless_of_digest():
+    # A venv step is always unpinned: its freeze hash is version-parity, not
+    # an OS-level image pin. True whether or not a digest was recorded.
+    from shinobi.provenance import unpinned_steps
+
+    no_digest = _cab_result("v", backend="venv", venv="/opt/env")
+    assert no_digest.containerized is False
+    assert build_manifest(no_digest, backend="venv").pinned is False
+
+    with_digest = _cab_result("v", backend="venv", venv="/opt/env", venv_digest="a" * 64)
+    m = build_manifest(with_digest, backend="venv")
+    assert m.pinned is False
+    assert unpinned_steps(m.root) == ["v"]
+
+
 def test_cache_roundtrip_preserves_provenance(tmp_path):
     from shinobi.cache import CacheManifest
     from shinobi.steps import Cab
@@ -291,6 +308,27 @@ def test_cache_roundtrip_preserves_provenance(tmp_path):
     # a re-run unpinned (caveat 1).
     assert hit.kind == "cab" and hit.backend == "docker"
     assert hit.image == "a:1" and hit.image_digest == d and hit.cached is True
+
+
+def test_cache_roundtrip_preserves_venv_provenance(tmp_path):
+    # Regression: a cache hit on a venv step must NOT come back venv=None, or
+    # the manifest would read it as a plain native step and report pinned.
+    from shinobi.cache import CacheManifest
+    from shinobi.steps import Cab
+
+    class NoIn(BaseModel):
+        pass
+
+    scope = Cab(name="v", command="v", venv="/opt/env", inputs_model=NoIn, outputs_model=_M)
+    manifest = CacheManifest(tmp_path / "manifest.json")
+    manifest.record("v", "k", _cab_result("v", backend="venv", venv="/opt/env", venv_digest="b" * 64))
+
+    hit = manifest.check("v", "k", scope, {})
+    assert hit.backend == "venv"
+    assert hit.venv == "/opt/env"
+    assert hit.venv_digest == "b" * 64
+    # ...and the reconstructed result is still reported unpinned.
+    assert build_manifest(hit, backend="venv").pinned is False
 
 
 def test_manifest_serializes_non_jsonable_inputs_lossily():

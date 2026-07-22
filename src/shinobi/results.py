@@ -38,6 +38,13 @@ class BackendRun:
     # that wraps in a container runtime (incl. Slurm-under-apptainer, whose
     # backend *name* isn't a container-runtime name).
     containerized: bool = False
+    # The virtualenv this ran in (its path), and a ``sha256`` of its sorted
+    # ``name==version`` list -- set only by the ``venv`` backend, and the
+    # digest only under ``pin=True``. The digest is a version-parity record,
+    # not an OS-level pin, so a venv run is always reported unpinned; these
+    # are informational provenance (see ``backends.venv``).
+    venv: str | None = None
+    venv_digest: str | None = None
 
     @property
     def success(self) -> bool:
@@ -84,6 +91,11 @@ class StepResult:
     # the backend name -- is what distinguishes a native cab (image is just
     # metadata) from a Slurm-under-apptainer run that must be pinned.
     containerized: bool = False
+    # The venv this step ran in and its version-parity digest (see
+    # BackendRun.venv/venv_digest). A step with `venv` set is always reported
+    # unpinned in the manifest regardless of `venv_digest`.
+    venv: str | None = None
+    venv_digest: str | None = None
     # Whether the step ran with sandboxing enabled (see `shinobi.sandbox`).
     # Recorded for diagnostics -- sandbox state affects path anchoring but
     # not the cache key, so output paths are normalized before recording

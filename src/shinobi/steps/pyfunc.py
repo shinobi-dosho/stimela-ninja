@@ -22,17 +22,17 @@ decorated function's signature at all -- `scope.inputs_model` is the schema
 authority there. Use `@shinobi.pystep` when you have a plain function and no
 external tool; use `@shinobi.step` when you have an existing `Cab`/`Recipe`.
 
-**Container execution**: when `image=` is set and a container backend is
-resolved, the function runs inside the container instead of in-process.
-The function's source *file* is mounted into the container via
-`inspect.getfile()`, and a generated runner script loads it as an isolated
-module and invokes it. The runner never imports the framework stack
-(shinobi/pydantic) or the target's own package inside the container -- it
-stubs them (so the container's Python need not be ABI-compatible with the
-host venv's compiled wheels) and lets the host rebuild the typed outputs.
-The runner is invoked as ``python3`` -- container images must provide it
-(every official Python image does; a bare ``python`` would fail). Native
-runs call the function in-process (the original behaviour).
+**Out-of-process execution**: when `image=` is set and a container backend is
+resolved, the function runs inside the container instead of in-process; when
+`venv=` is set and the `venv` backend is resolved, it runs under that venv's
+interpreter (see `shinobi.backends.venv`). Either way the function's source
+*file* is mounted/read via `inspect.getfile()`, and a generated runner script
+loads it as an isolated module and invokes it. The runner never imports the
+framework stack (shinobi/pydantic). For a container it also stubs the target's
+*own* package (so the container's Python need not be ABI-compatible with the
+host's compiled wheels); for a venv it does *not* -- importing the venv's real
+packages is the point. The host rebuilds the typed outputs from the child's
+JSON. Native runs call the function in-process (the original behaviour).
 
 For container-only imports (e.g. CASA tasks that don't exist on the host),
 use `ctx.import_func()` to avoid linter warnings:
@@ -62,6 +62,7 @@ import json
 import os
 import pickle
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, get_type_hints
 
@@ -168,10 +169,11 @@ def _ctx_shim() -> str:
 # site-packages is never placed on the container's `sys.path` -- the host's
 # compiled wheels (e.g. `pydantic_core`, built for the host's cpXY) cannot be
 # loaded by the container's own (possibly different) Python otherwise. Imports
-# of the framework packages (`shinobi`, `pydantic`) and the target's own
-# top-level package are intercepted by a stub finder installed at the front of
+# of whatever prefixes are in `_STUB_PREFIXES` (always the framework packages
+# `shinobi`/`pydantic`; for a container run, the target's own top-level package
+# too) are intercepted by a stub finder installed at the front of
 # `sys.meta_path`, so none of them -- nor their compiled deps -- ever load
-# in-container. This honours the ctx-shim's "shinobi is not assumed installed
+# in-child. This honours the ctx-shim's "shinobi is not assumed installed
 # in the container" design: the function is *defined* against dependency-free
 # stubs and *runs* using only stdlib plus whatever it pulls in via
 # `ctx.import_func` (real, container-provided packages like `casatasks`). The
@@ -284,52 +286,124 @@ with open({outputs_path!r}, "w") as f:
 '''
 
 
-def _run_pystep_container(
+@dataclass
+class _Launch:
+    """How to launch a pystep runner out-of-process, plus the provenance the
+    resulting `StepResult` should carry. `argv` is the full command; `env` is
+    the process environment (`None` inherits, e.g. for a container runtime
+    whose isolation comes from the runtime, not the env); `cwd` is the working
+    directory to run in (`None` = process cwd -- containers set their workdir
+    via a runtime flag instead, venvs need the sandbox dir here); `provenance`
+    is splatted into `StepResult` (the container path fills image fields, the
+    venv path fills venv fields).
+    """
+
+    argv: list[str]
+    env: dict[str, str] | None
+    cwd: str | None
+    provenance: dict[str, Any] = field(default_factory=dict)
+
+
+class _ContainerLauncher:
+    """Runs the pystep runner inside a container runtime. Stubs the target's
+    own package (its ABI-locked wheels can't load against a possibly-mismatched
+    in-container interpreter)."""
+
+    stub_target_package = True
+
+    def __init__(self, backend_name: str, ctx: ExecContext):
+        self.backend_name = backend_name
+        self.ctx = ctx
+
+    def build(self, runner_path: Path, workdir: str, extra_dirs: list[str], run_prepared: dict[str, Any]) -> _Launch:
+        from shinobi.backends.container import build_container_argv
+
+        full_argv, image_digest = build_container_argv(
+            self.backend_name,
+            self.ctx.scope,
+            ["python3", str(runner_path)],
+            run_prepared,
+            workdir,
+            extra_dirs=extra_dirs,
+            run_as_host_user=AppConfig.load().backend.run_as_host_user,
+            pin=self.ctx._pin,
+        )
+        return _Launch(
+            argv=full_argv,
+            env=None,
+            cwd=None,  # docker gets its workdir via --workdir, runs in host cwd
+            provenance={"image": self.ctx.scope.image, "image_digest": image_digest, "containerized": True},
+        )
+
+
+class _VenvLauncher:
+    """Runs the pystep runner with a virtualenv's own interpreter. Does *not*
+    stub the target's own package -- importing the venv's real packages is the
+    whole point (see `backends.venv`)."""
+
+    stub_target_package = False
+
+    def __init__(self, venv: Path, backend_name: str, ctx: ExecContext):
+        self.venv = venv
+        self.backend_name = backend_name
+        self.ctx = ctx
+
+    def build(self, runner_path: Path, workdir: str, extra_dirs: list[str], run_prepared: dict[str, Any]) -> _Launch:
+        from shinobi.backends.venv import venv_digest, venv_env
+
+        return _Launch(
+            argv=[str(self.venv / "bin" / "python"), str(runner_path)],
+            env=venv_env(self.venv),
+            cwd=workdir,  # subprocess has no --workdir; sandboxing depends on this
+            provenance={"venv": str(self.venv), "venv_digest": venv_digest(self.venv) if self.ctx._pin else None},
+        )
+
+
+def _run_pystep_subprocess(
     scope: Scope,
     func: Callable,
     outputs_model: type[BaseModel],
     is_empty: bool,
     wants_ctx: bool,
     ctx: ExecContext,
-    backend_name: str,
+    launcher: "_ContainerLauncher | _VenvLauncher",
 ) -> StepResult:
-    """Execute a pystep's function inside a container.
+    """Execute a pystep's function out-of-process, in a container or a venv.
 
-    Mounts the function's source-file directory and a temp directory
-    containing a runner script, pickled inputs, and the outputs file. The
-    runner loads the source file as an isolated module (stubbing the
-    framework and the target's own package so neither -- nor their compiled
-    deps -- load in-container), calls the function with the same objects the
-    in-process path would pass, and writes the JSON result to the outputs
-    file. The host then rebuilds the typed outputs model from that JSON.
-    When the function takes a leading `ctx`, a context shim is injected.
+    Writes a temp directory with a runner script, pickled inputs, and the
+    outputs file. The runner loads the function's source file as an isolated
+    module (always stubbing the framework packages; the target's own package
+    too for containers, but not for venvs -- see `launcher.stub_target_package`),
+    calls the function with the same objects the in-process path would pass,
+    and writes the JSON result to the outputs file. The host rebuilds the typed
+    outputs model from that JSON. When the function takes a leading `ctx`, a
+    context shim is injected. Only the launch (interpreter, env, cwd, mounts)
+    and the recorded provenance differ between the two backends.
     """
-    from shinobi.backends.container import build_container_argv
-
     if "<locals>" in func.__qualname__:
-        raise TypeError(f"pystep {func.__name__!r}: a function defined inside another function has no importable module path, so it cannot run in a container")
+        raise TypeError(f"pystep {func.__name__!r}: a function defined inside another function has no importable module path, so it cannot run out-of-process")
 
     source_file = Path(inspect.getfile(func)).resolve()
 
     # The runner loads this file as an isolated module, stubbing the framework
-    # packages (shinobi, pydantic) and the target's own top-level package so
-    # none of them execute in-container (see _RUNNER_TEMPLATE). A function
-    # defined in a directly-run script has __module__ == '__main__' and no
-    # importable package; only the two framework prefixes are stubbed for it.
+    # packages (shinobi, pydantic) always, and the target's own top-level
+    # package only for containers (see _RUNNER_TEMPLATE and the launcher). A
+    # function defined in a directly-run script has __module__ == '__main__'
+    # and no importable package.
     stub_prefixes = {"shinobi", "pydantic"}
-    if func.__module__ != "__main__":
+    if launcher.stub_target_package and func.__module__ != "__main__":
         stub_prefixes.add(func.__module__.split(".")[0])
 
     # Same objects the in-process path passes: prepare_inputs() applies
     # mutability handling on top of pydantic-coerced values. They travel by
     # pickle (protocol 4, not 5, so containers on Python 3.4-3.7 can
     # unpickle them -- protocol 5 requires 3.8+) so e.g. Path-typed inputs
-    # stay Paths inside the container.
+    # stay Paths in the child interpreter.
     prepared = ctx.prepare_inputs()
 
-    # Sandboxed run (shinobi.sandbox): the container's workdir is a private
-    # scratch dir, with path-typed inputs anchored back at the workspace --
-    # the containerized-cab counterpart in `dispatch._run_cab` documents the
+    # Sandboxed run (shinobi.sandbox): the child's workdir is a private scratch
+    # dir, with path-typed inputs anchored back at the workspace -- the
+    # containerized-cab counterpart in `dispatch._run_cab` documents the
     # scheme. `prepared` (the caller's original values) is kept for harvest.
     workspace = os.getcwd()
     sandbox_dir: Path | None = None
@@ -366,24 +440,13 @@ def _run_pystep_container(
         workdir = str(sandbox_dir) if sandbox_dir is not None else workspace
         # Mount only the target file's own directory (identity bind), not the
         # whole package root -- the runner loads the file by path and never
-        # puts it on sys.path, so nothing else in the tree is read.
+        # puts it on sys.path, so nothing else in the tree is read. (The venv
+        # launcher ignores extra_dirs: same filesystem, no mounts needed.)
         extra_dirs = [str(io_dir), str(source_file.parent)]
 
-        inner_argv = ["python3", str(runner_path)]
+        launch = launcher.build(runner_path, workdir, extra_dirs, run_prepared)
 
-        full_argv, image_digest = build_container_argv(
-            backend_name,
-            ctx.scope,
-            inner_argv,
-            run_prepared,
-            workdir,
-            extra_dirs=extra_dirs,
-            run_as_host_user=AppConfig.load().backend.run_as_host_user,
-            pin=ctx._pin,
-        )
-
-        run = run_streaming(full_argv, label=ctx._cache_path or scope.name, stream=ctx._stream)
-        run.image_digest = image_digest
+        run = run_streaming(launch.argv, label=ctx._cache_path or scope.name, stream=ctx._stream, cwd=launch.cwd, env=launch.env)
 
         if run.returncode != 0:
             stderr_tail = (run.stderr or "").strip()
@@ -399,7 +462,7 @@ def _run_pystep_container(
         try:
             output_data = json.loads(outputs_path.read_text())
         except (OSError, json.JSONDecodeError) as exc:
-            raise TypeError(f"pystep {func.__name__!r}: container run exited 0 but left no readable outputs file ({exc})") from exc
+            raise TypeError(f"pystep {func.__name__!r}: subprocess run exited 0 but left no readable outputs file ({exc})") from exc
 
         if is_empty:
             if output_data is not None:
@@ -407,7 +470,7 @@ def _run_pystep_container(
             outputs = outputs_model()
         else:
             if not isinstance(output_data, dict):
-                raise TypeError(f"pystep {func.__name__!r} must return {outputs_model.__name__!r}, got {type(output_data).__name__!r} from the container")
+                raise TypeError(f"pystep {func.__name__!r} must return {outputs_model.__name__!r}, got {type(output_data).__name__!r} from the subprocess")
             outputs = outputs_model(**output_data)
 
         if sandbox_dir is not None:
@@ -424,32 +487,42 @@ def _run_pystep_container(
             stdout=run.stdout,
             stderr=run.stderr,
             kind="pyfunc",
-            backend=backend_name,
-            image=scope.image,
-            image_digest=image_digest,
-            containerized=True,
+            backend=launcher.backend_name,
             sandboxed=sandbox_dir is not None,
+            **launch.provenance,
         )
 
 
 def _make_adapter(func: Callable, outputs_model: type[BaseModel], is_empty: bool, wants_ctx: bool) -> Callable[[ExecContext], StepResult]:
     def _adapter(ctx: ExecContext) -> StepResult:
-        # Check the cheap field first: resolving the backend name can fall
-        # through to a config-file read, which image-less pysteps (the
-        # common case) should never pay on every call.
-        if ctx.scope.image:
+        # Check the cheap local fields first: resolving the backend name can
+        # fall through to a config-file read, which plain pysteps (no image,
+        # no venv, no venv override -- the common case) should never pay on
+        # every call. `backend == "venv"` is included so an explicit per-step
+        # venv backend still honours `backend.venv.default` even when the
+        # scope names no venv of its own.
+        if ctx.scope.image or ctx.scope.venv or ctx.scope.backend == "venv":
             from shinobi.backends.container import CONTAINER_RUNTIMES
 
             backend_name = ctx.resolve_backend_name()
-            if backend_name in CONTAINER_RUNTIMES:
-                return _run_pystep_container(
-                    ctx.scope,
-                    func,
-                    outputs_model,
-                    is_empty,
-                    wants_ctx,
-                    ctx,
-                    backend_name,
+            # The resolved backend name decides, so a scope carrying both
+            # `image` and `venv` is well-defined.
+            if backend_name in CONTAINER_RUNTIMES and ctx.scope.image:
+                return _run_pystep_subprocess(ctx.scope, func, outputs_model, is_empty, wants_ctx, ctx, _ContainerLauncher(backend_name, ctx))
+            if backend_name == "venv":
+                from shinobi.backends.venv import resolve_venv
+
+                venv = resolve_venv(ctx.scope.venv)  # raises if declared-but-missing
+                if venv is not None:
+                    return _run_pystep_subprocess(ctx.scope, func, outputs_model, is_empty, wants_ctx, ctx, _VenvLauncher(venv, backend_name, ctx))
+                # No venv declared anywhere: fall through to in-process, warning
+                # (selecting `venv` is an opt-in to isolation, so a silent no-op
+                # would surprise -- matches the cab backend's native fallback).
+                import warnings
+
+                warnings.warn(
+                    f"pystep '{ctx.scope.name}' selected the venv backend but no venv is declared (on the step or via backend.venv.default) -- running in-process",
+                    stacklevel=2,
                 )
 
         prepared = ctx.prepare_inputs()
@@ -480,6 +553,7 @@ def pystep(
     name: str | None = None,
     info: str | None = None,
     image: str | None = None,
+    venv: str | None = None,
     backend: str | None = None,
     sandbox: bool | None = None,
     harvest: list[str] | None = None,
@@ -495,15 +569,22 @@ def pystep(
     instead of in-process. The function's source module is mounted into
     the container so it can be imported by the runner script.
 
+    `venv` enables virtualenv execution: when set (a path or a key into
+    `backend.venv.envs`) and the `venv` backend is resolved, the function
+    runs under that venv's own interpreter, importing the venv's real
+    packages (unlike the container path, the target's own package is *not*
+    stubbed). A scope may carry both `image` and `venv`; the resolved
+    backend name decides which is used.
+
     `backend` sets the default backend for this step (same as on any
     `Scope`). With `image`, this is typically a container backend name
-    like ``"docker"`` or ``"apptainer"``.
+    like ``"docker"`` or ``"apptainer"``; with `venv`, ``"venv"``.
 
     `sandbox`/`harvest` opt this step into sandboxed execution and declare
     extra keep-globs (see `shinobi.sandbox` and the fields on `Scope`).
-    Sandboxing only applies to the container path -- an in-process run
-    ignores it (`os.chdir` is process-global, and recipes run steps on a
-    thread pool), executing in the caller's cwd as always.
+    Sandboxing applies to the out-of-process paths (container and venv) --
+    an in-process run ignores it (`os.chdir` is process-global, and recipes
+    run steps on a thread pool), executing in the caller's cwd as always.
 
     `**params` are per-call constants, same as `@shinobi.step`.
     """
@@ -535,6 +616,7 @@ def pystep(
             inputs_model=inputs_model,
             outputs_model=outputs_model,
             image=image,
+            venv=venv,
             backend=backend,
             sandbox=sandbox,
             harvest=harvest or [],

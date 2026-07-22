@@ -529,6 +529,8 @@ def _run_cab(
         image=cab.image,
         image_digest=run.image_digest,
         containerized=run.containerized,
+        venv=run.venv,
+        venv_digest=run.venv_digest,
         sandboxed=sandbox_dir is not None,
     )
 
@@ -735,6 +737,8 @@ def _aggregate_scatter_results(
         image=scope.image,
         image_digest=slices[0].image_digest if slices else None,
         containerized=any(s.containerized for s in slices),
+        venv=slices[0].venv if slices else None,
+        venv_digest=slices[0].venv_digest if slices else None,
         sandboxed=any(s.sandboxed for s in slices),
         # Every slice is keyed independently, but downstream wires the
         # *gathered* result -- so its provenance is all the slices' keys

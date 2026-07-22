@@ -21,6 +21,9 @@ Settings
     backend:
       default: native            # default backend when none is specified
       run_as_host_user: true     # docker/podman: run as host uid:gid, not root
+      venv:                      # settings for the `venv` backend
+        default: null            #   venv used when a step declares none (path or a name below)
+        envs: {}                 #   name -> venv path, so recipes/config refer to a venv by name
     execution:
       max_workers: 1             # concurrent recipe steps (1 = sequential)
     log:
@@ -50,6 +53,16 @@ default.
 owned by the invoking host user instead of root. It's a no-op for
 ``apptainer``, which already runs as the host user; set it to ``False`` for
 images that need to run as root. See :doc:`backends`.
+
+``backend.venv`` configures the ``venv`` backend. ``backend.venv.default`` is
+the venv a ``venv``-backend step uses when it declares none of its own (a path,
+or a key into ``envs``); ``null`` means no default, so such a step falls back
+to native. ``backend.venv.envs`` maps short names to venv paths, letting a
+recipe or config name a venv (``venv: myenv``) instead of a machine-specific
+absolute path. Both are reachable via the environment as
+``SHINOBI_BACKEND__VENV__DEFAULT`` / ``SHINOBI_BACKEND__VENV__ENVS``. A venv is
+a deployment concern, so it lives here or on a ``Scope`` in Python -- never in a
+shared cab repo. See :doc:`backends` and :doc:`provenance`.
 
 ``log.stream`` (default ``True``) live-echoes a running cab's stdout/stderr
 as it runs (native/container backends only); set to ``False`` to restore the

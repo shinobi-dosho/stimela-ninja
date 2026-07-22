@@ -130,6 +130,82 @@ def test_replay_allow_unpinned_runs_original_ref(tmp_path, recipe_file, recorder
     assert cab.image == "alpine:3.19"  # unpinned step keeps its original ref
 
 
+# -- venv steps: always unpinned, so replay refuses without --allow-unpinned --
+
+_VENV_RECIPE_SRC = """
+from pydantic import BaseModel
+
+from shinobi.steps.schema import Cab, Recipe
+
+
+class I(BaseModel):
+    x: int = 0
+
+
+class O(BaseModel):
+    pass
+
+
+step1 = Cab(name="step1", command="true", venv="/opt/env", backend="record",
+            inputs_model=I, outputs_model=O)
+rec = Recipe(name="rec", inputs_model=I, outputs_model=O)
+rec.add_step("step1", step1, x=rec.inputs.x)
+"""
+
+
+@pytest.fixture
+def venv_recipe_file(tmp_path):
+    path = tmp_path / "replay_venv_recipe.py"
+    path.write_text(_VENV_RECIPE_SRC)
+    return path
+
+
+def _venv_manifest(recipe_file):
+    return RunManifest(
+        shinobi_version="0",
+        target=f"{recipe_file}:rec",
+        generated_at=datetime.now(timezone.utc),
+        backend="record",
+        returncode=0,
+        root=StepRecord(
+            name="rec",
+            kind="recipe",
+            returncode=0,
+            cached=False,
+            inputs={"x": 3},
+            outputs={},
+            steps=[
+                StepRecord(
+                    name="step1",
+                    kind="cab",
+                    returncode=0,
+                    cached=False,
+                    venv="/opt/env",
+                    venv_digest="b" * 64,
+                    containerized=False,
+                    inputs={"x": 3},
+                    outputs={},
+                )
+            ],
+        ),
+    )
+
+
+def test_replay_refuses_venv_manifest(tmp_path, venv_recipe_file, recorder):
+    mpath = _write(_venv_manifest(venv_recipe_file), tmp_path)
+    result = CliRunner().invoke(main, ["replay", str(mpath)])
+    assert result.exit_code != 0
+    assert "step1" in result.output and "--allow-unpinned" in result.output
+    assert not recorder.calls
+
+
+def test_replay_venv_allow_unpinned_runs(tmp_path, venv_recipe_file, recorder):
+    mpath = _write(_venv_manifest(venv_recipe_file), tmp_path)
+    result = CliRunner().invoke(main, ["replay", str(mpath), "--allow-unpinned"])
+    assert result.exit_code == 0, result.output
+    assert recorder.calls
+
+
 def test_replay_recipe_shape_mismatch_errors(tmp_path, recipe_file, recorder):
     manifest = _manifest(recipe_file)
     manifest.root.steps.append(

@@ -220,6 +220,20 @@ def test_mutable_input_blocks_offload():
         check_offloadable(_path_wired_recipe(make, _use_cab()))
 
 
+def test_venv_step_blocks_offload():
+    # A venv step would compile to a bare argv the engine runs natively on the
+    # compute node, silently ignoring the venv -- refuse rather than mis-run.
+    make = _make_cab().model_copy(update={"venv": "/opt/env"})
+    with pytest.raises(RecipeNotOffloadableError, match="runs in a venv"):
+        check_offloadable(_path_wired_recipe(make, _use_cab()))
+
+
+def test_venv_backend_override_blocks_offload():
+    make = _make_cab().model_copy(update={"backend": "venv"})
+    with pytest.raises(RecipeNotOffloadableError, match="runs in a venv"):
+        check_offloadable(_path_wired_recipe(make, _use_cab()))
+
+
 def test_non_cab_step_blocks_offload():
     from shinobi.steps.schema import Scope
 

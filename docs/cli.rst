@@ -118,10 +118,14 @@ re-fed. See :doc:`concepts/provenance`.
 
     $ ninja replay .shinobi/runs/selfcal.20260713T140750Z.12345.run.json
 
-Replay is strict by default: a manifest with ``pinned: false`` (some
-containerized step never resolved a digest) is refused, because it cannot
-guarantee the same images run again. ``--allow-unpinned`` proceeds anyway,
-running unpinned steps by their original image reference.
+Replay is strict by default: a manifest with ``pinned: false`` is refused,
+because it cannot guarantee the same environment runs again. A manifest is
+``pinned: false`` when some containerized step never resolved a digest, **or**
+any step ran under the ``venv`` backend -- a venv is only a version-parity
+record, never an OS-level pin, so it never earns full reproducibility (see the
+provenance durability tiers in :doc:`concepts/provenance`). ``--allow-unpinned``
+proceeds anyway, running unpinned steps by their original image reference (and
+venv steps by their original venv).
 
 ``--target 'path/to/file.py:name'`` overrides the recorded target -- required
 for manifests that don't record one (older manifests, or runs launched

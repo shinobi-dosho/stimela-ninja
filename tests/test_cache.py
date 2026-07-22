@@ -257,6 +257,25 @@ def test_compute_cache_key_differs_for_different_params():
     assert key1 != key2
 
 
+def test_venvless_cache_key_is_unchanged_by_the_venv_field():
+    # Regression: a scope with no venv must key exactly as before the venv
+    # field existed, so existing cache entries survive the upgrade. The venv
+    # part is *conditionally appended* only when scope.venv is set, so a
+    # venv-less scope's `parts` list is byte-identical to the pre-venv code.
+    # This pins the resulting hash; if the append ever becomes unconditional,
+    # this fails.
+    key = compute_cache_key(Cab(name="c", command="c", inputs_model=Inputs, outputs_model=Outputs), None, {"x": 1})
+    assert key == "f340d7de89951576429745e8ce95234d282934e42a577a54fce71084c9a87f08"
+
+
+def test_venv_changes_cache_key():
+    plain = compute_cache_key(Cab(name="c", command="c", inputs_model=Inputs, outputs_model=Outputs), None, {"x": 1})
+    with_venv = compute_cache_key(Cab(name="c", command="c", venv="/opt/env", inputs_model=Inputs, outputs_model=Outputs), None, {"x": 1})
+    other_venv = compute_cache_key(Cab(name="c", command="c", venv="/opt/other", inputs_model=Inputs, outputs_model=Outputs), None, {"x": 1})
+    assert plain != with_venv
+    assert with_venv != other_venv
+
+
 # -- nested Recipe (the real-world shape: a Recipe-of-Recipes pipeline
 # assembling several workers, each itself a Recipe of pysteps/cabs) --
 
