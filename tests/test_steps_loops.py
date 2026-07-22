@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from shinobi.graph import RecipeGraphError, build_graph
 from shinobi.backends.recording import RecordingBackend
+from shinobi.graph import RecipeGraphError, build_graph
 from shinobi.results import BackendRun
 from shinobi.steps import Cab, InputRef, OutputRef, Recipe, register_step_backend
 from shinobi.steps.dispatch import _dispatch

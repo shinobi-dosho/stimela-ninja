@@ -494,8 +494,11 @@ class LoopIteration(BaseModel):
     `selfcal.4.image` passes through `selfcal.3.image`), and
     `sentinel_step`/`sentinel_field` name the previous iteration's output
     whose existence on disk means "the loop has already converged, do no
-    work". `sentinel_step` is None for the first iteration, which can never
-    skip; `sentinel_field` is always set.
+    work". `prev_step` and `sentinel_step` are both None for the first
+    iteration, which can never skip -- there is nothing before it to pass
+    through or to have converged. `sentinel_field` is always set: which
+    output carries the signal is a property of the loop, not of one
+    iteration.
     """
 
     loop: str
