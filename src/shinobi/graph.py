@@ -97,6 +97,17 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
 
     for i, ref in enumerate(recipe.steps):
         step_scope = ref.step
+        # Ordering-only edges (StepRef.after): no data flows, but they are
+        # real dependency edges -- folded in here so the scheduler, the cycle
+        # check and the offload compiler all see them without a second notion
+        # of "depends on". `Recipe.add_loop` is the motivating producer.
+        for after_name in ref.after:
+            if after_name not in index:
+                raise RecipeGraphError(f"step '{ref.name}' declares after='{after_name}', which does not exist in recipe '{recipe.name}'")
+            if after_name == ref.name:
+                raise RecipeGraphError(f"step '{ref.name}' declares after='{after_name}', which is itself")
+            deps[i].add(index[after_name])
+            dependents[index[after_name]].add(i)
         if ref.scatter is not None:
             for field in ref.scatter.fields:
                 if not _is_input_field(step_scope, field):

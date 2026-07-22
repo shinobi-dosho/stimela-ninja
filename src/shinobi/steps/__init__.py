@@ -15,6 +15,8 @@ from shinobi.steps.pyfunc import pystep
 from shinobi.steps.schema import (
     Cab,
     InputRef,
+    LoopIteration,
+    LoopRef,
     Mutability,
     OutputRef,
     ParamMeta,
@@ -32,6 +34,8 @@ __all__ = [
     "Cab",
     "ExecContext",
     "InputRef",
+    "LoopIteration",
+    "LoopRef",
     "Mutability",
     "OutputRef",
     "ParamMeta",

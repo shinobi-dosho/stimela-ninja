@@ -97,8 +97,28 @@ def _static_outputs(cab: Cab, resolved_inputs: dict[str, Any]) -> dict[str, Any]
     return out
 
 
-def _script(cab: Cab, argv: list[str], workdir: str, sbatch_opts: dict[str, str], log_dir: Path) -> str:
-    job_name = safe_slurm_name(cab.name, "cab name", error=OffloadCompileError)
+def _script(
+    cab: Cab,
+    step_name: str,
+    argv: list[str],
+    workdir: str,
+    sbatch_opts: dict[str, str],
+    log_dir: Path,
+    *,
+    skip_if_exists: str | None = None,
+) -> str:
+    """Compile one step to an sbatch script.
+
+    The job is named after the **step**, not its cab: a recipe may bind one
+    cab to several steps (an unrolled loop always does), and a per-cab job
+    name would point them all at the same `--output`/`--error` file to
+    overwrite. The cab name is still charset-validated even though it is no
+    longer interpolated -- it arrives from untrusted cult-cargo YAML (see
+    SECURITY.md), and that guarantee should not quietly lapse just because
+    this particular use of it moved.
+    """
+    safe_slurm_name(cab.name, "cab name", error=OffloadCompileError)
+    job_name = safe_slurm_name(step_name, "step name", error=OffloadCompileError)
     return build_sbatch_script(
         job_name=job_name,
         chdir=workdir,
@@ -107,6 +127,7 @@ def _script(cab: Cab, argv: list[str], workdir: str, sbatch_opts: dict[str, str]
         sbatch_opts=sbatch_opts,
         argv=argv,
         error=OffloadCompileError,
+        skip_if_exists=skip_if_exists,
     )
 
 
@@ -187,9 +208,36 @@ def compile_slurm(
             # Digest is discarded here -- offloaded-Slurm provenance is a follow-up.
             argv, _ = build_container_argv(container_runtime, cab, argv, resolved, workdir)
 
+        own_outputs = _static_outputs(cab, resolved)
+
+        # An unrolled loop iteration (Recipe.add_loop) short-circuits on the
+        # previous iteration's sentinel, which is statically resolved above --
+        # so the whole decision compiles into the script and shinobi is not in
+        # the loop per step. Nothing else needs materialising on the skip
+        # path: every carried path resolves identically in every iteration
+        # (a body naming outputs per cycle can't be resolved statically at
+        # all, and `resolve_one` rejects it), so a downstream job's compiled
+        # argv already names the converged iteration's files.
+        skip_if_exists: str | None = None
+        if ref.loop is not None and ref.loop.sentinel_step is not None:
+            sentinel = resolved_outputs.get(ref.loop.sentinel_step, {}).get(ref.loop.sentinel_field)
+            if sentinel is None:
+                raise OffloadCompileError(
+                    f"step '{name}' belongs to loop '{ref.loop.loop}', whose sentinel "
+                    f"'{ref.loop.sentinel_step}.{ref.loop.sentinel_field}' has no statically-known "
+                    "path -- an offloaded loop's convergence signal must be a path the compiler can resolve"
+                )
+            skip_if_exists = str(sentinel)
+
         depends_on = [graph.names[d] for d in sorted(graph.deps[i])]
-        jobs.append(SlurmJob(name=name, script=_script(cab, argv, workdir, sbatch_opts, log_dir), depends_on=depends_on))
-        resolved_outputs[name] = _static_outputs(cab, resolved)
+        jobs.append(
+            SlurmJob(
+                name=name,
+                script=_script(cab, name, argv, workdir, sbatch_opts, log_dir, skip_if_exists=skip_if_exists),
+                depends_on=depends_on,
+            )
+        )
+        resolved_outputs[name] = own_outputs
 
     return SlurmWorkflow(recipe=recipe.name, jobs=jobs, log_dir=log_dir)
 

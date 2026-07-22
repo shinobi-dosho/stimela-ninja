@@ -41,11 +41,25 @@ def build_sbatch_script(
     sbatch_opts: dict[str, str],
     argv: list[str],
     error: type[Exception] = ValueError,
+    skip_if_exists: str | None = None,
 ) -> str:
     """The one sbatch script grammar shared by the blocking backend and the
     offload compiler: a `#!/bin/bash` header, `#SBATCH` directives (job
     name/chdir/output/error, then any extra `sbatch_opts`), then the
     exec-form argv (`shlex.join`, never a shell template).
+
+    `skip_if_exists` compiles an unrolled loop's short-circuit (see
+    `Recipe.add_loop`): if that path exists, an earlier iteration already
+    converged, so this job exits 0 without running -- satisfying the
+    `afterok` dependency so the rest of the chain proceeds. It is the exact
+    same predicate `shinobi.steps.loops.should_skip` applies locally, which
+    is why the sentinel is a path rather than a bool.
+
+    A skipped job needs to materialise nothing: every path an offloaded loop
+    can carry resolves to the same string in every iteration (a body whose
+    outputs are named *per* iteration cannot be statically resolved at all,
+    and `compile_slurm` rejects it outright), so the names a downstream job
+    was compiled against already point at the converged iteration's files.
     """
     job_name = safe_slurm_name(job_name, "job name", error=error)
     lines = [
@@ -58,6 +72,11 @@ def build_sbatch_script(
     for key, value in sbatch_opts.items():
         lines.append(f"#SBATCH --{safe_slurm_name(key, 'sbatch option', error=error)}={value}")
     lines.append("")
+    if skip_if_exists:
+        lines.append(f"if [ -e {shlex.quote(skip_if_exists)} ]; then")
+        lines.append("  exit 0")
+        lines.append("fi")
+        lines.append("")
     lines.append(shlex.join(argv))  # exec-form argv; never a shell template
     return "\n".join(lines) + "\n"
 

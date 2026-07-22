@@ -64,6 +64,12 @@ class StepResult:
     # True when this result was synthesized from `shinobi.cache` (the step
     # itself never actually ran) rather than produced by a real backend run.
     cached: bool = False
+    # True when this step belongs to an unrolled loop iteration that ran
+    # after the loop had already converged (see `shinobi.steps.loops`): its
+    # `outputs` are the same body step's outputs from the last iteration
+    # that really ran. Distinct from `cached` -- nothing was looked up, and
+    # distinct from `kind`, which still reports what the step *is*.
+    skipped: bool = False
     # Provenance, for the run manifest (see `shinobi.provenance`). `kind` is
     # stamped explicitly at each construction site rather than inferred, so a
     # containerized pystep can never be mistaken for a plain one. `backend`,
