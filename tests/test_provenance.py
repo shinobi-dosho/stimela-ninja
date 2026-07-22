@@ -397,7 +397,7 @@ def test_old_manifest_without_target_still_validates():
 # -- replay: unpinned_steps + apply_manifest_pins --
 
 
-def _rec(name, *, kind="cab", image=None, digest=None, containerized=False, steps=(), inputs=None):
+def _rec(name, *, kind="cab", image=None, digest=None, containerized=False, venv=None, steps=(), inputs=None):
     from shinobi.provenance import StepRecord
 
     return StepRecord(
@@ -408,6 +408,7 @@ def _rec(name, *, kind="cab", image=None, digest=None, containerized=False, step
         image=image,
         image_digest=digest,
         containerized=containerized,
+        venv=venv,
         inputs=inputs or {},
         outputs={},
         steps=list(steps),
@@ -444,6 +445,12 @@ def _image_step_cab(name, image):
     return Cab(name=name, command=name, image=image, inputs_model=_RIn, outputs_model=_Empty)
 
 
+def _venv_step_cab(name, venv=None):
+    from shinobi.steps.schema import Cab
+
+    return Cab(name=name, command=name, venv=venv, inputs_model=_RIn, outputs_model=_Empty)
+
+
 def test_apply_pins_rewrites_cab_image():
     from shinobi.provenance import apply_manifest_pins
 
@@ -452,6 +459,15 @@ def test_apply_pins_rewrites_cab_image():
     pinned = apply_manifest_pins(cab, _rec("t", image="alpine:3.19", digest=d, containerized=True))
     assert pinned.image == f"alpine@{d}"
     assert cab.image == "alpine:3.19"  # original untouched
+
+
+def test_apply_pins_sets_venv_from_record():
+    from shinobi.provenance import apply_manifest_pins
+
+    cab = _venv_step_cab("v")  # current declaration has no venv
+    pinned = apply_manifest_pins(cab, _rec("v", venv="/opt/env"))
+    assert pinned.venv == "/opt/env"
+    assert cab.venv is None  # original untouched
 
 
 def test_apply_pins_leaves_native_and_sif_unchanged():

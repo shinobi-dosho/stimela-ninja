@@ -407,7 +407,7 @@ def run(
     "--allow-unpinned",
     "allow_unpinned",
     is_flag=True,
-    help="Replay even when the manifest is not fully digest-pinned (pinned: false). Unpinned steps run their original image reference, so exact reproduction is not guaranteed.",
+    help="Replay even when the manifest is not fully pinned (pinned: false). Unpinned steps run their original image reference or venv, so exact reproduction is not guaranteed.",
 )
 @click.pass_context
 def replay(ctx: click.Context, run_manifest: str, target_override: str | None, allow_unpinned: bool) -> None:
@@ -438,8 +438,8 @@ def replay(ctx: click.Context, run_manifest: str, target_override: str | None, a
     if not manifest.pinned and not allow_unpinned:
         offenders = unpinned_steps(manifest.root)
         raise click.ClickException(
-            f"manifest is not fully pinned (steps without an image digest: "
-            f"{', '.join(offenders)}); replay cannot guarantee the same images ran -- "
+            f"manifest is not fully pinned (unpinned steps: "
+            f"{', '.join(offenders)}); replay cannot guarantee the same environment ran -- "
             "pass --allow-unpinned to proceed anyway"
         )
 

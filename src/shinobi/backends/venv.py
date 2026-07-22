@@ -30,9 +30,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from shinobi.backends import Backend, register
+from shinobi.backends import Backend, get_backend, register
 from shinobi.backends._stream import run_streaming
-from shinobi.backends.native import NativeBackend
 from shinobi.config import AppConfig
 from shinobi.exceptions import BackendError
 from shinobi.results import BackendRun
@@ -166,7 +165,7 @@ class VenvBackend(Backend):
                 "with no environment isolation",
                 stacklevel=2,
             )
-            return NativeBackend().run(cab, argv, inputs, label=label, stream=stream, pin=pin, cwd=cwd)
+            return get_backend("native").run(cab, argv, inputs, label=label, stream=stream, pin=pin, cwd=cwd)
 
         run_argv = [resolve_command(venv, argv[0]), *argv[1:]] if argv else argv
         run = run_streaming(run_argv, label=label or cab.name, stream=stream, cwd=cwd, env=venv_env(venv))

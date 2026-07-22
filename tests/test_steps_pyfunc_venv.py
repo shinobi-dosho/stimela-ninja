@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from shinobi import pystep
+from shinobi.config import AppConfig, BackendConfig, VenvConfig
 
 from tests import _venv_pystep_funcs as funcs
 
@@ -56,8 +57,11 @@ def test_pystep_venv_records_digest_under_provenance(make_venv):
     assert result.venv_digest is not None
 
 
-def test_pystep_venv_no_venv_declared_falls_back_in_process():
+def test_pystep_venv_no_venv_declared_falls_back_in_process(monkeypatch):
     # backend=venv but nothing declared -> in-process, with a warning.
+    # Isolate from any host config default so the fallback is really tested.
+    clean = AppConfig(backend=BackendConfig(venv=VenvConfig(default=None, envs={})))
+    monkeypatch.setattr(AppConfig, "load", lambda config_file=None, **overrides: clean)
     ref = pystep(venv=None, backend="venv")(funcs.plain_double)
     with pytest.warns(UserWarning, match="running in-process"):
         result = ref(n=21)

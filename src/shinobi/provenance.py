@@ -212,13 +212,18 @@ def apply_manifest_pins(scope: "Scope", record: StepRecord) -> "Scope":
         # give the copy its own dict so `set_output` on one can't leak into
         # the other.
         return scope.model_copy(update={"steps": new_steps, "output_wiring": dict(scope.output_wiring)})
+    updates: dict[str, Any] = {}
+    if record.venv is not None:
+        # Replay a venv step using the venv that originally ran, not whatever
+        # the current scope declaration happens to carry.
+        updates["venv"] = record.venv
     if record.containerized and record.image_digest and record.image:
         if not record.image.endswith(".sif"):
-            return scope.model_copy(update={"image": _with_digest(record.image, record.image_digest)})
+            updates["image"] = _with_digest(record.image, record.image_digest)
         # A .sif's recorded digest is a content hash of the local file, not a
         # registry ref -- the path already names the exact image, so there is
         # nothing to rewrite.
-    return scope.model_copy()
+    return scope.model_copy(update=updates)
 
 
 def run_manifest_path(config: "AppConfig", name: str) -> Path:

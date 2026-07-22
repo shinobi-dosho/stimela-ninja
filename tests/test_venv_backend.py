@@ -3,7 +3,7 @@ import warnings
 import pytest
 
 from shinobi.backends.venv import resolve_command, resolve_venv, venv_digest, venv_env
-from shinobi.config import AppConfig
+from shinobi.config import AppConfig, BackendConfig, VenvConfig
 from shinobi.exceptions import BackendError
 from shinobi.loaders import build_model
 from shinobi.policies import build_argv
@@ -64,7 +64,11 @@ def test_missing_tool_fails_loudly_not_silently(venv_backend, make_venv):
         venv_backend.run(cab, build_argv(cab, {}), {}, stream=False)
 
 
-def test_no_venv_declared_falls_back_to_native_with_warning(venv_backend):
+def test_no_venv_declared_falls_back_to_native_with_warning(venv_backend, monkeypatch):
+    # Isolate from any host config default so the no-venv-declared path is
+    # actually exercised.
+    clean = AppConfig(backend=BackendConfig(venv=VenvConfig(default=None, envs={})))
+    monkeypatch.setattr(AppConfig, "load", lambda config_file=None, **overrides: clean)
     cab = make_cab(command="/bin/echo")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

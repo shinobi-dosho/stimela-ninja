@@ -146,7 +146,7 @@ class O(BaseModel):
     pass
 
 
-step1 = Cab(name="step1", command="true", venv="/opt/env", backend="record",
+step1 = Cab(name="step1", command="true", backend="record",
             inputs_model=I, outputs_model=O)
 rec = Recipe(name="rec", inputs_model=I, outputs_model=O)
 rec.add_step("step1", step1, x=rec.inputs.x)
@@ -204,6 +204,8 @@ def test_replay_venv_allow_unpinned_runs(tmp_path, venv_recipe_file, recorder):
     result = CliRunner().invoke(main, ["replay", str(mpath), "--allow-unpinned"])
     assert result.exit_code == 0, result.output
     assert recorder.calls
+    ((cab, _argv, _inputs),) = recorder.calls
+    assert cab.venv == "/opt/env"  # recorded venv is applied even if current declaration has none
 
 
 def test_replay_recipe_shape_mismatch_errors(tmp_path, recipe_file, recorder):
