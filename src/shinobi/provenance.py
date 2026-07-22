@@ -175,7 +175,11 @@ def apply_manifest_pins(scope: "Scope", record: StepRecord) -> "Scope":
     """Return a copy of `scope` with every containerized step's image forced
     to the `repo@sha256:...` its manifest `record` recorded, so a replay runs
     exactly the images of the original run (an already-digest-pinned ref
-    passes through pin-then-run without a registry round-trip).
+    passes through pin-then-run without a registry round-trip). A venv step is
+    likewise forced to the venv `record` recorded, so a replay runs the venv
+    that originally ran rather than whatever the current declaration carries
+    (a venv is always unpinned, so this only takes effect under
+    `--allow-unpinned`).
 
     Recipe sub-steps are matched to `record.steps` by name; any shape
     difference -- the recipe changed since the manifest was written, or the

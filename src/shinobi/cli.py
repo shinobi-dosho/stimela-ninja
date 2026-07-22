@@ -438,9 +438,7 @@ def replay(ctx: click.Context, run_manifest: str, target_override: str | None, a
     if not manifest.pinned and not allow_unpinned:
         offenders = unpinned_steps(manifest.root)
         raise click.ClickException(
-            f"manifest is not fully pinned (unpinned steps: "
-            f"{', '.join(offenders)}); replay cannot guarantee the same environment ran -- "
-            "pass --allow-unpinned to proceed anyway"
+            f"manifest is not fully pinned (unpinned steps: {', '.join(offenders)}); replay cannot guarantee the same environment ran -- pass --allow-unpinned to proceed anyway"
         )
 
     obj = _resolve_target(target)
