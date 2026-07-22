@@ -9,6 +9,7 @@ import pytest
 from pydantic import BaseModel
 
 from shinobi.graph import RecipeGraphError, build_graph
+from shinobi.backends.recording import RecordingBackend
 from shinobi.results import BackendRun
 from shinobi.steps import Cab, InputRef, OutputRef, Recipe, register_step_backend
 from shinobi.steps.dispatch import _dispatch
@@ -344,6 +345,40 @@ def test_single_cab_body_is_one_step_per_iteration(tmp_path):
     result = _dispatch(recipe, None, ms=tmp_path / "in.ms")
     assert backend.n == 2
     assert [s.skipped for s in result.sub_results.values()] == [False, False, True, True]
+
+
+class IndexIn(BaseModel):
+    idx: int
+    ms: Path
+    flag: Path | None = None
+
+
+class IndexOut(BaseModel):
+    ms: Path | None = None
+    flag: Path | None = None
+
+
+def test_single_cab_body_index_input(tmp_path):
+    """`index_input` must be bound to the 1-based iteration counter for a
+    non-Recipe body too."""
+    backend = RecordingBackend()
+    register_step_backend("loop-index", backend)
+    cab = Cab(name="idx", command="idx", inputs_model=IndexIn, outputs_model=IndexOut, backend="loop-index")
+    recipe = Recipe(name="outer", inputs_model=WorkIn, outputs_model=WorkOut)
+    recipe.add_loop(
+        "cycle",
+        cab,
+        max_iter=3,
+        until="flag",
+        carry={"ms": "ms"},
+        index_input="idx",
+        ms=InputRef(field="ms"),
+    )
+    assert [ref.name for ref in recipe.steps] == ["cycle.1", "cycle.2", "cycle.3"]
+
+    result = _dispatch(recipe, None, ms=tmp_path / "in.ms")
+    assert not any(s.skipped for s in result.sub_results.values())
+    assert [call[2]["idx"] for call in backend.calls] == [1, 2, 3]
 
 
 def test_iterations_stay_ordered_under_parallel_workers(tmp_path):

@@ -494,7 +494,8 @@ class LoopIteration(BaseModel):
     `selfcal.4.image` passes through `selfcal.3.image`), and
     `sentinel_step`/`sentinel_field` name the previous iteration's output
     whose existence on disk means "the loop has already converged, do no
-    work". Both are None for the first iteration, which can never skip.
+    work". `sentinel_step` is None for the first iteration, which can never
+    skip; `sentinel_field` is always set.
     """
 
     loop: str
@@ -1034,7 +1035,11 @@ class Recipe(Scope):
                 # its inputs from the loop directly.
                 if not is_recipe:
                     for field, source in bound.items():
+                        if field == index_input:
+                            continue
                         wiring[field] = source
+                    if index_input is not None:
+                        params[index_input] = k
                     for field, value in loop_params.items():
                         params.setdefault(field, value)
 
