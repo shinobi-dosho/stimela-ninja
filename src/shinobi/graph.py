@@ -234,6 +234,11 @@ def check_offloadable(recipe: "Recipe") -> RecipeGraph:
         if not isinstance(scope, Cab):
             reasons.append(f"step '{ref.name}' is a {type(scope).__name__}, not a Cab -- only atomic Cab steps can be compiled to an external workflow")
             continue
+        # A venv step compiles to a bare argv the offload engine would run
+        # natively on the compute node, silently ignoring the venv -- refuse
+        # rather than mis-run it (venv-in-sbatch is deliberately not built).
+        if scope.venv is not None or scope.backend == "venv":
+            reasons.append(f"step '{ref.name}' runs in a venv -- venv execution is not supported by offloaded engines in this version; run it locally")
         mutable = sorted(name for name, m in scope.input_mutability.items() if m is Mutability.MUTABLE)
         if mutable:
             reasons.append(f"step '{ref.name}' has MUTABLE input(s) {mutable} -- pass-by-reference cannot cross node boundaries")

@@ -17,6 +17,21 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, Settings
 DEFAULT_CONFIG_FILE = Path.home() / ".shinobi" / "config.yml"
 
 
+class VenvConfig(BaseModel):
+    """Settings for the `venv` backend (`shinobi.backends.venv`).
+
+    `default` is the venv used when a step declares none of its own (a path,
+    or a key into `envs`); `None` means "no default", so a `venv`-backend step
+    with nothing declared falls back to native. `envs` maps short names to
+    venv paths so recipes/config can refer to a venv by name rather than a
+    machine-specific absolute path. A venv path is a deployment concern, so
+    these live here (or on a Scope in Python), never in a shared cab repo.
+    """
+
+    default: str | None = None
+    envs: dict[str, str] = Field(default_factory=dict)
+
+
 class BackendConfig(BaseModel):
     """Settings controlling which execution backend cabs run under."""
 
@@ -29,6 +44,9 @@ class BackendConfig(BaseModel):
     # specifically require running as root. No-op for apptainer, which
     # already runs as the host user.
     run_as_host_user: bool = True
+    # `venv` backend settings; reachable as SHINOBI_BACKEND__VENV__DEFAULT /
+    # __ENVS via the env_nested_delimiter below.
+    venv: VenvConfig = Field(default_factory=VenvConfig)
 
 
 class ExecutionConfig(BaseModel):

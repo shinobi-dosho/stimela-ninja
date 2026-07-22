@@ -116,3 +116,4 @@ from shinobi.backends import kubernetes as _kubernetes  # noqa: E402,F401
 from shinobi.backends import native as _native  # noqa: E402,F401
 from shinobi.backends import recording as _recording  # noqa: E402,F401
 from shinobi.backends import slurm as _slurm  # noqa: E402,F401
+from shinobi.backends import venv as _venv  # noqa: E402,F401

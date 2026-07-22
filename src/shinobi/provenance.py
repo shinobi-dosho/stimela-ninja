@@ -58,6 +58,12 @@ class StepRecord(BaseModel):
     image: str | None = None
     image_digest: str | None = None
     containerized: bool = False
+    # The venv this step ran in and its version-parity digest. A step with
+    # `venv` set is always reported unpinned (`RunManifest.pinned`) -- the
+    # digest is informational, not an OS-level pin. Defaulted so manifests
+    # written before the venv backend existed still load.
+    venv: str | None = None
+    venv_digest: str | None = None
     sandboxed: bool = False
     inputs: dict[str, Any]
     outputs: dict[str, Any]
@@ -87,13 +93,16 @@ class RunManifest(BaseModel):
     @property
     def pinned(self) -> bool:
         """False if any step that ran *inside a container* lacks a resolved
-        image digest. Keyed on `containerized` (not the backend name) so
-        Slurm-under-apptainer counts, and a native cab whose image is mere
-        metadata does not.
+        image digest, or ran in a *venv* at all. Keyed on `containerized`
+        (not the backend name) so Slurm-under-apptainer counts, and a native
+        cab whose image is mere metadata does not. A venv step is always
+        unpinned: its `venv_digest` is version-parity, not an OS-level image
+        pin, so it never earns the reproducibility claim a pinned container
+        does (see `backends.venv`).
         """
 
         def ok(record: StepRecord) -> bool:
-            self_ok = (not record.containerized) or record.image_digest is not None
+            self_ok = ((not record.containerized) or record.image_digest is not None) and record.venv is None
             return self_ok and all(ok(child) for child in record.steps)
 
         return ok(self.root)
@@ -123,6 +132,8 @@ def _record(result: StepResult, name: str | None = None) -> StepRecord:
         image=result.image,
         image_digest=result.image_digest,
         containerized=result.containerized,
+        venv=result.venv,
+        venv_digest=result.venv_digest,
         sandboxed=result.sandboxed,
         inputs=_jsonable(result.inputs),
         outputs=_jsonable(result.outputs),
@@ -148,12 +159,12 @@ def load_manifest(path: Path) -> RunManifest:
 
 
 def unpinned_steps(record: StepRecord) -> list[str]:
-    """Names of every step in `record`'s tree that ran containerized but has
-    no resolved image digest -- the steps that make `RunManifest.pinned`
-    false, named so a refusal to replay can say which ones.
+    """Names of every step in `record`'s tree that makes `RunManifest.pinned`
+    false -- ran containerized but has no resolved image digest, or ran in a
+    venv (always unpinned) -- named so a refusal to replay can say which ones.
     """
     names: list[str] = []
-    if record.containerized and record.image_digest is None:
+    if (record.containerized and record.image_digest is None) or record.venv is not None:
         names.append(record.name)
     for child in record.steps:
         names.extend(unpinned_steps(child))
@@ -164,7 +175,11 @@ def apply_manifest_pins(scope: "Scope", record: StepRecord) -> "Scope":
     """Return a copy of `scope` with every containerized step's image forced
     to the `repo@sha256:...` its manifest `record` recorded, so a replay runs
     exactly the images of the original run (an already-digest-pinned ref
-    passes through pin-then-run without a registry round-trip).
+    passes through pin-then-run without a registry round-trip). A venv step is
+    likewise forced to the venv `record` recorded, so a replay runs the venv
+    that originally ran rather than whatever the current declaration carries
+    (a venv is always unpinned, so this only takes effect under
+    `--allow-unpinned`).
 
     Recipe sub-steps are matched to `record.steps` by name; any shape
     difference -- the recipe changed since the manifest was written, or the
@@ -201,13 +216,18 @@ def apply_manifest_pins(scope: "Scope", record: StepRecord) -> "Scope":
         # give the copy its own dict so `set_output` on one can't leak into
         # the other.
         return scope.model_copy(update={"steps": new_steps, "output_wiring": dict(scope.output_wiring)})
+    updates: dict[str, Any] = {}
+    if record.venv is not None:
+        # Replay a venv step using the venv that originally ran, not whatever
+        # the current scope declaration happens to carry.
+        updates["venv"] = record.venv
     if record.containerized and record.image_digest and record.image:
         if not record.image.endswith(".sif"):
-            return scope.model_copy(update={"image": _with_digest(record.image, record.image_digest)})
+            updates["image"] = _with_digest(record.image, record.image_digest)
         # A .sif's recorded digest is a content hash of the local file, not a
         # registry ref -- the path already names the exact image, so there is
         # nothing to rewrite.
-    return scope.model_copy()
+    return scope.model_copy(update=updates)
 
 
 def run_manifest_path(config: "AppConfig", name: str) -> Path:

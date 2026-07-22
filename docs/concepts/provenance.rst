@@ -96,13 +96,33 @@ A recipe's sub-steps appear, in declaration order, under ``steps``.
 
 ``pinned``
     ``true`` only when every step that ran *inside a container* resolved to a
-    digest. A native step (whose ``image`` is mere metadata) never counts
-    against it; a containerized step that couldn't be pinned -- including a
-    Slurm job running under apptainer -- makes it ``false``. A consumer can
-    refuse to treat a manifest with ``pinned: false`` as reproducible.
+    digest **and** no step ran in a venv. A containerized step that couldn't be
+    pinned -- including a Slurm job running under apptainer -- makes it
+    ``false``, as does any ``venv`` step. A consumer can refuse to treat a
+    manifest with ``pinned: false`` as reproducible.
+
+    Provenance durability is **tiered**, and ``pinned`` is a claim about
+    container image digests, not cross-machine reproducibility in general:
+
+    * ``docker`` / ``podman`` / ``apptainer`` with provenance enabled --
+      **durable**: the exact image digest that ran is recorded and re-run.
+    * ``venv`` -- a **version-parity record only**: ``venv_digest`` is a hash of
+      the venv's ``name==version`` list, which is not an OS-level pin (identical
+      version lists can sit on different compiled C-extensions), so a venv step
+      is always reported *unpinned*.
+    * ``native`` -- **no environment provenance at all**: an ``image`` is mere
+      metadata, so a native step never drags ``pinned`` false, but its vacuous
+      ``pinned: true`` is *not* a reproducibility guarantee.
 
 ``image_digest``
     The ``sha256:...`` that actually ran, or ``null`` when unpinned.
+
+``venv`` / ``venv_digest``
+    The virtualenv a ``venv``-backend step ran in, and a ``sha256`` of its
+    ``name==version`` distribution list (recorded only under provenance). The
+    digest is informational -- a venv step is always unpinned (see ``pinned``
+    above), so replaying a manifest that contains one is refused unless
+    ``--allow-unpinned`` is passed, exactly like a digest-less container step.
 
 ``sandboxed``
     ``true`` when the step ran with per-step sandbox execution enabled

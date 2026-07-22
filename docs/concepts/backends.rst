@@ -16,6 +16,28 @@ Available backends
     Runs the command as a local subprocess. No isolation; the command must be
     on ``PATH``.
 
+``venv``
+    Runs the command inside an existing Python virtualenv -- the venv's ``bin``
+    is prepended to ``PATH``, ``VIRTUAL_ENV`` is set, and
+    ``PYTHONHOME``/``PYTHONPATH`` are cleared (what ``activate`` does, minus the
+    shell). A bare command is rewritten to the venv's own copy when it has one,
+    so a genuinely missing tool fails loudly rather than falling through to a
+    host binary of the same name. This is *weaker* than a container -- no
+    filesystem namespace, no OS-level pin -- and a **complement** to the
+    container backends, not a replacement: it covers the pip-installable half of
+    a pipeline (quartical, tricolour, breizorro, ...) without a container
+    runtime, while tools that need a full image (wsclean, casa, aoflagger) still
+    use one. The venv is named on the step (``venv=`` on a ``Scope`` or
+    ``@pystep``) or in :doc:`config` (``backend.venv``); it is **not** read from
+    cab YAML, since a venv path is machine-specific. If the ``venv`` backend is
+    selected but no venv is declared anywhere, the step runs natively (with a
+    warning). ``@pystep`` functions run under the venv's own interpreter and
+    import its real packages. See :doc:`provenance` for why a venv run is always
+    reported *unpinned*. Not supported by :doc:`../offloading` (an offloaded
+    venv step is refused, not silently run without its venv). A ``--dryrun`` of
+    a venv cab prints the plain (un-rewritten) argv; the venv resolution happens
+    only at run time.
+
 ``docker`` / ``podman`` / ``apptainer``
     Runs the cab's ``image`` in a container. Bind mounts are derived from the
     cab's own schema -- every ``File``/``MS``-dtype parameter contributes its

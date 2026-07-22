@@ -319,6 +319,13 @@ class Scope(BaseModel):
     outputs_model: type[BaseModel]
     backend: str | None = None
     image: str | None = None
+    # Names the virtualenv the `venv` backend runs this step in: either a
+    # filesystem path or a key into `backend.venv.envs` (config). Only the
+    # `venv` backend consults it; other backends ignore it. Typed `str` for
+    # now, but shaped to accept a spec dict later (auto-provisioning) without
+    # a schema break. A venv path is machine-specific, so it belongs here or
+    # in config -- never in a shared cab repo.
+    venv: str | None = None
     input_mutability: dict[str, Mutability] = Field(default_factory=dict)
     # Step-level skip-if-unchanged caching (shinobi.cache), same precedence
     # shape as `backend`: explicit call-time `cache=`/`cache_dir=` kwarg >
