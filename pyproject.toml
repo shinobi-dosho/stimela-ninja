@@ -86,3 +86,60 @@ consider_namespace_packages = true
 
 [tool.ruff]
 line-length = 180
+
+# Pin the rule set explicitly. Without a `select`, "is this tree lint-clean?"
+# is answered by whichever ruff a given machine happens to have installed --
+# ruff changes its defaults between releases, so the same commit can be clean
+# for one developer and report a hundred violations for another, with no code
+# having changed. That makes lint a property of an environment rather than of
+# the repo, which is worth exactly nothing as a signal. The list below is a
+# decision; extend it deliberately.
+#
+# Every family here passes on the tree as it stands, so this locks in current
+# behaviour rather than declaring a cleanup backlog. It is a strict superset
+# of what ruff checked by default before this was pinned (E4/E7/E9 + F).
+[tool.ruff.lint]
+select = [
+    "F",     # pyflakes -- real errors: undefined names, unused imports
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "C4",    # comprehension rewrites
+    "DTZ",   # naive datetimes (provenance timestamps must stay tz-aware)
+    "ERA",   # commented-out code
+    "EXE",   # shebang/executable-bit mismatches
+    "FA",    # missing `from __future__ import annotations` -- every module here relies on it
+    "FURB",  # modernizations
+    "G",     # logging call format (no f-strings in logger.* -- lazy % args)
+    "ICN",   # conventional import aliases
+    "ISC",   # implicit string concatenation
+    "LOG",   # logging misuse
+    "PGH",   # blanket `# noqa` / `# type: ignore` without a code
+    "Q",     # quote style
+    "RSE",   # `raise X()` not `raise X`
+    "T10",   # stray debugger imports
+    "T20",   # stray `print` (this is a library; output goes through click/logging)
+    "TID",   # relative-import hygiene
+    "YTT",   # sys.version misuse
+]
+ignore = [
+    # The formatter owns line length. It cannot split long string literals, so
+    # E501 only ever fires on lines `ruff format` has already declared final --
+    # it would be a permanent 2-violation floor, not a signal.
+    "E501",
+]
+
+# Families deliberately NOT selected, with the violation count each would add
+# today. Each is a real decision to make, not an oversight -- opt one in by
+# moving it up and clearing its findings:
+#
+#   B     9    mostly false positives: 5x B023 where the closure is called
+#              inside the same loop iteration, plus B018 in tests where a bare
+#              attribute access inside `pytest.raises` is the assertion
+#   I     12   import sorting -- all auto-fixable, but a large diff
+#   SIM   16   nested `with` merges, mostly in tests
+#   UP    46   quoted annotations, `Optional[X]` -> `X | None`
+#   RUF   38   incl. unused-`noqa` for rules not selected above
+#   PL    235  pylint port; PLW1510 alone is 17 (`subprocess.run` without
+#              `check=`, deliberate here -- backends read returncode themselves)
+#   ANN   1422 / D 1095 / S 1198  -- annotations, docstring style, bandit;
+#              each is a project-wide policy choice, not a cleanup
