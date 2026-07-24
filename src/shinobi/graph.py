@@ -21,13 +21,9 @@ is legitimate mid-construction.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
-from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, path_fields
+from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, path_fields
 from shinobi.wranglers import parse_output_action
-
-if TYPE_CHECKING:
-    from shinobi.steps.schema import Recipe
 
 
 class RecipeGraphError(ValueError):
@@ -108,6 +104,17 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
                 raise RecipeGraphError(f"step '{ref.name}' declares after='{after_name}', which is itself")
             deps[i].add(index[after_name])
             dependents[index[after_name]].add(i)
+        # A footprint is reserved for the leaf that does the work, never for
+        # a Recipe: a recipe is not a unit of execution, and reserving for
+        # both it and its sub-steps would double-count the same work -- and,
+        # worse, deadlock, since the parent's reservation is held while the
+        # nested scheduler waits for budget only the parent can release.
+        # Rejected here rather than warned about at run time so `--dryrun`
+        # surfaces it too (both read this one builder).
+        if isinstance(step_scope, Recipe) and step_scope.resources is not None:
+            raise RecipeGraphError(
+                f"step '{ref.name}' is a nested Recipe declaring resources -- declare them on the leaf steps that do the work, not on the recipe containing them"
+            )
         if ref.scatter is not None:
             for field in ref.scatter.fields:
                 if not _is_input_field(step_scope, field):

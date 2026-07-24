@@ -20,6 +20,7 @@ import importlib
 import logging
 import warnings
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Callable
 
@@ -29,7 +30,8 @@ from shinobi.config import AppConfig
 from shinobi.exceptions import CabRunError, ParameterError, ShinobiError, StepError
 from shinobi.graph import build_graph
 from shinobi.policies import build_argv
-from shinobi.results import StepResult
+from shinobi.resources import Budget, Resources
+from shinobi.results import StepResult, explain_returncode
 from shinobi.sandbox import (
     absolutize_path_inputs,
     create_sandbox,
@@ -54,6 +56,34 @@ logger = logging.getLogger("shinobi.run")
 # here is resolved through shinobi.backends.get_backend (the real,
 # class-based registry).
 _STEP_BACKENDS: dict[str, Any] = {}
+
+# Shared "this step declares nothing" footprint. Reserving it is a no-op, so
+# an undeclared step never touches the budget's lock.
+_NO_RESOURCES = Resources()
+
+# Slice index standing for "this unit is a whole step, not a scatter slice",
+# used only inside the scheduler's `pending` heap. Heap entries must be
+# order-comparable and `None` cannot be ordered against an int, so the
+# sentinel is a number that sorts before every real slice index.
+_NOT_A_SLICE = -1
+
+
+def _any_resources(recipe: Recipe) -> bool:
+    """Whether anything in `recipe`, at any nesting depth, declares a
+    resource footprint -- i.e. whether admission control is worth building.
+
+    Recurses into nested recipes because that is where the footprints
+    actually live: a caracal-shaped pipeline declares nothing at the top
+    level and everything two levels down.
+    """
+    for ref in recipe.steps:
+        scope = ref.step
+        if isinstance(scope, Recipe):
+            if _any_resources(scope):
+                return True
+        elif scope.resources is not None:
+            return True
+    return False
 
 
 def register_step_backend(name: str, backend: Any) -> None:
@@ -153,6 +183,7 @@ class ExecContext:
         pin: bool = False,
         sandbox_root: str | None = None,
         input_keys: dict[str, Any] | None = None,
+        budget: Budget | None = None,
     ):
         """Initialize execution state for one dispatched step.
 
@@ -177,6 +208,12 @@ class ExecContext:
                 produced this step's wired inputs (see `shinobi.cache`).
                 Only an enclosing recipe can know these; a top-level call
                 has none.
+            budget: Admission control shared with the enclosing run, if any
+                (see `shinobi.resources`). Only a `Recipe` scope uses it, by
+                forwarding it to its own `_run_recipe` -- which is the whole
+                point: every nested recipe's scheduler admits against the
+                *same* budget, so branches cannot each independently decide
+                they own the machine.
         """
         self.scope = scope
         self._raw = raw_inputs
@@ -203,6 +240,7 @@ class ExecContext:
         # to _run_recipe, which resolves each sub-step's InputRef wiring
         # against them (see shinobi.cache).
         self._input_keys = input_keys
+        self._budget = budget
 
     def prepare_inputs(self) -> dict[str, Any]:
         """Validated + mutability-processed inputs, with no overrides applied
@@ -282,6 +320,7 @@ class ExecContext:
                 provenance=self._pin,
                 sandbox=self._sandbox_root is not None,
                 input_keys=self._input_keys,
+                budget=self._budget,
             )
         else:
             raise TypeError(
@@ -333,6 +372,7 @@ def _dispatch(
     _config: AppConfig | None = None,
     _provenance_target: str | None = None,
     _input_keys: dict[str, Any] | None = None,
+    _budget: Budget | None = None,
     **kwargs: Any,
 ) -> StepResult:
     config = _config or AppConfig.load()
@@ -366,6 +406,7 @@ def _dispatch(
         pin=provenance_enabled,
         sandbox_root=config.sandbox.dir if sandbox_enabled else None,
         input_keys=_input_keys,
+        budget=_budget,
     )
 
     manifest = None
@@ -415,7 +456,7 @@ def _dispatch(
     if result.success:
         logger.info("step %s: finished (returncode 0)", cache_path)
     else:
-        logger.error("step %s: failed (returncode %s)", cache_path, result.returncode)
+        logger.error("step %s: failed (returncode %s)", cache_path, explain_returncode(result.returncode))
 
     if cacheable:
         result.cache_key = cache_key
@@ -514,7 +555,7 @@ def _run_cab(
             discard_sandbox(sandbox_dir)
         else:
             warnings.warn(
-                f"step '{label or cab.name}' failed (returncode {run.returncode}); its sandbox is kept for post-mortem at {sandbox_dir}",
+                f"step '{label or cab.name}' failed (returncode {explain_returncode(run.returncode)}); its sandbox is kept for post-mortem at {sandbox_dir}",
                 stacklevel=2,
             )
     return StepResult(
@@ -759,6 +800,7 @@ def _run_recipe(
     provenance: bool = False,
     sandbox: bool = False,
     input_keys: dict[str, Any] | None = None,
+    budget: Budget | None = None,
 ) -> StepResult:
     """Topological wavefront scheduler over the recipe's declared DAG.
 
@@ -783,10 +825,26 @@ def _run_recipe(
     (`_resolve_input_keys`) and hands them to each sub-step's `_dispatch`.
     `input_keys` is the same thing arriving from *outside*, for a recipe
     nested in another recipe.
+
+    Admission has a second gate besides `max_workers`: if any step declares
+    a resource footprint (`Scope.resources`), work is also admitted against
+    a `Budget` (see `shinobi.resources`). The budget is created once at the
+    outermost recipe that needs one and shared by every nested recipe's
+    scheduler -- a per-invocation budget would be useless for the pipelines
+    that motivated this, which nest each parallel branch as its own Recipe.
+    A recipe where nothing declares anything never builds one and schedules
+    exactly as it always did.
     """
     config = config or AppConfig.load()  # resolve once; workers never call load()
     graph = build_graph(recipe)
     max_workers = recipe.max_workers or config.execution.max_workers
+
+    # Built lazily, and only by the outermost recipe that needs one: nothing
+    # is detected, logged or locked for a recipe that declares no footprints.
+    if budget is None and _any_resources(recipe):
+        totals, source = config.execution.resources.resolve()
+        budget = Budget(totals)
+        logger.info("recipe %s: admitting steps against a budget of %s (%s)", recipe.name, totals.describe(), source)
 
     results: dict[str, StepResult] = {}
     indeg = [len(graph.deps[i]) for i in range(len(graph.names))]
@@ -801,8 +859,52 @@ def _run_recipe(
     scatter_sub_kwargs: dict[int, dict[str, Any]] = {}
     slice_results: dict[int, list[StepResult | None]] = {}
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures: dict[Future, tuple[int, int | None]] = {}
+    # Admission units awaiting a worker slot and (if declared) budget. A unit
+    # is one step, or one slice of a scattered step -- slices are admitted
+    # individually rather than all submitted at once, so a wide scatter can no
+    # longer put more work in flight than the scheduler accounted for.
+    #
+    # Declaration order across *steps* is preserved by `ready` (already a
+    # min-heap) plus the refill discipline in `submit_ready`, which only
+    # expands the next step once this queue has drained -- so a unit parked on
+    # the budget is never overtaken. This is a heap rather than a plain queue
+    # to keep that ordering true of the queue itself and not only of how it
+    # happens to be filled. `None` (not a slice) is stored as -1, so heap
+    # comparison never has to order None against an int.
+    pending: list[tuple[int, int]] = []
+    unit_payload: dict[tuple[int, int | None], tuple[dict[str, Any], dict[str, Any]]] = {}
+    futures: dict[Future, tuple[int, int | None]] = {}
+    # What each in-flight future reserved, so it can be released on every
+    # exit path -- including ones that never reach the reap loop.
+    held: dict[Future, Resources] = {}
+
+    def _return_reservations() -> None:
+        """Give back every reservation this recipe still holds.
+
+        Not just belt-and-braces over the per-future release: `_expand` runs
+        on *this* thread and can raise (unresolvable wiring, a mismatched
+        scatter), unwinding straight past the reap loop. The pool's own
+        `__exit__` then joins the in-flight work, but nobody reaps it -- so
+        without this its reservations would be leaked permanently, and
+        because the budget is shared that would throttle every sibling
+        recipe for the rest of the run. Also drops this scheduler's place in
+        the budget queue: a ticket left behind by a scheduler that has
+        stopped waiting would block every later arrival forever.
+        """
+        if budget is None:
+            return
+        for demand in held.values():
+            budget.release(demand)
+        held.clear()
+        budget.abandon()
+
+    # `ExitStack`, not a plain `with`: callbacks run in reverse order of
+    # registration, so `_return_reservations` (registered first) runs *after*
+    # the pool's `__exit__` has joined every in-flight future -- reservations
+    # come back once the work they were taken for has genuinely stopped.
+    with ExitStack() as stack:
+        stack.callback(_return_reservations)
+        pool = stack.enter_context(ThreadPoolExecutor(max_workers=max_workers))
 
         def _release_dependents(i: int) -> None:
             for dependent in graph.dependents[i]:
@@ -819,7 +921,13 @@ def _run_recipe(
                 return
             _release_dependents(i)
 
-        def _submit_step(i: int) -> None:
+        def _expand(i: int) -> None:
+            """Resolve step `i`'s inputs and queue its admission unit(s).
+
+            A step that does no work -- a converged loop iteration, a
+            zero-length scatter -- completes right here and queues nothing,
+            so it never occupies a worker or any budget.
+            """
             ref = recipe.steps[i]
             sub_kwargs = _resolve_wiring(ref, prepared, results)
             sub_input_keys = _resolve_input_keys(ref, input_keys or {}, results)
@@ -846,79 +954,133 @@ def _run_recipe(
                 scatter_sub_kwargs[i] = sub_kwargs
                 slice_results[i] = [None] * len(slices)
                 for slice_idx, slice_kwargs in enumerate(slices):
-                    fut = pool.submit(
-                        _dispatch,
-                        ref.step,
-                        ref.func,
-                        _recipe_backend=backend_name,
-                        _recipe_cache=cache_enabled,
-                        _recipe_cache_dir=cache_dir,
-                        _recipe_stream=stream,
-                        _recipe_provenance=provenance,
-                        _recipe_sandbox=sandbox,
-                        _cache_path=f"{cache_path}.{ref.name}[{slice_idx}]",
-                        _config=config,
-                        _input_keys=sub_input_keys,
-                        **slice_kwargs,
-                    )
-                    futures[fut] = (i, slice_idx)
-            else:
-                fut = pool.submit(
-                    _dispatch,
-                    ref.step,
-                    ref.func,
-                    _recipe_backend=backend_name,
-                    _recipe_cache=cache_enabled,
-                    _recipe_cache_dir=cache_dir,
-                    _recipe_stream=stream,
-                    _recipe_provenance=provenance,
-                    _recipe_sandbox=sandbox,
-                    _cache_path=f"{cache_path}.{ref.name}",
-                    _config=config,
-                    _input_keys=sub_input_keys,
-                    **sub_kwargs,
-                )
-                futures[fut] = (i, None)
+                    unit_payload[(i, slice_idx)] = (slice_kwargs, sub_input_keys)
+                    heapq.heappush(pending, (i, slice_idx))
+                return
+            unit_payload[(i, None)] = (sub_kwargs, sub_input_keys)
+            heapq.heappush(pending, (i, _NOT_A_SLICE))
 
-        def submit_ready() -> None:
-            """Submit as many ready steps as there is worker capacity for.
+        def _demand_of(i: int) -> Resources:
+            """What step `i` reserves while it runs.
 
-            Pops from `ready` (a min-heap of step indices, so lowest
-            declaration-index steps are drained first) until `ready` is
-            empty, `stop` is set, or `futures` is at `max_workers` capacity.
+            A nested `Recipe` reserves nothing: it is not a unit of
+            execution, its leaves are, and they schedule against this same
+            shared budget. Reserving for both would double-count -- and
+            deadlock, since the parent would hold that reservation while the
+            nested scheduler waited for budget only the parent could release.
+            (`build_graph` rejects the declaration outright; this is the
+            invariant the scheduler itself relies on.)
             """
-            while ready and not stop and len(futures) < max_workers:
-                i = heapq.heappop(ready)
-                _submit_step(i)
+            scope = recipe.steps[i].step
+            if scope.resources is None or isinstance(scope, Recipe):
+                return _NO_RESOURCES
+            return scope.resources
 
-        submit_ready()
-        while futures:
-            done, _ = wait(futures, return_when=FIRST_COMPLETED)
-            for fut in done:
-                i, slice_idx = futures.pop(fut)
-                try:
-                    res = fut.result()
-                except BaseException as exc:  # noqa: BLE001 -- re-raised below
-                    errors.append((i, exc))
-                    stop = True
-                    continue
-                if slice_idx is None:
-                    _step_completed(i, res)
+        def _submit_unit(i: int, slice_idx: int | None, demand: Resources) -> None:
+            """Submit one admission unit that has already been granted."""
+            ref = recipe.steps[i]
+            unit_kwargs, sub_input_keys = unit_payload.pop((i, slice_idx))
+            fut = pool.submit(
+                _dispatch,
+                ref.step,
+                ref.func,
+                _recipe_backend=backend_name,
+                _recipe_cache=cache_enabled,
+                _recipe_cache_dir=cache_dir,
+                _recipe_stream=stream,
+                _recipe_provenance=provenance,
+                _recipe_sandbox=sandbox,
+                _cache_path=f"{cache_path}.{ref.name}" if slice_idx is None else f"{cache_path}.{ref.name}[{slice_idx}]",
+                _config=config,
+                _budget=budget,
+                _input_keys=sub_input_keys,
+                **unit_kwargs,
+            )
+            futures[fut] = (i, slice_idx)
+            held[fut] = demand
+
+        def submit_ready() -> tuple[bool, int]:
+            """Admit as much queued work as capacity and budget allow.
+
+            Units are drained lowest-declaration-index first, and admission
+            *blocks* on the head unit rather than skipping past it: a step
+            that does not fit holds the queue, so a large step can never be
+            starved by a stream of smaller ones behind it.
+
+            Returns:
+                `(parked, generation)`. `parked` is True only when the head
+                unit was refused by the *budget* (not by worker capacity),
+                in which case the caller may wait on `generation` -- passing
+                that value back to `Budget.wait_for_change` is what makes
+                refuse-then-wait race-free.
+            """
+            while not stop:
+                # Refill from `ready`. A `while`, not a single shot: a step
+                # that does no work completes inside `_expand` and pushes its
+                # dependents onto `ready`, which one refill pass would leave
+                # stranded -- and an empty `pending` with a non-empty `ready`
+                # is exactly the state that would idle forever below.
+                while not pending and ready:
+                    _expand(heapq.heappop(ready))
+                if not pending or len(futures) >= max_workers:
+                    return False, 0
+                i, slot = pending[0]
+                slice_idx = None if slot == _NOT_A_SLICE else slot
+                demand = _demand_of(i)
+                if budget is None:
+                    granted, generation = True, 0
                 else:
-                    slice_results[i][slice_idx] = res
-                    completed = slice_results[i]
-                    if all(r is not None for r in completed):
-                        ref = recipe.steps[i]
-                        aggregated = _aggregate_scatter_results(
-                            ref.step,
-                            ref.scatter.fields,
-                            scatter_sub_kwargs[i],
-                            [r for r in completed if r is not None],
-                        )
-                        _step_completed(i, aggregated)
-                        del slice_results[i]
-                        del scatter_sub_kwargs[i]
-            submit_ready()
+                    granted, generation = budget.try_acquire(demand, recipe.steps[i].name)
+                if not granted:
+                    return True, generation
+                heapq.heappop(pending)
+                _submit_unit(i, slice_idx, demand)
+            return False, 0
+
+        parked, generation = submit_ready()
+        # `ready`/`pending` are deliberately gated on `not stop`: once a
+        # failure or worker exception has stopped submission, un-submitted
+        # work is abandoned and only the in-flight steps are drained. Without
+        # that gate the queue would never empty and this would hang.
+        while futures or (not stop and (pending or ready)):
+            if futures:
+                done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                for fut in done:
+                    i, slice_idx = futures.pop(fut)
+                    demand = held.pop(fut, _NO_RESOURCES)
+                    try:
+                        try:
+                            res = fut.result()
+                        except BaseException as exc:  # noqa: BLE001 -- re-raised below
+                            errors.append((i, exc))
+                            stop = True
+                            continue
+                        if slice_idx is None:
+                            _step_completed(i, res)
+                        else:
+                            slice_results[i][slice_idx] = res
+                            completed = slice_results[i]
+                            if all(r is not None for r in completed):
+                                ref = recipe.steps[i]
+                                aggregated = _aggregate_scatter_results(
+                                    ref.step,
+                                    ref.scatter.fields,
+                                    scatter_sub_kwargs[i],
+                                    [r for r in completed if r is not None],
+                                )
+                                _step_completed(i, aggregated)
+                                del slice_results[i]
+                                del scatter_sub_kwargs[i]
+                    finally:
+                        # Every reap path returns the reservation, including
+                        # the worker-exception one that `continue`s out.
+                        if budget is not None:
+                            budget.release(demand)
+            elif parked:
+                # Nothing of ours is running and the head unit doesn't fit:
+                # only another recipe sharing this budget can unblock us.
+                budget.wait_for_change(generation)
+            parked, generation = submit_ready()
 
     # A worker exception (e.g. a bad override's ValidationError) propagates
     # out of the recipe, first-by-declaration if several occurred. Add the
@@ -938,7 +1100,7 @@ def _run_recipe(
     if failures:
         i, failed = min(failures, key=lambda f: f[0])
         ref_name = recipe.steps[i].name
-        raise CabRunError(f"step '{ref_name}' in recipe '{recipe.name}' failed (returncode {failed.returncode})")
+        raise CabRunError(f"step '{ref_name}' in recipe '{recipe.name}' failed (returncode {explain_returncode(failed.returncode)})")
 
     ordered = [ref.name for ref in recipe.steps if ref.name in results]
     outputs = {field: getattr(results[out_ref.step].outputs, out_ref.field) for field, out_ref in recipe.output_wiring.items() if out_ref.step in results}

@@ -14,6 +14,8 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
+from shinobi.resources import ResourceBudget
+
 DEFAULT_CONFIG_FILE = Path.home() / ".shinobi" / "config.yml"
 
 
@@ -57,6 +59,11 @@ class ExecutionConfig(BaseModel):
     # declaration-order execution, and no MUTABLE input can be shared across
     # concurrently-running steps (see AGENTS.md's recipe-execution note).
     max_workers: int = 1
+    # The machine budget steps are admitted against, on top of `max_workers`
+    # (see `shinobi.resources`). Only consulted when some step actually
+    # declares a footprint, so the default costs nothing; `"auto"` then
+    # detects the real cgroup-aware limit rather than trusting /proc/meminfo.
+    resources: ResourceBudget = Field(default_factory=ResourceBudget)
 
 
 class CacheConfig(BaseModel):

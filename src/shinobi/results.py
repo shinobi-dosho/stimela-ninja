@@ -11,10 +11,41 @@ same console output, and is what a step call (cab or recipe) returns.
 
 from __future__ import annotations
 
+import signal
 from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel
+
+
+def explain_returncode(returncode: int) -> str:
+    """Render an exit status for a human, naming the signal if there was one.
+
+    A process killed by a signal surfaces as a *negative* returncode, and
+    bare `-9` is the single least informative thing a failed step can say:
+    it is what a step gets for exceeding a cgroup memory cap, and it looks
+    identical to any other kill. Naming the signal -- and calling out the
+    one that is almost always an out-of-memory kill -- is the difference
+    between "it died" and "it died because it asked for more memory than it
+    was allowed".
+
+    Args:
+        returncode: The process exit status.
+
+    Returns:
+        A string like `"-9 (SIGKILL -- killed by the OS, most often an
+        out-of-memory kill)"`, or just the number when it is an ordinary
+        exit status.
+    """
+    if returncode >= 0:
+        return str(returncode)
+    try:
+        name = signal.Signals(-returncode).name
+    except ValueError:
+        return str(returncode)
+    if name == "SIGKILL":
+        return f"{returncode} (SIGKILL -- killed by the OS, most often an out-of-memory kill; check the step's declared resources against what it actually used)"
+    return f"{returncode} ({name})"
 
 
 @dataclass

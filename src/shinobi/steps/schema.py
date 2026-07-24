@@ -24,6 +24,8 @@ from typing import Any, Callable, Union, get_args, get_origin
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_serializer, model_validator
 from pydantic_core import PydanticUndefined
 
+from shinobi.resources import Resources
+
 
 class Mutability(str, Enum):
     """Whether a step's input may be changed in place by the step's own
@@ -343,6 +345,14 @@ class Scope(BaseModel):
     # tool whose dynamically-named output family can't be enumerated as
     # literal output fields). Only consulted when the step runs sandboxed.
     harvest: list[str] = Field(default_factory=list)
+    # What this step costs to run, for the scheduler's admission control
+    # (`shinobi.resources`). Undeclared (the default) means "free": the step
+    # is admitted on `max_workers` alone, exactly as before this field
+    # existed. Declared on the *leaf* that does the work -- a `Recipe`
+    # inherits the field but must not use it (`build_graph` rejects that),
+    # since a recipe is not a unit of execution and reserving for both it
+    # and its leaves would double-count.
+    resources: Resources | None = None
 
     @field_serializer("inputs_model", "outputs_model")
     def _serialize_param_model(self, model: type[BaseModel]) -> dict[str, Any]:
@@ -386,6 +396,16 @@ class Scope(BaseModel):
         StepRef.
         """
         return self.model_copy(update={"backend": backend}) if backend else self
+
+    def with_resources(self, resources: Resources | None) -> Scope:
+        """A copy bound to `resources`, or `self` unchanged if None. Same
+        shape as `with_backend`, and used the same way: `Recipe.add_step`,
+        `Recipe.step` and `@shinobi.step` bind a per-step footprint onto a
+        Scope before wrapping it in a StepRef, so one shared Cab can be
+        declared cheap in one recipe position and expensive in another
+        without either mutating the Cab itself.
+        """
+        return self.model_copy(update={"resources": resources}) if resources else self
 
 
 class Cab(Scope):
@@ -849,6 +869,7 @@ class Recipe(Scope):
         scope: "Scope | StepRef",
         *,
         scatter: list[str] | ScatterSpec | None = None,
+        resources: Resources | None = None,
         **kwargs: Any,
     ) -> "Recipe":
         """Add a step. `scope` is usually a bare `Scope`/`Cab`/`Recipe`, but
@@ -861,6 +882,10 @@ class Recipe(Scope):
                 step's `inputs_model`; at runtime the corresponding value
                 must be a list, and every scattered field must have the same
                 length.
+            resources: What this step costs to run, for the scheduler's
+                admission control. An explicit keyword rather than a kwarg,
+                since `**kwargs` here is split into wiring and step params
+                and would otherwise swallow it as a constant input value.
         """
         scatter_spec = ScatterSpec(fields=scatter) if isinstance(scatter, list) else scatter
         wiring, params = self._split_kwargs(kwargs)
@@ -871,10 +896,14 @@ class Recipe(Scope):
                     "wiring": {**scope.wiring, **wiring},
                     "params": {**scope.params, **params},
                     "scatter": scatter_spec if scatter_spec is not None else scope.scatter,
+                    # The footprint lives on the Scope, not the StepRef, so
+                    # binding it here has to reach through to `scope.step` --
+                    # copying only the StepRef would silently drop it.
+                    "step": scope.step.with_resources(resources),
                 }
             )
         else:
-            ref = StepRef(name=name, step=scope, wiring=wiring, params=params, scatter=scatter_spec)
+            ref = StepRef(name=name, step=scope.with_resources(resources), wiring=wiring, params=params, scatter=scatter_spec)
         self.steps.append(ref)
         return self
 
@@ -1087,6 +1116,7 @@ class Recipe(Scope):
         *,
         backend: str | None = None,
         scatter: list[str] | ScatterSpec | None = None,
+        resources: Resources | None = None,
         **kwargs: Any,
     ):
         """Decorate a function as a new step appended to this recipe.
@@ -1095,6 +1125,7 @@ class Recipe(Scope):
             scope: The Cab, Recipe, or bare Scope to bind as this step.
             backend: Backend override for this step.
             scatter: Fields to fan out over (see `add_step`).
+            resources: What this step costs to run (see `add_step`).
             **kwargs: Split into wiring (`InputRef`/`OutputRef` values) and
                 per-step constant params via `_split_kwargs`.
 
@@ -1114,7 +1145,7 @@ class Recipe(Scope):
             Returns:
                 The new `StepRef`, already appended to `self.steps`.
             """
-            bound = scope.with_backend(backend)
+            bound = scope.with_backend(backend).with_resources(resources)
             wiring, params = self._split_kwargs(kwargs)
             ref = StepRef(
                 name=func.__name__,
