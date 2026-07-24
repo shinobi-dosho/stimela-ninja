@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 from shinobi.dag import TraceStep, graph_nodes, render_dag
 from shinobi.graph import RecipeGraphError
+from shinobi.resources import Resources
 from shinobi.steps.schema import Cab, InputRef, OutputRef, Recipe, StepRef
 
 
@@ -124,3 +125,29 @@ def test_render_falls_back_to_plain_chain_without_false_fan_structure():
     out = render_dag(steps)
     lines = out.splitlines()
     assert not any("-" in ln for ln in lines[-4:])
+
+
+def test_dryrun_box_shows_a_declared_footprint():
+    """`--dryrun` shows what is declared, and a footprint is a declaration
+    that changes a run's shape -- it is what turns parallel branches into a
+    queue -- so it belongs in the diagram, not just in the timings.
+    """
+
+    def cab(n, resources=None):
+        return Cab(name=n, command=n, inputs_model=In, outputs_model=PathOut, resources=resources)
+
+    recipe = Recipe(
+        name="p",
+        inputs_model=In,
+        outputs_model=PathOut,
+        steps=[
+            StepRef(name="cheap", step=cab("cheap")),
+            StepRef(name="heavy", step=cab("heavy", Resources(cpus=16, memory="200GiB"))),
+        ],
+    )
+    nodes = graph_nodes(recipe)
+    assert nodes[0].resources == ""
+    assert nodes[1].resources == "cpus=16, memory=200.0GiB"
+    rendered = render_dag(nodes)
+    assert "[ heavy (cpus=16, memory=200.0GiB) ]" in rendered
+    assert "[ cheap ]" in rendered

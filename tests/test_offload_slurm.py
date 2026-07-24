@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from shinobi.exceptions import BackendError
 from shinobi.graph import RecipeNotOffloadableError
 from shinobi.offload import OffloadCompileError, compile_slurm, status_slurm, submit_slurm
+from shinobi.resources import Resources
 from shinobi.steps.schema import Cab, InputRef, OutputRef, ParamMeta, Recipe, StepRef
 
 
@@ -379,3 +380,35 @@ def test_index_input_varies_per_iteration_locally():
     by_name = {ref.name: ref for ref in recipe.steps}
     assert by_name["sc.1.image"].params["cycle"] == 1
     assert by_name["sc.3.image"].params["cycle"] == 3
+
+
+# -- declared resource limits --
+
+
+def test_compiled_jobs_carry_per_step_resource_directives():
+    """`compile_slurm` passes one workflow-global `sbatch_opts` to every job,
+    so per-step allocation has to come from each step's own declaration.
+    """
+    make = Cab(name="make", command="mk", inputs_model=MakeIn, outputs_model=MSOut, resources=Resources(cpus=8, memory="32GiB"))
+    use = Cab(name="use", command="use", inputs_model=UseIn, outputs_model=OkOut)
+    wf = compile_slurm(_linear_recipe(make=make, use=use), {"ms": "/scratch/x.ms"}, workdir="/work", container_runtime=None)
+    scripts = {job.name: job.script for job in wf.jobs}
+    assert "#SBATCH --cpus-per-task=8" in scripts["make"]
+    assert f"#SBATCH --mem={32 * 1024}M" in scripts["make"]
+    # the undeclared step gets no directives of its own
+    assert "--cpus-per-task" not in scripts["use"]
+    assert "--mem=" not in scripts["use"]
+
+
+def test_workflow_sbatch_opts_win_over_a_step_declaration():
+    make = Cab(name="make", command="mk", inputs_model=MakeIn, outputs_model=MSOut, resources=Resources(memory="32GiB"))
+    wf = compile_slurm(
+        _linear_recipe(make=make),
+        {"ms": "/scratch/x.ms"},
+        workdir="/work",
+        container_runtime=None,
+        sbatch_opts={"mem": "100G"},
+    )
+    script = next(job.script for job in wf.jobs if job.name == "make")
+    assert "#SBATCH --mem=100G" in script
+    assert f"--mem={32 * 1024}M" not in script

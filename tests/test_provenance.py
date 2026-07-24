@@ -6,8 +6,10 @@ import pytest
 from pydantic import BaseModel
 
 from shinobi.backends import container as C
-from shinobi.provenance import build_manifest
+from shinobi.provenance import RunManifest, StepRecord, apply_manifest_pins, build_manifest
+from shinobi.resources import Resources
 from shinobi.results import StepResult
+from shinobi.steps.schema import Cab
 
 
 class _M(BaseModel):
@@ -558,3 +560,55 @@ def test_apply_pins_shape_mismatches_error():
     # the target changed shape entirely
     with pytest.raises(ReplayError, match="changed shape"):
         apply_manifest_pins(_image_step_cab("outer", "a:1"), _rec("outer", kind="recipe"))
+
+
+# -- declared resources in the manifest --
+
+
+def test_manifest_records_the_declared_footprint():
+    """The whole reason to record it: months later, a bare `-9` in a manifest
+    says nothing, while `-9` next to `memory=200GiB` is a diagnosis.
+    """
+    result = StepResult(
+        name="ddfacet",
+        returncode=-9,
+        outputs=_M(),
+        inputs=_M(),
+        kind="cab",
+        resources=Resources(cpus=16, memory="200GiB"),
+    )
+    manifest = build_manifest(result, backend="docker")
+    assert manifest.root.resources == Resources(cpus=16, memory=200 * 1024**3)
+
+
+def test_manifest_without_resources_still_loads():
+    """The field is additive: an older manifest predating it must still
+    round-trip, which is why there is no schema_version bump."""
+    result = StepResult(name="s", returncode=0, outputs=_M(), inputs=_M(), kind="cab")
+    manifest = build_manifest(result, backend="native")
+    assert manifest.root.resources is None
+    payload = manifest.model_dump_json()
+    reloaded = RunManifest.model_validate_json(payload)
+    assert reloaded.root.resources is None
+
+
+def test_replay_does_not_restore_a_recorded_footprint():
+    """A footprint describes the box a run happened on, not the run itself,
+    so replaying elsewhere must use the new machine's own declaration.
+    """
+    scope = Cab(name="c", command="c", image="img:1", inputs_model=_M, outputs_model=_M, resources=Resources(memory="8GiB"))
+    record = StepRecord(
+        name="c",
+        kind="cab",
+        returncode=0,
+        cached=False,
+        containerized=True,
+        image="img:1",
+        image_digest="sha256:" + "a" * 64,
+        resources=Resources(memory="500GiB"),
+        inputs={},
+        outputs={},
+    )
+    restored = apply_manifest_pins(scope, record)
+    assert restored.image == "img@sha256:" + "a" * 64  # pinning still happens
+    assert restored.resources == Resources(memory=8 * 1024**3)  # the local declaration wins

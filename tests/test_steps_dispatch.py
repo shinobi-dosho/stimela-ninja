@@ -7,10 +7,12 @@ from pydantic import BaseModel
 from shinobi.backends.recording import RecordingBackend
 from shinobi.config import AppConfig, ExecutionConfig
 from shinobi.exceptions import CabRunError, ParameterError, StepError
+from shinobi.graph import RecipeGraphError, build_graph
+from shinobi.resources import Budget, ResourceBudget, Resources, parse_size
 from shinobi.results import BackendRun
 from shinobi.steps import Cab, InputRef, OutputRef, Recipe, StepRef, register_step_backend
-from shinobi.steps.dispatch import _dispatch
-from shinobi.steps.schema import Mutability
+from shinobi.steps.dispatch import ScatterError, _dispatch
+from shinobi.steps.schema import Mutability, ScatterSpec
 from .fixtures.sample_steps import (
     chained_recipe,
     immutable_list_cab,
@@ -705,3 +707,280 @@ def test_config_execution_max_workers_is_honoured(monkeypatch):
     recipe = _two_independent_recipe(cab, cab)  # no per-recipe override
     config = AppConfig(execution=ExecutionConfig(max_workers=2))
     _dispatch(recipe, None, _config=config, x=1)
+
+
+# -- resource-aware admission --
+
+
+def _budget_config(memory="100GiB", max_workers=2):
+    """An AppConfig whose budget is fixed, so a test never depends on the
+    machine it runs on."""
+    return AppConfig(execution=ExecutionConfig(max_workers=max_workers, resources=ResourceBudget(memory=memory, cpus="unbounded")))
+
+
+class ConcurrencyProbe:
+    """Records the highest number of steps that were ever in flight at once."""
+
+    def __init__(self, hold=0.05):
+        self._lock = threading.Lock()
+        self._hold = hold
+        self.current = 0
+        self.peak = 0
+        self.order = []
+
+    def run(self, cab, argv, inputs, **kwargs):
+        with self._lock:
+            self.current += 1
+            self.peak = max(self.peak, self.current)
+            self.order.append(cab.name)
+        time.sleep(self._hold)
+        with self._lock:
+            self.current -= 1
+        return BackendRun(0, "", "")
+
+
+def _run_in_thread(fn, timeout=10):
+    """Run `fn` off-thread and fail if it does not finish.
+
+    A scheduler bug in this area does not raise -- it hangs -- so the
+    assertion that matters is "it terminated at all".
+    """
+    box = {}
+
+    def target():
+        try:
+            box["result"] = fn()
+        except BaseException as exc:  # noqa: BLE001 -- re-raised by the caller
+            box["error"] = exc
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    assert not thread.is_alive(), "recipe did not terminate"
+    return box
+
+
+def _sized_cab(name, backend, memory):
+    return Cab(name=name, command="t", inputs_model=Inputs, outputs_model=Outputs, backend=backend, resources=Resources(memory=memory))
+
+
+def test_budget_prevents_two_oversized_steps_from_overlapping():
+    """The point of the whole feature: two steps that each want more than
+    half the machine must not run together just because a slot is free."""
+    probe = ConcurrencyProbe()
+    register_step_backend("probe", probe)
+    recipe = _two_independent_recipe(_sized_cab("a", "probe", "60GiB"), _sized_cab("b", "probe", "60GiB"), max_workers=2)
+    _dispatch(recipe, None, _config=_budget_config(), x=1)
+    assert probe.peak == 1
+
+
+def test_budget_still_allows_steps_that_fit_together():
+    """The negative control: admission must not serialise everything."""
+    barrier = threading.Barrier(2, timeout=5)
+
+    class BarrierBackend:
+        def run(self, cab, argv, inputs, **kwargs):
+            barrier.wait()  # only returns if both are in flight together
+            return BackendRun(0, "", "")
+
+    register_step_backend("barrier", BarrierBackend())
+    recipe = _two_independent_recipe(_sized_cab("a", "barrier", "10GiB"), _sized_cab("b", "barrier", "10GiB"), max_workers=2)
+    _dispatch(recipe, None, _config=_budget_config(), x=1)
+
+
+def test_undeclared_steps_are_unaffected_by_a_declared_sibling():
+    """An undeclared step is free, so it still overlaps anything."""
+    barrier = threading.Barrier(2, timeout=5)
+
+    class BarrierBackend:
+        def run(self, cab, argv, inputs, **kwargs):
+            barrier.wait()
+            return BackendRun(0, "", "")
+
+    register_step_backend("barrier", BarrierBackend())
+    recipe = _two_independent_recipe(_sized_cab("a", "barrier", "90GiB"), _cab("b", "barrier"), max_workers=2)
+    _dispatch(recipe, None, _config=_budget_config(), x=1)
+
+
+def test_step_larger_than_the_whole_budget_still_runs():
+    probe = ConcurrencyProbe()
+    register_step_backend("probe", probe)
+    recipe = _two_independent_recipe(_sized_cab("a", "probe", "500GiB"), _sized_cab("b", "probe", "10GiB"), max_workers=2)
+    _dispatch(recipe, None, _config=_budget_config(), x=1)
+    assert probe.order == ["a", "b"]
+    assert probe.peak == 1
+
+
+def _nested_branch(name, leaf_cab):
+    """One branch of a caracal-shaped pipeline: a Recipe wrapping a leaf."""
+    inner = Recipe(name=name, inputs_model=Inputs, outputs_model=Outputs)
+    inner.add_step("leaf", leaf_cab, x=InputRef(field="x"))
+    return inner
+
+
+def test_nested_recipes_admit_against_the_shared_parent_budget():
+    """The regression the design exists for.
+
+    caracal-shaped pipelines nest each parallel branch as its own Recipe, so
+    every branch gets its own scheduler. A budget scoped per `_run_recipe`
+    invocation would let all five branches independently decide they own the
+    machine -- which is exactly the situation this feature was built to stop.
+    """
+    probe = ConcurrencyProbe()
+    register_step_backend("probe", probe)
+    outer = Recipe(name="outer", inputs_model=Inputs, outputs_model=Outputs, max_workers=2)
+    outer.add_step("b1", _nested_branch("i1", _sized_cab("leaf1", "probe", "60GiB")), x=InputRef(field="x"))
+    outer.add_step("b2", _nested_branch("i2", _sized_cab("leaf2", "probe", "60GiB")), x=InputRef(field="x"))
+    _dispatch(outer, None, _config=_budget_config(), x=1)
+    assert probe.peak == 1, "nested branches each built their own budget"
+
+
+def test_nested_recipes_still_overlap_when_the_budget_allows():
+    barrier = threading.Barrier(2, timeout=5)
+
+    class BarrierBackend:
+        def run(self, cab, argv, inputs, **kwargs):
+            barrier.wait()
+            return BackendRun(0, "", "")
+
+    register_step_backend("barrier", BarrierBackend())
+    outer = Recipe(name="outer", inputs_model=Inputs, outputs_model=Outputs, max_workers=2)
+    outer.add_step("b1", _nested_branch("i1", _sized_cab("leaf1", "barrier", "10GiB")), x=InputRef(field="x"))
+    outer.add_step("b2", _nested_branch("i2", _sized_cab("leaf2", "barrier", "10GiB")), x=InputRef(field="x"))
+    _dispatch(outer, None, _config=_budget_config(), x=1)
+
+
+def test_nested_recipe_declaring_resources_is_rejected():
+    inner = _nested_branch("i1", _cab("leaf", "record"))
+    inner.resources = Resources(memory="10GiB")
+    outer = Recipe(name="outer", inputs_model=Inputs, outputs_model=Outputs)
+    outer.add_step("b1", inner, x=InputRef(field="x"))
+    with pytest.raises(RecipeGraphError, match="nested Recipe declaring resources"):
+        build_graph(outer)
+
+
+def test_declaration_order_is_preserved_under_a_binding_budget():
+    probe = ConcurrencyProbe()
+    register_step_backend("probe", probe)
+    recipe = Recipe(
+        name="r",
+        inputs_model=Inputs,
+        outputs_model=Outputs,
+        max_workers=4,
+        steps=[StepRef(name=n, step=_sized_cab(n, "probe", "60GiB"), wiring={"x": InputRef(field="x")}) for n in ("a", "b", "c")],
+    )
+    _dispatch(recipe, None, _config=_budget_config(), x=1)
+    assert probe.order == ["a", "b", "c"]
+    assert probe.peak == 1
+
+
+def test_queued_steps_are_abandoned_promptly_when_one_fails():
+    """A failure must not leave the scheduler spinning on queued work.
+
+    `ready`/`pending` are gated on `not stop` precisely so this terminates:
+    without that gate the queue never empties and the loop hangs. Nothing
+    here declares resources -- the hazard is in the scheduling restructure
+    itself, so it applies to every recipe.
+    """
+
+    class FailBackend:
+        def run(self, cab, argv, inputs, **kwargs):
+            return BackendRun(2, "", "boom")
+
+    never = RecordingBackend()
+    register_step_backend("fail", FailBackend())
+    register_step_backend("never", never)
+    recipe = Recipe(
+        name="r",
+        inputs_model=Inputs,
+        outputs_model=Outputs,
+        max_workers=1,  # so 'b' and 'c' are still queued when 'a' fails
+        steps=[
+            StepRef(name="a", step=_cab("a", "fail"), wiring={"x": InputRef(field="x")}),
+            StepRef(name="b", step=_cab("b", "never"), wiring={"x": InputRef(field="x")}),
+            StepRef(name="c", step=_cab("c", "never"), wiring={"x": InputRef(field="x")}),
+        ],
+    )
+    box = _run_in_thread(lambda: _dispatch(recipe, None, x=1))
+    assert isinstance(box.get("error"), CabRunError)
+    assert never.calls == []
+
+
+def test_queued_steps_are_abandoned_promptly_on_a_worker_exception():
+    class ExplodingBackend:
+        def run(self, cab, argv, inputs, **kwargs):
+            raise RuntimeError("worker exploded")
+
+    never = RecordingBackend()
+    register_step_backend("explode", ExplodingBackend())
+    register_step_backend("never2", never)
+    recipe = Recipe(
+        name="r",
+        inputs_model=Inputs,
+        outputs_model=Outputs,
+        max_workers=1,
+        steps=[
+            StepRef(name="a", step=_cab("a", "explode"), wiring={"x": InputRef(field="x")}),
+            StepRef(name="b", step=_cab("b", "never2"), wiring={"x": InputRef(field="x")}),
+        ],
+    )
+    box = _run_in_thread(lambda: _dispatch(recipe, None, x=1))
+    assert isinstance(box.get("error"), StepError)
+    assert never.calls == []
+
+
+def test_reservations_are_returned_when_expansion_raises():
+    """`_expand` runs on the scheduler thread and can raise straight past
+    the reap loop. A reservation leaked there would be permanent, and -- as
+    the budget is shared -- would throttle every sibling for the whole run.
+    """
+
+    class SlowBackend:
+        def run(self, cab, argv, inputs, **kwargs):
+            time.sleep(0.05)
+            return BackendRun(0, "", "")
+
+    register_step_backend("slow", SlowBackend())
+    budget = Budget(Resources(memory=parse_size("100GiB")))
+    recipe = Recipe(
+        name="r",
+        inputs_model=Inputs,
+        outputs_model=Outputs,
+        max_workers=2,
+        steps=[
+            StepRef(name="a", step=_sized_cab("a", "slow", "10GiB"), wiring={"x": InputRef(field="x")}),
+            # scatter over a field that isn't a list -> ScatterError out of _expand
+            StepRef(name="b", step=_cab("b", "slow"), wiring={"x": InputRef(field="x")}, scatter=ScatterSpec(fields=["x"])),
+        ],
+    )
+    with pytest.raises(ScatterError):
+        _dispatch(recipe, None, _budget=budget, x=1)
+    assert budget.reserved.memory == 0
+    # ...and the failed scheduler left no ticket behind to block later work.
+    assert budget.try_acquire(Resources(memory=parse_size("100GiB")), "later")[0]
+
+
+def test_scatter_slices_are_admitted_individually():
+    """Slices used to be submitted all at once, bypassing the capacity check
+    entirely; they are now admitted one unit at a time like any other step.
+    """
+    probe = ConcurrencyProbe()
+    register_step_backend("probe", probe)
+
+    class ListIn(BaseModel):
+        xs: list[int]
+
+    class SliceIn(BaseModel):
+        xs: int
+
+    cab = Cab(name="s", command="t", inputs_model=SliceIn, outputs_model=Outputs, backend="probe", resources=Resources(memory=parse_size("60GiB")))
+    recipe = Recipe(
+        name="r",
+        inputs_model=ListIn,
+        outputs_model=Outputs,
+        max_workers=4,
+        steps=[StepRef(name="s", step=cab, wiring={"xs": InputRef(field="xs")}, scatter=ScatterSpec(fields=["xs"]))],
+    )
+    _dispatch(recipe, None, _config=_budget_config(), xs=[1, 2, 3])
+    assert probe.peak == 1
+    assert len(probe.order) == 3

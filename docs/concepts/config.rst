@@ -26,6 +26,9 @@ Settings
         envs: {}                 #   name -> venv path, so recipes/config refer to a venv by name
     execution:
       max_workers: 1             # concurrent recipe steps (1 = sequential)
+      resources:                 # machine budget steps are admitted against
+        cpus: auto               #   auto | unbounded | a number
+        memory: auto             #   auto | unbounded | e.g. "250GiB"
     log:
       dir: "."                   # log output directory
       file: null                  # run-log filename (null = file logging off)
@@ -47,6 +50,21 @@ input can be shared across concurrently-running steps. Raising it lets
 independent recipe branches run concurrently -- see the execution model in
 :doc:`recipes`. A recipe can also set its own ``max_workers``, overriding this
 default.
+
+``execution.resources`` is the total budget the scheduler admits work against
+when steps declare what they cost (see :doc:`recipes`). It is only consulted if
+something actually declares a footprint, so the default costs nothing.
+
+``auto`` detects the real limit, and detection is **cgroup-aware**: it walks
+the whole cgroup ancestor chain and takes the tightest limit at any level. That
+matters more than it sounds. A fair-share memory quota is usually set several
+levels above the cgroup a process actually runs in, so reading only the leaf
+finds no limit, falls back to ``/proc/meminfo``, and reports the host's full
+memory -- which is precisely how a tool ends up sizing itself for a machine it
+is not allowed to fill, and getting killed for it. Set an explicit value to
+override, or ``unbounded`` to stop constraining that dimension. Note ``null``
+is *not* the way to spell "unbounded"; elsewhere in this file ``null`` means
+"unset, fall back", and it is not quietly inverted here.
 
 ``backend.run_as_host_user`` (docker/podman only, default ``True``) adds
 ``--user uid:gid`` plus ``HOME=<workdir>`` so bind-mounted outputs come out

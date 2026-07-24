@@ -436,6 +436,35 @@ def bind_dirs(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[str]:
     return [d for d, _ in bind_dir_modes(scope, inputs, workdir)]
 
 
+def _resource_flags(scope: Scope) -> list[str]:
+    """`--cpus`/`--memory` for a step's declared footprint.
+
+    One emitter covers every supported runtime: docker, podman and
+    apptainer all spell these the same way, and all three accept a raw byte
+    count for `--memory`. Verified against apptainer 1.5.2, where
+    `--memory 256M --cpus 2` really does produce an `apptainer-*.scope`
+    cgroup with `memory.max=268435456` and `cpu.max=200000 100000` -- it is
+    not merely an accepted-and-ignored flag.
+
+    This is the half of the feature that is actual *enforcement*: the local
+    scheduler only decides whether to start a step, whereas a container
+    runtime holds it to its declaration, so a runaway is killed inside its
+    own cgroup instead of eating the shared budget its siblings are using.
+    Note apptainer needs cgroup delegation (cgroups v2 under systemd) for
+    this; where that is unavailable it fails loudly rather than silently
+    running unconstrained, which is the right way round.
+    """
+    resources = scope.resources
+    if resources is None:
+        return []
+    flags: list[str] = []
+    if resources.cpus is not None:
+        flags += ["--cpus", f"{resources.cpus:g}"]
+    if resources.memory is not None:
+        flags += ["--memory", str(resources.memory)]
+    return flags
+
+
 def build_container_argv(
     runtime: str,
     scope: Scope,
@@ -483,6 +512,8 @@ def build_container_argv(
         name = getattr(scope, "name", "<scope>")
         raise BackendError(f"'{name}' has no image, cannot run under {runtime}")
 
+    limit_flags = _resource_flags(scope)
+
     # With provenance on, resolve (and digest-pin) the image before building
     # the argv, so the reference that runs is the one recorded. Otherwise run
     # the image by its original ref -- no resolution, no behaviour change.
@@ -505,11 +536,11 @@ def build_container_argv(
         user_flags: list[str] = []
         if run_as_host_user:
             user_flags = ["--user", f"{os.getuid()}:{os.getgid()}", "-e", f"HOME={workdir}"]
-        return [runtime, "run", "--rm", *user_flags, *mounts, "-w", workdir, run_ref, *argv], digest
+        return [runtime, "run", "--rm", *user_flags, *limit_flags, *mounts, "-w", workdir, run_ref, *argv], digest
 
     # apptainer
     binds = [flag for d, w in dir_modes for flag in ("--bind", f"{d}:{d}" if w else f"{d}:{d}:ro")]
-    return [runtime, "exec", *binds, "--pwd", workdir, run_ref, *argv], digest
+    return [runtime, "exec", *limit_flags, *binds, "--pwd", workdir, run_ref, *argv], digest
 
 
 class ContainerBackend(Backend):

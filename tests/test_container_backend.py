@@ -5,6 +5,7 @@ import pytest
 from shinobi.backends.container import ApptainerBackend, DockerBackend
 from shinobi.exceptions import BackendError
 from shinobi.loaders import build_model
+from shinobi.resources import Resources
 from shinobi.steps.schema import Cab, ParamMeta, ParamPattern, ParamSegment
 
 OUT = build_model("Out", {})
@@ -224,3 +225,41 @@ def test_apptainer_image_uri_scheme_handling():
     assert _apptainer_image_uri("library://x/y:1") == "library://x/y:1"
     assert _apptainer_image_uri("/images/casa6.sif") == "/images/casa6.sif"
     assert _apptainer_image_uri("./casa6.sif") == "./casa6.sif"
+
+
+# -- declared resource limits --
+
+
+def test_docker_wrap_emits_declared_limits():
+    cab = make_cab()
+    cab = cab.model_copy(update={"resources": Resources(cpus=4, memory="8GiB")})
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["tool"], {})
+    assert "--cpus" in argv and argv[argv.index("--cpus") + 1] == "4"
+    assert "--memory" in argv and argv[argv.index("--memory") + 1] == str(8 * 1024**3)
+    # the limits must precede the image reference, not land in the command
+    assert argv.index("--memory") < argv.index("tool:latest")
+
+
+def test_apptainer_wrap_emits_declared_limits():
+    """Apptainer really enforces these -- `--memory 256M --cpus 2` produces a
+    cgroup scope with memory.max=268435456 -- so they are emitted rather than
+    dropped as unsupported.
+    """
+    cab = make_cab().model_copy(update={"resources": Resources(cpus=2, memory="256MiB")})
+    argv, _ = ApptainerBackend(workdir="/work")._wrap(cab, ["tool"], {})
+    assert argv[:5] == ["apptainer", "exec", "--cpus", "2", "--memory"]
+    assert argv[5] == str(256 * 1024**2)
+
+
+def test_partial_declaration_emits_only_what_was_declared():
+    cab = make_cab().model_copy(update={"resources": Resources(memory="1GiB")})
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["tool"], {})
+    assert "--memory" in argv
+    assert "--cpus" not in argv
+
+
+def test_undeclared_resources_change_nothing():
+    cab = make_cab()
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["tool"], {})
+    assert "--cpus" not in argv
+    assert "--memory" not in argv

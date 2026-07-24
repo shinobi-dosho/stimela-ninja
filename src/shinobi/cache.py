@@ -214,6 +214,13 @@ def compute_cache_key(scope: Scope, func: Callable | None, prepared: dict[str, A
     # -- mirroring the image-tag stance in this module's docstring.
     if scope.venv:
         parts.append(["__venv__", scope.venv])
+    # `Scope.resources` is deliberately NOT keyed, even though `venv` above
+    # is and the two look alike. A venv changes *which software runs*; a
+    # resource declaration only changes how the scheduler and the container
+    # runtime constrain the very same command -- the same category as
+    # `max_workers`, which is likewise not part of a step's identity.
+    # Re-running a step because someone re-tuned its memory declaration
+    # would be a false invalidation, not a correctness win.
     for name in sorted(prepared):
         value = prepared[name]
         if name in input_paths and name not in mutated_paths and name not in wired and value is not None:

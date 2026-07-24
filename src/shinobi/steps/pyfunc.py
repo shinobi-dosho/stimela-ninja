@@ -71,7 +71,7 @@ from pydantic import BaseModel, create_model
 from shinobi.backends._stream import run_streaming
 from shinobi.config import AppConfig
 from shinobi.exceptions import CabRunError
-from shinobi.results import StepResult
+from shinobi.results import StepResult, explain_returncode
 from shinobi.sandbox import (
     absolutize_path_inputs,
     create_sandbox,
@@ -452,8 +452,8 @@ def _run_pystep_subprocess(
             stderr_tail = (run.stderr or "").strip()
             detail = f"\nstderr:\n{stderr_tail}" if stderr_tail else ""
             if sandbox_dir is not None:
-                raise CabRunError(f"pystep '{scope.name}' failed (returncode {run.returncode}); its sandbox is kept for post-mortem at {sandbox_dir}{detail}")
-            raise CabRunError(f"pystep '{scope.name}' failed (returncode {run.returncode}){detail}")
+                raise CabRunError(f"pystep '{scope.name}' failed (returncode {explain_returncode(run.returncode)}); its sandbox is kept for post-mortem at {sandbox_dir}{detail}")
+            raise CabRunError(f"pystep '{scope.name}' failed (returncode {explain_returncode(run.returncode)}){detail}")
 
         # Exit 0 means the runner ran to completion, and it always writes
         # the outputs file -- so a missing/unreadable one is a broken
@@ -489,6 +489,7 @@ def _run_pystep_subprocess(
             kind="pyfunc",
             backend=launcher.backend_name,
             sandboxed=sandbox_dir is not None,
+            resources=scope.resources,
             **launch.provenance,
         )
 
