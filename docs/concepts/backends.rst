@@ -85,6 +85,47 @@ need one outside the CLI:
 
     backend = get_backend("native")
 
+Resource limits
+----------------
+
+When a step declares a footprint (see :doc:`recipes`), what happens to that
+declaration depends on the backend -- and the difference is the difference
+between a soft scheduling hint and a real limit:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 80
+
+   * - Backend
+     - What a declaration does
+   * - ``docker`` / ``podman``
+     - Emits ``--cpus`` / ``--memory``. Enforced by the container runtime: a
+       runaway is killed inside its own cgroup rather than eating memory its
+       siblings are using.
+   * - ``apptainer``
+     - Emits ``--cpus`` / ``--memory``, same spelling and same effect
+       (verified: ``--memory 256M`` really does produce a cgroup scope with
+       ``memory.max=268435456``). Needs cgroup delegation -- cgroups v2 under
+       systemd. Where that is unavailable apptainer fails loudly rather than
+       running unconstrained, which is the right way round.
+   * - ``kubernetes``
+     - Sets container ``resources.requests`` and ``resources.limits`` to the
+       same values, so the cluster reserves exactly what was declared. If no
+       node can satisfy the request the pod would sit ``Pending`` forever, so
+       shinobi surfaces that as an error instead of waiting.
+   * - ``slurm``
+     - Emits ``#SBATCH --cpus-per-task`` / ``--mem``, rounded up. Any
+       explicitly configured ``sbatch_opts`` win over the derived values.
+   * - ``native`` / ``venv``
+     - **Nothing.** There is no container and no cgroup, so the declaration is
+       honoured only by shinobi's own admission control -- it decides whether
+       to *start* the step and cannot constrain it afterwards. If a native
+       step's declaration is wrong, nothing catches it.
+
+The same values also feed the local scheduler's admission control, so a step's
+declaration is used consistently whether it gates a thread pool or a cluster
+allocation.
+
 Verification status
 --------------------
 

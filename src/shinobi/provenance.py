@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, computed_field
 
 from shinobi import __version__ as _shinobi_version
+from shinobi.resources import Resources
 from shinobi.results import StepResult
 
 if TYPE_CHECKING:
@@ -65,6 +66,12 @@ class StepRecord(BaseModel):
     venv: str | None = None
     venv_digest: str | None = None
     sandboxed: bool = False
+    # What the step declared it needed, if anything. Purely diagnostic: it is
+    # what turns a post-mortem `returncode -9` into "SIGKILL, and it had
+    # declared 200GiB". Deliberately NOT restored by `apply_manifest_pins` --
+    # a footprint describes the box a run happened on, not the run itself, so
+    # replaying it elsewhere should use that machine's own declaration.
+    resources: Resources | None = None
     inputs: dict[str, Any]
     outputs: dict[str, Any]
     steps: list["StepRecord"] = []
@@ -135,6 +142,7 @@ def _record(result: StepResult, name: str | None = None) -> StepRecord:
         venv=result.venv,
         venv_digest=result.venv_digest,
         sandboxed=result.sandboxed,
+        resources=result.resources,
         inputs=_jsonable(result.inputs),
         outputs=_jsonable(result.outputs),
         steps=[_record(sub, name=key) for key, sub in (result.sub_results or {}).items()],

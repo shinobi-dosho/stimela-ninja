@@ -573,6 +573,7 @@ def _run_cab(
         venv=run.venv,
         venv_digest=run.venv_digest,
         sandboxed=sandbox_dir is not None,
+        resources=cab.resources,
     )
 
 
@@ -781,6 +782,7 @@ def _aggregate_scatter_results(
         venv=slices[0].venv if slices else None,
         venv_digest=slices[0].venv_digest if slices else None,
         sandboxed=any(s.sandboxed for s in slices),
+        resources=scope.resources,
         # Every slice is keyed independently, but downstream wires the
         # *gathered* result -- so its provenance is all the slices' keys
         # together, and a change in any one of them invalidates dependents.

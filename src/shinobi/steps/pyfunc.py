@@ -489,6 +489,7 @@ def _run_pystep_subprocess(
             kind="pyfunc",
             backend=launcher.backend_name,
             sandboxed=sandbox_dir is not None,
+            resources=scope.resources,
             **launch.provenance,
         )
 

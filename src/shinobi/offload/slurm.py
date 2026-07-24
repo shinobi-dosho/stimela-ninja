@@ -40,6 +40,7 @@ from shinobi.backends.slurm_script import (
     parse_sbatch_job_id,
     sacct_job_fields,
     safe_slurm_name,
+    sbatch_resource_opts,
 )
 from shinobi.exceptions import BackendError
 from shinobi.graph import check_offloadable
@@ -124,7 +125,10 @@ def _script(
         chdir=workdir,
         stdout_path=log_dir / f"{job_name}.out",
         stderr_path=log_dir / f"{job_name}.err",
-        sbatch_opts=sbatch_opts,
+        # `compile_slurm` passes one workflow-global `sbatch_opts` to every
+        # job; merging the step's own declaration in here is what makes the
+        # emitted allocation per-step. Explicit options still win.
+        sbatch_opts={**sbatch_resource_opts(cab.resources), **sbatch_opts},
         argv=argv,
         error=OffloadCompileError,
         skip_if_exists=skip_if_exists,

@@ -6,6 +6,7 @@ import pytest
 from shinobi.backends.kubernetes import KubernetesBackend
 from shinobi.exceptions import BackendError
 from shinobi.loaders import build_model
+from shinobi.resources import Resources
 from shinobi.steps.schema import Cab
 
 
@@ -127,3 +128,68 @@ def test_job_is_cleaned_up_even_when_wait_raises(monkeypatch):
     with pytest.raises(BackendError):
         KubernetesBackend().run(make_cab(), ["tool"], {})
     assert calls[-1][0] == "delete"
+
+
+# -- declared resource limits --
+
+
+def test_manifest_sets_requests_and_limits_from_declaration():
+    cab = make_cab().model_copy(update={"resources": Resources(cpus=4, memory="8GiB")})
+    manifest = KubernetesBackend(namespace="ns", workdir="/work")._manifest(cab, ["tool"], {}, "job-1")
+    container = manifest["spec"]["template"]["spec"]["containers"][0]
+    expected = {"cpu": "4", "memory": str(8 * 1024**3)}
+    # requests == limits: reserve exactly what was declared, don't overcommit
+    assert container["resources"] == {"requests": expected, "limits": expected}
+
+
+def test_manifest_omits_resources_when_nothing_is_declared():
+    manifest = KubernetesBackend(namespace="ns", workdir="/work")._manifest(make_cab(), ["tool"], {}, "job-1")
+    assert "resources" not in manifest["spec"]["template"]["spec"]["containers"][0]
+
+
+def test_wait_raises_instead_of_hanging_on_an_unschedulable_pod():
+    """Requests larger than any node make a pod Pending forever -- it reaches
+    neither Complete nor Failed, so the poll loop would wait for eternity.
+    """
+    backend = KubernetesBackend(namespace="ns", workdir="/work")
+    job_json = json.dumps({"status": {"conditions": []}})
+    pods_json = json.dumps(
+        {
+            "items": [
+                {
+                    "status": {
+                        "phase": "Pending",
+                        "conditions": [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable", "message": "0/1 nodes are available: insufficient memory"}],
+                    }
+                }
+            ]
+        }
+    )
+
+    def fake_kubectl(*args, **kwargs):
+        payload = pods_json if args[1] == "pods" else job_json
+        return subprocess.CompletedProcess(args, 0, payload, "")
+
+    backend._kubectl = fake_kubectl
+    with pytest.raises(BackendError, match="cannot be scheduled"):
+        backend._wait("job-1")
+
+
+def test_wait_keeps_polling_while_a_pod_is_merely_starting():
+    """A Pending pod that is not *unschedulable* is normal; don't bail on it."""
+    backend = KubernetesBackend(namespace="ns", workdir="/work")
+    states = iter(
+        [
+            json.dumps({"status": {"conditions": []}}),
+            json.dumps({"status": {"conditions": [{"type": "Complete", "status": "True"}]}}),
+        ]
+    )
+    pods_json = json.dumps({"items": [{"status": {"phase": "Pending", "conditions": [{"type": "PodScheduled", "status": "False", "reason": "ContainerCreating"}]}}]})
+
+    def fake_kubectl(*args, **kwargs):
+        payload = pods_json if args[1] == "pods" else next(states)
+        return subprocess.CompletedProcess(args, 0, payload, "")
+
+    backend._kubectl = fake_kubectl
+    backend.poll_interval = 0
+    assert backend._wait("job-1") == "Complete"

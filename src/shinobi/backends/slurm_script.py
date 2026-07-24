@@ -12,11 +12,44 @@ never goes through the offload compiler.
 
 from __future__ import annotations
 
+import math
 import re
 import shlex
 from pathlib import Path
 
+from shinobi.resources import Resources
+
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def sbatch_resource_opts(resources: Resources | None) -> dict[str, str]:
+    """Slurm's spelling of a declared resource footprint.
+
+    Lives here rather than in `shinobi.resources` for the same reason the
+    rest of this module does: it is sbatch grammar, and both the blocking
+    backend and the offload compiler need exactly one copy of it.
+
+    Slurm wants whole cores and (by default) megabytes, so both values are
+    rounded **up** -- asking for less than was declared would quietly make
+    the cluster's allocation smaller than the budget the local scheduler
+    admitted against.
+
+    Args:
+        resources: The step's declared footprint, or None.
+
+    Returns:
+        `#SBATCH` options as `{option: value}`, empty when nothing is
+        declared. Callers merge this *under* any explicitly-configured
+        `sbatch_opts`, so an operator's own `--mem` always wins.
+    """
+    if resources is None:
+        return {}
+    opts: dict[str, str] = {}
+    if resources.cpus is not None:
+        opts["cpus-per-task"] = str(max(1, math.ceil(resources.cpus)))
+    if resources.memory is not None:
+        opts["mem"] = f"{max(1, math.ceil(resources.memory / 1024**2))}M"
+    return opts
 
 
 def safe_slurm_name(name: str, kind: str, *, error: type[Exception] = ValueError) -> str:

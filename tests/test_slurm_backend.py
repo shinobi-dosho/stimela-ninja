@@ -4,8 +4,10 @@ from pathlib import Path
 import pytest
 
 from shinobi.backends.slurm import SlurmBackend
+from shinobi.backends.slurm_script import sbatch_resource_opts
 from shinobi.exceptions import BackendError
 from shinobi.loaders import build_model
+from shinobi.resources import Resources
 from shinobi.steps.schema import Cab
 
 
@@ -112,3 +114,31 @@ def test_run_end_to_end_returns_backendrun(monkeypatch):
     run = backend.run(cab, ["tool"], {})
     assert run.success
     assert "answer=99" in run.stdout
+
+
+# -- declared resource limits --
+
+
+def test_script_emits_sbatch_directives_from_declaration():
+    backend = SlurmBackend(container_runtime=None, workdir="/work")
+    cab = make_cab(resources=Resources(cpus=4, memory="8GiB"))
+    script = backend._script(cab, ["tool"], {}, Path("/tmp/out.log"), Path("/tmp/err.log"))
+    assert "#SBATCH --cpus-per-task=4" in script
+    assert f"#SBATCH --mem={8 * 1024}M" in script
+
+
+def test_explicit_sbatch_opts_win_over_the_declaration():
+    """An operator who has configured --mem for their cluster keeps it."""
+    backend = SlurmBackend(container_runtime=None, workdir="/work", sbatch_opts={"mem": "64G"})
+    cab = make_cab(resources=Resources(memory="8GiB"))
+    script = backend._script(cab, ["tool"], {}, Path("/tmp/out.log"), Path("/tmp/err.log"))
+    assert "#SBATCH --mem=64G" in script
+    assert f"--mem={8 * 1024}M" not in script
+
+
+def test_fractional_cpus_and_partial_megabytes_round_up():
+    """Rounding down would allocate less than the local scheduler admitted."""
+    assert sbatch_resource_opts(Resources(cpus=2.5)) == {"cpus-per-task": "3"}
+    assert sbatch_resource_opts(Resources(memory=1024**2 + 1)) == {"mem": "2M"}
+    assert sbatch_resource_opts(None) == {}
+    assert sbatch_resource_opts(Resources()) == {}

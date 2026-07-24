@@ -163,6 +163,12 @@ run, so it writes a fresh manifest of what it ran.
 
 What replay guarantees -- and what it refuses:
 
+* **Declared resources are recorded, not restored.** Each step's
+  ``resources`` footprint (see :doc:`recipes`) is written into the manifest,
+  because a bare ``returncode -9`` months later tells you nothing while
+  ``-9`` beside ``memory=200GiB`` is a diagnosis. Replay deliberately does
+  *not* re-apply it: a footprint describes the machine a run happened on, not
+  the run itself, so replaying elsewhere uses that machine's own declaration.
 * **Unpinned manifests are refused.** A manifest with ``pinned: false``
   cannot promise the same images run again, so replay errors, naming the
   unpinned steps; ``--allow-unpinned`` proceeds anyway, running those steps

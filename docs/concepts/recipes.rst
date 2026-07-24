@@ -120,6 +120,81 @@ safety: at ``1`` no ``MUTABLE`` input can be shared between two steps running
 at once. With ``max_workers > 1`` you must ensure two concurrently-running
 steps never share a mutable object -- see :doc:`config`.
 
+Declaring what a step costs
+---------------------------
+
+``max_workers`` counts slots, not cost. That is fine when steps are cheap and
+interchangeable, and badly wrong when they are not: a ``wsclean`` or DDFacet
+step is often sized to use most of a machine on its own, so five of them
+running because five slots were free will oversubscribe the CPU and blow
+through the memory the machine actually has.
+
+A step can therefore declare a footprint, and the scheduler admits work against
+a budget as well as a slot count:
+
+.. code-block:: python
+
+    from shinobi.resources import Resources
+
+    recipe.add_step("selfcal", selfcal_cab, ms=recipe.inputs.ms,
+                    resources=Resources(cpus=16, memory="200GiB"))
+
+``resources=`` is also accepted by ``@recipe.step`` and ``@shinobi.step``, and
+can be set directly on a ``Cab``. Sizes accept ``GB``/``GiB``/``T`` suffixes
+(SI is decimal, IEC binary: ``200GB`` is 200×1000³, ``200GiB`` is 200×1024³).
+
+The rules are deliberately few:
+
+* **Undeclared means free.** A step that declares nothing is admitted on
+  ``max_workers`` alone, exactly as before. A budget only constrains what you
+  have actually described, so it is worth only as much as your declarations.
+* **Admission blocks in declaration order.** If the next step does not fit, the
+  scheduler waits rather than skipping ahead to a smaller one, so a large step
+  cannot be starved by a stream of small ones. Across sibling recipes sharing
+  one budget, the same guarantee is kept by serving waiters first-come.
+* **One budget covers the whole run.** Nested recipes share the *parent's*
+  budget rather than each creating their own -- otherwise a pipeline that nests
+  each parallel branch as its own ``Recipe`` (a common shape) would give every
+  branch its own scheduler and no shared limit at all, which is the exact
+  situation this is meant to prevent. Declare footprints on the leaf steps that
+  do the work; declaring them on a nested ``Recipe`` is rejected by
+  ``build_graph``, since a recipe is not a unit of execution.
+* **A step bigger than the whole budget still runs.** Waiting could never make
+  it fit, so it is admitted immediately with a warning, and it holds everything
+  else back until it finishes.
+
+``ninja run --dryrun`` shows declared footprints in each step's box, so you can
+see before running which branches will actually overlap.
+
+Declaration is not enforcement -- locally
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The scheduler decides *whether to start* a step; it cannot hold a running
+process to its word. What it does is stop the machine from being oversubscribed
+in the first place.
+
+Actual enforcement depends on where the step runs, and the difference is worth
+knowing (see :doc:`backends`): container backends and cluster backends really
+do constrain the process, so a runaway dies in its own cgroup instead of taking
+its siblings' memory with it. A ``native`` or ``venv`` step has **no backstop at
+all** -- if its declaration is wrong, nothing catches it.
+
+One residual gap: the "a reservation is never held by something waiting on the
+budget" rule is enforced by skipping nested ``Recipe`` steps. A ``@shinobi.pystep``
+or bare ``Scope`` step that declares resources *and* internally dispatches a
+sub-recipe defeats that, and can deadlock. Don't do that; declare resources on
+steps that do work, not on steps that orchestrate other steps.
+
+When a step is killed
+~~~~~~~~~~~~~~~~~~~~~
+
+A process killed by a signal reports a negative exit status, and a bare ``-9``
+is the least informative thing a failed step can say -- it is also exactly what
+exceeding a memory limit produces. Shinobi names the signal in the failure
+message, and calls out ``SIGKILL`` as the usual out-of-memory culprit. With
+``provenance`` enabled the run manifest also records what each step declared,
+so a post-mortem can compare the declaration against what happened.
+
 However steps interleave, results are **deterministic**: stdout, stderr, the
 aggregated outputs, and the recipe's exit code are all assembled in declaration
 order, not completion order. On the first failure -- a non-zero exit or a

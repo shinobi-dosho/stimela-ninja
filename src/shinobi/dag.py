@@ -35,6 +35,13 @@ class TraceStep:
     id: int
     name: str
     depends_on: set[int] = field(default_factory=set)
+    # The step's declared resource footprint, rendered in its box. `--dryrun`
+    # shows what is *declared*, and a footprint is one of the few
+    # declarations that changes the shape of a run rather than its content:
+    # it is what turns parallel branches into a queue. Seeing that before
+    # running, rather than inferring it from timings afterwards, is the
+    # whole point of the dry run.
+    resources: str = ""
 
 
 def graph_nodes(recipe: "Recipe") -> list[TraceStep]:
@@ -53,7 +60,8 @@ def graph_nodes(recipe: "Recipe") -> list[TraceStep]:
         depends_on = set(graph.deps[i])
         if not depends_on and nodes:
             depends_on = {nodes[-1].id}
-        nodes.append(TraceStep(id=i, name=name, depends_on=depends_on))
+        declared = recipe.steps[i].step.resources
+        nodes.append(TraceStep(id=i, name=name, depends_on=depends_on, resources=declared.describe() if declared else ""))
     return nodes
 
 
@@ -70,13 +78,16 @@ def _group_into_batches(steps: list[TraceStep]) -> list[list[TraceStep]]:
     return batches
 
 
-def _box(name: str) -> str:
-    return f"[ {name} ]"
+def _box(step: TraceStep) -> str:
+    """A step's box. A declared footprint rides along in the label, since it
+    is what decides whether two boxes on the same row actually run at the
+    same time."""
+    return f"[ {step.name} ]" if not step.resources else f"[ {step.name} ({step.resources}) ]"
 
 
 def _row_layout(batch: list[TraceStep], gap: int = 3) -> tuple[str, list[int]]:
     """A batch's row text, and the column-center of each box within it."""
-    boxes = [_box(s.name) for s in batch]
+    boxes = [_box(s) for s in batch]
     row = (" " * gap).join(boxes)
     centers = []
     col = 0

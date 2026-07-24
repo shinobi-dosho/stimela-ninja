@@ -17,6 +17,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from shinobi.resources import Resources
+
 
 def explain_returncode(returncode: int) -> str:
     """Render an exit status for a human, naming the signal if there was one.
@@ -132,6 +134,12 @@ class StepResult:
     # not the cache key, so output paths are normalized before recording
     # (see `sandbox.relativize_path_outputs`).
     sandboxed: bool = False
+    # What this step declared it needed (`Scope.resources`). Recorded purely
+    # so a post-mortem can compare the declaration against what happened:
+    # "killed by SIGKILL, declared 200GiB" is a diagnosis, whereas a bare
+    # `-9` months later is not. Not restored on replay -- see
+    # `provenance.apply_manifest_pins`.
+    resources: Resources | None = None
     sub_results: "dict[str, StepResult] | None" = None
     # Provenance keys, for the cache's upstream-invalidation term (see
     # `shinobi.cache`). `cache_key` is this step's own key, set by `_dispatch`

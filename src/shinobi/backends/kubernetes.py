@@ -38,6 +38,29 @@ from shinobi.steps.schema import Cab
 _TERMINAL_CONDITIONS = {"Complete", "Failed"}
 
 
+def _resource_requirements(cab: Cab) -> dict[str, Any]:
+    """A `resources` block for the container spec, or `{}` if nothing is
+    declared.
+
+    `requests` and `limits` are set to the same values, so the cluster
+    reserves exactly what the step said it needs rather than overcommitting
+    it. Memory is emitted as a plain byte count -- valid `Quantity` syntax
+    and exact, where converting to `Gi` would round (200 GB is 186.26 Gi)
+    for no benefit.
+    """
+    resources = cab.resources
+    if resources is None:
+        return {}
+    quantities: dict[str, str] = {}
+    if resources.cpus is not None:
+        quantities["cpu"] = f"{resources.cpus:g}"
+    if resources.memory is not None:
+        quantities["memory"] = str(resources.memory)
+    if not quantities:
+        return {}
+    return {"resources": {"requests": dict(quantities), "limits": dict(quantities)}}
+
+
 @register
 class KubernetesBackend(Backend):
     """Backend that runs cabs as Kubernetes batch Jobs via `kubectl`."""
@@ -87,6 +110,7 @@ class KubernetesBackend(Backend):
                                 "command": argv,
                                 "workingDir": self.workdir,
                                 "volumeMounts": mounts,
+                                **_resource_requirements(cab),
                             }
                         ],
                         "volumes": volumes,
@@ -107,7 +131,29 @@ class KubernetesBackend(Backend):
             for condition in status.get("conditions", []):
                 if condition.get("status") == "True" and condition.get("type") in _TERMINAL_CONDITIONS:
                     return condition["type"]
+            self._check_schedulable(job_name)
             time.sleep(self.poll_interval)
+
+    def _check_schedulable(self, job_name: str) -> None:
+        """Fail fast if the job's pod can never be placed.
+
+        An unschedulable pod stays `Pending` forever and reaches neither
+        `Complete` nor `Failed`, so the poll loop above would wait on it
+        indefinitely. That became reachable the moment steps started
+        declaring resources: requests larger than any node in the cluster
+        are exactly how a pod becomes unplaceable, and a silent hang is the
+        worst possible way to report "you asked for more than exists".
+        """
+        proc = self._kubectl("get", "pods", "-l", f"job-name={job_name}", "-o", "json")
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return  # the pod may simply not exist yet; keep polling
+        for pod in json.loads(proc.stdout).get("items", []):
+            pod_status = pod.get("status", {})
+            if pod_status.get("phase") != "Pending":
+                continue
+            for condition in pod_status.get("conditions", []):
+                if condition.get("type") == "PodScheduled" and condition.get("reason") == "Unschedulable":
+                    raise BackendError(f"job '{job_name}' cannot be scheduled: {condition.get('message', 'no node satisfies its requirements')}")
 
     def _pod_name(self, job_name: str) -> str:
         proc = self._kubectl("get", "pods", "-l", f"job-name={job_name}", "-o", "jsonpath={.items[0].metadata.name}")

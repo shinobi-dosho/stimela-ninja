@@ -29,7 +29,7 @@ from typing import Any
 
 from shinobi.backends import Backend, register
 from shinobi.backends.container import build_container_argv
-from shinobi.backends.slurm_script import build_sbatch_script, parse_sbatch_job_id, sacct_job_fields
+from shinobi.backends.slurm_script import build_sbatch_script, parse_sbatch_job_id, sacct_job_fields, sbatch_resource_opts
 from shinobi.exceptions import BackendError
 from shinobi.results import BackendRun
 from shinobi.steps.schema import Cab
@@ -102,7 +102,10 @@ class SlurmBackend(Backend):
             chdir=self.workdir,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
-            sbatch_opts=self.sbatch_opts,
+            # Derived limits go *under* the configured options, so an
+            # operator's explicit --mem/--cpus-per-task always wins over
+            # whatever the cab declared.
+            sbatch_opts={**sbatch_resource_opts(cab.resources), **self.sbatch_opts},
             argv=self._inner_argv(cab, argv, inputs, pin=pin)[0],
             error=BackendError,
         )
