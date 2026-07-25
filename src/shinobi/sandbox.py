@@ -48,7 +48,7 @@ import warnings
 from pathlib import Path
 from typing import Any
 
-from shinobi.exceptions import ParameterError
+from shinobi.exceptions import ParameterError, StepError
 from shinobi.loaders._modelgen import is_file_dtype
 from shinobi.steps.schema import Cab, Scope, path_fields
 
@@ -234,12 +234,18 @@ def relativize_path_outputs(scope: Scope, outputs: Any, workspace: Path) -> Any:
     return scope.outputs_model(**values)
 
 
-def _relative_targets(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbox_dir: Path) -> list[str]:
-    """The sandbox-relative paths harvest should rescue: declared path-typed
-    output field values (absolute ones already live at their destination and
-    are skipped), plus `scope.harvest` glob matches.
+def _relative_targets(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbox_dir: Path) -> dict[str, bool]:
+    """The sandbox-relative paths harvest should rescue, each mapped to
+    whether it is **declared**: a path-typed output field value (absolute
+    ones already live at their destination and are skipped) is declared;
+    a `scope.harvest` glob match is not -- its name was chosen by the tool
+    at run time, not by the schema.
+
+    That distinction is what `_move` uses to decide how destructive it is
+    allowed to be at the destination. A path reached both ways counts as
+    declared.
     """
-    targets: list[str] = []
+    targets: dict[str, bool] = {}
     for name in sorted(path_fields(scope.outputs_model)):
         value = getattr(outputs, name, None)
         if value is None:
@@ -247,7 +253,7 @@ def _relative_targets(scope: Scope, outputs: Any, prepared: dict[str, Any], sand
         for item in value if isinstance(value, (list, tuple)) else [value]:
             path = Path(str(item))
             if not path.is_absolute():
-                targets.append(str(path))
+                targets[str(path)] = True
     for pattern in scope.harvest:
         try:
             resolved = pattern.format(**prepared)
@@ -273,16 +279,36 @@ def _relative_targets(scope: Scope, outputs: Any, prepared: dict[str, Any], sand
             )
             continue
         for match in sandbox_dir.glob(resolved):
-            targets.append(str(match.relative_to(sandbox_dir)))
+            targets.setdefault(str(match.relative_to(sandbox_dir)), False)
     return targets
 
 
-def _move(src: Path, dst: Path) -> None:
+def _move(src: Path, dst: Path, declared: bool) -> None:
     """Move `src` over `dst`, replacing what's there -- the same overwrite
     the tool itself would have done had it run in the workspace directly.
+
+    Overwriting a *file* is that ordinary overwrite, and re-running a step
+    is supposed to replace the previous run's products. Replacing a
+    *directory* means `rmtree`, which is not an overwrite but a deletion of
+    everything underneath -- and for an undeclared (`scope.harvest`
+    glob-matched) target the colliding name was chosen by the tool at run
+    time, so it may name workspace data this step knows nothing about (an
+    MS, a directory of unrelated products). Rather than destroy it silently,
+    refuse: the run stops with both paths named, and the user either
+    declares the output or moves the directory aside.
+
+    Raises:
+        StepError: If `dst` is an existing directory and `declared` is False.
     """
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.is_dir() and not dst.is_symlink():
+        if not declared:
+            raise StepError(
+                f"harvest would replace the directory '{dst}', which this step never declared as an "
+                f"output -- it matched a harvest glob, so the name came from the tool, not the schema. "
+                f"Refusing to delete it. Declare it as an output field if it really is this step's "
+                f"product, or move the existing directory aside."
+            )
         shutil.rmtree(dst)
     elif dst.exists() or dst.is_symlink():
         dst.unlink()
@@ -302,12 +328,13 @@ def harvest_outputs(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbo
     the same destination -- rmtree-ing the just-harvested child.
     """
     moved: list[Path] = []
-    for rel in sorted(set(_relative_targets(scope, outputs, prepared, sandbox_dir)), key=lambda rel: Path(rel).parts):
+    targets = _relative_targets(scope, outputs, prepared, sandbox_dir)
+    for rel in sorted(targets, key=lambda rel: Path(rel).parts):
         src = sandbox_dir / rel
         if not src.exists() and not src.is_symlink():
             continue
         dst = workspace / rel
-        _move(src, dst)
+        _move(src, dst, targets[rel])
         moved.append(dst)
     return moved
 

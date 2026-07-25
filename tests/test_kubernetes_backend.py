@@ -37,11 +37,11 @@ def test_manifest_is_a_job_with_image_and_command():
 
 def test_manifest_no_image_raises():
     with pytest.raises(BackendError):
-        KubernetesBackend()._manifest(make_cab(image=None), ["tool"], {}, "job-abc")
+        KubernetesBackend(namespace="ns")._manifest(make_cab(image=None), ["tool"], {}, "job-abc")
 
 
 def test_manifest_mounts_file_like_params_as_hostpath_volumes():
-    backend = KubernetesBackend(workdir="/work")
+    backend = KubernetesBackend(namespace="ns", workdir="/work")
     cab = make_cab({"ms": ("MS", False, None)})
     manifest = backend._manifest(cab, ["tool"], {"ms": "/data/foo.ms"}, "job-abc")
     spec = manifest["spec"]["template"]["spec"]
@@ -52,7 +52,7 @@ def test_manifest_mounts_file_like_params_as_hostpath_volumes():
 
 
 def test_run_end_to_end_returns_backendrun(monkeypatch):
-    backend = KubernetesBackend(poll_interval=0)
+    backend = KubernetesBackend(namespace="ns", poll_interval=0)
     calls = []
 
     def fake_kubectl(self, *args, input=None):
@@ -77,7 +77,7 @@ def test_run_end_to_end_returns_backendrun(monkeypatch):
 
 
 def test_run_failed_job_reports_container_exit_code(monkeypatch):
-    backend = KubernetesBackend(poll_interval=0)
+    backend = KubernetesBackend(namespace="ns", poll_interval=0)
 
     def fake_kubectl(self, *args, input=None):
         if args[0] == "apply":
@@ -108,7 +108,7 @@ def test_apply_failure_raises_backend_error(monkeypatch):
 
     monkeypatch.setattr(KubernetesBackend, "_kubectl", fake_kubectl)
     with pytest.raises(BackendError):
-        KubernetesBackend().run(make_cab(), ["tool"], {})
+        KubernetesBackend(namespace="ns").run(make_cab(), ["tool"], {})
 
 
 def test_job_is_cleaned_up_even_when_wait_raises(monkeypatch):
@@ -126,8 +126,53 @@ def test_job_is_cleaned_up_even_when_wait_raises(monkeypatch):
 
     monkeypatch.setattr(KubernetesBackend, "_kubectl", fake_kubectl)
     with pytest.raises(BackendError):
-        KubernetesBackend().run(make_cab(), ["tool"], {})
+        KubernetesBackend(namespace="ns").run(make_cab(), ["tool"], {})
     assert calls[-1][0] == "delete"
+
+
+# -- host-access blast radius --
+
+
+def test_namespace_is_required():
+    """hostPath mounts are node-level host filesystem access; the backend
+    must not silently pick a namespace on the user's behalf.
+    """
+    with pytest.raises(BackendError, match="requires an explicit namespace"):
+        KubernetesBackend()
+
+
+def test_readonly_inputs_are_mounted_readonly():
+    """A `writable: false` input earns a `:ro` bind on the container backend;
+    the same classification must survive into the pod's volumeMounts.
+    """
+    cab = make_cab().model_copy(update={"inputs_model": build_model("In", {"ref": ("File", False, None)}, extras={"ref": {"writable": False}})})
+    backend = KubernetesBackend(namespace="ns", workdir="/work")
+    manifest = backend._manifest(cab, ["tool"], {"ref": "/refdata/table.txt"}, "job-1")
+    mounts = {m["mountPath"]: m.get("readOnly", False) for m in manifest["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]}
+    assert mounts["/refdata"] is True
+    assert mounts["/work"] is False  # the workdir is still writable
+
+
+def test_pod_runs_as_the_invoking_user_non_root():
+    import os
+
+    manifest = KubernetesBackend(namespace="ns", workdir="/work", run_as_user=1234, run_as_group=5678)._manifest(make_cab(), ["tool"], {}, "job-1")
+    spec = manifest["spec"]["template"]["spec"]
+    assert spec["securityContext"]["runAsUser"] == 1234
+    assert spec["securityContext"]["runAsGroup"] == 5678
+    assert spec["securityContext"]["runAsNonRoot"] is True
+    container_ctx = spec["containers"][0]["securityContext"]
+    assert container_ctx["allowPrivilegeEscalation"] is False
+    assert container_ctx["capabilities"] == {"drop": ["ALL"]}
+
+    # defaults follow the invoking user, so hostPath writes are owned by them
+    default = KubernetesBackend(namespace="ns", workdir="/work")._manifest(make_cab(), ["tool"], {}, "job-1")
+    assert default["spec"]["template"]["spec"]["securityContext"]["runAsUser"] == os.getuid()
+
+
+def test_root_uid_does_not_get_a_contradictory_run_as_non_root():
+    manifest = KubernetesBackend(namespace="ns", workdir="/work", run_as_user=0, run_as_group=0)._manifest(make_cab(), ["tool"], {}, "job-1")
+    assert "runAsNonRoot" not in manifest["spec"]["template"]["spec"]["securityContext"]
 
 
 # -- declared resource limits --

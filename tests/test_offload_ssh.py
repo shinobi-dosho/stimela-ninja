@@ -29,6 +29,29 @@ def test_parse_remote_rejects_missing_colon():
         parse_remote("no-colon-here")
 
 
+@pytest.mark.parametrize(
+    "spec",
+    [
+        # ssh/rsync take the host positionally, so a leading '-' is read as
+        # an option -- `-oProxyCommand=...` runs a command on the local box.
+        "-oProxyCommand=touch /tmp/pwned:/path",
+        "-J evil:/path",
+        # nothing shell-ish should survive into an argv element either
+        "host;touch /tmp/x:/path",
+        "$(id):/path",
+    ],
+)
+def test_parse_remote_rejects_option_shaped_and_exotic_hosts(spec):
+    with pytest.raises(ValueError, match="not a plain"):
+        parse_remote(spec)
+
+
+def test_parse_remote_still_accepts_ordinary_hosts():
+    assert parse_remote("host:/p").host == "host"
+    assert parse_remote("user@host.example.com:/p").host == "user@host.example.com"
+    assert parse_remote("user-name@ilifu-slurm-1:/p").host == "user-name@ilifu-slurm-1"
+
+
 # -- find_cab_deps --
 
 
@@ -80,7 +103,7 @@ def test_sync_to_remote_mkdirs_then_rsyncs_with_relative_paths(monkeypatch):
     monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", fake_run)
     sync_to_remote(FIXTURE_DIR, [Path("recipe.py"), Path("cabs/tool.yml")], RemoteSpec("host", "/remote/path"))
 
-    assert calls[0][0] == ["ssh", "host", "bash -lc 'mkdir -p /remote/path'"]
+    assert calls[0][0] == ["ssh", "--", "host", "bash -lc 'mkdir -p /remote/path'"]
     rsync_args, rsync_kwargs = calls[1]
     assert rsync_args[0] == "rsync"
     assert "-R" in rsync_args
@@ -115,8 +138,8 @@ def test_launch_remote_captures_pid_from_echoed_output(monkeypatch):
     assert handle.host == "host"
     assert handle.path == "/remote/path"
     args = captured["args"]
-    assert args[:2] == ["ssh", "host"]
-    assert len(args) == 3  # single trailing arg -- see _ssh()'s docstring on why
+    assert args[:3] == ["ssh", "--", "host"]
+    assert len(args) == 4  # single trailing arg after `-- host` -- see _ssh()'s docstring on why
     remote_cmd = args[-1]
     assert remote_cmd.startswith("bash -lc ")
     assert "setsid bash -c" in remote_cmd
@@ -146,8 +169,8 @@ def test_status_ssh_sends_a_single_trailing_arg_and_uses_absolute_exit_path(monk
     status_ssh(handle)
 
     args = captured["args"]
-    assert args[:2] == ["ssh", "host"]
-    assert len(args) == 3
+    assert args[:3] == ["ssh", "--", "host"]
+    assert len(args) == 4  # single trailing arg
     assert "/remote/path/e.exit" in args[-1]
 
 

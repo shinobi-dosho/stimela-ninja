@@ -1,6 +1,9 @@
 """Unit coverage for run-manifest provenance and image pinning."""
 
+import contextlib
 import hashlib
+import io
+import json as _json
 
 import pytest
 from pydantic import BaseModel
@@ -17,6 +20,13 @@ class _M(BaseModel):
 
 
 _CONTAINERISH = {"docker", "podman", "apptainer", "slurm"}
+
+
+def _json_response(payload):
+    """A stand-in for `urlopen`'s context-managed response, carrying just
+    enough for `json.load` to read `payload` back out.
+    """
+    return contextlib.closing(io.BytesIO(_json.dumps(payload).encode()))
 
 
 def _cab_result(name, *, backend=None, image=None, digest=None, cached=False, containerized=None, venv=None, venv_digest=None):
@@ -149,14 +159,95 @@ def test_auth_keys_include_docker_hub_legacy_key():
 
 
 def test_authorize_basic_scheme_uses_creds():
-    header = C._authorize('Basic realm="x"', ("alice", "s3cret"))
+    header = C._authorize('Basic realm="x"', ("alice", "s3cret"), "quay.io")
     assert header == C._basic_auth(("alice", "s3cret"))
-    assert C._authorize('Basic realm="x"', None) is None  # no creds -> can't
+    assert C._authorize('Basic realm="x"', None, "quay.io") is None  # no creds -> can't
 
 
 def test_authorize_bearer_delegates_to_token(monkeypatch):
-    monkeypatch.setattr(C, "_bearer_token", lambda challenge, creds=None: "tok123")
-    assert C._authorize('Bearer realm="x",service="y"', None) == "Bearer tok123"
+    monkeypatch.setattr(C, "_bearer_token", lambda challenge, creds, registry: "tok123")
+    assert C._authorize('Bearer realm="x",service="y"', None, "quay.io") == "Bearer tok123"
+
+
+# -- realm validation: credentials only go to the registry or its token host --
+
+
+@pytest.mark.parametrize(
+    "realm, registry, expected",
+    [
+        # the registry itself, over https -- the ordinary case
+        ("https://quay.io/v2/auth", "quay.io", True),
+        # Docker Hub's real, allowlisted delegation to a different host
+        ("https://auth.docker.io/token", "registry-1.docker.io", True),
+        # an unrelated host named by the challenge: this is the attack
+        ("https://evil.example.com/token", "quay.io", False),
+        # the right host but plaintext -- creds must not cross http
+        ("http://quay.io/v2/auth", "quay.io", False),
+        # another registry's delegation doesn't apply here
+        ("https://auth.docker.io/token", "quay.io", False),
+        # not a URL at all
+        ("not-a-url", "quay.io", False),
+    ],
+)
+def test_realm_may_have_credentials(realm, registry, expected):
+    assert C._realm_may_have_credentials(realm, registry) is expected
+
+
+def test_bearer_token_withholds_credentials_from_foreign_realm(monkeypatch):
+    """A hostile registry names a realm it controls. The token request must
+    still go out (a public image needs it) but WITHOUT the user's password.
+    """
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["headers"] = dict(req.headers)
+        return _json_response({"token": "anon"})
+
+    monkeypatch.setattr(C.urllib.request, "urlopen", fake_urlopen)
+    challenge = 'Bearer realm="https://evil.example.com/token",service="quay.io"'
+    assert C._bearer_token(challenge, ("alice", "s3cret"), "quay.io") == "anon"
+    assert not any(k.lower() == "authorization" for k in seen["headers"])
+
+
+def test_bearer_token_sends_credentials_to_the_registrys_own_realm(monkeypatch):
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["headers"] = {k.lower(): v for k, v in req.headers.items()}
+        return _json_response({"token": "scoped"})
+
+    monkeypatch.setattr(C.urllib.request, "urlopen", fake_urlopen)
+    challenge = 'Bearer realm="https://quay.io/v2/auth",service="quay.io"'
+    assert C._bearer_token(challenge, ("alice", "s3cret"), "quay.io") == "scoped"
+    assert seen["headers"]["authorization"] == C._basic_auth(("alice", "s3cret"))
+
+
+def test_bearer_token_refuses_plaintext_realm(monkeypatch):
+    def fail(req, timeout=None):
+        raise AssertionError("must not contact a plaintext realm at all")
+
+    monkeypatch.setattr(C.urllib.request, "urlopen", fail)
+    assert C._bearer_token('Bearer realm="http://quay.io/v2/auth"', None, "quay.io") is None
+
+
+# -- best-effort lookups cache successes, not failures --
+
+
+def test_transient_failure_is_not_cached_forever():
+    """A blip must not unpin every later step in the run: `cache_successes`
+    retries after a `None`, then memoizes the first real answer.
+    """
+    calls = []
+
+    @C.cache_successes
+    def flaky(ref):
+        calls.append(ref)
+        return None if len(calls) == 1 else "sha256:" + "a" * 64
+
+    assert flaky("img") is None  # transient failure, not remembered
+    assert flaky("img") == "sha256:" + "a" * 64  # retried, and succeeded
+    assert flaky("img") == "sha256:" + "a" * 64  # success is remembered
+    assert len(calls) == 2
 
 
 # -- pin gate (opt-in behaviour) --

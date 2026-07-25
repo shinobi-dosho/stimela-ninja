@@ -5,13 +5,23 @@ kubectl -- matching shinobi's "runtime CLI, not an SDK" convention -- so
 there's no Kubernetes client library dependency.
 
 Volume mounts reuse the container backend's File/MS-dtype-derived
-directory list, mounted into the pod as hostPath volumes. That's the
-simplest thing that actually works on a single-node dev cluster (kind,
-minikube) or a cluster where every worker node shares the same storage
-(common on radio-astronomy k8s deployments, e.g. via NFS mounted
-identically everywhere). A production multi-node cluster without shared
-node storage needs PersistentVolumeClaims instead -- that's a deliberate
-scope boundary, not an oversight; see AGENTS.md.
+directory list (via ``bind_dir_modes``, so a cab's ``writable: false``
+inputs are mounted ``readOnly`` here exactly as they are ``:ro`` there),
+mounted into the pod as hostPath volumes. That's the simplest thing that
+actually works on a single-node dev cluster (kind, minikube) or a cluster
+where every worker node shares the same storage (common on
+radio-astronomy k8s deployments, e.g. via NFS mounted identically
+everywhere). A production multi-node cluster without shared node storage
+needs PersistentVolumeClaims instead -- that's a deliberate scope
+boundary, not an oversight; see AGENTS.md.
+
+hostPath is node-level host filesystem access from inside a pod, so this
+backend does not guess at its blast radius: the ``namespace`` is
+**required** (no ``default`` fallback), and every pod carries a
+``securityContext`` running it as the invoking user, non-root, with
+privilege escalation disabled and all capabilities dropped. Even so, a
+shared multi-tenant cluster is not the target -- see the PVC boundary
+above.
 
 Not live-verified against a real cluster: none was available in the dev
 environment this was built in, unlike the container backend, which was
@@ -30,7 +40,7 @@ import uuid
 from typing import Any
 
 from shinobi.backends import Backend, register
-from shinobi.backends.container import bind_dirs
+from shinobi.backends.container import bind_dir_modes
 from shinobi.exceptions import BackendError
 from shinobi.results import BackendRun
 from shinobi.steps.schema import Cab
@@ -70,29 +80,76 @@ class KubernetesBackend(Backend):
     def __init__(
         self,
         *,
-        namespace: str = "default",
+        namespace: str | None = None,
         workdir: str | None = None,
         poll_interval: float = 5.0,
+        run_as_user: int | None = None,
+        run_as_group: int | None = None,
     ):
         """Initialize the backend.
 
         Args:
             namespace: Kubernetes namespace to create and query Jobs in.
+                Required -- there is deliberately no default. This backend
+                mounts host paths into the pod, so silently landing that in
+                whatever namespace happens to be called `default` is not a
+                safe guess to make on the user's behalf.
             workdir: Working directory to bind-mount into the pod as
                 hostPath volumes. Defaults to the current working directory.
             poll_interval: Seconds to wait between Job status polls.
+            run_as_user: UID the pod runs as. Defaults to the invoking
+                user's, so files written to a hostPath mount are owned by
+                them rather than by root.
+            run_as_group: GID the pod runs as. Defaults to the invoking
+                user's, for the same reason.
+
+        Raises:
+            BackendError: If `namespace` is not supplied.
         """
+        if not namespace:
+            raise BackendError(
+                "the kubernetes backend requires an explicit namespace -- it mounts host "
+                "paths into the pod, so it will not guess one (pass namespace=... , or set "
+                "it in config under the kubernetes backend's options)"
+            )
         self.namespace = namespace
         self.workdir = workdir or os.getcwd()
         self.poll_interval = poll_interval
+        self.run_as_user = os.getuid() if run_as_user is None else run_as_user
+        self.run_as_group = os.getgid() if run_as_group is None else run_as_group
+
+    def _pod_security_context(self) -> dict[str, Any]:
+        """Pod-level `securityContext`.
+
+        Without one, a pod runs as whatever the image says -- usually root --
+        with host directories mounted in, and any cluster with Pod Security
+        Admission enforced rejects it outright. Running as the invoking user
+        also keeps the ownership of files written into a hostPath mount
+        matching what every other backend produces. `runAsNonRoot` is only
+        asserted when it is actually true, so a deliberately root-uid caller
+        gets a working pod rather than a contradictory manifest.
+        """
+        ctx: dict[str, Any] = {
+            "runAsUser": self.run_as_user,
+            "runAsGroup": self.run_as_group,
+            "fsGroup": self.run_as_group,
+            "seccompProfile": {"type": "RuntimeDefault"},
+        }
+        if self.run_as_user != 0:
+            ctx["runAsNonRoot"] = True
+        return ctx
 
     def _manifest(self, cab: Cab, argv: list[str], inputs: dict[str, Any], job_name: str) -> dict[str, Any]:
         if not cab.image:
             raise BackendError(f"cab '{cab.name}' has no image, cannot run on kubernetes")
 
-        dirs = bind_dirs(cab, inputs, self.workdir)
-        volumes = [{"name": f"vol{i}", "hostPath": {"path": d}} for i, d in enumerate(dirs)]
-        mounts = [{"name": f"vol{i}", "mountPath": d} for i, d in enumerate(dirs)]
+        # `bind_dir_modes`, not `bind_dirs`: the read-only classification a
+        # cab's `writable: false` inputs earn is honoured by the container
+        # backend, and dropping it here would silently hand every step
+        # read-write host access it never asked for.
+        dir_modes = bind_dir_modes(cab, inputs, self.workdir)
+        volumes = [{"name": f"vol{i}", "hostPath": {"path": d}} for i, (d, _) in enumerate(dir_modes)]
+        mounts = [{"name": f"vol{i}", "mountPath": d, **({} if writable else {"readOnly": True})} for i, (d, writable) in enumerate(dir_modes)]
 
         return {
             "apiVersion": "batch/v1",
@@ -103,6 +160,7 @@ class KubernetesBackend(Backend):
                 "template": {
                     "spec": {
                         "restartPolicy": "Never",
+                        "securityContext": self._pod_security_context(),
                         "containers": [
                             {
                                 "name": cab.name,
@@ -110,6 +168,10 @@ class KubernetesBackend(Backend):
                                 "command": argv,
                                 "workingDir": self.workdir,
                                 "volumeMounts": mounts,
+                                "securityContext": {
+                                    "allowPrivilegeEscalation": False,
+                                    "capabilities": {"drop": ["ALL"]},
+                                },
                                 **_resource_requirements(cab),
                             }
                         ],

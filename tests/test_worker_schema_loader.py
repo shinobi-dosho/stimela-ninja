@@ -101,21 +101,55 @@ def test_plain_relative_include_merges_files(tmp_path):
     assert schema.inputs_model.model_fields["x"].default == 1
 
 
-def test_package_scoped_include_resolves_via_importlib(tmp_path, monkeypatch):
+def _pkg_include_fixture(tmp_path):
+    """A package dir with a schema fragment, plus a main schema that pulls
+    it in with the package-scoped `(mypkg)shared.yaml` form. The `__init__.py`
+    raises: nothing may import this package to resolve the include.
+    """
     pkg_dir = tmp_path / "mypkg"
     pkg_dir.mkdir()
-    (pkg_dir / "__init__.py").write_text("")
+    (pkg_dir / "__init__.py").write_text("raise AssertionError('worker_schema imported a package to resolve an _include')\n")
     (pkg_dir / "shared.yaml").write_text("shared:\n  y:\n    dtype: bool\n    default: true\n")
 
     schema_dir = tmp_path / "schemas"
     schema_dir.mkdir()
     main = schema_dir / "main.yaml"
     main.write_text("libs:\n  _include: (mypkg)shared.yaml\nname: thing\ninputs:\n  _use: libs.shared\n")
+    return pkg_dir, main
 
-    monkeypatch.syspath_prepend(str(tmp_path))
-    schema = load_worker_schema(main)
+
+def test_package_scoped_include_resolves_via_package_roots(tmp_path):
+    pkg_dir, main = _pkg_include_fixture(tmp_path)
+    schema = load_worker_schema(main, package_roots={"mypkg": pkg_dir})
     assert "y" in schema.inputs_model.model_fields
     assert schema.inputs_model.model_fields["y"].default is True
+
+
+def test_package_scoped_include_never_imports_the_package(tmp_path, monkeypatch):
+    """The include names a real, importable package whose `__init__.py`
+    would blow up if executed. Without a `package_roots` entry the load must
+    fail with a clear error rather than importing it -- the loader has no
+    business running code named by a config file (SECURITY.md).
+    """
+    _pkg_dir, main = _pkg_include_fixture(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    with pytest.raises(ConfigLoadError, match="no filesystem root was supplied"):
+        load_worker_schema(main)
+
+
+def test_package_scoped_include_resolves_longest_prefix(tmp_path):
+    """`(mypkg.sub)file` against a root registered for `mypkg` descends the
+    remainder as a subdirectory, same as the cultcargo dialect.
+    """
+    pkg_dir = tmp_path / "mypkg"
+    (pkg_dir / "sub").mkdir(parents=True)
+    (pkg_dir / "sub" / "shared.yaml").write_text("shared:\n  z:\n    dtype: int\n    default: 7\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("libs:\n  _include: (mypkg.sub)shared.yaml\nname: thing\ninputs:\n  _use: libs.shared\n")
+
+    schema = load_worker_schema(main, package_roots={"mypkg": pkg_dir})
+    assert schema.inputs_model.model_fields["z"].default == 7
 
 
 def test_sibling_keys_win_over_use_merged_keys(tmp_path):

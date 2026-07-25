@@ -30,9 +30,9 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
-from functools import lru_cache
+from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from shinobi.backends import Backend, register
 from shinobi.backends._stream import run_streaming
@@ -149,6 +149,39 @@ def _split_ref(ref: str) -> tuple[str, str, str] | None:
     return registry, repo, reference
 
 
+_T = TypeVar("_T")
+
+
+def cache_successes(func: Callable[..., _T | None]) -> Callable[..., _T | None]:
+    """Memoize a best-effort lookup, but **only its successes**.
+
+    The registry/credential lookups below are all "return `None` on any
+    failure" by design, and a plain `lru_cache` would then remember that
+    `None` for the life of the process. One transient blip -- a network
+    hiccup, a credential helper not yet unlocked -- would silently unpin
+    every remaining step of the run, and the manifest would honestly but
+    uselessly report the whole thing as unpinned. Caching only successful
+    results keeps the "one round-trip per image, not per step" win while
+    letting a failure be retried by the next step that needs it.
+
+    Unbounded, like the `lru_cache(maxsize=None)` it replaces: the key space
+    is the set of image references and registries a single run touches.
+    """
+    cache: dict[tuple[Any, ...], _T] = {}
+
+    @wraps(func)
+    def wrapper(*args: Any) -> _T | None:
+        if args in cache:
+            return cache[args]
+        result = func(*args)
+        if result is not None:
+            cache[args] = result
+        return result
+
+    wrapper.cache_clear = cache.clear  # type: ignore[attr-defined]
+    return wrapper
+
+
 def _auth_keys(registry: str) -> list[str]:
     """Candidate keys under which `registry`'s credentials might be stored in
     a Docker `config.json` `auths` map (Docker Hub is stored under its legacy
@@ -179,7 +212,7 @@ def _cred_helper_get(helper: str, registry: str) -> tuple[str, str] | None:
     return (user, secret) if user and secret else None
 
 
-@lru_cache(maxsize=None)
+@cache_successes
 def _docker_config_auth(registry: str) -> tuple[str, str] | None:
     """`(username, password)` for `registry` from the Docker config
     (`$DOCKER_CONFIG/config.json` or `~/.docker/config.json`) -- via a
@@ -215,37 +248,72 @@ def _basic_auth(creds: tuple[str, str]) -> str:
     return "Basic " + base64.b64encode(f"{creds[0]}:{creds[1]}".encode()).decode()
 
 
-def _authorize(challenge: str, creds: tuple[str, str] | None) -> str | None:
+# Registries that legitimately delegate their token endpoint to a *different*
+# host than the one serving the manifests. Credentials are only ever sent to a
+# realm whose host matches the registry itself or its entry here; see
+# `_realm_may_have_credentials`. Keyed by registry host, valued by the set of
+# hosts allowed to receive that registry's credentials.
+_REALM_DELEGATIONS = {
+    "docker.io": {"auth.docker.io"},
+    "index.docker.io": {"auth.docker.io"},
+    "registry-1.docker.io": {"auth.docker.io"},
+}
+
+
+def _realm_may_have_credentials(realm: str, registry: str) -> bool:
+    """Whether it is safe to attach `registry`'s stored credentials to a
+    token request aimed at `realm`.
+
+    The realm comes from the registry's own `WWW-Authenticate` header, i.e.
+    from the network -- so a hostile or compromised registry (or anything
+    able to influence that header) could otherwise name a host of its
+    choosing and be handed the user's registry password. Credentials go out
+    only over `https`, and only to the registry itself or a host explicitly
+    allowlisted as that registry's token endpoint.
+    """
+    parsed = urllib.parse.urlparse(realm)
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    registry = registry.lower()
+    return host == registry or host in _REALM_DELEGATIONS.get(registry, set())
+
+
+def _authorize(challenge: str, creds: tuple[str, str] | None, registry: str) -> str | None:
     """Turn a `WWW-Authenticate` challenge into an `Authorization` header
     value: fetch a bearer token (using `creds` for the token request when the
-    repo is private), or send Basic directly. `None` if unsatisfiable.
+    repo is private *and* the realm is entitled to them), or send Basic
+    directly. `None` if unsatisfiable.
     """
     scheme = challenge.split(" ", 1)[0].lower()
     if scheme == "bearer":
-        token = _bearer_token(challenge, creds)
+        token = _bearer_token(challenge, creds, registry)
         return f"Bearer {token}" if token else None
     if scheme == "basic" and creds:
         return _basic_auth(creds)
     return None
 
 
-def _bearer_token(challenge: str, creds: tuple[str, str] | None = None) -> str | None:
+def _bearer_token(challenge: str, creds: tuple[str, str] | None, registry: str) -> str | None:
     """Fetch a pull token from a registry's `WWW-Authenticate: Bearer ...`
-    challenge (realm + service + scope). When `creds` are given, authenticate
-    the token request with Basic so private-repo scopes are granted. `None`
-    if the challenge isn't bearer or the request fails.
+    challenge (realm + service + scope). When `creds` are given *and* the
+    realm is entitled to them (`_realm_may_have_credentials`), authenticate
+    the token request with Basic so private-repo scopes are granted;
+    otherwise the token is requested anonymously, which is all a public
+    image needs. `None` if the challenge isn't bearer, the realm isn't a
+    plausible `https` URL, or the request fails.
     """
     if not challenge.lower().startswith("bearer "):
         return None
     params = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
     realm = params.get("realm")
-    if not realm:
-        return None
+    if not realm or urllib.parse.urlparse(realm).scheme != "https":
+        return None  # never follow a plaintext (or non-URL) realm
     query = {k: params[k] for k in ("service", "scope") if k in params}
     url = f"{realm}?{urllib.parse.urlencode(query)}"
-    headers = {"Authorization": _basic_auth(creds)} if creds else {}
+    headers = {"Authorization": _basic_auth(creds)} if creds and _realm_may_have_credentials(realm, registry) else {}
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 -- https realm
+    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 -- https enforced above
         data = json.load(resp)
     return data.get("token") or data.get("access_token")
 
@@ -268,7 +336,7 @@ def _manifest_digest_header(url: str, authorization: str | None, method: str) ->
         return None, None
 
 
-@lru_cache(maxsize=None)
+@cache_successes
 def _registry_api_digest(ref: str) -> str | None:
     """Resolve a registry reference to its manifest digest by querying the
     registry's HTTP v2 API directly -- no external binary, no image pull.
@@ -292,7 +360,7 @@ def _registry_api_digest(ref: str) -> str | None:
         for method in ("HEAD", "GET"):  # a few registries omit the digest on HEAD
             digest, challenge = _manifest_digest_header(url, None, method)
             if digest is None and challenge:
-                authorization = _authorize(challenge, creds)
+                authorization = _authorize(challenge, creds, registry)
                 if authorization:
                     digest, _ = _manifest_digest_header(url, authorization, method)
             if digest:
@@ -302,7 +370,7 @@ def _registry_api_digest(ref: str) -> str | None:
         return None
 
 
-@lru_cache(maxsize=None)
+@cache_successes
 def _registry_digest(ref: str) -> str | None:
     """`sha256:...` digest of a registry reference, resolved via `skopeo
     inspect` without pulling. `None` if skopeo is unavailable, the ref
@@ -326,7 +394,7 @@ def _registry_digest(ref: str) -> str | None:
     return digest if out.returncode == 0 and digest.startswith("sha256:") else None
 
 
-@lru_cache(maxsize=None)
+@cache_successes
 def _docker_digest(runtime: str, image: str) -> str | None:
     """`sha256:...` digest of `image` via `<runtime> buildx imagetools
     inspect --raw` -- the content hash of the manifest bytes, fetched from

@@ -301,3 +301,33 @@ def resolve_directive(node: Any, key: str, entry_to_dict: Callable[[Any], Any]) 
             merged = deep_merge(merged, entry_to_dict(entry))
         node = deep_merge(merged, node)
     return node
+
+
+def resolve_package_root(dotted: str, package_roots: dict[str, Path], *, error: type[Exception]) -> Path:
+    """`dotted` (e.g. `cultcargo.genesis.cubical`) -> filesystem directory,
+    resolved against the *longest* registered prefix in `package_roots`
+    (descending the remainder as subdirectories) -- **never** via
+    `importlib`.
+
+    Both loader dialects have a package-scoped `_include` form naming a
+    dotted package rather than a path. Resolving one by importing the
+    package would execute an arbitrary `__init__.py` at schema-load time,
+    from a name read out of a YAML file -- so shinobi never imports a
+    package for any reason, and callers supply an explicit
+    `package_roots={"cultcargo": Path(...)}` mapping instead (see
+    SECURITY.md's "never import a cab package", and `loaders.cultcargo`'s
+    module docstring for the longer rationale). Shared here so both
+    dialects resolve it the same way, and neither can drift back to
+    `importlib`.
+    """
+    parts = dotted.split(".")
+    for i in range(len(parts), 0, -1):
+        prefix = ".".join(parts[:i])
+        if prefix in package_roots:
+            return package_roots[prefix].joinpath(*parts[i:])
+    raise error(
+        f"package-scoped _include references package {dotted!r}, but no filesystem "
+        f"root was supplied for it (or a parent package of it) -- pass "
+        f"package_roots={{{parts[0]!r}: Path(...)}} to the loader "
+        "(shinobi never imports a package to resolve this -- see SECURITY.md)"
+    )
