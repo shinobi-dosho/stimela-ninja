@@ -149,7 +149,7 @@ def test_output_wiring_to_unknown_step_is_rejected():
 def test_dependency_cycle_is_rejected():
     a = _cab("a", UseIn, PathOut)
     b = _cab("b", UseIn, PathOut)
-    with pytest.raises(RecipeGraphError, match="dependency cycle involving: a, b"):
+    with pytest.raises(RecipeGraphError, match=r"dependency cycle: a -> b -> a"):
         build_graph(
             _recipe(
                 [
@@ -158,6 +158,26 @@ def test_dependency_cycle_is_rejected():
                 ]
             )
         )
+
+
+def test_cycle_message_names_only_the_cycle_not_its_downstream():
+    """The reason for using `graphlib` rather than draining in-degrees: a
+    step that merely *waits on* a cycle is not part of it, and listing it
+    buries the two steps actually pointing at each other.
+    """
+    cabs = {name: _cab(name, UseIn, PathOut) for name in ("a", "b", "downstream")}
+    with pytest.raises(RecipeGraphError) as exc:
+        build_graph(
+            _recipe(
+                [
+                    StepRef(name="a", step=cabs["a"], wiring={"path": OutputRef(step="b", field="path")}),
+                    StepRef(name="b", step=cabs["b"], wiring={"path": OutputRef(step="a", field="path")}),
+                    StepRef(name="downstream", step=cabs["downstream"], wiring={"path": OutputRef(step="b", field="path")}),
+                ]
+            )
+        )
+    assert "a -> b -> a" in str(exc.value)
+    assert "downstream" not in str(exc.value)
 
 
 # -- offload eligibility (check_offloadable) --

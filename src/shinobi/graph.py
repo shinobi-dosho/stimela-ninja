@@ -20,6 +20,7 @@ is legitimate mid-construction.
 
 from __future__ import annotations
 
+import graphlib
 from dataclasses import dataclass
 
 from shinobi.policies import EXECUTABLE_FLAVOURS
@@ -162,27 +163,29 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
                 f"{producer_scope.outputs_model.__name__}"
             )
 
-    _check_acyclic(recipe.name, names, deps, dependents)
+    _check_acyclic(recipe.name, names, deps)
     return RecipeGraph(names=names, deps=deps, dependents=dependents)
 
 
-def _check_acyclic(recipe_name: str, names: list[str], deps: list[set[int]], dependents: list[set[int]]) -> None:
-    """Kahn's algorithm: drain zero-in-degree nodes; any that never drain
-    are part of (or downstream of) a cycle.
+def _check_acyclic(recipe_name: str, names: list[str], deps: list[set[int]]) -> None:
+    """Reject a dependency cycle, naming the steps that form it.
+
+    `graphlib.TopologicalSorter` (stdlib) rather than a hand-rolled Kahn's:
+    it reports the **cycle itself**, where draining zero-in-degree nodes and
+    listing whatever failed to drain reports the cycle *plus everything
+    downstream of it* -- on a real recipe that buries the two steps actually
+    pointing at each other under every step that waits on them.
+
+    The graph is built in index order so `CycleError`'s node list, and hence
+    the message, is deterministic.
     """
-    indeg = [len(d) for d in deps]
-    ready = [i for i, d in enumerate(indeg) if d == 0]
-    drained = 0
-    while ready:
-        i = ready.pop()
-        drained += 1
-        for d in dependents[i]:
-            indeg[d] -= 1
-            if indeg[d] == 0:
-                ready.append(d)
-    if drained != len(names):
-        stuck = sorted(names[i] for i, d in enumerate(indeg) if d > 0)
-        raise RecipeGraphError(f"recipe '{recipe_name}' has a dependency cycle involving: {', '.join(stuck)}")
+    try:
+        graphlib.TopologicalSorter({i: deps[i] for i in range(len(names))}).prepare()
+    except graphlib.CycleError as exc:
+        # args[1] is the cycle as a node list with the first node repeated at
+        # the end, which reads naturally as `a -> b -> a`.
+        cycle = " -> ".join(names[i] for i in exc.args[1])
+        raise RecipeGraphError(f"recipe '{recipe_name}' has a dependency cycle: {cycle}") from exc
 
 
 def _wrangler_output_fields(cab: Cab) -> set[str]:
