@@ -2,7 +2,7 @@ import threading
 
 import pytest
 
-from shinobi.resources import Budget, ResourceBudget, Resources, detect_budget, format_size, parse_size
+from shinobi.resources import Budget, ResourceBudget, Resources, delegated_controllers, detect_budget, format_size, parse_size
 
 # -- size parsing --
 
@@ -140,6 +140,99 @@ def test_resource_budget_config_modes(tmp_path):
     auto, source = ResourceBudget().resolve(tmp_path)
     assert auto.memory == 1000000000
     assert "cgroup v2" in source
+
+
+# -- delegated controllers (what a rootless runtime can actually enforce) --
+
+
+def _delegate(root, *, leaf, per_level):
+    """A fake cgroup v2 tree whose levels advertise `per_level` controllers.
+
+    `per_level` maps a cgroup-relative path (`""` for the root) to the
+    `cgroup.controllers` contents at that level -- the file systemd's
+    `Delegate=` ultimately drives.
+    """
+    _write_cgroup_tree(root, leaf=leaf, limits={})
+    cg = root / "sys/fs/cgroup"
+    for rel, controllers in per_level.items():
+        (cg / rel if rel else cg).joinpath("cgroup.controllers").write_text(f"{controllers}\n")
+    delegated_controllers.cache_clear()
+    return str(root)
+
+
+def test_delegated_controllers_reports_a_partial_delegation(tmp_path):
+    """Issue #39's host: root has everything, the user manager has `memory
+    pids` and no `cpu`.
+    """
+    root = _delegate(
+        tmp_path,
+        leaf="/user.slice/user-20001.slice/user@20001.service/app.slice/vte.scope",
+        per_level={
+            "": "cpuset cpu io memory hugetlb pids rdma misc",
+            "user.slice/user-20001.slice/user@20001.service": "memory pids",
+            "user.slice/user-20001.slice/user@20001.service/app.slice": "memory pids",
+            "user.slice/user-20001.slice/user@20001.service/app.slice/vte.scope": "memory pids",
+        },
+    )
+    assert delegated_controllers(root) == frozenset({"memory", "pids"})
+
+
+def test_delegated_controllers_ignores_the_callers_own_level(tmp_path):
+    """The measured layout of the dev machine: the user manager has `cpu`
+    (and apptainer really does apply `--cpus` there), while the calling shell
+    sits under an `app.slice` that never enabled it. Reading the caller's own
+    cgroup would drop a limit that works -- a silent loss of enforcement,
+    which is the one error direction that matters.
+    """
+    root = _delegate(
+        tmp_path,
+        leaf="/user.slice/user-1000.slice/user@1000.service/app.slice/app-terminal.slice/vte-spawn.scope",
+        per_level={
+            "": "cpuset cpu io memory pids",
+            "user.slice/user-1000.slice/user@1000.service": "cpu memory pids",
+            "user.slice/user-1000.slice/user@1000.service/app.slice": "memory pids",
+            "user.slice/user-1000.slice/user@1000.service/app.slice/app-terminal.slice": "memory pids",
+            "user.slice/user-1000.slice/user@1000.service/app.slice/app-terminal.slice/vte-spawn.scope": "memory pids",
+        },
+    )
+    assert delegated_controllers(root) == frozenset({"cpu", "memory", "pids"})
+
+
+def test_delegated_controllers_reports_nothing_delegated(tmp_path):
+    """An empty set at the boundary is an answer ("nothing is delegated"),
+    and a different one from "couldn't tell".
+    """
+    root = _delegate(
+        tmp_path,
+        leaf="/user.slice/user-1000.slice/user@1000.service/leaf.scope",
+        per_level={"": "cpu memory pids", "user.slice/user-1000.slice/user@1000.service": ""},
+    )
+    assert delegated_controllers(root) == frozenset()
+
+
+def test_delegated_controllers_is_unknown_without_a_user_manager(tmp_path):
+    """No `user@<uid>.service` in the path -- a container, or a session
+    systemd never took charge of. Nothing to read, so nothing is claimed.
+    """
+    root = _delegate(tmp_path, leaf="/system.slice/some.service", per_level={"": "cpu memory pids"})
+    assert delegated_controllers(root) is None
+
+
+def test_delegated_controllers_is_unknown_without_cgroup_v2(tmp_path):
+    """No unified hierarchy in view means "can't tell" -- which callers must
+    treat as "emit everything and fail loudly", never as "nothing works".
+    """
+    (tmp_path / "proc/self").mkdir(parents=True)
+    (tmp_path / "proc/self/cgroup").write_text("4:memory:/user.slice\n3:cpu,cpuacct:/user.slice\n")
+    delegated_controllers.cache_clear()
+    assert delegated_controllers(str(tmp_path)) is None
+
+
+def test_delegated_controllers_is_unknown_without_a_unified_entry(tmp_path):
+    root = _delegate(tmp_path, leaf="/user.slice/user@1000.service/a", per_level={"": "cpu memory"})
+    (tmp_path / "proc/self/cgroup").write_text("4:memory:/user.slice\n")  # v1-only entry
+    delegated_controllers.cache_clear()
+    assert delegated_controllers(root) is None
 
 
 # -- the Budget state machine --

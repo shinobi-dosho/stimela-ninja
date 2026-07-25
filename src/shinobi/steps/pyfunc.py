@@ -335,6 +335,13 @@ class _ContainerLauncher:
             provenance={"image": self.ctx.scope.image, "image_digest": image_digest, "containerized": True},
         )
 
+    def failure_hint(self, stderr: str) -> str | None:
+        """Translate a cgroup-delegation failure, if that is what this was
+        (see `backends.container.cgroup_failure_hint`)."""
+        from shinobi.backends.container import cgroup_failure_hint
+
+        return cgroup_failure_hint(stderr, self.backend_name)
+
 
 class _VenvLauncher:
     """Runs the pystep runner with a virtualenv's own interpreter. Does *not*
@@ -451,6 +458,12 @@ def _run_pystep_subprocess(
         if run.returncode != 0:
             stderr_tail = (run.stderr or "").strip()
             detail = f"\nstderr:\n{stderr_tail}" if stderr_tail else ""
+            # A containerized pystep hits the same cgroup-delegation wall a cab
+            # does, and gets the same unreadable message; explain it here too.
+            explain = getattr(launcher, "failure_hint", None)
+            hint = explain(run.stderr or "") if explain else None
+            if hint:
+                detail = f"\n{hint}{detail}"
             if sandbox_dir is not None:
                 raise CabRunError(f"pystep '{scope.name}' failed (returncode {explain_returncode(run.returncode)}); its sandbox is kept for post-mortem at {sandbox_dir}{detail}")
             raise CabRunError(f"pystep '{scope.name}' failed (returncode {explain_returncode(run.returncode)}){detail}")

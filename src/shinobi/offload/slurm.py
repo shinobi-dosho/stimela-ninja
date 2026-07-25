@@ -210,7 +210,9 @@ def compile_slurm(
         argv = build_argv(cab, resolved)  # inherits the non-"binary" flavour guard
         if cab.image and container_runtime:
             # Digest is discarded here -- offloaded-Slurm provenance is a follow-up.
-            argv, _ = build_container_argv(container_runtime, cab, argv, resolved, workdir)
+            # runs_here=False: compiled here, executed on a compute node whose
+            # cgroup delegation this host cannot see (see `_resource_flags`).
+            argv, _ = build_container_argv(container_runtime, cab, argv, resolved, workdir, runs_here=False)
 
         own_outputs = _static_outputs(cab, resolved)
 

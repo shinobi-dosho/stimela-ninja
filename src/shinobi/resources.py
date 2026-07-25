@@ -33,7 +33,11 @@ start* a step; it cannot hold a running process to its word. Container and
 cluster backends do enforce it (`--memory`/`--cpus`, `#SBATCH --mem`, k8s
 `resources.limits`), which is a real difference -- a containerised runaway
 dies in its own cgroup instead of eating the shared slice. A native or venv
-step has no such backstop at all.
+step has no such backstop at all. Enforcement is also *per dimension*: a
+rootless runtime can only apply the controllers systemd delegated to the
+session, so see `delegated_controllers` for what is actually enforceable
+here, and note that it is a strictly weaker question than what the budget
+above says you may use.
 """
 
 from __future__ import annotations
@@ -43,6 +47,7 @@ import os
 import re
 import threading
 from collections.abc import Iterator
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
@@ -80,6 +85,11 @@ _SIZE_RE = re.compile(r"^\s*([0-9]*\.?[0-9]+)\s*([a-zA-Z]*)\s*$")
 # cgroup v1 writes a near-`INT64_MAX` sentinel rather than a word when a
 # controller is unlimited; anything this large is not a real quota.
 _V1_UNLIMITED = 1 << 62
+
+# The systemd user manager's own cgroup: the boundary a rootless runtime's
+# scope is created inside, and so the level whose delegated controller set
+# decides what that runtime can enforce (see `delegated_controllers`).
+_USER_MANAGER_RE = re.compile(r"^user@\d+\.service$")
 
 
 def parse_size(value: float | str) -> int:
@@ -309,6 +319,64 @@ def _parse_v1_memory(raw: str) -> int | None:
     """cgroup v1 `memory.limit_in_bytes`: a huge sentinel when unlimited."""
     value = int(raw)
     return None if value >= _V1_UNLIMITED else value
+
+
+@lru_cache(maxsize=None)
+def delegated_controllers(root: str = "/") -> frozenset[str] | None:
+    """Which cgroup v2 controllers this user session may actually apply limits
+    with -- i.e. what a *rootless* container runtime can enforce here.
+
+    Detection is the other half of enforcement. `detect_budget` asks "how much
+    of this machine am I allowed to use"; this asks "which of those dimensions
+    can I hold a child process to". They are different questions, and on a
+    shared box the answer to the second is routinely *some of them*: systemd
+    delegates only what `Delegate=` names, so a session can easily have
+    `memory pids` and no `cpu`. A runtime handed `--cpus` there cannot create
+    `cpu.max` in its new scope and the container never starts -- taking the
+    memory limit, which was perfectly enforceable, down with it.
+
+    **What is read, and why that one file.** A rootless runtime does not put
+    its scope next to the calling process -- it asks the systemd *user
+    manager* to create one, so the scope lands under `user@<uid>.service`
+    and inherits whatever that cgroup makes available. That is the
+    delegation boundary, and its `cgroup.controllers` is the honest answer.
+
+    The obvious cheaper proxy -- this process's own cgroup -- is measurably
+    wrong: on the machine this was developed on, `user@1000.service` has
+    `cpu memory pids` and apptainer applies `--cpus` fine, while the calling
+    shell sits several levels down under `app.slice` with only `memory
+    pids`, because that intermediate slice never enabled `cpu` in its
+    `subtree_control`. Reading the caller's cgroup would have dropped a CPU
+    limit that works -- silently losing enforcement, which is the one error
+    direction worth engineering against here. Over-estimating merely fails
+    loudly, exactly as it did before this probe existed.
+
+    Args:
+        root: Filesystem root to probe against. A test seam; `"/"` in real
+            use. Cached per root -- delegation does not change within a run.
+
+    Returns:
+        The delegated controller names, or `None` when this cannot be
+        determined -- no cgroup v2, no unified entry in `/proc/self/cgroup`,
+        or no systemd user manager in this process's cgroup path at all (a
+        container, or an `ssh` session with no user@.service). Callers must
+        read `None` as "assume everything works" and keep failing loudly,
+        never as "nothing works".
+    """
+    base = Path(root) / "sys/fs/cgroup"
+    if not (base / "cgroup.controllers").exists():
+        return None  # cgroup v1, or no cgroupfs in view: no delegation model to read
+    components = _cgroup_paths(Path(root), "")
+    if components is None:
+        return None
+    # Innermost user manager first -- nesting is unusual, but the scope would
+    # be created in the closest one.
+    for depth in range(len(components), 0, -1):
+        if not _USER_MANAGER_RE.match(components[depth - 1]):
+            continue
+        raw = _read_first_line(base.joinpath(*components[:depth]) / "cgroup.controllers")
+        return None if raw is None else frozenset(raw.split())
+    return None
 
 
 def detect_budget(root: str | Path = "/") -> tuple[Resources, str]:
