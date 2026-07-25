@@ -1,9 +1,11 @@
 import os
 from pathlib import Path
 
+import pytest
 import shinobi
 from pydantic import BaseModel
 
+from shinobi import cache
 from shinobi.backends.recording import RecordingBackend
 from shinobi.cache import CacheManifest, compute_cache_key, get_cache_manifest, invalidate_path_hashes
 from shinobi.results import StepResult
@@ -294,30 +296,209 @@ def test_repeated_hash_of_one_path_walks_it_once_between_executions(tmp_path):
 
     cache_mod.invalidate_path_hashes()
     walks = []
-    original_walk = cache_mod.os.walk
+    original_scandir = cache_mod.os.scandir
 
-    def counting_walk(path, *args, **kwargs):
+    def counting_scandir(path, *args, **kwargs):
         walks.append(path)
-        return original_walk(path, *args, **kwargs)
+        return original_scandir(path, *args, **kwargs)
 
-    cache_mod.os.walk = counting_walk
+    cache_mod.os.scandir = counting_scandir
     try:
         first = cache_mod._hash_path(vis)
         second = cache_mod._hash_path(vis)
     finally:
-        cache_mod.os.walk = original_walk
+        cache_mod.os.scandir = original_scandir
 
     assert first == second
     assert len(walks) == 1
 
     # ...and the memo is dropped the moment anything could have written.
     cache_mod.invalidate_path_hashes()
-    cache_mod.os.walk = counting_walk
+    cache_mod.os.scandir = counting_scandir
     try:
         cache_mod._hash_path(vis)
     finally:
-        cache_mod.os.walk = original_walk
+        cache_mod.os.scandir = original_scandir
     assert len(walks) == 2
+
+
+# -- the directory branch of `_hash_path`, which had no coverage at all --
+
+
+def _make_ms(root: Path) -> Path:
+    """A casacore-shaped tree: a table at the top plus subtable directories,
+    each with its own descriptor, data-manager and lock files. Modelled on
+    the real MSs this project runs against (~60-140 files); the shape is what
+    matters here, not the bytes.
+    """
+    root.mkdir(parents=True)
+    for name in ("table.dat", "table.info", "table.f0", "table.lock"):
+        (root / name).write_text(name)
+    for sub in ("ANTENNA", "FIELD", "SPECTRAL_WINDOW"):
+        (root / sub).mkdir()
+        for name in ("table.dat", "table.f0", "table.lock"):
+            (root / sub / name).write_text(f"{sub}/{name}")
+    return root
+
+
+def _reference_walk(path: Path):
+    """The pre-scandir implementation, kept as the equivalence oracle: any
+    divergence in the rewrite shows up as a digest change and a silently
+    invalidated cache.
+    """
+    entries = []
+    for root, _dirs, files in os.walk(path):
+        for fname in files:
+            fpath = Path(root) / fname
+            st = fpath.stat()
+            entries.append([str(fpath.relative_to(path)), st.st_mtime_ns, st.st_size])
+    return sorted(entries)
+
+
+def test_walk_fingerprint_matches_the_reference_implementation(tmp_path):
+    """The rewrite must be byte-identical on every tree the old code could
+    actually return for -- otherwise it silently invalidates every cached
+    step with a directory input.
+    """
+    ms = _make_ms(tmp_path / "data.ms")
+    (ms / "FIELD" / "link.dat").symlink_to(ms / "table.dat")  # symlinked file: followed
+    (ms / "linkdir").symlink_to(ms / "ANTENNA")  # symlinked dir: not descended, not listed
+
+    assert cache._walk_fingerprint(ms) == _reference_walk(ms)
+
+
+def test_walk_fingerprint_is_order_independent(tmp_path):
+    """Two trees with identical contents built in different creation orders
+    must key identically -- `scandir` yields in directory order, which is not
+    creation order and not sorted.
+    """
+    a, b = tmp_path / "a.ms", tmp_path / "b.ms"
+    a.mkdir()
+    b.mkdir()
+    for name in ("z.dat", "a.dat", "m.dat"):
+        (a / name).write_text(name)
+    for name in ("m.dat", "z.dat", "a.dat"):
+        (b / name).write_text(name)
+    for path in list(a.rglob("*")) + list(b.rglob("*")):
+        os.utime(path, (1700000000, 1700000000))
+
+    assert cache._walk_fingerprint(a) == cache._walk_fingerprint(b)
+
+
+def test_walk_fingerprint_uses_nested_relative_paths(tmp_path):
+    """Entries are keyed by path *relative to the input*, with subdirectories
+    spelled `SUB/name` -- so an absolute move of the MS doesn't change the
+    fingerprint but a rename inside it does.
+    """
+    ms = _make_ms(tmp_path / "data.ms")
+    names = {entry[0] for entry in cache._walk_fingerprint(ms)}
+
+    assert "table.dat" in names
+    assert "ANTENNA/table.f0" in names
+    assert not any(name.startswith("/") for name in names)
+
+
+def test_deep_change_inside_a_subtable_changes_the_fingerprint(tmp_path):
+    """The case the whole directory branch exists for: an MS is rewritten
+    several levels down, with the top-level directory untouched.
+    """
+    ms = _make_ms(tmp_path / "data.ms")
+    before = cache._walk_fingerprint(ms)
+
+    target = ms / "ANTENNA" / "table.f0"
+    os.utime(target, (target.stat().st_atime + 5, target.stat().st_mtime + 5))
+
+    assert cache._walk_fingerprint(ms) != before
+
+
+def test_adding_deleting_or_renaming_a_file_changes_the_fingerprint(tmp_path):
+    ms = _make_ms(tmp_path / "data.ms")
+    before = cache._walk_fingerprint(ms)
+
+    (ms / "FIELD" / "extra.f1").write_text("new")
+    added = cache._walk_fingerprint(ms)
+    assert added != before
+
+    (ms / "FIELD" / "extra.f1").rename(ms / "FIELD" / "renamed.f1")
+    assert cache._walk_fingerprint(ms) != added
+
+    (ms / "FIELD" / "renamed.f1").unlink()
+    assert cache._walk_fingerprint(ms) == before
+
+
+def test_a_dangling_symlink_does_not_raise(tmp_path):
+    """Regression: `os.walk` lists a broken symlink under `files`, and the
+    old per-file `stat` then raised `FileNotFoundError` straight out of
+    `compute_cache_key`, killing the run. A boundary input is data shinobi
+    neither produced nor controls; a fingerprint is the wrong place to fail.
+    """
+    ms = _make_ms(tmp_path / "data.ms")
+    (ms / "broken").symlink_to(ms / "does_not_exist")
+
+    with pytest.raises(FileNotFoundError):  # what the old walk did
+        _reference_walk(ms)
+
+    names = {entry[0] for entry in cache._walk_fingerprint(ms)}
+    assert "broken" not in names
+    assert "table.dat" in names
+
+
+def test_a_symlink_loop_does_not_raise(tmp_path):
+    """Regression: a cycle raised `OSError: [Errno 40] ELOOP`."""
+    ms = _make_ms(tmp_path / "data.ms")
+    (ms / "loop_a").symlink_to(ms / "loop_b")
+    (ms / "loop_b").symlink_to(ms / "loop_a")
+
+    with pytest.raises(OSError, match="Too many levels of symbolic links"):
+        _reference_walk(ms)
+
+    names = {entry[0] for entry in cache._walk_fingerprint(ms)}
+    assert "loop_a" not in names and "loop_b" not in names
+    assert "table.dat" in names
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_an_unreadable_subdirectory_is_skipped_not_fatal(tmp_path):
+    """Regression: a subdirectory with `r` but no `x` raised `PermissionError`
+    (the name is listable, so `os.walk` descended, and the stat then failed).
+    """
+    ms = _make_ms(tmp_path / "data.ms")
+    locked = ms / "FIELD"
+    locked.chmod(0o444)
+    try:
+        with pytest.raises(PermissionError):  # what the old walk did
+            _reference_walk(ms)
+
+        names = {entry[0] for entry in cache._walk_fingerprint(ms)}
+        assert "table.dat" in names
+        assert not any(name.startswith("FIELD/") for name in names)
+    finally:
+        locked.chmod(0o755)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_an_unreadable_input_does_not_key_as_a_missing_one(tmp_path):
+    """An unreadable path used to raise. It now returns a distinct marker
+    rather than `None`: keying it as absent would let a step take a hit
+    against a run where the file genuinely wasn't there, the moment
+    permissions were restored.
+    """
+    ms = _make_ms(tmp_path / "data.ms")
+    ms.chmod(0o000)
+    try:
+        unreadable = cache._walk_fingerprint(ms)
+        assert unreadable is not None
+        assert unreadable != cache._walk_fingerprint(tmp_path / "never_existed.ms")
+    finally:
+        ms.chmod(0o755)
+
+
+def test_a_missing_path_still_keys_as_absent(tmp_path):
+    assert cache._walk_fingerprint(tmp_path / "nope.ms") is None
+    # a path whose *parent* is a regular file -- ENOTDIR, which `Path.exists()`
+    # also treated as absent
+    (tmp_path / "afile").write_text("x")
+    assert cache._walk_fingerprint(tmp_path / "afile" / "under.ms") is None
 
 
 def test_deleting_declared_output_forces_rerun(tmp_path):
