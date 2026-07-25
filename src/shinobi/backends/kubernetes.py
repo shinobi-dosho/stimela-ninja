@@ -62,8 +62,8 @@ def _resource_requirements(cab: Cab) -> dict[str, Any]:
     if resources is None:
         return {}
     quantities: dict[str, str] = {}
-    if resources.cpus is not None:
-        quantities["cpu"] = f"{resources.cpus:g}"
+    if resources.enforceable_cpus is not None:
+        quantities["cpu"] = f"{resources.enforceable_cpus:g}"
     if resources.memory is not None:
         quantities["memory"] = str(resources.memory)
     if not quantities:

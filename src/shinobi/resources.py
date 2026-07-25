@@ -161,11 +161,22 @@ class Resources(BaseModel):
     everyone who has not opted in; free keeps the feature genuinely additive
     at the cost of being only as complete as your declarations.
 
+    `cpus` also takes `"all"`, for the very common tool that is simply told
+    to use every core it can see (wsclean's default, `-j 0`, `nproc`). That
+    step is the opposite of free and must not read as undeclared, but the
+    number it stands for is not knowable where recipes are *built*: a recipe
+    is a static, machine-independent declaration, and probing the builder's
+    core count would bake one host's answer into a job that may run on
+    another (and, for a caller whose builder is not allowed to touch the
+    filesystem at all, is not available even in principle). So it stays
+    symbolic until `Budget` resolves it against the live pool, on the host
+    that is actually admitting the work. See `resolved_against`.
+
     Shaped so a third dimension (`gpus`) can be added later without a schema
     break -- but not added speculatively.
     """
 
-    cpus: float | None = None
+    cpus: Literal["all"] | float | None = None
     memory: int | None = None
 
     @field_validator("memory", mode="before")
@@ -180,11 +191,45 @@ class Resources(BaseModel):
         """
         return self.cpus is None and self.memory is None
 
+    @property
+    def enforceable_cpus(self) -> float | None:
+        """The core count a *backend* can cap this step at, or None.
+
+        None for `"all"` as well as for undeclared: a runtime limit of "the
+        whole machine" is not a limit, and no backend should invent a number
+        for it -- a container flag would be a no-op at best and the building
+        host's core count at worst, while a batch script would be asking a
+        scheduler for a node size it cannot know. `"all"` is a claim on the
+        local pool, and the local scheduler is where it is honoured.
+        """
+        return None if isinstance(self.cpus, str) else self.cpus
+
+    def resolved_against(self, total: Resources) -> Resources:
+        """This footprint with `cpus="all"` replaced by `total`'s own count.
+
+        Resolution has to happen against the very total that admission is
+        decided against, or the two disagree: resolving to anything *larger*
+        would trip `_exceeds_total` and be waved through unconstrained --
+        turning the strongest declaration into the weakest, which is the
+        opposite of what it says.
+
+        An unconstrained dimension resolves to `None` (undeclared): if the
+        pool has no CPU total then nothing can exhaust it, so there is
+        nothing for this step to be held back by.
+
+        Args:
+            total: The pool's resolved totals.
+
+        Returns:
+            `self` unchanged unless `cpus` is `"all"`.
+        """
+        return self if self.cpus != "all" else self.model_copy(update={"cpus": total.cpus})
+
     def describe(self) -> str:
         """A short human rendering for log lines (`"cpus=4, memory=200.0GiB"`)."""
         parts = []
         if self.cpus is not None:
-            parts.append(f"cpus={self.cpus:g}")
+            parts.append(f"cpus={self.cpus}" if isinstance(self.cpus, str) else f"cpus={self.cpus:g}")
         if self.memory is not None:
             parts.append(f"memory={format_size(self.memory)}")
         return ", ".join(parts) if parts else "unbounded"
@@ -615,6 +660,7 @@ class Budget:
             `wait_for_change(generation)` -- passing back the generation
             returned here is what makes the wait race-free.
         """
+        demand = demand.resolved_against(self.total)
         with self._cond:
             if demand.is_empty():
                 return True, self._generation
@@ -650,10 +696,14 @@ class Budget:
         """Return `demand` to the budget and wake every parked scheduler.
 
         Args:
-            demand: Exactly what `try_acquire` was granted for this unit.
+            demand: Exactly what `try_acquire` was granted for this unit --
+                passed as *declared*, `"all"` and all; it is resolved here
+                the same way, against the same total, so what is returned is
+                exactly what was reserved.
         """
         if demand.is_empty():
             return
+        demand = demand.resolved_against(self.total)
         with self._cond:
             self._cpus_used = max(0.0, self._cpus_used - (demand.cpus or 0.0))
             self._memory_used = max(0, self._memory_used - (demand.memory or 0))

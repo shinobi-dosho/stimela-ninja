@@ -162,6 +162,14 @@ The rules are deliberately few:
 * **A step bigger than the whole budget still runs.** Waiting could never make
   it fit, so it is admitted immediately with a warning, and it holds everything
   else back until it finishes.
+* **"I use every core" is a declaration, not a blank.** Many tools are simply
+  told to use whatever they can see (``wsclean -j 0``, ``nproc``), and the
+  number that stands for is not knowable where recipes are *built* -- a recipe
+  is machine-independent, and the builder is not always the host that runs it.
+  Write ``Resources(cpus="all")`` and the budget resolves it against the live
+  pool when it admits the step, so such a step excludes its siblings instead of
+  reading as free. Backends do not turn it into a limit flag: capping a process
+  at "the whole machine" is not a cap.
 
 ``ninja run --dryrun`` shows declared footprints in each step's box, so you can
 see before running which branches will actually overlap.

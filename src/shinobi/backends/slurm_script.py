@@ -45,8 +45,12 @@ def sbatch_resource_opts(resources: Resources | None) -> dict[str, str]:
     if resources is None:
         return {}
     opts: dict[str, str] = {}
-    if resources.cpus is not None:
-        opts["cpus-per-task"] = str(max(1, math.ceil(resources.cpus)))
+    # `enforceable_cpus`, so a step declaring "all" asks for the partition
+    # default rather than a core count derived from the submitting host --
+    # which says nothing about the compute node the job lands on.
+    cpus = resources.enforceable_cpus
+    if cpus is not None:
+        opts["cpus-per-task"] = str(max(1, math.ceil(cpus)))
     if resources.memory is not None:
         opts["mem"] = f"{max(1, math.ceil(resources.memory / 1024**2))}M"
     return opts
