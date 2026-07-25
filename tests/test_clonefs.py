@@ -42,8 +42,24 @@ def _snapshot_of(root: Path) -> dict[str, bytes | str]:
     return out
 
 
+@pytest.fixture(params=[True, False], ids=["with-cfr", "without-cfr"])
+def _copy_file_range_availability(request, monkeypatch):
+    """Run the content tests both with and without `os.copy_file_range`.
+
+    Its absence is not hypothetical: CPython compiles the binding in only
+    when the C library had it at configure time, so a portable
+    redistributable build (what `uv python install` fetches, and what CI
+    runs) lacks it on a kernel that supports it perfectly well. That is
+    exactly the kind of environment difference A1 says must cost space and
+    never content, so both answers are exercised rather than whichever the
+    test machine happens to have.
+    """
+    monkeypatch.setattr(clonefs, "_has_copy_file_range", lambda: request.param)
+    return request.param
+
+
 @pytest.mark.parametrize("tier", list(CloneTier))
-def test_every_rung_reproduces_the_tree_exactly(tmp_path, tier):
+def test_every_rung_reproduces_the_tree_exactly(tmp_path, tier, _copy_file_range_availability):
     """A1: a reflink, a copy_file_range clone and a full copy differ only in
     space. If any rung produced different bytes the whole design would rest
     on which filesystem happened to be underneath.
@@ -55,7 +71,7 @@ def test_every_rung_reproduces_the_tree_exactly(tmp_path, tier):
 
 
 @pytest.mark.parametrize("tier", list(CloneTier))
-def test_a_snapshot_does_not_move_when_the_source_is_rewritten_in_place(tmp_path, tier):
+def test_a_snapshot_does_not_move_when_the_source_is_rewritten_in_place(tmp_path, tier, _copy_file_range_availability):
     """The property that rules hardlinks out of the ladder entirely.
 
     An MS is rewritten *in place* -- casacore writes into existing table
@@ -82,7 +98,7 @@ def test_a_snapshot_does_not_move_when_the_source_is_rewritten_in_place(tmp_path
 
 
 @pytest.mark.parametrize("tier", list(CloneTier))
-def test_mtimes_are_preserved_on_every_rung(tmp_path, tier):
+def test_mtimes_are_preserved_on_every_rung(tmp_path, tier, _copy_file_range_availability):
     """A boundary path's fingerprint is `[relpath, mtime_ns, size]`, and a
     generation-0 snapshot is *named* by the hash of that fingerprint. A rung
     that kept the bytes but re-dated the files would make a restored tree
@@ -140,6 +156,7 @@ def test_probe_reports_probable_clone_on_zfs_with_block_cloning_on(tmp_path, mon
     monkeypatch.setattr(clonefs, "_try_ficlone", lambda directory: False)
     monkeypatch.setattr(clonefs, "_mount_info", lambda path: ("/tank", "zfs"))
     monkeypatch.setattr(clonefs, "_zfs_bclone_enabled", lambda: True)
+    monkeypatch.setattr(clonefs, "_has_copy_file_range", lambda: True)
     assert probe(tmp_path) is CloneTier.COPY_FILE_RANGE
     assert "not verifiable" in decisions()[0].reason
 
@@ -237,3 +254,16 @@ def test_unknown_free_space_does_not_block_work(tmp_path, monkeypatch):
     """
     monkeypatch.setattr(clonefs.os, "statvfs", lambda path: (_ for _ in ()).throw(OSError()))
     assert free_space(tmp_path) > (1 << 60)
+
+
+def test_a_python_without_copy_file_range_does_not_get_the_zfs_rung(tmp_path, monkeypatch):
+    """ZFS exposes block cloning through `copy_file_range` and nothing else,
+    so an interpreter without it cannot reach that rung -- and must be told
+    why rather than silently reporting a clone it never performed.
+    """
+    monkeypatch.setattr(clonefs, "_try_ficlone", lambda directory: False)
+    monkeypatch.setattr(clonefs, "_mount_info", lambda path: ("/tank", "zfs"))
+    monkeypatch.setattr(clonefs, "_zfs_bclone_enabled", lambda: True)
+    monkeypatch.setattr(clonefs, "_has_copy_file_range", lambda: False)
+    assert probe(tmp_path) is CloneTier.COPY
+    assert "without copy_file_range" in decisions()[0].reason

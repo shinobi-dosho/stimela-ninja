@@ -34,7 +34,11 @@ The rungs:
    ``filefrag`` equivalent -- so this rung is recorded as *probable*
    sharing, and gated on ``zfs_bclone_enabled`` being on (it was disabled
    by default after the 2.2.0-era corruption bug, so its state has to be
-   read at runtime rather than assumed).
+   read at runtime rather than assumed). It is *also* gated on the
+   interpreter actually having ``os.copy_file_range``, which is not a given
+   even on Linux: CPython compiles the binding in only when the C library
+   had it at configure time, so a portable redistributable build can lack
+   it on a kernel that supports it fine.
 3. **`copy`** -- an ordinary read/write copy. Always correct, always full
    price. Callers that care about capacity preflight against free space
    before asking for one.
@@ -143,6 +147,19 @@ def _mount_info(path: Path) -> tuple[str, str]:
         return ("", "unknown")
 
 
+def _has_copy_file_range() -> bool:
+    """Whether this interpreter exposes the `copy_file_range` syscall.
+
+    Not a given, even on Linux. CPython compiles the binding in only when
+    the C library had it at *configure* time, so a portable redistributable
+    build (python-build-standalone, which `uv python install` fetches, built
+    against an old glibc on purpose) can lack it on a kernel that supports it
+    perfectly well. Checked as a function rather than a module constant so
+    tests can fake both answers.
+    """
+    return hasattr(os, "copy_file_range")
+
+
 def _zfs_bclone_enabled() -> bool:
     """Whether ZFS block cloning is switched on in this kernel module.
 
@@ -220,8 +237,10 @@ def probe(path: Path) -> CloneTier:
     mountpoint, fstype = _mount_info(directory)
     if _try_ficlone(directory):
         tier, reason = CloneTier.FICLONE, "FICLONE ioctl succeeded on a two-file probe"
-    elif fstype == "zfs" and _zfs_bclone_enabled():
+    elif fstype == "zfs" and _zfs_bclone_enabled() and _has_copy_file_range():
         tier, reason = CloneTier.COPY_FILE_RANGE, "ZFS with zfs_bclone_enabled=1: copy_file_range probably clones, sharing not verifiable from userspace"
+    elif fstype == "zfs" and _zfs_bclone_enabled():
+        tier, reason = CloneTier.COPY, "ZFS block cloning is on, but this Python was built without copy_file_range, which is the only way ZFS exposes it"
     elif fstype == "zfs":
         tier, reason = CloneTier.COPY, "ZFS with block cloning disabled (zfs_bclone_enabled=0)"
     else:
@@ -268,7 +287,7 @@ def _copy_fd(src_fd: int, dst_fd: int, size: int, tier: CloneTier) -> None:
             return
         except OSError:
             os.ftruncate(dst_fd, 0)
-    if tier in (CloneTier.FICLONE, CloneTier.COPY_FILE_RANGE):
+    if tier in (CloneTier.FICLONE, CloneTier.COPY_FILE_RANGE) and _has_copy_file_range():
         try:
             offset = 0
             while offset < size:
