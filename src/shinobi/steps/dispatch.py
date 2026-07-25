@@ -68,9 +68,11 @@ _NO_RESOURCES = Resources()
 _NOT_A_SLICE = -1
 
 # How far past a budget-blocked head the scheduler will look for work that
-# fits alongside it. Bounded so a wide fan-out cannot turn every refusal into
-# a scan of the whole ready set; the head is retried on every pass regardless,
-# so a candidate missed by one pass is simply reconsidered on the next.
+# fits alongside it. Purely a **performance** bound, not a correctness one:
+# it stops a wide fan-out turning every refusal into a scan of the whole
+# ready set. Nothing is lost by the cut-off, because the head is retried on
+# every pass and the ready set is re-scanned from the front each time, so a
+# candidate beyond the window is simply reconsidered on a later pass.
 _BACKFILL_LOOKAHEAD = 8
 
 
@@ -1026,11 +1028,18 @@ def _run_recipe(
                 Whether anything was done -- if so the caller should retry
                 admission rather than park.
             """
-            for position, (i, slot) in enumerate(pending):
-                if position == 0:
-                    continue  # the head itself; never skipped past
+            # `sorted`, not `enumerate`: a heap orders only its root, so
+            # walking the backing list would pick an arbitrary fitting unit
+            # rather than the lowest-index one. Backfill relaxes *whether*
+            # queued work waits for the head, never the order it is chosen
+            # in -- everything else here drains by declaration index and this
+            # must too, or which step overtakes a parked head depends on heap
+            # layout. `pending` is small (one step's units, plus whatever
+            # earlier backfills expanded), so sorting it is cheap.
+            for entry in sorted(pending)[1:]:
+                i, slot = entry
                 if budget.try_backfill(_demand_of(i), head_demand, recipe.steps[i].name):
-                    pending.pop(position)
+                    pending.remove(entry)  # entries are unique (step, slice) pairs
                     heapq.heapify(pending)
                     _submit_unit(i, None if slot == _NOT_A_SLICE else slot, _demand_of(i), backfilled=True)
                     return True

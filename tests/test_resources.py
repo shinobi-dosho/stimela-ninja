@@ -517,6 +517,10 @@ def test_backfill_refuses_when_a_sibling_is_queued_ahead():
     thread = threading.Thread(target=older_sibling)
     thread.start()
     thread.join()
+    # The sibling exits still holding its ticket. Harmless here because the
+    # budget dies with the test, but on a real scheduler that is exactly the
+    # leak `abandon()` exists to prevent -- a ticket from a dead waiter would
+    # block every later arrival forever (see `_return_reservations`).
 
     # This thread has no ticket at all, and a sibling holds an older one.
     assert not budget.try_backfill(Resources(memory="10GiB"), Resources(memory="70GiB"), "b")
@@ -562,3 +566,25 @@ def test_backfill_resolves_the_cpus_all_sentinel_on_both_sides():
     small_head = Resources(cpus=4)
     assert not other.try_acquire(small_head, "head")[0]
     assert not other.try_backfill(Resources(cpus="all"), small_head, "greedy")
+
+
+def test_backfill_treats_the_dimensions_independently():
+    """`_leaves_room_for` skips a dimension the candidate leaves unset, which
+    is what makes "work that consumes no CPU cannot delay anyone on CPU"
+    true. Pin the cross-dimension contract before someone simplifies that
+    filter away.
+    """
+    budget = Budget(Resources(cpus=8, memory="100GiB"))
+    budget.try_acquire(Resources(memory="60GiB"), "running")
+    memory_head = Resources(memory="70GiB")
+    assert not budget.try_acquire(memory_head, "head")[0]
+
+    # A CPU-only candidate competes with the memory-bound head for nothing.
+    assert budget.try_backfill(Resources(cpus=4), memory_head, "cpu-only")
+
+    # ... but it is still held to the CPU dimension against a CPU-bound head.
+    other = Budget(Resources(cpus=8, memory="100GiB"))
+    other.try_acquire(Resources(cpus=6), "running")
+    cpu_head = Resources(cpus=6)
+    assert not other.try_acquire(cpu_head, "head")[0]
+    assert not other.try_backfill(Resources(cpus=4), cpu_head, "cpu-only")  # 6 + 4 > 8

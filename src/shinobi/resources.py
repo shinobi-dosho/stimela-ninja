@@ -744,9 +744,24 @@ class Budget:
                 self._next_ticket += 1
             return False, self._generation
 
+    def _backfill_operands(self, demand: Resources, behind: Resources) -> tuple[Resources, Resources] | None:
+        """Both footprints resolved against this pool, or `None` when the
+        candidate reserves nothing and is therefore admissible outright.
+
+        The shared preamble of `can_backfill` and `try_backfill`. Kept in one
+        place because it encodes two decisions those two must never disagree
+        on: that a `cpus="all"` footprint is measured against *this* total
+        before any arithmetic, and that an empty demand short-circuits to
+        "yes" -- it cannot delay anything it is not competing for.
+        """
+        demand = demand.resolved_against(self.total)
+        if demand.is_empty():
+            return None
+        return demand, behind.resolved_against(self.total)
+
     def _backfillable(self, demand: Resources, behind: Resources) -> bool:
         """Whether `demand` could be backfilled past a head needing `behind`.
-        Caller holds the lock.
+        Both already resolved; caller holds the lock.
         """
         oldest = min(self._waiters.values(), default=None)
         my_ticket = self._waiters.get(threading.get_ident())
@@ -764,12 +779,11 @@ class Budget:
         that could not be admitted anyway. Advisory by nature: capacity can
         change before the real `try_backfill`, which simply refuses then.
         """
-        demand = demand.resolved_against(self.total)
-        behind = behind.resolved_against(self.total)
-        if demand.is_empty():
+        operands = self._backfill_operands(demand, behind)
+        if operands is None:
             return True
         with self._cond:
-            return self._backfillable(demand, behind)
+            return self._backfillable(*operands)
 
     def try_backfill(self, demand: Resources, behind: Resources, label: str = "") -> bool:
         """Reserve `demand` only if doing so cannot delay a unit needing
@@ -807,14 +821,10 @@ class Budget:
             ticket which makes the fairness check below read as "we are the
             oldest waiter" rather than "someone is ahead of us".
         """
-        # Resolved before anything is compared, exactly as `try_acquire`
-        # does: a `cpus="all"` footprint is symbolic until measured against
-        # this pool, and both sides of the room-to-spare test have to be
-        # real numbers against the same total.
-        demand = demand.resolved_against(self.total)
-        behind = behind.resolved_against(self.total)
-        if demand.is_empty():
+        operands = self._backfill_operands(demand, behind)
+        if operands is None:
             return True  # reserves nothing, so it can never delay anything
+        demand, behind = operands
         with self._cond:
             if not self._backfillable(demand, behind):
                 return False
