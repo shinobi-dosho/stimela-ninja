@@ -579,10 +579,11 @@ def compile_recipe(
     into a cluster workflow and, with --submit, hand it off and detach.
 
     Only purely-declarative recipes can be offloaded; anything relying on
-    live Python (orchestration functions, MUTABLE inputs, non-path data
-    flow) is rejected with an explanation -- run those locally via `ninja
-    run`. [OPTIONS] carry the recipe's own inputs; run
-    `ninja compile TARGET --help` to see them.
+    live Python (orchestration functions, MUTABLE non-path inputs, non-path
+    data flow) is rejected with an explanation -- run those locally via
+    `ninja run`. Steps that rewrite a shared path in place are fine: the
+    compiler derives the ordering they need. [OPTIONS] carry the recipe's
+    own inputs; run `ninja compile TARGET --help` to see them.
     """
     if target in ("-h", "--help"):
         click.echo(ctx.get_help())

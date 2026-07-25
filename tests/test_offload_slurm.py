@@ -8,7 +8,7 @@ from shinobi.exceptions import BackendError
 from shinobi.graph import RecipeNotOffloadableError
 from shinobi.offload import OffloadCompileError, compile_slurm, status_slurm, submit_slurm
 from shinobi.resources import Resources
-from shinobi.steps.schema import Cab, InputRef, OutputRef, ParamMeta, Recipe, StepRef
+from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, ParamMeta, Recipe, StepRef
 
 
 class RecipeIn(BaseModel):
@@ -412,3 +412,234 @@ def test_workflow_sbatch_opts_win_over_a_step_declaration():
     script = next(job.script for job in wf.jobs if job.name == "make")
     assert "#SBATCH --mem=100G" in script
     assert f"--mem={32 * 1024}M" not in script
+
+
+# ---------------------------------------------------------------------------
+# In-place mutation ordering
+#
+# The caracal-shaped case: several steps take the *same* MS as a plain input
+# and rewrite it. Nothing wires them together, so the declared graph sees
+# independent steps -- locally the default `max_workers: 1` hides that behind
+# declaration order, but handed to Slurm as an unordered DAG it is data
+# corruption. These cover the edges the compiler derives from resolved paths.
+# ---------------------------------------------------------------------------
+
+
+class MSIn(BaseModel):
+    ms: Path
+
+
+class ImgIn(BaseModel):
+    ms: Path
+    prefix: str = "img"
+
+
+def _mutator(name: str, model=MSIn) -> Cab:
+    """A cab that rewrites its `ms` input in place (flag/gaincal/applycal)."""
+    return Cab(
+        name=name,
+        command=name,
+        inputs_model=model,
+        outputs_model=OkOut,
+        input_mutability={"ms": Mutability.MUTABLE},
+    )
+
+
+def _reader(name: str, model=MSIn) -> Cab:
+    """A cab that only reads its `ms` input (wsclean)."""
+    return Cab(name=name, command=name, inputs_model=model, outputs_model=OkOut)
+
+
+def _steps_recipe(*steps: StepRef) -> Recipe:
+    return Recipe(name="pipe", inputs_model=RecipeIn, outputs_model=OkOut, steps=list(steps))
+
+
+def _deps(wf) -> dict[str, list[str]]:
+    return {job.name: job.depends_on for job in wf.jobs}
+
+
+def test_steps_mutating_one_ms_are_serialized_in_declaration_order():
+    """flag -> gaincal -> applycal, all rewriting the same MS in place, with
+    no wiring between them at all.
+    """
+    recipe = _steps_recipe(
+        StepRef(name="flag", step=_mutator("flag"), wiring={"ms": InputRef(field="ms")}),
+        StepRef(name="gaincal", step=_mutator("gaincal"), wiring={"ms": InputRef(field="ms")}),
+        StepRef(name="applycal", step=_mutator("applycal"), wiring={"ms": InputRef(field="ms")}),
+    )
+    wf = compile_slurm(recipe, {"ms": "/scratch/obs.ms"}, workdir="/work", container_runtime=None)
+
+    # A chain, not a fan: minimal edges, not every pair.
+    assert _deps(wf) == {"flag": [], "gaincal": ["flag"], "applycal": ["gaincal"]}
+
+
+def test_a_reader_is_ordered_after_the_mutator_it_follows():
+    """The finding that a mutator-vs-mutator-only rule would have missed:
+    `applycal` rewrites CORRECTED_DATA, `wsclean` merely reads the MS. Only
+    one side declares MUTABLE, and the edge is still required.
+    """
+    recipe = _steps_recipe(
+        StepRef(name="applycal", step=_mutator("applycal"), wiring={"ms": InputRef(field="ms")}),
+        StepRef(name="image", step=_reader("wsclean", ImgIn), wiring={"ms": InputRef(field="ms")}),
+    )
+    wf = compile_slurm(recipe, {"ms": "/scratch/obs.ms"}, workdir="/work", container_runtime=None)
+    assert _deps(wf)["image"] == ["applycal"]
+
+
+def test_a_mutator_is_ordered_after_readers_of_the_old_contents():
+    """Write-after-read: the mutator must not rewrite the MS out from under
+    a reader that is still running.
+    """
+    recipe = _steps_recipe(
+        StepRef(name="image", step=_reader("wsclean", ImgIn), wiring={"ms": InputRef(field="ms")}),
+        StepRef(name="applycal", step=_mutator("applycal"), wiring={"ms": InputRef(field="ms")}),
+    )
+    wf = compile_slurm(recipe, {"ms": "/scratch/obs.ms"}, workdir="/work", container_runtime=None)
+    assert _deps(wf)["applycal"] == ["image"]
+
+
+def test_two_readers_of_the_same_ms_stay_parallel():
+    """Nothing mutates, so nothing needs ordering -- the whole point of
+    offload is that independent work runs concurrently.
+    """
+    recipe = _steps_recipe(
+        StepRef(name="imageA", step=_reader("wscleanA", ImgIn), wiring={"ms": InputRef(field="ms")}),
+        StepRef(name="imageB", step=_reader("wscleanB", ImgIn), wiring={"ms": InputRef(field="ms")}),
+    )
+    wf = compile_slurm(recipe, {"ms": "/scratch/obs.ms"}, workdir="/work", container_runtime=None)
+    assert _deps(wf) == {"imageA": [], "imageB": []}
+
+
+def test_readers_between_two_mutators_all_gate_the_second():
+    """A mutator waits for *every* reader since the last write, not just the
+    most recent one.
+    """
+    recipe = _steps_recipe(
+        StepRef(name="flag", step=_mutator("flag"), wiring={"ms": InputRef(field="ms")}),
+        StepRef(name="imageA", step=_reader("wscleanA", ImgIn), wiring={"ms": InputRef(field="ms")}),
+        StepRef(name="imageB", step=_reader("wscleanB", ImgIn), wiring={"ms": InputRef(field="ms")}),
+        StepRef(name="applycal", step=_mutator("applycal"), wiring={"ms": InputRef(field="ms")}),
+    )
+    wf = compile_slurm(recipe, {"ms": "/scratch/obs.ms"}, workdir="/work", container_runtime=None)
+    deps = _deps(wf)
+    assert deps["imageA"] == ["flag"] and deps["imageB"] == ["flag"]
+    assert deps["applycal"] == ["imageA", "imageB"]
+
+
+def test_ordering_survives_different_spellings_of_the_same_path(tmp_path):
+    """Syntactic source-matching would miss this: one step wires the MS from
+    the recipe input, the next hard-codes an equal literal, and a third
+    reaches it by a relative path. One file, three spellings.
+    """
+    ms = tmp_path / "obs.ms"
+    ms.mkdir()
+    recipe = _steps_recipe(
+        StepRef(name="flag", step=_mutator("flag"), wiring={"ms": InputRef(field="ms")}),
+        StepRef(name="gaincal", step=_mutator("gaincal"), params={"ms": str(ms)}),
+        StepRef(name="applycal", step=_mutator("applycal"), params={"ms": f"{tmp_path}/./obs.ms"}),
+    )
+    wf = compile_slurm(recipe, {"ms": str(ms)}, workdir="/work", container_runtime=None)
+    assert _deps(wf) == {"flag": [], "gaincal": ["flag"], "applycal": ["gaincal"]}
+
+
+def test_ordering_covers_a_path_neither_step_mentions():
+    """Both steps leave the field unset and take the cab schema's default,
+    so there is no wiring and no param to compare -- only the resolved value.
+    """
+
+    class DefaultedIn(BaseModel):
+        ms: Path = Path("/scratch/default.ms")
+
+    recipe = _steps_recipe(
+        StepRef(name="flag", step=_mutator("flag", DefaultedIn)),
+        StepRef(name="gaincal", step=_mutator("gaincal", DefaultedIn)),
+    )
+    wf = compile_slurm(recipe, {"ms": "/scratch/unused.ms"}, workdir="/work", container_runtime=None)
+    assert _deps(wf)["gaincal"] == ["flag"]
+
+
+def test_ordering_covers_directory_containment():
+    """An MS *is* a directory: a step rewriting `/scratch/obs.ms` and a step
+    reading a table inside it touch the same data while comparing unequal.
+    """
+
+    class SubIn(BaseModel):
+        ms: Path = Path("/scratch/obs.ms/CORRECTED")
+
+    recipe = _steps_recipe(
+        StepRef(name="applycal", step=_mutator("applycal"), wiring={"ms": InputRef(field="ms")}),
+        StepRef(name="peek", step=_reader("peek", SubIn)),
+    )
+    wf = compile_slurm(recipe, {"ms": "/scratch/obs.ms"}, workdir="/work", container_runtime=None)
+    assert _deps(wf)["peek"] == ["applycal"]
+
+
+def test_ordering_covers_list_valued_inputs():
+    """`gaintable=[a, b]` -- each element is a path the step touches."""
+
+    class TablesIn(BaseModel):
+        ms: Path
+        gaintable: list[Path] = []
+
+    recipe = _steps_recipe(
+        StepRef(name="gaincal", step=_mutator("gaincal"), wiring={"ms": InputRef(field="ms")}),
+        StepRef(
+            name="applycal",
+            step=_reader("applycal", TablesIn),
+            params={"ms": "/scratch/other.ms", "gaintable": ["/scratch/obs.ms"]},
+        ),
+    )
+    wf = compile_slurm(recipe, {"ms": "/scratch/obs.ms"}, workdir="/work", container_runtime=None)
+    assert _deps(wf)["applycal"] == ["gaincal"]
+
+
+def test_unrelated_paths_are_not_ordered():
+    """The analysis must not serialize a whole recipe just because it uses
+    MUTABLE anywhere -- two MSs are two MSs.
+    """
+    recipe = _steps_recipe(
+        StepRef(name="flagA", step=_mutator("flagA"), params={"ms": "/scratch/a.ms"}),
+        StepRef(name="flagB", step=_mutator("flagB"), params={"ms": "/scratch/b.ms"}),
+    )
+    wf = compile_slurm(recipe, {"ms": "/scratch/unused.ms"}, workdir="/work", container_runtime=None)
+    assert _deps(wf) == {"flagA": [], "flagB": []}
+
+
+def test_mutation_edges_merge_with_wired_edges_without_duplication():
+    recipe = Recipe(
+        name="pipe",
+        inputs_model=RecipeIn,
+        outputs_model=OkOut,
+        steps=[
+            StepRef(name="make", step=Cab(name="mk", command="mk", inputs_model=MakeIn, outputs_model=MSOut), wiring={"ms": InputRef(field="ms")}),
+            # wired from make's output *and* mutating the same path
+            StepRef(name="flag", step=_mutator("flag"), wiring={"ms": OutputRef(step="make", field="ms")}),
+        ],
+    )
+    wf = compile_slurm(recipe, {"ms": "/scratch/obs.ms"}, workdir="/work", container_runtime=None)
+    assert _deps(wf)["flag"] == ["make"]
+
+
+def test_compiled_chain_emits_afterok_dependencies(monkeypatch, tmp_path):
+    """End of the road: the derived edges really become `--dependency=afterok`
+    at submission, not just entries in a dataclass.
+    """
+    recipe = _steps_recipe(
+        StepRef(name="flag", step=_mutator("flag"), wiring={"ms": InputRef(field="ms")}),
+        StepRef(name="applycal", step=_mutator("applycal"), wiring={"ms": InputRef(field="ms")}),
+    )
+    wf = compile_slurm(recipe, {"ms": "/scratch/obs.ms"}, workdir=str(tmp_path), container_runtime=None)
+
+    submitted = []
+    counter = iter(["101", "102"])
+
+    def fake_run(args, **kwargs):
+        submitted.append(args)
+        return subprocess.CompletedProcess(args, 0, f"{next(counter)}\n", "")  # sbatch --parsable
+
+    monkeypatch.setattr("shinobi.offload.slurm.subprocess.run", fake_run)
+    ids = submit_slurm(wf, workdir=str(tmp_path))
+
+    assert ids == {"flag": "101", "applycal": "102"}
+    assert not any(a.startswith("--dependency") for a in submitted[0])
+    assert "--dependency=afterok:101" in submitted[1]

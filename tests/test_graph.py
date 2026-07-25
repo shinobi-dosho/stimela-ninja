@@ -214,9 +214,36 @@ def test_orchestration_function_blocks_offload():
         check_offloadable(recipe)
 
 
-def test_mutable_input_blocks_offload():
+def test_mutable_path_input_does_not_block_offload():
+    """A MUTABLE *path* is exactly the in-place-MS-rewrite case every real
+    self-cal pipeline is built on. The shared filesystem carries the
+    reference; the ordering the declared graph lacks is supplied by the
+    compiler (`offload.slurm.MutationOrder`), not by refusing the recipe.
+    """
     make = _make_cab().model_copy(update={"input_mutability": {"where": Mutability.MUTABLE}})
-    with pytest.raises(RecipeNotOffloadableError, match=r"MUTABLE input\(s\) \['where'\]"):
+    check_offloadable(_path_wired_recipe(make, _use_cab()))  # does not raise
+
+
+def test_mutable_non_path_input_still_blocks_offload():
+    """No filesystem carries a live Python object across a node boundary."""
+    cab = Cab(name="make", command="mk", inputs_model=In, outputs_model=MSOut, input_mutability={"n": Mutability.MUTABLE})
+    recipe = _recipe(
+        [
+            StepRef(name="make", step=cab),
+            StepRef(name="use", step=_use_cab(), wiring={"ms": OutputRef(step="make", field="ms")}),
+        ],
+        output_wiring={"ok": OutputRef(step="use", field="ok")},
+    )
+    with pytest.raises(RecipeNotOffloadableError, match=r"MUTABLE non-path input\(s\) \['n'\]"):
+        check_offloadable(recipe)
+
+
+def test_non_binary_flavour_blocks_offload():
+    """A code-carrying flavour has no argv to compile. `build_argv` would
+    refuse it later anyway; saying so up front beats failing mid-compile.
+    """
+    make = _make_cab().model_copy(update={"flavour": "python"})
+    with pytest.raises(RecipeNotOffloadableError, match="flavour 'python'"):
         check_offloadable(_path_wired_recipe(make, _use_cab()))
 
 
@@ -295,14 +322,14 @@ def test_wrangler_derived_output_ref_blocks_offload():
 
 
 def test_offload_check_reports_all_reasons_at_once():
-    make = _make_cab().model_copy(update={"input_mutability": {"where": Mutability.MUTABLE}})
+    make = _make_cab().model_copy(update={"venv": "/opt/env"})
     use = _use_cab()
     recipe = _path_wired_recipe(make, use)
     recipe.steps[1].func = lambda ctx: ctx.run()
     with pytest.raises(RecipeNotOffloadableError) as exc:
         check_offloadable(recipe)
     msg = str(exc.value)
-    assert "MUTABLE" in msg and "orchestration function" in msg
+    assert "runs in a venv" in msg and "orchestration function" in msg
 
 
 # -- additional wiring/field validation --

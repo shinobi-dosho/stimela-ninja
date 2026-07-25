@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from shinobi.policies import EXECUTABLE_FLAVOURS
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, path_fields
 from shinobi.wranglers import parse_output_action
 
@@ -216,8 +217,22 @@ def check_offloadable(recipe: "Recipe") -> RecipeGraph:
       shipping it would be a code-execution hazard.
     - **Every step is a `Cab`** -- a bare `Scope`/nested `Recipe` step has
       no single argv to emit.
-    - **No MUTABLE inputs** -- pass-by-reference is a single-heap concept;
-      there is no shared memory across cluster nodes.
+    - **A MUTABLE input must be a path** on a `Cab`. MUTABLE means
+      pass-by-reference, which for a live Python object is a single-heap
+      concept with no meaning across nodes -- but a `Cab`'s inputs are
+      paths, and a shared filesystem *is* exactly that reference. The
+      hazard in-place mutation actually poses is **ordering**, not
+      representation: two steps rewriting the same MS get no graph edge
+      unless one wires from the other's output, so a cluster would run them
+      concurrently. That is resolved where the real path values are known,
+      by `offload.slurm.MutationOrder`, which emits the missing edges --
+      so this check no longer has to refuse the whole class. (A MUTABLE
+      input that is *not* path-typed still has no cross-node meaning and is
+      refused; so is any MUTABLE input on a non-`Cab` step.)
+    - **Only `binary`-flavour cabs** -- a code-carrying flavour has no argv
+      to compile, and `build_argv` would refuse it later anyway. Reported
+      here so an unofloadable recipe says so up front rather than failing
+      mid-compile.
     - **Every inter-step `OutputRef`** (one step's input wired from another
       step's output) carries a **path** output that is **not**
       wrangler-derived -- across nodes, data flows only as shared-filesystem
@@ -246,9 +261,24 @@ def check_offloadable(recipe: "Recipe") -> RecipeGraph:
         # rather than mis-run it (venv-in-sbatch is deliberately not built).
         if scope.venv is not None or scope.backend == "venv":
             reasons.append(f"step '{ref.name}' runs in a venv -- venv execution is not supported by offloaded engines in this version; run it locally")
-        mutable = sorted(name for name, m in scope.input_mutability.items() if m is Mutability.MUTABLE)
-        if mutable:
-            reasons.append(f"step '{ref.name}' has MUTABLE input(s) {mutable} -- pass-by-reference cannot cross node boundaries")
+        if scope.flavour not in EXECUTABLE_FLAVOURS:
+            reasons.append(
+                f"step '{ref.name}' uses cab '{scope.name}' with flavour '{scope.flavour}' -- only "
+                "'binary' cabs compile to an argv an external engine can run (see dosho for real ports)"
+            )
+        # A MUTABLE input is fine when it is a path: the shared filesystem
+        # carries the reference, and `offload.slurm.MutationOrder` supplies
+        # the ordering edges the declared graph doesn't have. A MUTABLE
+        # *non*-path input is a live Python object, which no filesystem can
+        # carry across a node boundary.
+        paths = path_fields(scope.inputs_model)
+        mutable_non_path = sorted(name for name, m in scope.input_mutability.items() if m is Mutability.MUTABLE and name not in paths)
+        if mutable_non_path:
+            reasons.append(
+                f"step '{ref.name}' has MUTABLE non-path input(s) {mutable_non_path} -- pass-by-reference "
+                "of a live object cannot cross a node boundary (a MUTABLE *path* is fine: the shared "
+                "filesystem carries it, and the compiler orders the steps that share it)"
+            )
 
     def check_output_ref(label: str, src: OutputRef) -> None:
         """Append a reason to `reasons` if `src` can't cross a node boundary.
