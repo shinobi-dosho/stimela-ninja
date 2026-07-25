@@ -80,7 +80,7 @@ html_title = f"stimela-ninja {release}"
 html_static_path = ["_static"]
 
 html_theme_options = {
-    "source_repository": "https://github.com/SpheMakh/stimela-ninja/",
+    "source_repository": "https://github.com/shinobi-dosho/stimela-ninja/",
     "source_branch": "main",
     "source_directory": "docs/",
 }

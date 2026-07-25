@@ -10,10 +10,10 @@ authors:
     given-names: "Sphesihle"
     email: "sphemakh@gmail.com"
     orcid: "https://orcid.org/0000-0001-9565-9622"
-version: "0.1.0b1"
+version: "0.1.0b4"
 license: MIT
-repository-code: "https://github.com/SpheMakh/stimela-ninja"
-url: "https://github.com/SpheMakh/stimela-ninja"
+repository-code: "https://github.com/shinobi-dosho/stimela-ninja"
+url: "https://github.com/shinobi-dosho/stimela-ninja"
 keywords:
   - radio astronomy
   - pipelines

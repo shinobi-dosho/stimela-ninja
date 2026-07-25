@@ -7,7 +7,7 @@ valuable contributions right now are bug reports, focused fixes, tests,
 documentation, and feedback on the design.
 
 By participating you agree to abide by our
-[Code of Conduct](https://github.com/SpheMakh/stimela-ninja/blob/main/CODE_OF_CONDUCT.md).
+[Code of Conduct](https://github.com/shinobi-dosho/stimela-ninja/blob/main/CODE_OF_CONDUCT.md).
 
 ## Scope and philosophy
 
@@ -17,14 +17,14 @@ problems with plain Python over adding new layers of machinery.
 
 For background on how the project is put together and the reasoning behind its
 current design, see
-**[`AGENTS.md`](https://github.com/SpheMakh/stimela-ninja/blob/main/AGENTS.md)**.
+**[`AGENTS.md`](https://github.com/shinobi-dosho/stimela-ninja/blob/main/AGENTS.md)**.
 It's helpful context when proposing anything that touches the recipe/
 orchestration layer. If you're considering a larger change, opening an issue to
 discuss it first is a great way to align before writing code.
 
 ## Ways to contribute
 
-- **Report bugs** and request features via [issues](https://github.com/SpheMakh/stimela-ninja/issues).
+- **Report bugs** and request features via [issues](https://github.com/shinobi-dosho/stimela-ninja/issues).
 - **Improve documentation** under `docs/` or the docstrings that feed the API
   reference.
 - **Submit code** — bug fixes, new cabs/loaders/backends, tests.
@@ -118,4 +118,4 @@ and publishes to PyPI.
 ## License
 
 By contributing, you agree that your contributions are licensed under the
-project's [MIT License](https://github.com/SpheMakh/stimela-ninja/blob/main/LICENSE).
+project's [MIT License](https://github.com/shinobi-dosho/stimela-ninja/blob/main/LICENSE).

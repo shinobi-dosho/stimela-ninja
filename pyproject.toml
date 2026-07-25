@@ -49,7 +49,7 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/shinobi/stimela-ninja"
+Homepage = "https://github.com/shinobi-dosho/stimela-ninja"
 Repository = "https://github.com/shinobi-dosho/stimela-ninja"
 Documentation = "https://stimela-ninja.readthedocs.io"
 Issues = "https://github.com/shinobi-dosho/stimela-ninja/issues"

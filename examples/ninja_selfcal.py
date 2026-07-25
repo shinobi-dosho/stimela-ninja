@@ -1,6 +1,7 @@
 """Ninja selfcal -- a shinobi Recipe for the self-calibration pipeline
-originally at https://github.com/SpheMakh/ninja/blob/319cc37/ninja-recipe.py
-(stimela classic).
+originally at sphemakh/ninja @ 319cc37 (`ninja-recipe.py`, stimela classic).
+That repository is private, so the reference is provenance rather than a
+link you can follow.
 
 This is a condensed reimplementation on the step model (`Cab`/`Recipe`/
 `@recipe.step`, `ninja run`). A selfcal pipeline is a *declared DAG*: each
