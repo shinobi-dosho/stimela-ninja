@@ -583,7 +583,7 @@ def _resource_flags(scope: Scope, runtime: str, *, runs_here: bool = True) -> li
         return []
 
     declared = [
-        ("cpus", f"{resources.cpus:g}" if resources.cpus is not None else None),
+        ("cpus", f"{resources.enforceable_cpus:g}" if resources.enforceable_cpus is not None else None),
         ("memory", str(resources.memory) if resources.memory is not None else None),
     ]
     available = delegated_controllers() if mode == "auto" and runs_here and _rootless(runtime) else None

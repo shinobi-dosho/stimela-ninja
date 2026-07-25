@@ -315,6 +315,48 @@ def test_demand_larger_than_the_whole_budget_is_granted_not_parked():
     assert not budget.try_acquire(Resources(memory="1GiB"), "sibling")[0]
 
 
+def test_all_cpus_takes_the_whole_pool_and_excludes_a_sibling():
+    """The point of the sentinel: a step that will use every core must not
+    read as *free* just because a recipe cannot know the number.
+    """
+    budget = Budget(Resources(cpus=8))
+    assert budget.try_acquire(Resources(cpus="all"), "wsclean")[0]
+    assert budget.reserved.cpus == 8
+    assert not budget.try_acquire(Resources(cpus=1), "sibling")[0]
+
+
+def test_all_cpus_is_granted_rather_than_deadlocking_against_itself():
+    """Resolving to exactly the total (not more) is what keeps this a *wait*
+    rather than the `_exceeds_total` escape hatch, which would wave both
+    steps through unconstrained -- turning the strongest declaration into
+    the weakest.
+    """
+    budget = Budget(Resources(cpus=8))
+    assert budget.try_acquire(Resources(cpus="all"), "first")[0]
+    assert not budget.try_acquire(Resources(cpus="all"), "second")[0]
+    budget.release(Resources(cpus="all"))  # released as declared, resolved the same way
+    budget.abandon()
+    assert budget.reserved.cpus == 0
+    assert budget.try_acquire(Resources(cpus="all"), "second")[0]
+
+
+def test_all_cpus_against_an_unconstrained_pool_is_free():
+    """Nothing can exhaust a pool with no CPU total, so there is nothing for
+    the step to be held back by."""
+    budget = Budget(Resources(cpus=None, memory="10GiB"))
+    for _ in range(5):
+        assert budget.try_acquire(Resources(cpus="all"), "greedy")[0]
+
+
+def test_all_cpus_is_not_a_backend_limit():
+    """A cap of "the whole machine" is not a cap, and no backend may invent
+    a number for it (see `Resources.enforceable_cpus`)."""
+    assert Resources(cpus="all").enforceable_cpus is None
+    assert Resources(cpus=4).enforceable_cpus == 4
+    assert not Resources(cpus="all").is_empty()
+    assert Resources(cpus="all").describe() == "cpus=all"
+
+
 def test_unconstrained_dimension_never_refuses():
     budget = Budget(Resources(cpus=4, memory=None))
     for _ in range(5):
