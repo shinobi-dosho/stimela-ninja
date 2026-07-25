@@ -91,6 +91,10 @@ _V1_UNLIMITED = 1 << 62
 # decides what that runtime can enforce (see `delegated_controllers`).
 _USER_MANAGER_RE = re.compile(r"^user@\d+\.service$")
 
+# The per-user slice the manager lives in, alongside the login sessions.
+# The uid is captured because that is what names the manager beside them.
+_USER_SLICE_RE = re.compile(r"^user-(\d+)\.slice$")
+
 
 def parse_size(value: float | str) -> int:
     """Parse a byte size: a bare number, or a number with a unit suffix.
@@ -355,13 +359,27 @@ def delegated_controllers(root: str = "/") -> frozenset[str] | None:
         root: Filesystem root to probe against. A test seam; `"/"` in real
             use. Cached per root -- delegation does not change within a run.
 
+    **The caller is not always inside the manager it will ask.** An `ssh`
+    login lands in `/user.slice/user-<uid>.slice/session-<n>.scope` -- a
+    *sibling* of `user@<uid>.service`, not a descendant -- so the path walk
+    below finds no manager even though one is running and its delegation is
+    sitting there to be read. Returning "couldn't tell" for that shape means
+    emitting `--cpus` on a host known not to delegate `cpu`, which is the
+    abort this probe exists to prevent, and `ssh` is how batch runs are
+    started. So a session that names its user slice is resolved through
+    `_user_manager_beside`.
+
+    Args:
+        root: Filesystem root to probe against. A test seam; `"/"` in real
+            use. Cached per root -- delegation does not change within a run.
+
     Returns:
         The delegated controller names, or `None` when this cannot be
         determined -- no cgroup v2, no unified entry in `/proc/self/cgroup`,
-        or no systemd user manager in this process's cgroup path at all (a
-        container, or an `ssh` session with no user@.service). Callers must
-        read `None` as "assume everything works" and keep failing loudly,
-        never as "nothing works".
+        or neither a user manager in this process's cgroup path nor one
+        beside it (a container, or a session systemd never took charge of).
+        Callers must read `None` as "assume everything works" and keep
+        failing loudly, never as "nothing works".
     """
     base = Path(root) / "sys/fs/cgroup"
     if not (base / "cgroup.controllers").exists():
@@ -375,6 +393,38 @@ def delegated_controllers(root: str = "/") -> frozenset[str] | None:
         if not _USER_MANAGER_RE.match(components[depth - 1]):
             continue
         raw = _read_first_line(base.joinpath(*components[:depth]) / "cgroup.controllers")
+        return None if raw is None else frozenset(raw.split())
+    return _user_manager_beside(base, components)
+
+
+def _user_manager_beside(base: Path, components: list[str]) -> frozenset[str] | None:
+    """Delegation read from the user manager *next to* the caller's cgroup.
+
+    For a login session (`user-<uid>.slice/session-<n>.scope`) the runtime
+    still asks `user@<uid>.service` for its scope, so that manager's
+    `cgroup.controllers` is the same honest answer it is for a caller
+    already inside it -- it is simply one level across rather than up.
+
+    The uid comes from the *observed* slice name rather than from `geteuid`,
+    so this only ever reads the manager of the user whose slice this process
+    is genuinely in. A container with its own cgroup namespace names no user
+    slice and still gets `None`.
+
+    Args:
+        base: The cgroup v2 mount point (`<root>/sys/fs/cgroup`).
+        components: The caller's cgroup path, already split.
+
+    Returns:
+        The delegated controller names, or `None` if no user slice is named
+        or no manager exists beside the caller (`Delegate=` unset, or a
+        `user@.service` that is not running).
+    """
+    for depth in range(len(components), 0, -1):
+        match = _USER_SLICE_RE.match(components[depth - 1])
+        if match is None:
+            continue
+        manager = base.joinpath(*components[:depth], f"user@{match.group(1)}.service")
+        raw = _read_first_line(manager / "cgroup.controllers")
         return None if raw is None else frozenset(raw.split())
     return None
 

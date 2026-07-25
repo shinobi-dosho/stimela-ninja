@@ -155,7 +155,9 @@ def _delegate(root, *, leaf, per_level):
     _write_cgroup_tree(root, leaf=leaf, limits={})
     cg = root / "sys/fs/cgroup"
     for rel, controllers in per_level.items():
-        (cg / rel if rel else cg).joinpath("cgroup.controllers").write_text(f"{controllers}\n")
+        level = cg / rel if rel else cg
+        level.mkdir(parents=True, exist_ok=True)  # a named level need not be on the leaf path
+        (level / "cgroup.controllers").write_text(f"{controllers}\n")
     delegated_controllers.cache_clear()
     return str(root)
 
@@ -210,9 +212,58 @@ def test_delegated_controllers_reports_nothing_delegated(tmp_path):
     assert delegated_controllers(root) == frozenset()
 
 
+def test_delegated_controllers_reads_the_manager_beside_an_ssh_session(tmp_path):
+    """The measured layout of the batch host: an `ssh` login sits in
+    `session-<n>.scope`, a *sibling* of `user@<uid>.service` rather than a
+    descendant. The manager is right there and says `memory pids`, so
+    answering "couldn't tell" would emit `--cpus` on a host known to abort
+    on it -- and `ssh` is how batch runs are started.
+    """
+    root = _delegate(
+        tmp_path,
+        leaf="/user.slice/user-20001.slice/session-c4116.scope",
+        per_level={
+            "": "cpuset cpu io memory hugetlb pids rdma misc",
+            "user.slice/user-20001.slice": "memory pids",
+            "user.slice/user-20001.slice/user@20001.service": "memory pids",
+            "user.slice/user-20001.slice/session-c4116.scope": "memory pids",
+        },
+    )
+    assert delegated_controllers(root) == frozenset({"memory", "pids"})
+
+
+def test_delegated_controllers_prefers_a_manager_the_caller_is_inside(tmp_path):
+    """When the caller really is under a `user@<uid>.service`, that one is
+    the answer -- the sibling lookup is a fallback, not an override.
+    """
+    root = _delegate(
+        tmp_path,
+        leaf="/user.slice/user-1000.slice/user@1000.service/app.slice/vte.scope",
+        per_level={
+            "": "cpu memory pids",
+            "user.slice/user-1000.slice/user@1000.service": "cpu memory pids",
+            "user.slice/user-1000.slice/user@1000.service/app.slice": "memory pids",
+            "user.slice/user-1000.slice/user@1000.service/app.slice/vte.scope": "memory pids",
+        },
+    )
+    assert delegated_controllers(root) == frozenset({"cpu", "memory", "pids"})
+
+
+def test_delegated_controllers_is_unknown_when_no_manager_is_running(tmp_path):
+    """A user slice with no `user@<uid>.service` beside it -- systemd never
+    started one. Nothing to read, so nothing is claimed.
+    """
+    root = _delegate(
+        tmp_path,
+        leaf="/user.slice/user-20001.slice/session-c1.scope",
+        per_level={"": "cpu memory pids", "user.slice/user-20001.slice": "memory pids"},
+    )
+    assert delegated_controllers(root) is None
+
+
 def test_delegated_controllers_is_unknown_without_a_user_manager(tmp_path):
-    """No `user@<uid>.service` in the path -- a container, or a session
-    systemd never took charge of. Nothing to read, so nothing is claimed.
+    """No `user@<uid>.service` in the path and no user slice either -- a
+    container, or a system service. Nothing to read, so nothing is claimed.
     """
     root = _delegate(tmp_path, leaf="/system.slice/some.service", per_level={"": "cpu memory pids"})
     assert delegated_controllers(root) is None
