@@ -338,6 +338,8 @@ runs. See :doc:`../cli` for the ``--dryrun`` output.
 Offloading
 ----------
 
-A recipe that is *purely declarative* -- no orchestration functions, no
-MUTABLE inputs, and only paths crossing between steps -- can be compiled to a
-cluster workflow and detached. See :doc:`../offloading`.
+A recipe that is *purely declarative* -- no orchestration functions, only
+``binary`` cabs, and only paths crossing between steps -- can be compiled to
+a cluster workflow and detached. Steps that rewrite a shared path in place
+(the usual self-cal pattern) are offloadable too: the compiler derives the
+ordering they need from the resolved paths. See :doc:`../offloading`.

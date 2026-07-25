@@ -18,7 +18,7 @@ from shinobi.steps.schema import Cab
 # subprocess as argv[0]. Everything else (cult-cargo's "python-code",
 # "casa-task", ...) has a `command` that is inline source or a dotted
 # function reference -- not something to run, let alone eval()/exec().
-_EXECUTABLE_FLAVOURS = {"binary"}
+EXECUTABLE_FLAVOURS = {"binary"}
 
 
 def _format_value(value: Any, policies) -> str:
@@ -66,10 +66,10 @@ def build_argv(cab: Cab, resolved: dict[str, Any]) -> list[str]:
     non-executable `command` can never reach subprocess as argv[0] (see
     SECURITY.md).
     """
-    if cab.flavour not in _EXECUTABLE_FLAVOURS:
+    if cab.flavour not in EXECUTABLE_FLAVOURS:
         raise UnsupportedFlavourError(
             f"cab '{cab.name}' has flavour '{cab.flavour}', which shinobi doesn't "
-            f"execute (only {sorted(_EXECUTABLE_FLAVOURS)} today) -- its `command` "
+            f"execute (only {sorted(EXECUTABLE_FLAVOURS)} today) -- its `command` "
             f"is not an executable name and must not be run as one"
         )
 

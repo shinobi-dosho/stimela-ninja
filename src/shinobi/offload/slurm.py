@@ -16,10 +16,18 @@ Two halves, deliberately split by testability:
   (none in the dev env) -- reviewed by construction; verify before relying.
 
 Only recipes that pass `check_offloadable` get here (no orchestration funcs,
-no MUTABLE inputs, inter-step data flow via shared-filesystem paths only),
-so every value the compiler needs is statically knowable: an inter-step
-`OutputRef` path is resolved from the producing step's same-named input or
-its output-field default, mirroring `_fill_outputs` minus the backend run.
+inter-step data flow via shared-filesystem paths only), so every value the
+compiler needs is statically knowable: an inter-step `OutputRef` path is
+resolved from the producing step's same-named input or its output-field
+default, mirroring `_fill_outputs` minus the backend run.
+
+Having those resolved values is also what lets this module order **in-place
+mutation**, which the declared graph cannot express: several steps taking
+the same MS as a plain input and rewriting it are, to `build_graph`,
+independent. `MutationOrder` derives the edges they actually need from the
+resolved paths and merges them into each job's `afterok` dependencies --
+see its docstring for the rules, and `graph.check_offloadable` for why the
+whole MUTABLE class no longer has to be refused.
 """
 
 from __future__ import annotations
@@ -45,7 +53,7 @@ from shinobi.backends.slurm_script import (
 from shinobi.exceptions import BackendError
 from shinobi.graph import check_offloadable
 from shinobi.policies import build_argv
-from shinobi.steps.schema import Cab, InputRef, OutputRef, Recipe
+from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, path_fields
 
 
 class OffloadCompileError(ValueError):
@@ -81,6 +89,122 @@ class SlurmWorkflow:
     recipe: str
     jobs: list[SlurmJob]  # in topological order
     log_dir: Path  # where each job's --output/--error land; created by submit
+
+
+def _touched_paths(cab: Cab, resolved: dict[str, Any]) -> list[tuple[Path, bool]]:
+    """Every path-typed input the step touches, as `(canonical_path,
+    mutates)` -- `mutates` being whether the cab declares that field
+    `Mutability.MUTABLE`, i.e. the tool rewrites the file in place rather
+    than only reading it.
+
+    Paths are canonicalised with `Path.resolve()` so `./obs.ms`,
+    `obs.ms` and `/data/obs.ms` are recognised as one file rather than
+    three, and so a symlink and its target don't look independent.
+    List-valued inputs (e.g. `gaintable=[a, b]`) contribute each element.
+    """
+    touched: list[tuple[Path, bool]] = []
+    for name in sorted(path_fields(cab.inputs_model)):
+        value = resolved.get(name)
+        if value is None:
+            continue
+        mutates = cab.mutability_of(name) is Mutability.MUTABLE
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            if item is None:
+                continue
+            touched.append((Path(str(item)).resolve(), mutates))
+    return touched
+
+
+def _overlaps(a: Path, b: Path) -> bool:
+    """Whether two canonical paths can name the same bytes: equal, or one
+    inside the other. Containment is not a nicety here -- a Measurement Set
+    *is* a directory, so a step rewriting `/data/obs.ms` and a step reading
+    `/data/obs.ms/CORRECTED` touch the same data while comparing unequal.
+    """
+    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
+
+
+@dataclass
+class _PathState:
+    """Who last wrote a path, and who has read it since. Exactly what is
+    needed to emit the *minimal* ordering edges rather than linking every
+    pair that touches it: a chain of four steps mutating one MS becomes
+    1->2->3->4, not all six pairwise edges.
+    """
+
+    last_writer: str | None = None
+    readers_since_write: list[str] = field(default_factory=list)
+
+
+class MutationOrder:
+    """Tracks who has touched which paths, and reports the ordering a step
+    needs because of it. Fed one step at a time, in declaration order, as
+    the compiler resolves them.
+
+    A recipe's declared graph only has an edge where one step *wires* an
+    input from another's output. In-place mutation leaves no such trace:
+    `flag`, `gaincal` and `applycal` all take the same MS as a plain input
+    and rewrite it, so the DAG sees three independent steps. Locally the
+    default `max_workers: 1` hides that behind declaration order; handed to
+    Slurm as an unordered DAG it is data corruption. This is what makes the
+    mutation order the recipe already relied on explicit.
+
+    Ordering is emitted for a pair only when **at least one** of them
+    declares the shared path MUTABLE -- so read-after-write and
+    write-after-read, not just write-after-write. That breadth is the
+    point: `applycal` mutates the MS while `wsclean` merely reads it, so
+    restricting this to mutator-vs-mutator pairs would leave exactly the
+    caracal-shaped case racing. Two steps that only read the same path need
+    no ordering and get none.
+    """
+
+    def __init__(self) -> None:
+        self._accesses: dict[Path, _PathState] = {}
+
+    def order_after(self, name: str, cab: Cab, resolved: dict[str, Any]) -> set[str]:
+        """Record `name`'s path accesses and return the already-seen steps
+        it must run after.
+
+        Args:
+            name: The step's name.
+            cab: Its cab, consulted for which inputs are paths and which of
+                those are declared MUTABLE.
+            resolved: Its fully-resolved inputs (defaults filled in), so
+                the comparison is on real path values rather than on how
+                each step happened to spell them.
+
+        Returns:
+            Names of previously-recorded steps this one must follow.
+        """
+        required: set[str] = set()
+        for path, mutates in _touched_paths(cab, resolved):
+            overlapping = [state for known, state in self._accesses.items() if _overlaps(path, known)]
+            for state in overlapping:
+                if mutates and state.readers_since_write:
+                    # Write-after-read: follow everyone who read the current
+                    # contents, or this rewrites the file out from under a
+                    # reader that is still running. Those readers already
+                    # order after `last_writer` (that is how they were
+                    # recorded), so depending on them covers it transitively
+                    # -- naming the writer too would only add a redundant
+                    # edge to every job's `--dependency` list.
+                    required |= set(state.readers_since_write)
+                elif state.last_writer is not None:
+                    required.add(state.last_writer)
+
+            state = self._accesses.setdefault(path, _PathState())
+            if mutates:
+                # This step is now the last writer of `path` *and* of every
+                # overlapping path, so a later toucher of either orders
+                # after it. Reads recorded before the write are satisfied.
+                for s in [*overlapping, state]:
+                    s.last_writer = name
+                    s.readers_since_write = []
+            else:
+                state.readers_since_write.append(name)
+
+        required.discard(name)  # a step reading and mutating the same path
+        return required
 
 
 def _static_outputs(cab: Cab, resolved_inputs: dict[str, Any]) -> dict[str, Any]:
@@ -160,6 +284,11 @@ def compile_slurm(
 
     resolved_outputs: dict[str, dict[str, Any]] = {}
     jobs: list[SlurmJob] = []
+    # In-place mutation of a shared path is invisible to `build_graph` (it
+    # only sees wiring), so the edges it implies are derived here, from
+    # resolved values, and merged into each job's `depends_on`.
+    mutation_order = MutationOrder()
+    step_index = {n: idx for idx, n in enumerate(graph.names)}
 
     for i, name in enumerate(graph.names):
         ref = recipe.steps[i]
@@ -235,7 +364,22 @@ def compile_slurm(
                 )
             skip_if_exists = str(sentinel)
 
-        depends_on = [graph.names[d] for d in sorted(graph.deps[i])]
+        # Wiring edges from the declared graph, plus the ones implied by
+        # steps sharing a path at least one of them mutates. Both are by
+        # step name, and both become `--dependency=afterok` links below.
+        # Kept in declaration order (not name order) so the emitted
+        # dependency list stays stable and readable.
+        #
+        # `order_after` only ever returns steps it has already recorded, so
+        # every edge it adds points backwards -- which is what lets
+        # `submit_slurm` resolve each parent to a job id it has already
+        # submitted. Checked rather than assumed, since a forward edge would
+        # otherwise surface as a confusing KeyError at submission time.
+        mutation_deps = mutation_order.order_after(name, cab, resolved)
+        forward = [dep for dep in mutation_deps if step_index[dep] >= i]
+        if forward:
+            raise OffloadCompileError(f"internal: step '{name}' derived a forward mutation dependency on {forward} -- offloaded dependencies must point at earlier steps")
+        depends_on = sorted({graph.names[d] for d in graph.deps[i]} | mutation_deps, key=lambda dep: step_index[dep])
         jobs.append(
             SlurmJob(
                 name=name,

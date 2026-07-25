@@ -14,12 +14,48 @@ running any Python. A recipe is offload-eligible only when:
 
 * it has **no orchestration functions** (nothing whose behaviour depends on
   live Python control flow),
-* it has **no MUTABLE inputs**, and
+* every step is a ``binary``-flavour ``Cab``,
+* any **MUTABLE input is a path** (see below), and
 * only **paths** cross between steps (an output wired into a later input must be
   a filesystem path knowable at compile time, not a wrangler-derived value).
 
 Anything relying on live Python is rejected with an explanation -- run those
 recipes locally with ``ninja run`` instead.
+
+.. _offload-mutation-ordering:
+
+In-place mutation is offloadable
+--------------------------------
+
+Self-cal pipelines rewrite one Measurement Set in place: ``flag``,
+``gaincal`` and ``applycal`` each take the same MS as a plain input and
+modify it. Nothing wires them together, so the declared graph sees three
+*independent* steps -- run locally that is harmless, because the default
+``max_workers: 1`` executes them in declaration order anyway, but handed to
+a cluster as an unordered DAG they would run concurrently against the same
+files.
+
+``ninja compile`` therefore derives the missing edges itself. As it resolves
+each step's inputs it records which paths that step touches and whether it
+declares them ``MUTABLE``, then orders any two steps that share a path when
+**at least one** of them mutates it:
+
+* mutate-then-mutate -- the second waits for the first;
+* mutate-then-read -- a reader sees the finished result;
+* read-then-mutate -- the writer waits for readers of the old contents.
+
+Two steps that only *read* the same path are left parallel, which is the
+whole point of offloading them.
+
+Because this works on **resolved values**, it does not care how each step
+spells the path. A step wiring the MS from a recipe input and a step naming
+the same file as a literal are recognised as touching one file, as are
+``./obs.ms`` and ``/data/obs.ms``, a path neither step mentions because both
+take a schema default, and ``/data/obs.ms`` versus ``/data/obs.ms/CORRECTED``
+-- a Measurement Set is a directory, so containment counts.
+
+A MUTABLE input that is *not* a path is still refused: that is a live Python
+object, and no shared filesystem can carry one across a node boundary.
 
 A :ref:`declared loop <declared-loops>` satisfies all of this: unrolling
 leaves a plain dependency chain of ``Cab`` steps, and its convergence test
