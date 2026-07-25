@@ -23,7 +23,7 @@ To install the latest development version:
 
 .. code-block:: console
 
-    $ pip install git+https://github.com/SpheMakh/stimela-ninja.git
+    $ pip install git+https://github.com/shinobi-dosho/stimela-ninja.git
 
 Either way, this installs:
 
@@ -42,7 +42,7 @@ The project uses `uv <https://docs.astral.sh/uv/>`_:
 
 .. code-block:: console
 
-    $ git clone https://github.com/SpheMakh/stimela-ninja.git
+    $ git clone https://github.com/shinobi-dosho/stimela-ninja.git
     $ cd stimela-ninja
     $ uv venv .venv && uv pip install -e . --group dev
     $ .venv/bin/pytest

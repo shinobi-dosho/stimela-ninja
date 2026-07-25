@@ -73,7 +73,7 @@ Architecture
     ``wsclean.yml``, ``cubical.yml`` and ``quartical.yml`` all do — loads with
     a warning and whatever static ``inputs:``/``outputs:`` it has, which may
     be an **incomplete** schema. Hand-authored full ports of those three live
-    in `dosho <https://github.com/SpheMakh/dosho>`_; prefer them.
+    in `dosho <https://github.com/shinobi-dosho/dosho>`_; prefer them.
 
   Relatedly, only ``flavour: binary`` cabs execute. cult-cargo's
   code-carrying flavours (``python``, inline source — e.g. ``msutils.copycol``,
@@ -153,6 +153,16 @@ only paths crossing between steps) can be **offloaded** to a cluster with
 See ``docs/design.rst`` for the design philosophy behind the declared-DAG
 model and what's deliberately left out.
 
+Coming from CARACal or Stimela 2?
+---------------------------------
+
+``docs/migration.rst`` maps a CARACal worker onto a shinobi recipe, with two
+real workers (``transform`` and ``flag``) side by side: what carries over
+(your cab YAML, your worker *schemas*), what you rewrite by hand (the worker
+body -- ``enable:`` flags become ordinary ``if`` statements), and what has no
+equivalent yet. Read it before porting anything -- it opens with a breaking
+change to package-scoped ``_include`` that you will otherwise hit first.
+
 Status
 ------
 
@@ -168,7 +178,7 @@ Once published to PyPI::
 
 Until then, install the latest from GitHub::
 
-    pip install git+https://github.com/SpheMakh/stimela-ninja.git
+    pip install git+https://github.com/shinobi-dosho/stimela-ninja.git
 
 This installs the ``ninja`` command and the importable ``shinobi`` package.
 

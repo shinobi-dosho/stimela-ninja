@@ -6,7 +6,7 @@ Vendored copies of real [simms 3.0](https://github.com/wits-cfa/simms) files.
 
 `simms-cabs.yaml` is no longer used by `example-simulation.py` itself --
 that example now gets its `telsim`/`skysim` cabs from
-[dosho](https://github.com/SpheMakh/dosho) (`dosho.cabs.simms`), the
+[dosho](https://github.com/shinobi-dosho/dosho) (`dosho.cabs.simms`), the
 native shinobi cab repository, instead of loading this vendored YAML
 directly. It's kept as a real-file regression fixture for
 `shinobi.loaders.cultcargo`'s own dtype handling

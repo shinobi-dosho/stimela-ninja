@@ -52,6 +52,7 @@ is just Python, and it doesn't need reinventing.
 
    installation
    quickstart
+   migration
 
 .. toctree::
    :maxdepth: 2

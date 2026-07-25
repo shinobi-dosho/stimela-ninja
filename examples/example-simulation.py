@@ -10,7 +10,7 @@ calibrate against) -> calibrate -> image 3x with different Briggs robust
 weightings. Every tool involved is real and was exercised directly
 against this file while writing it.
 
-Every cab here comes from **dosho** (https://github.com/SpheMakh/dosho),
+Every cab here comes from **dosho** (https://github.com/shinobi-dosho/dosho),
 the native shinobi cab repository -- not hand-loaded YAML, not a
 hand-declared `Cab`. This is the intended way to use cabs now; see
 `ninja_selfcal.py` for the older `shinobi.loaders.cultcargo`/hand-declared
