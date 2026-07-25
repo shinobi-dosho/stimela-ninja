@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field, ValidationError, create_model
-from shinobi.cache import combine_keys, compute_cache_key, get_cache_manifest, invalidate_path_hashes
+from shinobi.cache import as_provenance_key, combine_keys, compute_cache_key, get_cache_manifest, invalidate_path_hashes, set_content_sample
+from shinobi.snapshots import SnapshotGuard, announce_run, eligible_fields, get_journal, new_run_id, reconcile
 from shinobi.config import AppConfig
 from shinobi.exceptions import CabRunError, ParameterError, ShinobiError, StepError
 from shinobi.graph import build_graph
@@ -192,6 +193,7 @@ class ExecContext:
         sandbox_root: str | None = None,
         input_keys: dict[str, Any] | None = None,
         budget: Budget | None = None,
+        run_id: str = "",
     ):
         """Initialize execution state for one dispatched step.
 
@@ -249,6 +251,11 @@ class ExecContext:
         # against them (see shinobi.cache).
         self._input_keys = input_keys
         self._budget = budget
+        # Identifies the whole top-level dispatch, threaded down like
+        # `_config` so every step of one run agrees on it. Names trash
+        # directories and stamps manifest entries, both of which are read
+        # across runs -- which is why it is a uuid and not a pid.
+        self._run_id = run_id
 
     def prepare_inputs(self) -> dict[str, Any]:
         """Validated + mutability-processed inputs, with no overrides applied
@@ -329,6 +336,7 @@ class ExecContext:
                 sandbox=self._sandbox_root is not None,
                 input_keys=self._input_keys,
                 budget=self._budget,
+                run_id=self._run_id,
             )
         else:
             raise TypeError(
@@ -360,6 +368,52 @@ def _emit_run_manifest(
         warnings.warn(f"failed to write run manifest for {result.name!r}: {exc}", stacklevel=2)
 
 
+_snapshot_warned: set[tuple[str, str]] = set()
+
+
+def _snapshot_guard(
+    scope: Scope,
+    ctx: "ExecContext",
+    cache_dir: str,
+    cache_path: str,
+    cache_key: str | None,
+    run_id: str,
+    input_keys: dict[str, Any] | None,
+    wired_fields: set[str] | None,
+    slice_index: int | None,
+    config: AppConfig,
+) -> SnapshotGuard | None:
+    """A `SnapshotGuard` for this step, or `None` if it mutates nothing Tier
+    1 can protect.
+
+    Every field it declines is warned about exactly once per process --
+    these are properties of a recipe's shape, not of a run, so repeating
+    them per step per run would bury the ones that matter.
+    """
+    protected, excluded = eligible_fields(scope, ctx.prepare_inputs(), input_keys, wired_fields, slice_index is not None)
+    for exclusion in excluded:
+        if (cache_path, exclusion.field) not in _snapshot_warned:
+            _snapshot_warned.add((cache_path, exclusion.field))
+            logger.warning(
+                "step %s: no snapshot protection for mutated input '%s' -- %s. This step runs against live disk, exactly as it would with snapshots off.",
+                cache_path,
+                exclusion.field,
+                exclusion.reason,
+            )
+    if not protected:
+        return None
+    return SnapshotGuard(
+        journal=get_journal(cache_dir),
+        step_path=cache_path,
+        cache_key=cache_key,
+        run_id=run_id,
+        fields=protected,
+        input_keys=input_keys,
+        wired_fields=wired_fields,
+        force_copy=config.cache.snapshots.mode == "copy",
+    )
+
+
 def _dispatch(
     scope: Scope,
     func: Callable | None,
@@ -380,10 +434,14 @@ def _dispatch(
     _config: AppConfig | None = None,
     _provenance_target: str | None = None,
     _input_keys: dict[str, Any] | None = None,
+    _wired_fields: set[str] | None = None,
     _budget: Budget | None = None,
+    _run_id: str | None = None,
+    _slice_index: int | None = None,
     **kwargs: Any,
 ) -> StepResult:
     config = _config or AppConfig.load()
+    run_id = _run_id or new_run_id()
     if _cache_path is None:
         # Top-level entry: the start of a run, and the memoized boundary-path
         # hashes must not outlive one. Anything could have happened to the
@@ -391,6 +449,10 @@ def _dispatch(
         # long-lived session, two `_dispatch` calls in one test), and none of
         # it went through the post-execution invalidation below.
         invalidate_path_hashes()
+        # Whether boundary fingerprints carry a content sample is a property
+        # of the workspace, not of a step, so it is set once per run rather
+        # than passed down (see `cache.set_content_sample`).
+        set_content_sample(config.cache.content_sample)
     cache_enabled = cache if cache is not None else scope.cache if scope.cache is not None else _recipe_cache if _recipe_cache is not None else config.cache.enabled
     cache_dir_value = cache_dir or scope.cache_dir or _recipe_cache_dir or config.cache.dir
     cache_path = _cache_path or scope.name
@@ -407,6 +469,39 @@ def _dispatch(
     # each get their own cache check via their own recursive _dispatch
     # call (see shinobi.cache's module docstring for why).
     cacheable = cache_enabled and not isinstance(scope, Recipe)
+    # Mutation-chain snapshots (shinobi.snapshots) ride on caching being on
+    # *somewhere* in the effective chain, not on this scope being cacheable.
+    # An uncached mutating step inside an otherwise-cached recipe still has
+    # to dirty the journal, or a cached consumer downstream would restore
+    # over work it cannot see -- see the never-worse rules.
+    # Two different questions, and conflating them silently disabled crash
+    # recovery for every real pipeline. Whether Tier 1 is *active for this
+    # run* has nothing to do with the shape of the scope being dispatched;
+    # whether *this scope* gets a snapshot guard does, because a Recipe is
+    # never itself cached and mutates nothing of its own -- its leaves do.
+    # A top-level target is almost always a Recipe, so gating reconciliation
+    # on the leaf-level answer meant it never ran outside the tests that
+    # called it directly.
+    snapshots_active = config.cache.snapshots.mode != "off" and (cache_enabled or bool(_recipe_cache) or config.cache.enabled)
+    snapshots_enabled = snapshots_active and not isinstance(scope, Recipe)
+    if _cache_path is None and snapshots_active:
+        # Crash recovery, before any step of this run looks at the disk --
+        # but only once we can show no other shinobi is live on this cache
+        # directory. Reconciliation reads "marker set, no manifest entry" as
+        # a corpse and rolls the workspace back; against a run that is merely
+        # still going, that deletes its work mid-write. When we cannot
+        # establish we are alone we skip, which is safe: the marker stays
+        # set, so the next restore still forces a rollback (branch 1), and
+        # only the tidying waits.
+        presence = announce_run(cache_dir_value, run_id)
+        if presence.alone():
+            for note in reconcile(cache_dir_value, get_cache_manifest(cache_dir_value)):
+                logger.warning("cache: %s", note)
+        else:
+            logger.warning(
+                "cache: not reconciling %s -- another shinobi process appears to be using it (or this filesystem does not support locking). Interrupted steps still recover on their own; run 'ninja cache check' when the other run has finished.",
+                cache_dir_value,
+            )
 
     ctx = ExecContext(
         scope,
@@ -422,6 +517,7 @@ def _dispatch(
         sandbox_root=config.sandbox.dir if sandbox_enabled else None,
         input_keys=_input_keys,
         budget=_budget,
+        run_id=run_id,
     )
 
     manifest = None
@@ -447,6 +543,14 @@ def _dispatch(
         cache_path,
         " (sandboxed)" if sandbox_enabled else "",
     )
+    # Tier 1's pre-run hooks: roll the mutated paths back to the states this
+    # step's DAG position calls for, then mark them in flight, then snapshot
+    # what is being consumed. All of it after the cache key is computed --
+    # which is safe because a mutated path contributes only its path string
+    # to the key, so no restore can move it (see `snapshots.before_run`).
+    guard = _snapshot_guard(scope, ctx, cache_dir_value, cache_path, cache_key, run_id, _input_keys, _wired_fields, _slice_index, config) if snapshots_enabled else None
+    if guard is not None:
+        guard.before_run()
     try:
         if func is None:
             result = ctx.run()
@@ -458,6 +562,11 @@ def _dispatch(
                 raise TypeError(f"step function {getattr(func, '__name__', func)!r} must return StepResult or None, got {type(result).__name__}")
     except Exception:
         logger.exception("step %s: raised", cache_path)
+        if guard is not None:
+            # The workspace goes back to exactly what it was before this step
+            # touched it. The marker stays set on purpose -- the next run then
+            # forces a rollback before re-executing.
+            guard.after_failure()
         raise
     finally:
         # This step may have written to the workspace -- including to an
@@ -482,8 +591,21 @@ def _dispatch(
 
     if cacheable:
         result.cache_key = cache_key
-    if cacheable and result.success:
-        manifest.record(cache_path, cache_key, result)
+    if result.success:
+        # The five-stage commit lives in the guard so its ordering
+        # constraints are enforced in one place -- above all that the tip
+        # snapshot (S1) precedes `manifest.record` (S3), or a crash between
+        # them leaves a step the cache hits forever with nothing snapshotted.
+        def _record() -> None:
+            if cacheable and result.success:
+                manifest.record(cache_path, cache_key, result, run_id=run_id)
+
+        if guard is not None:
+            guard.after_success(_record)
+        else:
+            _record()
+    elif guard is not None:
+        guard.after_failure()
     if _cache_path is None and provenance_enabled:
         _emit_run_manifest(result, ctx, config, backend, target=_provenance_target)
     return result
@@ -652,9 +774,19 @@ def _resolve_input_keys(ref, inbound_keys: dict[str, Any], results: dict[str, St
 
     def key_of(source: InputRef | OutputRef) -> Any:
         if isinstance(source, InputRef):
+            # Already a `ProvenanceKey` if the enclosing recipe had one to
+            # give: an inbound key names the leaf that produced it, and the
+            # boundary is not a new producer.
             return inbound_keys.get(source.field)
         producer = results.get(source.step)
-        return producer.provenance_key(source.field) if producer is not None else None
+        if producer is None:
+            return None
+        # `source.field` is the producing step's own output field, which is
+        # exactly what names the state (see `cache.ProvenanceKey`). It is in
+        # scope only here, at the wiring site -- `provenance_key` itself
+        # cannot supply it for a leaf step, which resolves every field to one
+        # key.
+        return as_provenance_key(producer.provenance_key(source.field), source.field)
 
     keys: dict[str, Any] = {}
     for field, source in ref.wiring.items():
@@ -825,6 +957,7 @@ def _run_recipe(
     sandbox: bool = False,
     input_keys: dict[str, Any] | None = None,
     budget: Budget | None = None,
+    run_id: str = "",
 ) -> StepResult:
     """Topological wavefront scheduler over the recipe's declared DAG.
 
@@ -1023,6 +1156,15 @@ def _run_recipe(
                 _config=config,
                 _budget=budget,
                 _input_keys=sub_input_keys,
+                # The *declared* wiring, not just the keyed subset. Tier 1
+                # has to tell "unwired boundary path" from "wired to a
+                # producer that had no cache key" -- `_input_keys` omits
+                # both, and they need opposite treatment (the first is
+                # named from the journal, the second cannot be named at
+                # all). See `snapshots.eligible_fields`.
+                _wired_fields=set(ref.wiring),
+                _run_id=run_id,
+                _slice_index=slice_idx,
                 **unit_kwargs,
             )
             futures[fut] = (i, slice_idx)
@@ -1202,9 +1344,15 @@ def _run_recipe(
     outputs = {field: getattr(results[out_ref.step].outputs, out_ref.field) for field, out_ref in recipe.output_wiring.items() if out_ref.step in results}
     # Per-output provenance for whoever consumes this recipe's outputs: each
     # declared output is keyed by the sub-step that actually produced it, not
-    # by the recipe as a whole -- see StepResult.provenance_key.
+    # by the recipe as a whole -- see StepResult.provenance_key. `out_ref.field`
+    # names the producing sub-step's own output field, so it is the right
+    # `ProvenanceKey` field here; a sub-step that is itself a recipe already
+    # carries one naming its leaf, and `as_provenance_key` leaves that alone
+    # rather than renaming the state to this recipe's export name.
     output_keys = {
-        field: key for field, out_ref in recipe.output_wiring.items() if out_ref.step in results and (key := results[out_ref.step].provenance_key(out_ref.field)) is not None
+        field: as_provenance_key(key, out_ref.field)
+        for field, out_ref in recipe.output_wiring.items()
+        if out_ref.step in results and (key := results[out_ref.step].provenance_key(out_ref.field)) is not None
     }
     return StepResult(
         name=recipe.name,

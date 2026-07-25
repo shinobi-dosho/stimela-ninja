@@ -38,6 +38,9 @@ Settings
     cache:
       enabled: false              # step-level result caching, off by default
       dir: ".shinobi/cache"       # cache directory
+      content_sample: false       # sample file extents into boundary fingerprints
+      snapshots:
+        mode: auto                # auto | copy | off -- mutation-chain snapshots
     provenance:
       enabled: false              # image pinning + run manifests, off by default
       dir: ".shinobi/runs"        # where run manifests are written
@@ -133,6 +136,64 @@ unchanged cache key is skipped and its prior result reused. It's off by
 default and must also be opted into per-step or per-recipe via ``Scope.cache``
 -- see ``shinobi.cache``. ``ninja run --cache-dir``/``--no-cache`` override
 this per invocation.
+
+``cache.snapshots.mode`` controls mutation-chain snapshots, which ride on
+caching being enabled (see ``shinobi.snapshots``). When several steps rewrite
+one measurement set in turn -- split, then flag, then calibrate -- the cache
+can say *which* state of that MS a step consumed, but on its own it cannot
+put that state back. So re-running a middle step executes it against the
+chain's final state, and resuming after a step died mid-rewrite executes it
+against its own half-written output. Both produce wrong results that look
+finished. With snapshots on, each state is saved under a name and restored
+before the step that needs it re-runs.
+
+* ``auto`` (default): use the cheapest copy the filesystem supports. On XFS
+  with ``reflink=1``, Btrfs, or ZFS with block cloning enabled, a snapshot
+  shares blocks with the original and costs almost nothing; elsewhere it is a
+  full copy, and a snapshot that would not fit is refused loudly rather than
+  half-written. ``ninja cache check`` reports what was chosen for each
+  filesystem and why.
+* ``copy``: always take full copies. For measuring the real cost, or for a
+  filesystem whose clone support you don't trust.
+* ``off``: the escape hatch -- no snapshots, no journal, no restores, leaving
+  exactly the plain skip-cache behaviour described above.
+
+Anything the snapshot layer cannot name -- a scattered or list-valued mutated
+field, a path produced by an uncached step, a snapshot that could not fit --
+is left alone with a warning, and runs exactly as it would with snapshots
+off. It never rolls back something it cannot justify.
+
+``cache.content_sample`` adds a bounded sample (the first and last 4 KiB of
+each file) to the fingerprints of *boundary* inputs -- raw data you supplied,
+which shinobi did not produce. It exists for one case: two different datasets
+that happen to have the same layout and sizes, with mtimes preserved by
+``cp -a`` or ``tar -x``, which would otherwise fingerprint identically. It
+does **not** detect an intermediate edited behind shinobi's back: rewriting a
+column in the middle of a table changes neither the file's size nor its first
+and last pages. That case is undetectable by design -- the declared graph is
+the truth. Off by default, because turning it on changes every boundary-input
+key, so the first run afterwards recomputes that whole layer.
+
+Cache tooling
+~~~~~~~~~~~~~
+
+``ninja cache check`` reports anything the cache cannot vouch for: steps
+interrupted mid-run, paths whose content is not vouched for, quarantined
+trees left by a crash, journal/manifest disagreements, and the clone
+capability chosen per filesystem. It only reads.
+
+``ninja cache invalidate <step-path>`` forgets a step's cached result *and*
+rolls its snapshots back, then forces the rest of its chain to re-run. Use it
+when a step exited zero but wrote something wrong -- dropping the cache entry
+alone would leave that output snapshotted and reachable.
+
+``ninja cache evict --bytes N`` frees snapshot space, dropping unreachable
+states first and never one a live chain still needs.
+
+``ninja clean --cache`` removes the cache directory and the snapshot journal
+with it, and refuses while a quarantined tree is outstanding -- the journal
+is the only thing that explains what such a tree was set aside for. Pass
+``--force`` to remove both.
 
 ``provenance.enabled`` turns on reproducible-run provenance: container images
 are digest-pinned before running (pin-then-run) and a run manifest is written

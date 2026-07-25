@@ -118,7 +118,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from shinobi.results import StepResult
-from shinobi.steps.schema import Cab, Mutability, Scope, path_fields
+from shinobi.steps.schema import Cab, Scope, mutated_path_fields, path_fields
 
 
 _path_hash_cache: dict[Path, Any] = {}
@@ -188,8 +188,17 @@ def _walk_fingerprint(path: Path) -> Any:
             return None
         return [["__unreadable__", exc.errno]]
 
+    # The sample is appended as a *fourth* element rather than folded into
+    # the existing three, so with the flag off every entry is byte-identical
+    # to what it always was and no existing cache entry is orphaned -- the
+    # same conditional-append discipline as `__venv__`/`__upstream__`.
+    sample = _content_sample_enabled
+
     if stat.S_ISREG(st.st_mode):
-        return [[".", st.st_mtime_ns, st.st_size]]
+        entry = [".", st.st_mtime_ns, st.st_size]
+        if sample:
+            entry.append(_content_sample(path, st.st_size))
+        return [entry]
 
     entries: list[list[Any]] = []
     stack: list[tuple[str, str]] = [(os.fspath(path), "")]
@@ -221,8 +230,61 @@ def _walk_fingerprint(path: Path) -> Any:
                         continue  # dangling, or a loop
                     if stat.S_ISDIR(est.st_mode):
                         continue  # symlink to a directory: os.walk never listed these
-                entries.append([rel, est.st_mtime_ns, est.st_size])
+                record = [rel, est.st_mtime_ns, est.st_size]
+                if sample:
+                    record.append(_content_sample(Path(entry.path), est.st_size))
+                entries.append(record)
     return sorted(entries)
+
+
+_SAMPLE_BYTES = 4096
+_content_sample_enabled = False
+
+
+def set_content_sample(enabled: bool) -> None:
+    """Turn the bounded content sample on or off (see `_content_sample`).
+
+    Process-global rather than threaded through `compute_cache_key`, because
+    it has to reach inside `_hash_path`'s memo -- and because it is a
+    property of the *workspace*, not of a step: two steps in one run keying
+    the same boundary path by different rules would be incoherent. Flipping
+    it invalidates the memo for the same reason a step execution does.
+    """
+    global _content_sample_enabled
+    if enabled != _content_sample_enabled:
+        _content_sample_enabled = enabled
+        invalidate_path_hashes()
+
+
+def _content_sample(path: Path, size: int) -> str | None:
+    """A digest of the first and last 4 KiB of `path`.
+
+    Aimed at exactly one gap: two *different* datasets colliding because
+    they have the same layout, the same sizes and mtimes preserved by
+    `cp -a`/`tar -x` inside one granularity window. Sampling the extents
+    separates them for 8 KiB of reads per file.
+
+    It emphatically does **not** cover the limitation it sits next to. An
+    intermediate edited out of band -- a rewritten `FLAG` column, say --
+    changes neither the file's size nor its first and last pages, and stays
+    invisible. That case is undetectable by design, not by omission: the
+    declared graph is the truth, and an on-disk dependency left out of it
+    does not exist. Anyone reading this sample as covering both will be
+    wrong in the direction that loses data.
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(_SAMPLE_BYTES)
+            if size > _SAMPLE_BYTES:
+                handle.seek(max(size - _SAMPLE_BYTES, _SAMPLE_BYTES))
+                tail = handle.read(_SAMPLE_BYTES)
+            else:
+                tail = b""
+    except OSError:
+        return None
+    # blake2b from the stdlib, not blake3: a new third-party dependency is
+    # not justified by 8 KiB of hashing per file.
+    return hashlib.blake2b(head + tail, digest_size=16).hexdigest()
 
 
 def _hash_path(path: Path) -> Any:
@@ -306,6 +368,63 @@ def _identity(scope: Scope, func: Callable | None) -> Any:
     raise TypeError(f"no cacheable identity for a bare Scope with no func ({scope.name!r})")
 
 
+class ProvenanceKey(str):
+    """A provenance key that also remembers *which output field of the
+    producing step* it names.
+
+    The key alone answers "which state of this path", which is all the
+    skip cache ever needed. Snapshotting needs one thing more: a step with
+    two mutated outputs produces two states in one run, and both resolve
+    to that step's single `cache_key` (see `StepResult.provenance_key`), so
+    the key by itself cannot tell them apart. `(key, producer field)` can.
+
+    It is a `str` subclass rather than a pair because these values are
+    hashed into cache keys, in `__upstream__` and through `combine_keys`,
+    and any change to their *shape* would rewrite every key in every
+    existing manifest. `json.dumps` serializes a `str` subclass as the
+    plain string -- as value, as list element, and as dict key, under
+    `sort_keys` and `default=str` alike -- and equality, ordering and
+    hashing against plain `str` are inherited unchanged. So the field
+    rides along in memory and vanishes at the point of hashing, which is
+    what lets this land without invalidating anything.
+
+    `producer_field` is a *class* attribute as well as an instance one:
+    `copy.deepcopy` and `pickle` reconstruct a `str` subclass through
+    `str.__new__` and then restore state, so an instance can briefly exist
+    without it, and reading it must not raise.
+    """
+
+    producer_field: str | None = None
+
+    def __new__(cls, value: str, producer_field: str | None = None) -> "ProvenanceKey":
+        """Build a key naming `value` as produced by output `producer_field`.
+
+        Args:
+            value: The producing step's cache key.
+            producer_field: The producing step's output field this key
+                names, or `None` when it isn't known.
+        """
+        obj = str.__new__(cls, value)
+        obj.producer_field = producer_field
+        return obj
+
+
+def as_provenance_key(key: Any, producer_field: str | None) -> Any:
+    """Attach `producer_field` to `key`, unless it already names one.
+
+    Already-wrapped keys pass through *unchanged*, and that is the whole
+    subtlety. A key crossing a recipe boundary is the producing leaf's
+    key, and the field it names is the leaf's own output field -- not the
+    name the enclosing recipe re-exports it under, nor the name the
+    consumer wires it into. Re-wrapping at each boundary would rename the
+    state at every hop and break the one-state-one-name invariant. `None`
+    (no provenance) passes through as `None`.
+    """
+    if key is None or isinstance(key, ProvenanceKey):
+        return key
+    return ProvenanceKey(key, producer_field)
+
+
 def combine_keys(keys: list[Any]) -> str | None:
     """One key standing for a list of them, or `None` if none of them
     carried provenance. Used to give a scattered step -- N independently
@@ -358,8 +477,7 @@ def compute_cache_key(scope: Scope, func: Callable | None, prepared: dict[str, A
     provenance existed and its cache entries survive the upgrade.
     """
     input_paths = path_fields(scope.inputs_model)
-    output_paths = path_fields(scope.outputs_model)
-    mutated_paths = (input_paths & output_paths) | {name for name in input_paths if scope.mutability_of(name) is Mutability.MUTABLE}
+    mutated_paths = mutated_path_fields(scope)
     wired = set(input_keys or ())
 
     parts: list[Any] = [scope.image, _identity(scope, func)]
@@ -395,21 +513,28 @@ def compute_cache_key(scope: Scope, func: Callable | None, prepared: dict[str, A
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
-class CacheManifest:
-    """A JSON-backed `{step_path: {cache_key, outputs}}` store. Guards
-    reads/writes with a `threading.Lock` (cheap -- one process, `_run_
-    recipe`'s own concurrency is a `ThreadPoolExecutor`) and writes via
-    write-temp-then-rename for atomicity. Two separate *processes*
-    sharing one manifest file remain unguarded -- a known limitation, not
-    solved here.
+class _JsonFileStore:
+    """One JSON object in one file, read and written under a
+    `threading.Lock`, with writes going to a temp file that is then renamed
+    over the target.
+
+    Shared by `CacheManifest` and the mutation-chain journal
+    (`shinobi.snapshots`) rather than reimplemented in each: they have the
+    same shape, the same concurrency story, and the same atomicity
+    requirement, and two private copies of "atomic JSON store" is exactly
+    the kind of drift this repo's DRY discipline exists to prevent.
+
+    The lock is cheap and sufficient *within* a process -- `_run_recipe`'s
+    concurrency is a `ThreadPoolExecutor`. Two separate *processes* sharing
+    one file remain unguarded, a known limitation inherited by both users.
     """
 
     def __init__(self, path: Path):
-        """Initialize the manifest, backed by a JSON file at `path`.
+        """Initialize the store, backed by a JSON file at `path`.
 
         Args:
-            path: Path to the JSON manifest file. Not read until first use;
-                created (with parent directories) on first write.
+            path: Path to the JSON file. Not read until first use; created
+                (with parent directories) on first write.
         """
         self._path = path
         self._lock = threading.Lock()
@@ -424,6 +549,12 @@ class CacheManifest:
         tmp = self._path.with_name(self._path.name + f".tmp{os.getpid()}")
         tmp.write_text(json.dumps(data))
         tmp.replace(self._path)
+
+
+class CacheManifest(_JsonFileStore):
+    """A JSON-backed `{step_path: {cache_key, outputs}}` store -- see
+    `_JsonFileStore` for the locking and atomicity it inherits.
+    """
 
     def check(self, step_path: str, cache_key: str, scope: Scope, prepared: dict[str, Any]) -> StepResult | None:
         """`None` on any kind of miss (no entry, key mismatch, or a
@@ -473,17 +604,42 @@ class CacheManifest:
             sandboxed=entry.get("sandboxed", False),
         )
 
-    def record(self, step_path: str, cache_key: str, result) -> None:
+    def entry(self, step_path: str) -> dict[str, Any] | None:
+        """The raw persisted entry for `step_path`, or `None`.
+
+        Read directly, without `check`'s key comparison or outputs-exist
+        test, because `shinobi.snapshots` needs to ask a different question:
+        not "may this step be skipped" but "did *this run* finish and record
+        it". See `record` for why `run_id` is part of the answer.
+        """
+        with self._lock:
+            return self._read().get(step_path)
+
+    def record(self, step_path: str, cache_key: str, result, run_id: str | None = None) -> None:
         """Persist the *whole* outputs model (not just path-valued
         fields) -- a downstream step wired to a non-path (e.g. wrangled)
         output of a cached step still needs a real value on a later hit --
         plus the step's provenance (kind/backend/image/digest) so a later
         cache hit can reconstruct a manifest-complete `StepResult`.
+
+        `run_id` identifies the top-level dispatch that recorded the entry.
+        The skip cache does not read it; crash recovery does, and needs it
+        to be right. There is exactly one entry per step path, so a key
+        match alone says only that *some* run of this step with this key
+        once succeeded -- and a step that re-ran (because another of its
+        declared outputs was deleted) and was then killed mid-mutation would
+        find its own entry from the earlier run and conclude it had
+        finished, leaving a half-written MS under a cache key that hits
+        forever. Comparing the run makes the oracle answer the question
+        actually being asked. Entries written before this field existed have
+        no `run_id`, so they compare unequal and recovery takes the
+        conservative branch -- the safe direction.
         """
         with self._lock:
             data = self._read()
             data[step_path] = {
                 "cache_key": cache_key,
+                "run_id": run_id,
                 "outputs": json.loads(result.outputs.model_dump_json()),
                 "kind": result.kind,
                 "backend": result.backend,

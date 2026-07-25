@@ -75,6 +75,21 @@ class ExecutionConfig(BaseModel):
     enforce_resources: Literal["auto", "always", "never"] = "auto"
 
 
+class SnapshotConfig(BaseModel):
+    """Settings controlling mutation-chain snapshots (`shinobi.snapshots`)."""
+
+    # How snapshots are taken, when they are taken at all (they ride on the
+    # cache being enabled -- see `CacheConfig.enabled`).
+    #
+    # - "auto": use the clone ladder (`shinobi.clonefs`), so a reflink-
+    #   capable filesystem pays almost nothing per snapshot.
+    # - "copy": force full copies. For measuring the real cost, or for a
+    #   filesystem whose clone support is suspect.
+    # - "off": no snapshots, no journal, no restores -- the escape hatch,
+    #   leaving exactly the shipped skip-cache behaviour.
+    mode: Literal["auto", "copy", "off"] = "auto"
+
+
 class CacheConfig(BaseModel):
     """Settings controlling step-level skip-if-unchanged caching."""
 
@@ -83,6 +98,12 @@ class CacheConfig(BaseModel):
     # `backend.default`/`execution.max_workers`.
     enabled: bool = False
     dir: str = ".shinobi/cache"
+    snapshots: SnapshotConfig = Field(default_factory=SnapshotConfig)
+    # Add a bounded content sample (first+last 4 KiB per file) to boundary
+    # path fingerprints -- see `shinobi.cache._hash_path`. Off by default
+    # because turning it on changes every boundary-input key, so the first
+    # run after enabling recomputes that whole layer.
+    content_sample: bool = False
 
 
 class LogConfig(BaseModel):

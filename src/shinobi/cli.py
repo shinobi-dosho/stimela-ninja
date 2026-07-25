@@ -508,8 +508,16 @@ def replay(ctx: click.Context, run_manifest: str, target_override: str | None, a
     help="Directory to look for launch dirs under (default: cwd). Only affects --launches.",
 )
 @click.option("--dry-run", "dry_run", is_flag=True, help="Show what would be removed without deleting.")
+@click.option(
+    "--force",
+    "force",
+    is_flag=True,
+    help=(
+        "Remove the step cache even while quarantined trees are outstanding, and delete those trees too. Without this, --cache refuses rather than orphaning a tree whose only explanation is the journal it would delete."
+    ),
+)
 @click.pass_context
-def clean(ctx: click.Context, runs: bool, cache: bool, sandboxes: bool, launches: bool, workdir: str | None, dry_run: bool) -> None:
+def clean(ctx: click.Context, runs: bool, cache: bool, sandboxes: bool, launches: bool, workdir: str | None, dry_run: bool, force: bool) -> None:
     """Remove shinobi runtime artifacts: run manifests, the step cache,
     leftover step sandboxes, and (opt-in) detached-run launch dirs.
 
@@ -537,6 +545,21 @@ def clean(ctx: click.Context, runs: bool, cache: bool, sandboxes: bool, launches
     if not runs and not cache and not sandboxes and not launches:
         raise click.ClickException("nothing selected: pass --runs/--cache/--sandboxes/--launches")
 
+    # Resolved before anything is deleted: the list is derived from the chain
+    # journal, which lives *inside* the cache directory this may be about to
+    # remove.
+    pending = _unreconciled_trash(config) if cache else []
+    if pending and not force:
+        # Removing the cache directory takes the journal with it, and the
+        # journal is the only thing that says what a quarantined tree was
+        # quarantined for. Refuse rather than strand it: these trees are
+        # typically the biggest things in the workspace, and nothing else will
+        # ever explain them.
+        listing = "\n  ".join(str(path) for path in pending)
+        raise click.ClickException(
+            f"refusing to remove the step cache while quarantined trees are outstanding -- removing the journal would leave these unexplained:\n  {listing}\nRun 'ninja cache check' to see why, or pass --force to remove them too."
+        )
+
     for label, path in targets:
         if not path.exists():
             click.echo(f"{label}: nothing at {path}")
@@ -545,6 +568,128 @@ def clean(ctx: click.Context, runs: bool, cache: bool, sandboxes: bool, launches
         else:
             shutil.rmtree(path)
             click.echo(f"{label}: removed {path}")
+
+    if force:
+        for path in pending:
+            if dry_run:
+                click.echo(f"trash: would remove {path}")
+            else:
+                shutil.rmtree(path, ignore_errors=True)
+                click.echo(f"trash: removed {path}")
+
+
+def _unreconciled_trash(config: AppConfig) -> list[Path]:
+    """Quarantined trees the journal still has, or once had, a reason for."""
+    from shinobi.snapshots import TRASH_SUFFIX, get_journal, orphan_trash
+
+    try:
+        found = list(orphan_trash(config.cache.dir))
+    except Exception:  # noqa: BLE001 -- a broken journal must not block a clean
+        found = []
+    for chain in get_journal(config.cache.dir).all_chains().values():
+        if chain.marker is None:
+            continue
+        candidate = Path(chain.path).with_name(Path(chain.path).name + TRASH_SUFFIX + chain.marker.run_id)
+        if candidate.exists():
+            found.append(candidate)
+    return sorted(set(found))
+
+
+@main.group("cache")
+def cache_group() -> None:
+    """Inspect and repair the step cache and its mutation-chain snapshots."""
+
+
+@cache_group.command("check")
+@click.pass_context
+def cache_check(ctx: click.Context) -> None:
+    """Report anything the cache cannot vouch for.
+
+    Reads state, changes none: off-tip paths, unreconciled and orphaned
+    quarantined trees, journal/manifest disagreements, generations whose
+    snapshot was never taken, and what the clone-capability probe decided
+    for each filesystem and why.
+    """
+    from shinobi.cache import get_cache_manifest
+    from shinobi.snapshots import check
+
+    config = ctx.obj or AppConfig.load()
+    report = check(config.cache.dir, get_cache_manifest(config.cache.dir))
+    labels = {
+        "unreconciled": "interrupted steps (a run died here; the next run restores before re-running)",
+        "off_tip": "paths whose content is not vouched for",
+        "orphan_trash": "orphaned quarantined trees (no marker explains these; 'ninja clean --cache --force' removes them)",
+        "disagreements": "journal/manifest disagreements",
+        "missing_snapshots": "generations with no snapshot (a space preflight refused them)",
+        "capabilities": "clone capability by filesystem",
+    }
+    clean_report = True
+    for section, label in labels.items():
+        lines = report.get(section) or []
+        if not lines:
+            continue
+        if section != "capabilities":
+            clean_report = False
+        click.echo(f"{label}:")
+        for line in lines:
+            click.echo(f"  {line}")
+    if clean_report:
+        click.echo("cache: nothing to report")
+
+
+@cache_group.command("invalidate")
+@click.argument("step_path")
+@click.pass_context
+def cache_invalidate(ctx: click.Context, step_path: str) -> None:
+    """Forget a step's cached result and roll its snapshots back.
+
+    STEP_PATH is the dotted path the cache records a step under
+    (`<recipe>.<step>`, as shown by `ninja cache check`).
+
+    This removes more than the manifest entry, and it has to. A step that
+    exits zero while writing garbage gets that garbage snapshotted under a
+    durable name, and a later restore reinstates it faithfully -- so the
+    escape hatch drops the step's own generations, rolls the chain head back
+    to the state before them, and marks it untrusted, which is what makes
+    the next run put the earlier state back before re-running.
+    """
+    from shinobi.cache import get_cache_manifest
+    from shinobi.snapshots import invalidate
+
+    config = ctx.obj or AppConfig.load()
+    notes = invalidate(config.cache.dir, step_path, get_cache_manifest(config.cache.dir))
+    if not notes:
+        click.echo(f"cache: nothing recorded for '{step_path}'")
+    for note in notes:
+        click.echo(f"cache: {note}")
+
+
+@cache_group.command("evict")
+@click.option("--bytes", "target", required=True, type=int, help="How many bytes of snapshots to try to free.")
+@click.option("--dry-run", is_flag=True, help="Show what would be removed without deleting.")
+@click.pass_context
+def cache_evict(ctx: click.Context, target: int, dry_run: bool) -> None:
+    """Free snapshot space, safest candidates first.
+
+    Superseded generations of live chains go before anything else, then dead
+    chains (whose workspace path no longer exists) oldest first. A state some
+    live chain's head or consumed record still names is never evicted: it
+    would make every restore through that point impossible while reclaiming
+    almost nothing on a clone-capable filesystem, since its blocks are shared.
+    """
+    from shinobi.snapshots import evict
+
+    config = ctx.obj or AppConfig.load()
+    if dry_run:
+        click.echo("evict --dry-run is not supported yet; run 'ninja cache check' to see chain state first")
+        return
+    removed = evict(config.cache.dir, target)
+    if not removed:
+        click.echo("cache: nothing evictable (every snapshot is still named by a live chain)")
+        return
+    for name, size in removed:
+        click.echo(f"cache: evicted {name} ({size} bytes)")
+    click.echo(f"cache: freed {sum(size for _name, size in removed)} bytes across {len(removed)} snapshots")
 
 
 def _handle_path(workdir: str | None, recipe: str) -> Path:

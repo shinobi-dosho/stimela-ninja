@@ -408,6 +408,26 @@ class Scope(BaseModel):
         return self.model_copy(update={"resources": resources}) if resources else self
 
 
+def mutated_path_fields(scope: Scope) -> set[str]:
+    """Names of the path inputs `scope` rewrites in place.
+
+    Two spellings, both meaning the same thing: the field is declared on
+    `outputs_model` as well as `inputs_model`, or its input is declared
+    `Mutability.MUTABLE` (the flag/gaincal/applycal shape, where a cab
+    rewrites its MS without re-declaring it as an output).
+
+    This lives here, in schema, rather than in either of its two callers,
+    because they must never disagree. `cache.compute_cache_key` drops these
+    fields from the key; `shinobi.snapshots` decides what to snapshot from
+    exactly the same set. If one grew a case the other lacked, the cache
+    would key a step on content the snapshotter had already rolled back --
+    the drift is silent and the failure is wrong science, so there is one
+    computation and both import it.
+    """
+    input_paths = path_fields(scope.inputs_model)
+    return (input_paths & path_fields(scope.outputs_model)) | {name for name in input_paths if scope.mutability_of(name) is Mutability.MUTABLE}
+
+
 class Cab(Scope):
     """An atomic step backed by a single command."""
 
