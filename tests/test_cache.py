@@ -174,6 +174,83 @@ def test_inplace_mutated_path_not_invalidated_by_its_own_mtime(tmp_path):
     assert calls["n"] == 1
 
 
+def test_reader_after_an_inplace_mutation_is_not_served_a_stale_memoized_hash(tmp_path):
+    """`_hash_path` is memoized (an MS is thousands of files and the walk
+    runs per unwired boundary input, per step, per run), and this is the
+    false hit that memo must never produce.
+
+    A reader hashes the MS, a mutating step rewrites it in place -- adding no
+    memo entry of its own, since a path that is both input and output is
+    dropped from the key -- and a later reader with identical params must
+    still see the *post*-mutation content. Serving it the first reader's
+    cached hash would key it identically and silently skip it.
+    """
+    vis = tmp_path / "data.ms"
+    vis.mkdir()
+    (vis / "table.dat").write_text("original")
+    reads = {"n": 0}
+
+    @shinobi.pystep()
+    def read_vis(ctx, src: Path) -> FileOutputs:
+        reads["n"] += 1
+        return FileOutputs(marker=reads["n"])
+
+    @shinobi.pystep()
+    def mutate_in_place(ctx, vis: Path) -> InPlaceOutputs:
+        (vis / "table.dat").write_text("mutated -- longer, so size moves too")
+        return InPlaceOutputs(vis=vis)
+
+    cache_dir = tmp_path / "cache"
+    kw = {"cache": True, "cache_dir": str(cache_dir)}
+
+    _dispatch(read_vis.step, read_vis.func, src=vis, **kw)
+    assert reads["n"] == 1
+
+    _dispatch(mutate_in_place.step, mutate_in_place.func, vis=vis, **kw)
+
+    # Same params as the first read, but the bytes underneath changed.
+    _dispatch(read_vis.step, read_vis.func, src=vis, **kw)
+    assert reads["n"] == 2, "second reader was served a pre-mutation memoized hash"
+
+
+def test_repeated_hash_of_one_path_walks_it_once_between_executions(tmp_path):
+    """The win the memo exists for: several unwired boundary fields naming
+    one MS are walked once, not once each.
+    """
+    import shinobi.cache as cache_mod
+
+    vis = tmp_path / "data.ms"
+    vis.mkdir()
+    (vis / "table.dat").write_text("x")
+
+    cache_mod.invalidate_path_hashes()
+    walks = []
+    original_walk = cache_mod.os.walk
+
+    def counting_walk(path, *args, **kwargs):
+        walks.append(path)
+        return original_walk(path, *args, **kwargs)
+
+    cache_mod.os.walk = counting_walk
+    try:
+        first = cache_mod._hash_path(vis)
+        second = cache_mod._hash_path(vis)
+    finally:
+        cache_mod.os.walk = original_walk
+
+    assert first == second
+    assert len(walks) == 1
+
+    # ...and the memo is dropped the moment anything could have written.
+    cache_mod.invalidate_path_hashes()
+    cache_mod.os.walk = counting_walk
+    try:
+        cache_mod._hash_path(vis)
+    finally:
+        cache_mod.os.walk = original_walk
+    assert len(walks) == 2
+
+
 def test_deleting_declared_output_forces_rerun(tmp_path):
     out_path = tmp_path / "out.dat"
     calls = {"n": 0}

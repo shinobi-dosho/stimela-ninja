@@ -84,6 +84,7 @@ from shinobi.exceptions import CabLoadError
 from shinobi.loaders._modelgen import (
     COMMON_LEAF_KEYS,
     build_model,
+    contain_include,
     deep_merge,
     resolve_directive,
     resolve_package_root,
@@ -138,36 +139,54 @@ def _resolve_package_root(dotted: str, package_roots: dict[str, Path]) -> Path:
     return resolve_package_root(dotted, package_roots, error=CabLoadError)
 
 
-def _include_entry_to_dict(entry: Any, base_dir: Path | None, package_roots: dict[str, Path]) -> dict[str, Any]:
+def _include_entry_to_dict(
+    entry: Any,
+    base_dir: Path | None,
+    package_roots: dict[str, Path],
+    containment_root: Path | None = None,
+) -> dict[str, Any]:
     """One `_include` list entry -> its fully-loaded (and itself
     recursively `_include`-resolved) dict. Three real shapes:
     - plain relative path string (`"base.yml"`), only valid with a `base_dir`
     - combined package+path string (`"(cultcargo.genesis.cubical)schema.yaml"`)
     - package + file-list dict (`{"(cultcargo)": ["genesis/cult-cargo-base.yml"]}`)
+
+    `containment_root` is the package root the enclosing include chain
+    entered through (`None` at the top level, where a plain relative include
+    is unconstrained). Every package-scoped hop sets it to its own package
+    root and every file below that hop is checked against it -- see
+    `_modelgen.contain_include`.
     """
     if isinstance(entry, str):
         if m := _PKG_INCLUDE_RE.match(entry):
             if not m.group("rest"):
                 raise CabLoadError(f"package-scoped _include {entry!r} has no filename")
             pkg_dir = _resolve_package_root(m.group("pkg"), package_roots)
-            return _load_raw((pkg_dir / m.group("rest")).resolve(), package_roots)
+            target = contain_include(pkg_dir / m.group("rest"), pkg_dir, entry=entry, error=CabLoadError)
+            return _load_raw(target, package_roots, pkg_dir)
         if base_dir is None:
             raise CabLoadError(f"relative-path _include {entry!r} has no base directory to resolve against (loads() only supports package-scoped _include entries)")
-        return _load_raw((base_dir / entry).resolve(), package_roots)
+        target = base_dir / entry
+        if containment_root is not None:
+            target = contain_include(target, containment_root, entry=entry, error=CabLoadError)
+        return _load_raw(target.resolve(), package_roots, containment_root)
     if isinstance(entry, dict) and len(entry) == 1:
         ((key, files),) = entry.items()
         if (m := _PKG_INCLUDE_RE.match(key)) and not m.group("rest"):
             pkg_dir = _resolve_package_root(m.group("pkg"), package_roots)
             merged: dict[str, Any] = {}
             for f in files if isinstance(files, list) else [files]:
-                merged = deep_merge(merged, _load_raw((pkg_dir / f).resolve(), package_roots))
+                target = contain_include(pkg_dir / f, pkg_dir, entry=f, error=CabLoadError)
+                merged = deep_merge(merged, _load_raw(target, package_roots, pkg_dir))
             return merged
     raise CabLoadError(f"unsupported _include entry {entry!r}")
 
 
-def _load_raw(path: Path, package_roots: dict[str, Path]) -> dict[str, Any]:
+def _load_raw(path: Path, package_roots: dict[str, Path], containment_root: Path | None = None) -> dict[str, Any]:
     """Read, parse, and recursively `_include`-resolve one file. Cached
-    (keyed on the resolved path and `package_roots`) for the same reason as
+    (keyed on the resolved path, `package_roots`, and the active
+    `containment_root`, all three of which change how the file's own nested
+    includes resolve) for the same reason as
     `worker_schema._load_include_file`: a cab library commonly has many
     files `_include`-ing the same shared base (cult-cargo's own
     `cult-cargo-base.yml`/`vars` files) or `_use`-ing each other, so without
@@ -178,14 +197,18 @@ def _load_raw(path: Path, package_roots: dict[str, Path]) -> dict[str, Any]:
     turned into a hashable, order-independent key since a plain dict can't
     be an `lru_cache` argument directly.
     """
-    return _load_raw_cached(path, tuple(sorted(package_roots.items())))
+    return _load_raw_cached(path, tuple(sorted(package_roots.items())), containment_root)
 
 
 @functools.lru_cache(maxsize=None)
-def _load_raw_cached(path: Path, roots_key: tuple[tuple[str, Path], ...]) -> dict[str, Any]:
+def _load_raw_cached(path: Path, roots_key: tuple[tuple[str, Path], ...], containment_root: Path | None) -> dict[str, Any]:
     package_roots = dict(roots_key)
     data = yaml.safe_load(path.read_text()) or {}
-    return resolve_directive(data, "_include", lambda entry: _include_entry_to_dict(entry, path.parent, package_roots))
+    return resolve_directive(
+        data,
+        "_include",
+        lambda entry: _include_entry_to_dict(entry, path.parent, package_roots, containment_root),
+    )
 
 
 _LEAF_SPEC_KEYS = COMMON_LEAF_KEYS | {"nom_de_guerre", "mkdir", "element_choices"}

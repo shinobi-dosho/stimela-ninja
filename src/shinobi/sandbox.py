@@ -297,6 +297,14 @@ def _move(src: Path, dst: Path, declared: bool) -> None:
     refuse: the run stops with both paths named, and the user either
     declares the output or moves the directory aside.
 
+    The asymmetry is deliberate: an *undeclared* collision with an existing
+    **file** still overwrites. Only directories are refused. A stray file
+    (a leftover log, a previous run's plot) is cheap to lose and cheap to
+    regenerate, whereas failing a long pipeline run because one such file
+    happened to share a harvested name would cost far more than it protects.
+    The line is drawn at "deleting a tree of data the step never mentioned",
+    which is the case that is expensive and irreversible.
+
     Raises:
         StepError: If `dst` is an existing directory and `declared` is False.
     """

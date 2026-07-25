@@ -331,3 +331,41 @@ def resolve_package_root(dotted: str, package_roots: dict[str, Path], *, error: 
         f"package_roots={{{parts[0]!r}: Path(...)}} to the loader "
         "(shinobi never imports a package to resolve this -- see SECURITY.md)"
     )
+
+
+def contain_include(candidate: Path, root: Path, *, entry: Any, error: type[Exception]) -> Path:
+    """Resolve `candidate` and require it to stay under `root`, which is the
+    `package_roots` directory the enclosing `_include` chain entered through.
+
+    `resolve_package_root` constrains only the *dotted* part of a
+    package-scoped include (`[\\w.]+` cannot contain `..`); the file part is
+    free-form and was previously joined unguarded, so
+    `_include: (cultcargo)../../../etc/anything.yaml` read straight out of the
+    package root. Both dialects share that join, and cult-cargo's
+    `{"(pkg)": [file, ...]}` dict form takes its filenames from a YAML list
+    that never passes through the include regex at all -- so the check belongs
+    at the join, not in the pattern.
+
+    Enforced **transitively**: the root is threaded down the whole recursion,
+    so a legitimately-included package file cannot re-escape with a plain
+    relative `_include: ../../../etc/anything.yaml` of its own (which resolves
+    against its own directory, by then inside the root). A nested
+    *package-scoped* include re-enters through `package_roots` and so replaces
+    the root with its own -- that hop is explicitly authorised by the caller.
+
+    Both sides are resolved before comparing, so a symlink inside the package
+    pointing out of it is caught too -- which a textual `..` check would miss.
+
+    Plain relative includes below no package root at all stay unconstrained:
+    `../common/base.yaml` is real, widely-used schema layout, and only
+    `package_roots` ever promised containment.
+    """
+    resolved = candidate.resolve()
+    root = root.resolve()
+    if not resolved.is_relative_to(root):
+        raise error(
+            f"_include entry {entry!r} resolves to '{resolved}', outside the package "
+            f"root '{root}' it was reached through -- a package-scoped _include may "
+            "only read files within its own package_roots directory (see SECURITY.md)"
+        )
+    return resolved

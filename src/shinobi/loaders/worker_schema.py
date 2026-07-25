@@ -60,6 +60,7 @@ from pydantic import BaseModel, Field, create_model
 from shinobi.exceptions import ConfigLoadError
 from shinobi.loaders._modelgen import (
     COMMON_LEAF_KEYS,
+    contain_include,
     dtype_to_type,
     narrow_choices,
     required_field_spec,
@@ -129,7 +130,7 @@ def load_worker_schema(path: str | Path, *, package_roots: dict[str, Path] | Non
     )
 
 
-def _resolve_includes(node: Any, base_dir: Path, package_roots: dict[str, Path]) -> Any:
+def _resolve_includes(node: Any, base_dir: Path, package_roots: dict[str, Path], containment_root: Path | None = None) -> Any:
     def entry_to_dict(entry: Any) -> Any:
         """Resolve one `_include` entry to the dict it refers to.
 
@@ -147,14 +148,15 @@ def _resolve_includes(node: Any, base_dir: Path, package_roots: dict[str, Path])
                 stacklevel=2,
             )
             return {}
-        return _load_include(entry, base_dir, package_roots)
+        return _load_include(entry, base_dir, package_roots, containment_root)
 
     return resolve_directive(node, "_include", entry_to_dict)
 
 
-def _load_include_file(path: Path, package_roots: dict[str, Path]) -> dict[str, Any]:
+def _load_include_file(path: Path, package_roots: dict[str, Path], containment_root: Path | None = None) -> dict[str, Any]:
     """Read, parse, and recursively `_include`-resolve one file. Cached
-    (keyed on the resolved path *and* `package_roots`, which participate in
+    (keyed on the resolved path, `package_roots`, *and* the active
+    `containment_root` -- all three participate in
     resolving the file's own nested includes) -- a schema set commonly has
     many files all including the same shared base (e.g. caracal2's
     `caracal_base.yaml`), so without this every worker schema re-reads and
@@ -165,23 +167,31 @@ def _load_include_file(path: Path, package_roots: dict[str, Path]) -> dict[str, 
     since a plain dict can't be an `lru_cache` argument -- same split as
     `cultcargo._load_raw`.
     """
-    return _load_include_file_cached(path, tuple(sorted(package_roots.items())))
+    return _load_include_file_cached(path, tuple(sorted(package_roots.items())), containment_root)
 
 
 @functools.lru_cache(maxsize=None)
-def _load_include_file_cached(path: Path, roots_key: tuple[tuple[str, Path], ...]) -> dict[str, Any]:
+def _load_include_file_cached(path: Path, roots_key: tuple[tuple[str, Path], ...], containment_root: Path | None) -> dict[str, Any]:
     data = yaml.safe_load(path.read_text()) or {}
     if not isinstance(data, dict):
         raise ConfigLoadError(f"_include target '{path}' must be a mapping, got {data!r}")
-    return _resolve_includes(data, path.parent, dict(roots_key))
+    return _resolve_includes(data, path.parent, dict(roots_key), containment_root)
 
 
-def _load_include(entry: str, base_dir: Path, package_roots: dict[str, Path]) -> dict[str, Any]:
+def _load_include(entry: str, base_dir: Path, package_roots: dict[str, Path], containment_root: Path | None = None) -> dict[str, Any]:
+    """Resolve one include entry to its loaded dict, keeping a package-scoped
+    chain inside the root it entered through -- see
+    `_modelgen.contain_include` for why the check is at the join and why it
+    is threaded transitively.
+    """
     if m := _PKG_INCLUDE_RE.match(entry):
-        path = resolve_package_root(m.group("module"), package_roots, error=ConfigLoadError) / m.group("file")
-    else:
-        path = base_dir / entry
-    return _load_include_file(path.resolve(), package_roots)
+        pkg_dir = resolve_package_root(m.group("module"), package_roots, error=ConfigLoadError)
+        path = contain_include(pkg_dir / m.group("file"), pkg_dir, entry=entry, error=ConfigLoadError)
+        return _load_include_file(path, package_roots, pkg_dir)
+    path = base_dir / entry
+    if containment_root is not None:
+        path = contain_include(path, containment_root, entry=entry, error=ConfigLoadError)
+    return _load_include_file(path.resolve(), package_roots, containment_root)
 
 
 _LEAF_KEYS = COMMON_LEAF_KEYS
