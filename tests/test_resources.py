@@ -437,3 +437,154 @@ def test_abandon_frees_the_queue_for_later_arrivals():
 
     # Without abandon() the dead scheduler's ticket would block this forever.
     assert budget.try_acquire(Resources(memory="4GiB"), "later")[0]
+
+
+# -- backfill --
+
+
+def test_backfill_admits_a_unit_that_leaves_room_for_the_head():
+    """Numbers chosen so the two clauses do not coincide: with 50 GiB
+    running, a 40 GiB candidate fits in what is free (50) but would leave the
+    70 GiB head unable to start; a 25 GiB one leaves room for it.
+    """
+    budget = Budget(Resources(memory="100GiB"))
+    budget.try_acquire(Resources(memory="50GiB"), "running")
+    head = Resources(memory="70GiB")
+    assert not budget.try_acquire(head, "head")[0]  # parked, and now holds a ticket
+
+    assert not budget.try_backfill(Resources(memory="40GiB"), head, "too-big")
+    assert budget.try_backfill(Resources(memory="25GiB"), head, "fits")
+
+
+def test_backfill_is_cumulative_across_grants():
+    """The bug an earlier draft shipped: bounding each grant against the
+    total on its own admits both 30 GiB units, and the 70 GiB head then
+    cannot start when the original 40 GiB holder finishes.
+    """
+    budget = Budget(Resources(memory="100GiB"))
+    running = Resources(memory="40GiB")
+    budget.try_acquire(running, "running")
+    head = Resources(memory="70GiB")
+    assert not budget.try_acquire(head, "head")[0]
+
+    assert budget.try_backfill(Resources(memory="30GiB"), head, "b1")
+    assert not budget.try_backfill(Resources(memory="30GiB"), head, "b2")
+
+    # The whole point: once the work the head was already waiting for
+    # finishes, the head starts -- exactly as it would have with no backfill.
+    budget.release(running)
+    assert budget.try_acquire(head, "head")[0]
+
+
+def test_releasing_a_backfill_frees_the_cumulative_room_again():
+    budget = Budget(Resources(memory="100GiB"))
+    budget.try_acquire(Resources(memory="40GiB"), "running")
+    head = Resources(memory="70GiB")
+    assert not budget.try_acquire(head, "head")[0]
+
+    first = Resources(memory="30GiB")
+    assert budget.try_backfill(first, head, "b1")
+    assert not budget.try_backfill(Resources(memory="30GiB"), head, "b2")
+
+    budget.release(first, backfilled=True)
+    assert budget.try_backfill(Resources(memory="30GiB"), head, "b3")
+
+
+def test_undeclared_units_backfill_without_limit():
+    """An undeclared step reserves nothing, so it can never delay the head
+    and must not consume cumulative room. This is the common case -- a
+    plain step stuck behind a sized one.
+    """
+    budget = Budget(Resources(memory="100GiB"))
+    budget.try_acquire(Resources(memory="90GiB"), "running")
+    head = Resources(memory="70GiB")
+    assert not budget.try_acquire(head, "head")[0]
+
+    for _ in range(5):
+        assert budget.try_backfill(Resources(), head, "free")
+
+
+def test_backfill_refuses_when_a_sibling_is_queued_ahead():
+    """Backfill must not jump the cross-recipe FIFO queue -- that is the
+    starvation the tickets exist to prevent.
+    """
+    budget = Budget(Resources(memory="100GiB"))
+    budget.try_acquire(Resources(memory="40GiB"), "running")
+
+    def older_sibling():
+        assert not budget.try_acquire(Resources(memory="80GiB"), "sibling")[0]
+
+    thread = threading.Thread(target=older_sibling)
+    thread.start()
+    thread.join()
+    # The sibling exits still holding its ticket. Harmless here because the
+    # budget dies with the test, but on a real scheduler that is exactly the
+    # leak `abandon()` exists to prevent -- a ticket from a dead waiter would
+    # block every later arrival forever (see `_return_reservations`).
+
+    # This thread has no ticket at all, and a sibling holds an older one.
+    assert not budget.try_backfill(Resources(memory="10GiB"), Resources(memory="70GiB"), "b")
+
+
+def test_backfill_never_touches_the_waiter_queue():
+    """The head's parked ticket is what holds its place; a backfill grant on
+    the same thread must not pop it the way `try_acquire` does.
+    """
+    budget = Budget(Resources(memory="100GiB"))
+    budget.try_acquire(Resources(memory="40GiB"), "running")
+    head = Resources(memory="70GiB")
+    assert not budget.try_acquire(head, "head")[0]
+    ticket = dict(budget._waiters)
+    assert ticket, "the refusal should have queued this thread"
+
+    assert budget.try_backfill(Resources(memory="30GiB"), head, "granted")
+    assert budget._waiters == ticket
+    assert not budget.try_backfill(Resources(memory="30GiB"), head, "refused")
+    assert budget._waiters == ticket
+
+
+def test_backfill_resolves_the_cpus_all_sentinel_on_both_sides():
+    """`cpus="all"` is symbolic until measured against the pool, so both the
+    parked head's demand and the candidate's have to be resolved before the
+    room-to-spare arithmetic -- otherwise a string reaches it.
+
+    Semantically: a head claiming every core leaves room for nothing that
+    declares CPU, but still cannot be delayed by work that declares none.
+    """
+    budget = Budget(Resources(cpus=8, memory="100GiB"))
+    budget.try_acquire(Resources(cpus=4), "running")
+    head = Resources(cpus="all")
+    assert not budget.try_acquire(head, "head")[0]
+
+    assert not budget.try_backfill(Resources(cpus=2), head, "sized")
+    assert budget.try_backfill(Resources(), head, "undeclared")
+
+    # ... and a candidate that itself wants every core cannot slip past a
+    # head that needs only some of them.
+    other = Budget(Resources(cpus=8, memory="100GiB"))
+    other.try_acquire(Resources(cpus=6), "running")
+    small_head = Resources(cpus=4)
+    assert not other.try_acquire(small_head, "head")[0]
+    assert not other.try_backfill(Resources(cpus="all"), small_head, "greedy")
+
+
+def test_backfill_treats_the_dimensions_independently():
+    """`_leaves_room_for` skips a dimension the candidate leaves unset, which
+    is what makes "work that consumes no CPU cannot delay anyone on CPU"
+    true. Pin the cross-dimension contract before someone simplifies that
+    filter away.
+    """
+    budget = Budget(Resources(cpus=8, memory="100GiB"))
+    budget.try_acquire(Resources(memory="60GiB"), "running")
+    memory_head = Resources(memory="70GiB")
+    assert not budget.try_acquire(memory_head, "head")[0]
+
+    # A CPU-only candidate competes with the memory-bound head for nothing.
+    assert budget.try_backfill(Resources(cpus=4), memory_head, "cpu-only")
+
+    # ... but it is still held to the CPU dimension against a CPU-bound head.
+    other = Budget(Resources(cpus=8, memory="100GiB"))
+    other.try_acquire(Resources(cpus=6), "running")
+    cpu_head = Resources(cpus=6)
+    assert not other.try_acquire(cpu_head, "head")[0]
+    assert not other.try_backfill(Resources(cpus=4), cpu_head, "cpu-only")  # 6 + 4 > 8

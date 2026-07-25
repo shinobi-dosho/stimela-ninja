@@ -984,3 +984,78 @@ def test_scatter_slices_are_admitted_individually():
     _dispatch(recipe, None, _config=_budget_config(), xs=[1, 2, 3])
     assert probe.peak == 1
     assert len(probe.order) == 3
+
+
+# -- backfill past a budget-blocked head --
+#
+# `probe.order` is the discriminator here, not `probe.peak`. Peak concurrency
+# reaches 2 with or without backfill -- without it, the blocked head simply
+# runs first and overlaps the step behind it *later*. What backfill changes is
+# that a step behind a parked head starts **while the head is still parked**,
+# so it shows up ahead of the head in start order.
+
+
+def _independent_recipe(cabs, *, max_workers):
+    """N steps that each wire only from the recipe's own input, so nothing
+    orders them but declaration index and the budget.
+    """
+    return Recipe(
+        name="r",
+        inputs_model=Inputs,
+        outputs_model=Outputs,
+        max_workers=max_workers,
+        steps=[StepRef(name=cab.name, step=cab, wiring={"x": InputRef(field="x")}) for cab in cabs],
+    )
+
+
+def _order_of(cabs, *, max_workers, memory="100GiB"):
+    probe = ConcurrencyProbe()
+    register_step_backend("probe", probe)
+    _dispatch(_independent_recipe(cabs, max_workers=max_workers), None, _config=_budget_config(memory=memory), x=1)
+    return probe.order
+
+
+def test_an_undeclared_step_backfills_past_a_blocked_head():
+    """The headline case. `a` and `b` are each 60 GiB of a 100 GiB budget, so
+    `b` parks -- and without backfill `c` parks behind it, idling a machine
+    with room for it. `c` declares nothing, so it cannot delay `b` by any
+    amount and must start while `b` is still waiting.
+    """
+    order = _order_of(
+        [_sized_cab("a", "probe", "60GiB"), _sized_cab("b", "probe", "60GiB"), _cab("c", "probe")],
+        max_workers=3,
+    )
+    assert order == ["a", "c", "b"], "the undeclared step did not overtake the parked head"
+
+
+def test_a_sized_step_backfills_only_when_the_head_still_fits_beside_it():
+    """`b` (70 GiB) parks behind `a` (50 GiB) in a 100 GiB budget.
+
+    A 25 GiB candidate leaves room for `b` once `a` drains, so it goes now.
+    A 40 GiB one does not (70 + 40 > 100) and must wait -- even though it
+    would fit in the 50 GiB currently free, which is exactly the case a
+    naive "does it fit right now" rule gets wrong.
+    """
+    fits = _order_of(
+        [_sized_cab("a", "probe", "50GiB"), _sized_cab("b", "probe", "70GiB"), _sized_cab("c", "probe", "25GiB")],
+        max_workers=3,
+    )
+    assert fits == ["a", "c", "b"]
+
+    too_big = _order_of(
+        [_sized_cab("a", "probe", "50GiB"), _sized_cab("b", "probe", "70GiB"), _sized_cab("c", "probe", "40GiB")],
+        max_workers=3,
+    )
+    assert too_big == ["a", "b", "c"], "a candidate that would delay the head was admitted anyway"
+
+
+def test_backfill_does_not_reorder_at_max_workers_one():
+    """At `max_workers=1` the documented guarantee is exact declaration
+    order, so backfill must not engage at all -- not even for a step that
+    reserves nothing.
+    """
+    order = _order_of(
+        [_sized_cab("a", "probe", "60GiB"), _sized_cab("b", "probe", "60GiB"), _cab("c", "probe")],
+        max_workers=1,
+    )
+    assert order == ["a", "b", "c"]

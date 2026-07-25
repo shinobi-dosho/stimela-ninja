@@ -67,6 +67,14 @@ _NO_RESOURCES = Resources()
 # sentinel is a number that sorts before every real slice index.
 _NOT_A_SLICE = -1
 
+# How far past a budget-blocked head the scheduler will look for work that
+# fits alongside it. Purely a **performance** bound, not a correctness one:
+# it stops a wide fan-out turning every refusal into a scan of the whole
+# ready set. Nothing is lost by the cut-off, because the head is retried on
+# every pass and the ready set is re-scanned from the front each time, so a
+# candidate beyond the window is simply reconsidered on a later pass.
+_BACKFILL_LOOKAHEAD = 8
+
 
 def _any_resources(recipe: Recipe) -> bool:
     """Whether anything in `recipe`, at any nesting depth, declares a
@@ -866,19 +874,24 @@ def _run_recipe(
     # individually rather than all submitted at once, so a wide scatter can no
     # longer put more work in flight than the scheduler accounted for.
     #
-    # Declaration order across *steps* is preserved by `ready` (already a
-    # min-heap) plus the refill discipline in `submit_ready`, which only
-    # expands the next step once this queue has drained -- so a unit parked on
-    # the budget is never overtaken. This is a heap rather than a plain queue
-    # to keep that ordering true of the queue itself and not only of how it
-    # happens to be filled. `None` (not a slice) is stored as -1, so heap
-    # comparison never has to order None against an int.
+    # Declaration order across *steps* is carried by this heap itself: the
+    # head is always the lowest-index unit, whichever steps happen to be
+    # queued. That matters because backfill (`_backfill_behind`) expands a
+    # second step's units while the head is parked, so the ordinary refill
+    # discipline below -- only expand the next step once this queue has
+    # drained -- is an expansion *policy*, not the thing keeping order true.
+    # Being a heap rather than a plain queue is what makes that safe.
+    # `None` (not a slice) is stored as -1, so heap comparison never has to
+    # order None against an int.
     pending: list[tuple[int, int]] = []
     unit_payload: dict[tuple[int, int | None], tuple[dict[str, Any], dict[str, Any]]] = {}
     futures: dict[Future, tuple[int, int | None]] = {}
-    # What each in-flight future reserved, so it can be released on every
-    # exit path -- including ones that never reach the reap loop.
-    held: dict[Future, Resources] = {}
+    # What each in-flight future reserved, and whether that reservation came
+    # from `Budget.try_backfill`, so it can be released on every exit path --
+    # including ones that never reach the reap loop. The flag has to travel
+    # with the reservation: the budget's cumulative backfill total is only
+    # honest if every grant is matched by a release that says so.
+    held: dict[Future, tuple[Resources, bool]] = {}
 
     def _return_reservations() -> None:
         """Give back every reservation this recipe still holds.
@@ -895,8 +908,8 @@ def _run_recipe(
         """
         if budget is None:
             return
-        for demand in held.values():
-            budget.release(demand)
+        for demand, backfilled in held.values():
+            budget.release(demand, backfilled=backfilled)
         held.clear()
         budget.abandon()
 
@@ -978,7 +991,7 @@ def _run_recipe(
                 return _NO_RESOURCES
             return scope.resources
 
-        def _submit_unit(i: int, slice_idx: int | None, demand: Resources) -> None:
+        def _submit_unit(i: int, slice_idx: int | None, demand: Resources, backfilled: bool = False) -> None:
             """Submit one admission unit that has already been granted."""
             ref = recipe.steps[i]
             unit_kwargs, sub_input_keys = unit_payload.pop((i, slice_idx))
@@ -999,7 +1012,64 @@ def _run_recipe(
                 **unit_kwargs,
             )
             futures[fut] = (i, slice_idx)
-            held[fut] = demand
+            held[fut] = (demand, backfilled)
+
+        def _backfill_behind(head_index: int, head_demand: Resources) -> bool:
+            """Admit one unit past a head the budget just refused, or expand
+            a `ready` step so the next pass can.
+
+            Blocking on the head is what stops a large step being starved,
+            but it also idles a machine that has room for work the head will
+            not use. `Budget.try_backfill` admits only units the head can
+            still start alongside once the work reserved *now* drains, so
+            the head waits for exactly what it was already waiting for.
+
+            Returns:
+                Whether anything was done -- if so the caller should retry
+                admission rather than park.
+            """
+            # `sorted`, not `enumerate`: a heap orders only its root, so
+            # walking the backing list would pick an arbitrary fitting unit
+            # rather than the lowest-index one. Backfill relaxes *whether*
+            # queued work waits for the head, never the order it is chosen
+            # in -- everything else here drains by declaration index and this
+            # must too, or which step overtakes a parked head depends on heap
+            # layout. `pending` is small (one step's units, plus whatever
+            # earlier backfills expanded), so sorting it is cheap.
+            for entry in sorted(pending)[1:]:
+                i, slot = entry
+                if budget.try_backfill(_demand_of(i), head_demand, recipe.steps[i].name):
+                    pending.remove(entry)  # entries are unique (step, slice) pairs
+                    heapq.heapify(pending)
+                    _submit_unit(i, None if slot == _NOT_A_SLICE else slot, _demand_of(i), backfilled=True)
+                    return True
+
+            # Nothing queued fits; look a little further into `ready`. Only
+            # the chosen step is expanded, so wiring is not resolved for
+            # steps that may never run. `ready` is a heap: pop candidates and
+            # push back the ones not taken, because slicing it would not give
+            # the lowest indices and mutating it in place would corrupt every
+            # later push/pop -- which is what the ordering guarantee rests on.
+            examined: list[int] = []
+            chosen: int | None = None
+            while ready and len(examined) < _BACKFILL_LOOKAHEAD:
+                candidate = heapq.heappop(ready)
+                # A lower-index step is not a backfill at all: declaration
+                # order says it outranks the current head, so expand it
+                # unconditionally and let it become the next head. Filtering
+                # it through the backfill rule would strand it here behind a
+                # step it should precede. (`build_graph` puts no index
+                # ordering on `after`/`OutputRef`, so this really happens.)
+                if candidate < head_index or budget.can_backfill(_demand_of(candidate), head_demand):
+                    chosen = candidate
+                    break
+                examined.append(candidate)
+            for candidate in examined:
+                heapq.heappush(ready, candidate)
+            if chosen is None:
+                return False
+            _expand(chosen)
+            return True
 
         def submit_ready() -> tuple[bool, int]:
             """Admit as much queued work as capacity and budget allow.
@@ -1007,7 +1077,9 @@ def _run_recipe(
             Units are drained lowest-declaration-index first, and admission
             *blocks* on the head unit rather than skipping past it: a step
             that does not fit holds the queue, so a large step can never be
-            starved by a stream of smaller ones behind it.
+            starved by a stream of smaller ones behind it. `_backfill_behind`
+            then recovers the capacity that blocking would otherwise idle,
+            without moving the head's start time.
 
             Returns:
                 `(parked, generation)`. `parked` is True only when the head
@@ -1034,6 +1106,14 @@ def _run_recipe(
                 else:
                     granted, generation = budget.try_acquire(demand, recipe.steps[i].name)
                 if not granted:
+                    # Backfill only where concurrency is already allowed. At
+                    # `max_workers=1` a sibling recipe holding the shared
+                    # budget can leave this scheduler with nothing in flight
+                    # and a refused head -- and admitting a later unit there
+                    # would break the documented guarantee that
+                    # `max_workers=1` reproduces exact declaration order.
+                    if max_workers > 1 and _backfill_behind(i, demand):
+                        continue
                     return True, generation
                 heapq.heappop(pending)
                 _submit_unit(i, slice_idx, demand)
@@ -1049,7 +1129,7 @@ def _run_recipe(
                 done, _ = wait(futures, return_when=FIRST_COMPLETED)
                 for fut in done:
                     i, slice_idx = futures.pop(fut)
-                    demand = held.pop(fut, _NO_RESOURCES)
+                    demand, was_backfill = held.pop(fut, (_NO_RESOURCES, False))
                     try:
                         try:
                             res = fut.result()
@@ -1077,7 +1157,7 @@ def _run_recipe(
                         # Every reap path returns the reservation, including
                         # the worker-exception one that `continue`s out.
                         if budget is not None:
-                            budget.release(demand)
+                            budget.release(demand, backfilled=was_backfill)
             elif parked:
                 # Nothing of ours is running and the head unit doesn't fit:
                 # only another recipe sharing this budget can unblock us.
