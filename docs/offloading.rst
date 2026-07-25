@@ -57,6 +57,27 @@ take a schema default, and ``/data/obs.ms`` versus ``/data/obs.ms/CORRECTED``
 A MUTABLE input that is *not* a path is still refused: that is a live Python
 object, and no shared filesystem can carry one across a node boundary.
 
+.. warning::
+
+   Canonicalisation is ``Path.resolve()``, and it runs on the machine where
+   ``ninja compile`` runs. Two steps reaching one MS by paths that are only
+   equal *on the compute node* are therefore not recognised as sharing it,
+   and no ordering edge is emitted. In practice that means a cluster where
+   the submitting host and the compute nodes disagree about the filesystem:
+   ``/scratch`` against ``/mnt/scratch`` under a different automount layout,
+   or a symlink that resolves one way on the login node and another way on
+   the node that runs the job.
+
+   The container boundary is *not* affected -- every container backend
+   identity-mounts (``-v {d}:{d}``, ``--bind {d}:{d}``, and Kubernetes
+   ``mountPath == hostPath.path``), so a container-side path equals its
+   host-side path by construction and comparison holds straight through.
+
+   Closing the cross-node case needs a canonical naming the cluster itself
+   agrees to, which shinobi cannot derive. Until then: give steps that share
+   an MS the same spelling of its path, and prefer paths that resolve
+   identically on both sides.
+
 A :ref:`declared loop <declared-loops>` satisfies all of this: unrolling
 leaves a plain dependency chain of ``Cab`` steps, and its convergence test
 becomes a guard at the top of each job's script --

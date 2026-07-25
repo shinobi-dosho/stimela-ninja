@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field, ValidationError, create_model
-from shinobi.cache import combine_keys, compute_cache_key, get_cache_manifest
+from shinobi.cache import combine_keys, compute_cache_key, get_cache_manifest, invalidate_path_hashes
 from shinobi.config import AppConfig
 from shinobi.exceptions import CabRunError, ParameterError, ShinobiError, StepError
 from shinobi.graph import build_graph
@@ -384,6 +384,13 @@ def _dispatch(
     **kwargs: Any,
 ) -> StepResult:
     config = _config or AppConfig.load()
+    if _cache_path is None:
+        # Top-level entry: the start of a run, and the memoized boundary-path
+        # hashes must not outlive one. Anything could have happened to the
+        # workspace between two runs sharing a process (a `ninja run` in a
+        # long-lived session, two `_dispatch` calls in one test), and none of
+        # it went through the post-execution invalidation below.
+        invalidate_path_hashes()
     cache_enabled = cache if cache is not None else scope.cache if scope.cache is not None else _recipe_cache if _recipe_cache is not None else config.cache.enabled
     cache_dir_value = cache_dir or scope.cache_dir or _recipe_cache_dir or config.cache.dir
     cache_path = _cache_path or scope.name
@@ -452,6 +459,13 @@ def _dispatch(
     except Exception:
         logger.exception("step %s: raised", cache_path)
         raise
+    finally:
+        # This step may have written to the workspace -- including to an
+        # unwired boundary path a *later* step reads, whose memoized content
+        # hash would otherwise be pre-mutation and produce a false cache hit.
+        # In the `finally` because a step that raised part-way through has
+        # still had the chance to write. See `cache._hash_path`.
+        invalidate_path_hashes()
 
     # A recipe's stdout/stderr aggregate its sub-steps', and each sub-step
     # already logged its own via its recursive _dispatch -- re-logging the

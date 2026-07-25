@@ -119,24 +119,81 @@ from shinobi.results import StepResult
 from shinobi.steps.schema import Cab, Scope, path_fields
 
 
+_path_hash_cache: dict[Path, Any] = {}
+_path_hash_lock = threading.Lock()
+
+
+def invalidate_path_hashes() -> None:
+    """Drop every memoized `_hash_path` result. Called by `_dispatch` after
+    any step actually executes -- see `_hash_path` for why that is the only
+    safe invalidation point.
+    """
+    with _path_hash_lock:
+        _path_hash_cache.clear()
+
+
 def _hash_path(path: Path) -> Any:
     """`(relative_path, mtime_ns, size)` for every file under `path` -- a
     single file yields one tuple; a directory (e.g. an MS) yields one per
     file within it, sorted for a deterministic result. `None` if `path`
     doesn't exist (e.g. an optional input the caller didn't supply).
+
+    Memoized on the resolved path, because an MS is a directory of many
+    thousands of small files and this walk+stat runs per unwired boundary
+    input, per step, per run -- a caracal-shaped recipe pointing most of its
+    steps at one MS pays it over and over for an answer that has usually not
+    changed.
+
+    "Usually" is the whole difficulty, so the memo is **not** run-scoped.
+    An unwired boundary path is exactly the kind a step can mutate in place,
+    and a mutating step contributes no memo entry of its own (a path that is
+    both input and output is dropped from the key entirely -- see
+    `compute_cache_key`). So a reader before the mutation, a mutation, and a
+    reader after it would otherwise serve the second reader the *pre*-mutation
+    hash: an identical key, a false cache hit, and a silently skipped step.
+    That is the failure the wired/unwired split exists to prevent, so the
+    memo must not reintroduce it.
+
+    The cache is therefore cleared at both points where the workspace may
+    have moved underneath it (`invalidate_path_hashes`, called from
+    `_dispatch`): after any step executes, and again on entry to a top-level
+    dispatch, since the memo must not outlive a single run -- two runs
+    sharing a process have an arbitrary gap between them that no
+    step-completion hook observes.
+
+    What survives is the sharing that is provably safe: several fields of one
+    step naming the same path, steps in the same parallel wave, and
+    consecutive steps that all hit the cache without running. A long chain of
+    mutating steps still re-walks between each one, because there the answer
+    genuinely did change.
+
+    What remains outside the memo's guarantee is what was already outside
+    mtime's: a *concurrent external writer* touching a boundary path mid-run,
+    between two steps neither of which executed. The window is one run and
+    the scheme is already racy against that writer.
     """
+    key = path.resolve()
+    with _path_hash_lock:
+        if key in _path_hash_cache:
+            return _path_hash_cache[key]
+
     if not path.exists():
-        return None
-    if path.is_file():
+        result: Any = None
+    elif path.is_file():
         st = path.stat()
-        return [[".", st.st_mtime_ns, st.st_size]]
-    entries: list[list[Any]] = []
-    for root, _dirs, files in os.walk(path):
-        for fname in files:
-            fpath = Path(root) / fname
-            st = fpath.stat()
-            entries.append([str(fpath.relative_to(path)), st.st_mtime_ns, st.st_size])
-    return sorted(entries)
+        result = [[".", st.st_mtime_ns, st.st_size]]
+    else:
+        entries: list[list[Any]] = []
+        for root, _dirs, files in os.walk(path):
+            for fname in files:
+                fpath = Path(root) / fname
+                st = fpath.stat()
+                entries.append([str(fpath.relative_to(path)), st.st_mtime_ns, st.st_size])
+        result = sorted(entries)
+
+    with _path_hash_lock:
+        _path_hash_cache[key] = result
+    return result
 
 
 def _identity(scope: Scope, func: Callable | None) -> Any:

@@ -92,6 +92,31 @@ schemas) — which share one `resolve_package_root` helper precisely so
 neither can drift away from the rule. A package-scoped `_include` naming a
 package with no registered root is a load error, never an import.
 
+#### What a registered root does and does not promise
+
+A `package_roots` entry is a **containment** boundary, not just a lookup
+table: an `_include` chain that enters through a root may only read files
+*within* that root. `resolve_package_root` constrains the dotted part of the
+name, and `_modelgen.contain_include` constrains the file part at the join,
+so neither `_include: (cultcargo)../../../etc/anything.yaml` nor
+cult-cargo's `{"(cultcargo)": ["../../../etc/anything.yaml"]}` dict form can
+read outside the directory you pointed at. Paths are resolved on both sides
+before comparison, so a symlink planted inside the package is caught too.
+
+The boundary is **transitive**. A file legitimately included from a root
+cannot re-escape with a plain relative `_include: ../../../etc/anything.yaml`
+of its own, even though that resolves against its own directory rather than
+the root. A nested *package-scoped* include is the one thing that changes the
+boundary, replacing it with the new package's root — that hop goes back
+through the `package_roots` mapping, which only the caller controls.
+
+What this does **not** cover: a plain relative `_include` below no package
+root at all. `../common/base.yaml` from a schema file you passed by path is
+ordinary, widely-used layout, and only `package_roots` ever made a
+containment promise — so relative includes there are unconstrained, exactly
+as the file's own directory placement already implies. Treat the schema
+files you point shinobi at as you would the recipe that loads them.
+
 ### Backends never shell out through a shell
 
 Backends invoke commands with **list-form** `subprocess.run` — never

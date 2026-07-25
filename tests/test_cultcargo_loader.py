@@ -324,6 +324,103 @@ def test_package_scoped_include_via_combined_string_form(tmp_path):
     assert "data_ms" in cabs["cubical"].inputs_model.model_fields
 
 
+def _secret_outside(tmp_path: Path) -> Path:
+    """A YAML-parseable file outside any package root, plus the package root
+    a traversal would have to escape to reach it."""
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "secret.yaml").write_text("vars:\n  stolen: yes\n")
+    pkg_dir = tmp_path / "pkg" / "cultcargo"
+    (pkg_dir / "genesis").mkdir(parents=True)
+    return pkg_dir
+
+
+def test_package_scoped_include_cannot_traverse_out_of_its_root_combined_form(tmp_path):
+    """Regression test: `resolve_package_root` constrains only the dotted
+    part; the file part was joined unguarded, so
+    `(cultcargo)../../outside/secret.yaml` read straight out of the root that
+    `package_roots` exists to define.
+    """
+    pkg_dir = _secret_outside(tmp_path)
+    main = tmp_path / "main.yml"
+    main.write_text("cabs:\n  tool:\n    command: echo\n    inputs:\n      _include: (cultcargo)../../outside/secret.yaml\n")
+    with pytest.raises(CabLoadError, match="outside the package root"):
+        load_file(main, package_roots={"cultcargo": pkg_dir})
+
+
+def test_package_scoped_include_cannot_traverse_out_of_its_root_dict_form(tmp_path):
+    """The dict form takes its filenames from a YAML *list* that never passes
+    through `_PKG_INCLUDE_RE` at all -- a regex-level fix leaves this open,
+    which is why the check lives at the join.
+    """
+    pkg_dir = _secret_outside(tmp_path)
+    main = tmp_path / "main.yml"
+    main.write_text("_include:\n  - (cultcargo):\n      - ../../outside/secret.yaml\ncabs:\n  tool:\n    command: echo\n")
+    with pytest.raises(CabLoadError, match="outside the package root"):
+        load_file(main, package_roots={"cultcargo": pkg_dir})
+
+
+def test_package_file_cannot_re_escape_via_a_nested_plain_include(tmp_path):
+    """The guard is transitive: hop one lands legitimately inside the root,
+    but the included file's own plain relative `_include` resolves against
+    *its* directory -- by then inside the package -- and would otherwise walk
+    back out, defeating the containment hop one just enforced.
+    """
+    pkg_dir = _secret_outside(tmp_path)
+    (pkg_dir / "genesis" / "base.yml").write_text("_include:\n  - ../../../outside/secret.yaml\n")
+    main = tmp_path / "main.yml"
+    main.write_text("_include:\n  - (cultcargo)genesis/base.yml\ncabs:\n  tool:\n    command: echo\n")
+    with pytest.raises(CabLoadError, match="outside the package root"):
+        load_file(main, package_roots={"cultcargo": pkg_dir})
+
+
+def test_package_scoped_include_cannot_escape_via_a_symlink(tmp_path):
+    """Both sides are resolved before comparing, so a symlink planted inside
+    the package root is caught -- a textual `..` check would pass this.
+    """
+    pkg_dir = _secret_outside(tmp_path)
+    (pkg_dir / "genesis" / "base.yml").symlink_to(tmp_path / "outside" / "secret.yaml")
+    main = tmp_path / "main.yml"
+    main.write_text("_include:\n  - (cultcargo)genesis/base.yml\ncabs:\n  tool:\n    command: echo\n")
+    with pytest.raises(CabLoadError, match="outside the package root"):
+        load_file(main, package_roots={"cultcargo": pkg_dir})
+
+
+def test_plain_relative_include_may_still_reach_a_sibling_directory(tmp_path):
+    """Deliberate scope limit: only `package_roots` ever promised
+    containment. A plain relative `_include: ../common/base.yml` below no
+    package root is real, widely-used schema layout and stays allowed.
+    """
+    (tmp_path / "common").mkdir()
+    (tmp_path / "common" / "base.yml").write_text("vars:\n  cult-cargo:\n    images:\n      registry: quay.io/stimela2\n")
+    (tmp_path / "cabs").mkdir()
+    main = tmp_path / "cabs" / "main.yml"
+    main.write_text(
+        "_include:\n  - ../common/base.yml\ncabs:\n  breizorro:\n    command: breizorro\n"
+        "    image:\n      _use: vars.cult-cargo.images\n      name: breizorro\n"
+    )
+    assert load_file(main)["breizorro"].image == "breizorro"
+
+
+def test_nested_package_scoped_include_rebases_containment_on_the_new_root(tmp_path):
+    """A package file may include *another* registered package's file: that
+    hop re-enters through `package_roots`, which the caller controls, so the
+    root is replaced rather than treated as an escape.
+    """
+    pkg_a = tmp_path / "pkg_a"
+    pkg_b = tmp_path / "pkg_b"
+    pkg_a.mkdir()
+    pkg_b.mkdir()
+    (pkg_b / "shared.yml").write_text("vars:\n  cult-cargo:\n    images:\n      registry: quay.io/stimela2\n")
+    (pkg_a / "base.yml").write_text("_include:\n  - (pkg_b)shared.yml\n")
+    main = tmp_path / "main.yml"
+    main.write_text(
+        "_include:\n  - (pkg_a)base.yml\ncabs:\n  breizorro:\n    command: breizorro\n"
+        "    image:\n      _use: vars.cult-cargo.images\n      name: breizorro\n"
+    )
+    cabs = load_file(main, package_roots={"pkg_a": pkg_a, "pkg_b": pkg_b})
+    assert cabs["breizorro"].image == "breizorro"
+
+
 def test_dynamic_schema_warns_but_still_loads_static_inputs():
     text = "cabs:\n  tool:\n    command: tool\n    dynamic_schema: some.module.make_schema\n    inputs:\n      size:\n        dtype: int\n"
     with pytest.warns(UserWarning, match="dynamic_schema"):

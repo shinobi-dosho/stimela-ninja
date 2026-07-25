@@ -152,6 +152,38 @@ def test_package_scoped_include_resolves_longest_prefix(tmp_path):
     assert schema.inputs_model.model_fields["z"].default == 7
 
 
+def test_package_scoped_include_cannot_traverse_out_of_its_root(tmp_path):
+    """This dialect shares the unguarded join the cultcargo one had: the
+    `(?P<file>.+)` part of `_PKG_INCLUDE_RE` cannot contain `..` only because
+    nothing checked. See `test_cultcargo_loader`'s equivalents.
+    """
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "secret.yaml").write_text("shared:\n  stolen:\n    dtype: bool\n")
+    pkg_dir = tmp_path / "pkg" / "mypkg"
+    pkg_dir.mkdir(parents=True)
+    main = tmp_path / "main.yaml"
+    main.write_text("libs:\n  _include: (mypkg)../../outside/secret.yaml\nname: thing\ninputs:\n  _use: libs.shared\n")
+
+    with pytest.raises(ConfigLoadError, match="outside the package root"):
+        load_worker_schema(main, package_roots={"mypkg": pkg_dir})
+
+
+def test_package_file_cannot_re_escape_via_a_nested_plain_include(tmp_path):
+    """Transitive, as in the cultcargo dialect: the included package file's
+    own relative `_include` resolves against its directory, inside the root.
+    """
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "secret.yaml").write_text("stolen:\n  dtype: bool\n")
+    pkg_dir = tmp_path / "pkg" / "mypkg"
+    pkg_dir.mkdir(parents=True)
+    (pkg_dir / "shared.yaml").write_text("shared:\n  _include: ../../outside/secret.yaml\n")
+    main = tmp_path / "main.yaml"
+    main.write_text("libs:\n  _include: (mypkg)shared.yaml\nname: thing\ninputs:\n  _use: libs.shared\n")
+
+    with pytest.raises(ConfigLoadError, match="outside the package root"):
+        load_worker_schema(main, package_roots={"mypkg": pkg_dir})
+
+
 def test_sibling_keys_win_over_use_merged_keys(tmp_path):
     base = tmp_path / "base.yaml"
     base.write_text("shared:\n  x:\n    dtype: int\n    default: 1\n")
