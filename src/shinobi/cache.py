@@ -116,7 +116,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from shinobi.results import StepResult
-from shinobi.steps.schema import Cab, Scope, path_fields
+from shinobi.steps.schema import Cab, Mutability, Scope, path_fields
 
 
 _path_hash_cache: dict[Path, Any] = {}
@@ -249,10 +249,27 @@ def compute_cache_key(scope: Scope, func: Callable | None, prepared: dict[str, A
       in the `__upstream__` part. Its bytes are never read: for a path
       several steps rewrite in turn, the producer's key is the only thing
       that says *which* state of it this step consumed.
-    - **absent** -- an unwired boundary path, hashed by `_hash_path`
-      (mtime+size). Unless it is also a declared *output* of this step, in
-      which case it is dropped from the key altogether: a step mutating a
-      boundary path in place would otherwise never look unchanged.
+    - **absent** -- an unwired boundary path, keyed by its path *and* its
+      content (`_hash_path`, mtime+size). Unless it is also mutated in place
+      by this step, in which case it is dropped from the key altogether: a
+      step mutating a boundary path would otherwise never look unchanged.
+
+    A boundary path contributes its path string as well as its content
+    hash. Content alone is not an identity: `cp -a`/`rsync -a`/`tar -x` all
+    preserve mtimes, so two identically-laid-out copies of one MS hashed to
+    the same value and a step repointed from one to the other saw a cache
+    hit; and two *different* absent paths both hash to `None`, so swapping a
+    step onto a different missing file was invisible. The wired branch below
+    always kept the path repr for the same reason -- this is that rule
+    applied consistently.
+
+    "Mutated in place" means either spelling: the field is also declared on
+    `outputs_model`, or its input is declared `Mutability.MUTABLE`. The
+    second is how a cab that rewrites its input without re-declaring it as
+    an output says so (the flag/gaincal/applycal shape -- see
+    `Scope.mutability_of` and `steps.schema.Mutability`), and keying such a
+    step on the content it is about to overwrite made it re-run on every
+    resumed run, forever.
 
     Provenance is one part at the end rather than per-field alongside the
     params, so a step with no wired inputs keys exactly as it did before
@@ -260,7 +277,7 @@ def compute_cache_key(scope: Scope, func: Callable | None, prepared: dict[str, A
     """
     input_paths = path_fields(scope.inputs_model)
     output_paths = path_fields(scope.outputs_model)
-    mutated_paths = input_paths & output_paths
+    mutated_paths = (input_paths & output_paths) | {name for name in input_paths if scope.mutability_of(name) is Mutability.MUTABLE}
     wired = set(input_keys or ())
 
     parts: list[Any] = [scope.image, _identity(scope, func)]
@@ -282,7 +299,7 @@ def compute_cache_key(scope: Scope, func: Callable | None, prepared: dict[str, A
         value = prepared[name]
         if name in input_paths and name not in mutated_paths and name not in wired and value is not None:
             values = value if isinstance(value, (list, tuple)) else [value]
-            parts.append([name, [_hash_path(Path(v)) for v in values]])
+            parts.append([name, repr(value), [_hash_path(Path(v)) for v in values]])
         else:
             # A wired path still contributes its *value* here (the path
             # string), which the `__upstream__` part below does not cover --

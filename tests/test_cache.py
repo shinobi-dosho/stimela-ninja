@@ -1,12 +1,14 @@
+import os
 from pathlib import Path
 
 import shinobi
 from pydantic import BaseModel
 
 from shinobi.backends.recording import RecordingBackend
-from shinobi.cache import CacheManifest, compute_cache_key, get_cache_manifest
+from shinobi.cache import CacheManifest, compute_cache_key, get_cache_manifest, invalidate_path_hashes
 from shinobi.results import StepResult
 from shinobi.steps import Cab, register_step_backend
+from shinobi.steps.schema import Mutability
 from shinobi.steps.dispatch import _dispatch
 
 
@@ -172,6 +174,73 @@ def test_inplace_mutated_path_not_invalidated_by_its_own_mtime(tmp_path):
     # just been rewritten by the first run's own side effect
     _dispatch(mutate_in_place.step, mutate_in_place.func, cache=True, cache_dir=str(cache_dir), vis=vis)
     assert calls["n"] == 1
+
+
+class MutableOnlyOutputs(BaseModel):
+    """No path fields -- the flag/gaincal/applycal shape, which rewrites its
+    input in place and declares that with `Mutability.MUTABLE` rather than by
+    re-declaring the MS as an output. Mirrors `_mutator`'s `OkOut` in
+    `tests/test_offload_slurm.py`.
+    """
+
+    ok: bool = True
+
+
+def test_mutable_declared_input_is_not_keyed_on_content_it_overwrites(tmp_path):
+    """Regression: `compute_cache_key` derived "mutated in place" only from
+    `input_paths & output_paths`, ignoring `Mutability.MUTABLE`. A cab
+    declaring its MS mutable but not re-declaring it as an output was keyed
+    on the very bytes it was about to overwrite, so its own side effect moved
+    the key and it re-ran on every resumed run, forever -- the bug
+    `test_inplace_mutated_path_not_invalidated_by_its_own_mtime` pins for the
+    other spelling.
+    """
+    vis = tmp_path / "data.ms"
+    vis.write_text("original")
+    cab = Cab(
+        name="applycal",
+        command="applycal",
+        inputs_model=InPlaceInputs,
+        outputs_model=MutableOnlyOutputs,
+        input_mutability={"vis": Mutability.MUTABLE},
+    )
+
+    before = compute_cache_key(cab, None, {"vis": vis})
+    vis.write_text("rewritten in place by the step itself")
+    # Without this the memoized fingerprint would serve both calls the same
+    # answer and the test would pass no matter what the key logic does.
+    invalidate_path_hashes()
+    after = compute_cache_key(cab, None, {"vis": vis})
+
+    assert before == after, "a MUTABLE input's own rewrite must not move the key"
+
+
+def test_two_boundary_paths_with_identical_content_do_not_share_a_key(tmp_path):
+    """Regression: an unwired boundary path contributed only its content
+    hash, never its path string. `cp -a`/`rsync -a`/`tar -x` preserve mtimes,
+    so two identically-laid-out copies of one MS hashed identically and a step
+    repointed from one to the other took a false cache hit.
+    """
+    cab = Cab(name="t", command="t", inputs_model=InPlaceInputs, outputs_model=Outputs)
+
+    a, b = tmp_path / "A.ms", tmp_path / "B.ms"
+    for root in (a, b):
+        (root / "ANTENNA").mkdir(parents=True)
+        (root / "table.dat").write_text("x")
+        (root / "ANTENNA" / "table.f0").write_text("y")
+    for root in (a, b):  # what `cp -a` leaves behind
+        for path in root.rglob("*"):
+            os.utime(path, (1700000000, 1700000000))
+
+    assert compute_cache_key(cab, None, {"vis": a}) != compute_cache_key(cab, None, {"vis": b})
+
+
+def test_two_missing_boundary_paths_do_not_share_a_key(tmp_path):
+    """Same root cause, starker: a non-existent path hashes to `None`, so
+    every absent boundary input keyed identically to every other one.
+    """
+    cab = Cab(name="t", command="t", inputs_model=InPlaceInputs, outputs_model=Outputs)
+    assert compute_cache_key(cab, None, {"vis": tmp_path / "gone1.ms"}) != compute_cache_key(cab, None, {"vis": tmp_path / "gone2.ms"})
 
 
 def test_reader_after_an_inplace_mutation_is_not_served_a_stale_memoized_hash(tmp_path):
