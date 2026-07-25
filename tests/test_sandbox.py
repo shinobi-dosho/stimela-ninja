@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from shinobi.backends.recording import RecordingBackend
-from shinobi.exceptions import ParameterError
+from shinobi.exceptions import ParameterError, StepError
 from shinobi.loaders import build_model
 from shinobi.sandbox import (
     absolutize_path_inputs,
@@ -150,6 +150,54 @@ def test_harvest_globs_rescue_dynamic_output_families(tmp_path):
 
     assert sorted(p.name for p in moved) == ["img-0000.fits", "img-0001.fits"]
     assert not (workspace / "other.fits").exists()
+
+
+def test_harvest_glob_refuses_to_rmtree_an_undeclared_workspace_directory(tmp_path):
+    """A harvest glob matches names the *tool* chose. If one collides with a
+    workspace directory the step never declared, replacing it means rmtree-ing
+    data this step knows nothing about -- refuse instead.
+    """
+    scope = make_scope(harvest=["out-*"])
+    sandbox = _sandbox_with(tmp_path, "out-1/new.bin")
+    workspace = tmp_path / "ws"
+    (workspace / "out-1").mkdir(parents=True)
+    (workspace / "out-1" / "precious.ms").write_text("someone else's data")
+
+    with pytest.raises(StepError, match="never declared as an output"):
+        harvest_outputs(scope, scope.outputs_model(), {}, sandbox, workspace)
+
+    assert (workspace / "out-1" / "precious.ms").read_text() == "someone else's data"
+
+
+def test_harvest_glob_still_overwrites_a_colliding_file(tmp_path):
+    """The guard is about directories only: re-running a step must still
+    replace the previous run's like-named products.
+    """
+    scope = make_scope(harvest=["img-*.fits"])
+    sandbox = _sandbox_with(tmp_path, "img-0000.fits")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "img-0000.fits").write_text("from the previous run")
+
+    harvest_outputs(scope, scope.outputs_model(), {}, sandbox, workspace)
+
+    assert (workspace / "img-0000.fits").read_text() == "img-0000.fits"
+
+
+def test_harvest_declared_directory_output_still_replaces(tmp_path):
+    """A *declared* directory output is this step's own product, so replacing
+    it wholesale on a re-run stays the documented behaviour.
+    """
+    scope = make_scope(outputs={"table": ("Directory", False, "gains.tbl")})
+    sandbox = _sandbox_with(tmp_path, "gains.tbl/data.bin")
+    workspace = tmp_path / "ws"
+    (workspace / "gains.tbl").mkdir(parents=True)
+    (workspace / "gains.tbl" / "stale.bin").write_text("previous run")
+
+    harvest_outputs(scope, scope.outputs_model(), {}, sandbox, workspace)
+
+    assert (workspace / "gains.tbl/data.bin").read_text() == "gains.tbl/data.bin"
+    assert not (workspace / "gains.tbl" / "stale.bin").exists()
 
 
 def test_harvest_skips_absolute_and_never_written_outputs(tmp_path):

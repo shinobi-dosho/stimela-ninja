@@ -33,6 +33,23 @@ inline Python/shell source (e.g. `bdsf.catalog`) or a dotted reference to a
 function to import and call (e.g. `msutils.copycol`'s `flavour: python`);
 these are non-`"binary"` flavours.
 
+### Recipes, unlike cab definitions, *always* execute
+
+Everything below is about **cab and config definitions** — the YAML shinobi
+*reads*. It does not extend to recipes, and the distinction is easy to
+over-generalise, so state it plainly:
+
+**A shinobi recipe is a Python file, and `ninja run file.py:target` imports
+and executes it.** That is the project's central design choice, not a gap:
+control flow is Python, so running a recipe runs arbitrary Python with your
+privileges, before any cab is dispatched or any sandbox exists.
+
+Treat a recipe exactly as you would any script someone sent you — read it
+before you run it, and don't run one from a source you wouldn't `curl | sh`
+from. The guarantees in this document are about what a *cab definition* can
+make shinobi do; none of them constrain what a recipe can do, because a
+recipe is code by design.
+
 ### Never eval()/exec() a cab's `command`
 
 shinobi never treats a non-`"binary"` cab's `command` as code to run: every
@@ -61,14 +78,19 @@ module and *calling* a function it names, at cab-load time. Not implemented;
 producing a possibly-incomplete schema (a cab relying solely on
 `dynamic_schema` with no static `inputs:`/`outputs:` loads empty).
 
-The same boundary extends to "never import a cab package": resolving
-cult-cargo's package-scoped `_include` form would normally mean importing
-the named package (`importlib`) to find its data directory, but that risks
-executing arbitrary code from *any* `__init__.py` on the path. Instead,
-callers pass an explicit `package_roots={"cultcargo": Path(...)}` mapping
-into `load_file()`/`loads()`, and a dotted name is resolved against the
-longest registered prefix as a plain filesystem lookup — never through
-Python's import machinery.
+The same boundary extends to "never import a cab package": resolving the
+package-scoped `_include` form would normally mean importing the named
+package (`importlib`) to find its data directory, but that risks executing
+arbitrary code from *any* `__init__.py` on the path. Instead, callers pass
+an explicit `package_roots={"cultcargo": Path(...)}` mapping into the
+loader, and a dotted name is resolved against the longest registered prefix
+as a plain filesystem lookup — never through Python's import machinery.
+
+This applies to **both** loader dialects — `shinobi.loaders.cultcargo`
+(cab schemas) and `shinobi.loaders.worker_schema` (scabha-dialect config
+schemas) — which share one `resolve_package_root` helper precisely so
+neither can drift away from the rule. A package-scoped `_include` naming a
+package with no registered root is a load error, never an import.
 
 ### Backends never shell out through a shell
 

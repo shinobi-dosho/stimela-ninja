@@ -28,6 +28,12 @@ Dialect, as actually used by caracal2 (see its `caracal/schemas/`):
   string (different from cult-cargo's list-of-plain-paths form), or a
   plain relative-path string, or a list of either. Resolved recursively
   (an included file's own `_include` resolves relative to *its* directory).
+  The package-scoped form is resolved against a caller-supplied
+  `package_roots={"module.path": Path(...)}` mapping, never by importing
+  the named module -- importing it would execute an arbitrary
+  `__init__.py` named by a config file. Same mechanism, and the same
+  `resolve_package_root` helper, as `loaders.cultcargo`; see SECURITY.md's
+  "never import a cab package".
 * `_use: dotted.path` or `_use: [dotted.path, ...]` -- deep-merges one or
   more dotted lookups (against the fully `_include`-resolved document)
   into the dict it appears in, with that dict's own sibling keys winning
@@ -43,7 +49,6 @@ bind-mounted read-only by the container backend (see `_leaf_field` and
 from __future__ import annotations
 
 import functools
-import importlib
 import re
 import warnings
 from pathlib import Path
@@ -59,6 +64,7 @@ from shinobi.loaders._modelgen import (
     narrow_choices,
     required_field_spec,
     resolve_directive,
+    resolve_package_root,
     resolve_use,
     sanitize_unique,
     validate_choices,
@@ -80,11 +86,16 @@ class ConfigSchema(BaseModel):
 _PKG_INCLUDE_RE = re.compile(r"^\((?P<module>[\w.]+)\)(?P<file>.+)$")
 
 
-def load_worker_schema(path: str | Path) -> ConfigSchema:
+def load_worker_schema(path: str | Path, *, package_roots: dict[str, Path] | None = None) -> ConfigSchema:
     """Load a stimela-classic worker schema (YAML) file into a `ConfigSchema`.
 
     Args:
         path: Path to the YAML worker schema file.
+        package_roots: Mapping of dotted package name to filesystem root,
+            used to resolve package-scoped `_include: (module.path)file`
+            directives. A package-scoped include naming a package with no
+            registered root raises rather than being resolved by importing
+            it -- see `resolve_package_root`.
 
     Returns:
         The built `ConfigSchema`, with `inputs_model`/`outputs_model`
@@ -92,11 +103,13 @@ def load_worker_schema(path: str | Path) -> ConfigSchema:
 
     Raises:
         ConfigLoadError: If the file's top-level content isn't a mapping,
-            or it has no top-level `name`.
+            it has no top-level `name`, or a package-scoped `_include`
+            names a package with no entry in `package_roots`.
     """
     path = Path(path)
+    roots = package_roots or {}
     raw = yaml.safe_load(path.read_text()) or {}
-    raw = _resolve_includes(raw, path.parent)
+    raw = _resolve_includes(raw, path.parent, roots)
     resolved = resolve_use(raw, raw, error=ConfigLoadError)
 
     if not isinstance(resolved, dict):
@@ -116,7 +129,7 @@ def load_worker_schema(path: str | Path) -> ConfigSchema:
     )
 
 
-def _resolve_includes(node: Any, base_dir: Path) -> Any:
+def _resolve_includes(node: Any, base_dir: Path, package_roots: dict[str, Path]) -> Any:
     def entry_to_dict(entry: Any) -> Any:
         """Resolve one `_include` entry to the dict it refers to.
 
@@ -134,36 +147,41 @@ def _resolve_includes(node: Any, base_dir: Path) -> Any:
                 stacklevel=2,
             )
             return {}
-        return _load_include(entry, base_dir)
+        return _load_include(entry, base_dir, package_roots)
 
     return resolve_directive(node, "_include", entry_to_dict)
 
 
-@functools.lru_cache(maxsize=None)
-def _load_include_file(path: Path) -> dict[str, Any]:
-    """Read, parse, and recursively `_include`-resolve one file, cached on
-    its resolved absolute path -- a schema set commonly has many files all
-    including the same shared base (e.g. caracal2's `caracal_base.yaml`),
-    so without this every worker schema re-reads and re-parses it from disk.
-    Safe to cache: `resolve_directive`/`deep_merge` never mutate their
-    inputs, so the same returned dict can be reused (and further deep_merged
-    from, which always builds a new dict) by every caller.
+def _load_include_file(path: Path, package_roots: dict[str, Path]) -> dict[str, Any]:
+    """Read, parse, and recursively `_include`-resolve one file. Cached
+    (keyed on the resolved path *and* `package_roots`, which participate in
+    resolving the file's own nested includes) -- a schema set commonly has
+    many files all including the same shared base (e.g. caracal2's
+    `caracal_base.yaml`), so without this every worker schema re-reads and
+    re-parses it from disk. Safe to cache: `resolve_directive`/`deep_merge`
+    never mutate their inputs, so the same returned dict can be reused (and
+    further deep_merged from, which always builds a new dict) by every
+    caller. `package_roots` is turned into a hashable, order-independent key
+    since a plain dict can't be an `lru_cache` argument -- same split as
+    `cultcargo._load_raw`.
     """
+    return _load_include_file_cached(path, tuple(sorted(package_roots.items())))
+
+
+@functools.lru_cache(maxsize=None)
+def _load_include_file_cached(path: Path, roots_key: tuple[tuple[str, Path], ...]) -> dict[str, Any]:
     data = yaml.safe_load(path.read_text()) or {}
     if not isinstance(data, dict):
         raise ConfigLoadError(f"_include target '{path}' must be a mapping, got {data!r}")
-    return _resolve_includes(data, path.parent)
+    return _resolve_includes(data, path.parent, dict(roots_key))
 
 
-def _load_include(entry: str, base_dir: Path) -> dict[str, Any]:
+def _load_include(entry: str, base_dir: Path, package_roots: dict[str, Path]) -> dict[str, Any]:
     if m := _PKG_INCLUDE_RE.match(entry):
-        module = importlib.import_module(m.group("module"))
-        if not module.__file__:
-            raise ConfigLoadError(f"_include module {m.group('module')!r} has no file path")
-        path = Path(module.__file__).parent / m.group("file")
+        path = resolve_package_root(m.group("module"), package_roots, error=ConfigLoadError) / m.group("file")
     else:
         path = base_dir / entry
-    return _load_include_file(path.resolve())
+    return _load_include_file(path.resolve(), package_roots)
 
 
 _LEAF_KEYS = COMMON_LEAF_KEYS

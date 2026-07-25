@@ -51,7 +51,7 @@ def test_real_tool_runs_as_a_job():
         inputs_model=build_model("In", {"version": ("bool", False, None)}),
         outputs_model=build_model("Out", {}),
     )
-    backend = KubernetesBackend()
+    backend = KubernetesBackend(namespace="default")
     result = backend.run(cab, ["wsclean", "--version"], {"version": True})
 
     assert result.success
@@ -70,7 +70,7 @@ def test_host_file_visible_via_hostpath_mount(tmp_path):
         inputs_model=build_model("In", {"path": ("File", True, None)}),
         outputs_model=build_model("Out", {}),
     )
-    backend = KubernetesBackend()
+    backend = KubernetesBackend(namespace="default")
     result = backend.run(cab, ["/bin/cat", str(host_file)], {"path": str(host_file)})
 
     assert result.success
@@ -80,7 +80,7 @@ def test_host_file_visible_via_hostpath_mount(tmp_path):
 @requires_k8s_and_wsclean_image
 def test_failing_job_reports_real_container_exit_code():
     cab = Cab(name="fail", command="/bin/sh", image=WSCLEAN_IMAGE, inputs_model=build_model("In", {}), outputs_model=build_model("Out", {}))
-    backend = KubernetesBackend()
+    backend = KubernetesBackend(namespace="default")
     result = backend.run(cab, ["/bin/sh", "-c", "exit 17"], {})
 
     assert not result.success

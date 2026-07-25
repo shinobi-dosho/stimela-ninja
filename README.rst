@@ -58,10 +58,27 @@ Architecture
   (``shinobi.loaders.cultcargo``) -- that schema format is good design and
   is reused as-is, including its ``_include`` (file composition) and ``_use``
   (dotted-path deep-merge) mechanisms, verified against real upstream cab
-  files. The ``=config.x.y`` expression language and package-scoped includes
-  are deliberately not implemented -- see the module docstring and, for the
-  security rationale behind the package-scoped-include restriction,
-  ``SECURITY.md``.
+  files. Package-scoped includes resolve against an explicit
+  ``package_roots={"cultcargo": Path(...)}`` mapping the caller supplies,
+  never by importing the named package.
+
+  **Two limitations worth knowing before you evaluate this against your own
+  cab library**, both deliberate (see ``SECURITY.md`` for the reasoning, and
+  the module docstring for detail):
+
+  - The ``=config.x.y`` / ``${...}`` expression language is not evaluated;
+    such values stay literal strings.
+  - ``dynamic_schema:`` is not resolved, because doing so means importing and
+    *calling* a function a cab file names. A cab using it — real cult-cargo's
+    ``wsclean.yml``, ``cubical.yml`` and ``quartical.yml`` all do — loads with
+    a warning and whatever static ``inputs:``/``outputs:`` it has, which may
+    be an **incomplete** schema. Hand-authored full ports of those three live
+    in `dosho <https://github.com/SpheMakh/dosho>`_; prefer them.
+
+  Relatedly, only ``flavour: binary`` cabs execute. cult-cargo's
+  code-carrying flavours (``python``, inline source — e.g. ``msutils.copycol``,
+  ``bdsf.catalog``) are refused with ``UnsupportedFlavourError`` rather than
+  run.
 
 - **Steps** (``shinobi.step``, ``shinobi.pystep``) -- a step binds an
   orchestration function to a scope. ``@shinobi.step`` decorates a function

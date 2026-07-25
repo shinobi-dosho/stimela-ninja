@@ -86,6 +86,7 @@ from shinobi.loaders._modelgen import (
     build_model,
     deep_merge,
     resolve_directive,
+    resolve_package_root,
     resolve_use,
     sanitize_unique,
     validate_choices,
@@ -130,22 +131,11 @@ _PKG_INCLUDE_RE = re.compile(r"^\((?P<pkg>[\w.]+)\)(?P<rest>.*)$")
 
 
 def _resolve_package_root(dotted: str, package_roots: dict[str, Path]) -> Path:
-    """`dotted` (e.g. `cultcargo.genesis.cubical`) -> filesystem directory,
-    resolved against the *longest* registered prefix in `package_roots`
-    (descending the remainder as subdirectories) -- never via `importlib`.
-    See this module's docstring for why.
+    """This dialect's `CabLoadError`-flavoured `resolve_package_root`. See
+    that helper (and this module's docstring) for why `importlib` is never
+    involved.
     """
-    parts = dotted.split(".")
-    for i in range(len(parts), 0, -1):
-        prefix = ".".join(parts[:i])
-        if prefix in package_roots:
-            return package_roots[prefix].joinpath(*parts[i:])
-    raise CabLoadError(
-        f"package-scoped _include references package {dotted!r}, but no filesystem "
-        f"root was supplied for it (or a parent package of it) -- pass "
-        f"package_roots={{{parts[0]!r}: Path(...)}} to load_file()/loads() "
-        "(shinobi never imports a package to resolve this -- see this module's docstring)"
-    )
+    return resolve_package_root(dotted, package_roots, error=CabLoadError)
 
 
 def _include_entry_to_dict(entry: Any, base_dir: Path | None, package_roots: dict[str, Path]) -> dict[str, Any]:
