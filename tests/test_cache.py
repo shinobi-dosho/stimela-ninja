@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from shinobi import cache
 from shinobi.backends.recording import RecordingBackend
-from shinobi.cache import CacheManifest, compute_cache_key, get_cache_manifest, invalidate_path_hashes
+from shinobi.cache import CacheManifest, ProvenanceKey, as_provenance_key, combine_keys, compute_cache_key, get_cache_manifest, invalidate_path_hashes
 from shinobi.results import StepResult
 from shinobi.steps import Cab, register_step_backend
 from shinobi.steps.schema import Mutability
@@ -1033,3 +1033,263 @@ def test_unsandboxed_cab_result_is_not_marked_sandboxed(tmp_path):
     )
     result = _dispatch(cab, None, x=1)
     assert result.sandboxed is False
+
+
+# --- ProvenanceKey: the field rides along, the hashed bytes do not change ---
+
+
+def test_provenance_key_hashes_identically_to_a_plain_string():
+    """The whole reason `ProvenanceKey` is a `str` subclass rather than a
+    pair: these values are hashed into `__upstream__`, so if the wrapper
+    changed a single byte of the serialization it would rewrite every key in
+    every existing manifest.
+    """
+    cab, _ = _cab(Path("/nonexistent"))
+    prepared = {"x": 1}
+    plain = compute_cache_key(cab, None, prepared, {"x": "deadbeef"})
+    wrapped = compute_cache_key(cab, None, prepared, {"x": ProvenanceKey("deadbeef", "ms")})
+    assert plain == wrapped
+
+
+def test_provenance_key_hashes_identically_inside_a_list_valued_wiring():
+    """List wiring keys a field to several producers at once, so the wrapper
+    has to be transparent as a list *element* too, not just as a bare value.
+    """
+    cab, _ = _cab(Path("/nonexistent"))
+    prepared = {"x": 1}
+    plain = compute_cache_key(cab, None, prepared, {"x": ["aa", "bb"]})
+    wrapped = compute_cache_key(cab, None, prepared, {"x": [ProvenanceKey("aa", "one"), ProvenanceKey("bb", "two")]})
+    assert plain == wrapped
+
+
+def test_combine_keys_is_unchanged_by_wrapping():
+    """`combine_keys` hashes its input through the same `json.dumps` path, so
+    a scattered step's gathered key must not move either.
+    """
+    assert combine_keys(["aa", "bb"]) == combine_keys([ProvenanceKey("aa", "ms"), ProvenanceKey("bb", "ms")])
+
+
+def test_provenance_key_compares_and_hashes_as_its_string():
+    """Every dict/set/sort position these keys occupy treats them as plain
+    strings, and a wrapped key must be indistinguishable there.
+    """
+    key = ProvenanceKey("abc", "ms")
+    assert key == "abc"
+    assert hash(key) == hash("abc")
+    assert {key: 1} == {"abc": 1}
+    assert sorted([ProvenanceKey("b", "f"), "a"]) == ["a", "b"]
+
+
+def test_provenance_field_survives_a_reconstructing_copy():
+    """`copy`/`pickle` rebuild a `str` subclass through `str.__new__` and
+    restore state afterwards, so reading `producer_field` must never raise on
+    a partly-built instance -- hence the class-level default.
+    """
+    import copy
+    import pickle
+
+    key = ProvenanceKey("abc", "ms")
+    assert copy.deepcopy(key).producer_field == "ms"
+    assert pickle.loads(pickle.dumps(key)).producer_field == "ms"
+    assert ProvenanceKey.producer_field is None
+
+
+def test_as_provenance_key_does_not_rename_an_already_named_state():
+    """A key crossing a recipe boundary already names the *leaf* field that
+    produced it. Re-wrapping it under the enclosing recipe's export name (or
+    the consumer's input name) would give one state two names and break the
+    uniqueness the snapshot layer relies on.
+    """
+    leaf = ProvenanceKey("abc", "image")
+    assert as_provenance_key(leaf, "img").producer_field == "image"
+    assert as_provenance_key("abc", "img").producer_field == "img"
+    assert as_provenance_key(None, "img") is None
+
+
+def test_cache_key_digests_are_frozen():
+    """Golden test. Both digests were produced by the tree as it stood
+    *before* `ProvenanceKey` existed. Every entry in every existing user
+    workspace is named by one of these, so this pins the key scheme itself:
+    any change that moves a digest orphans all of them, and must be a
+    deliberate `key_version` bump rather than a side effect.
+
+    Deliberately built from fixed literals rather than a `tmp_path`
+    pipeline -- a boundary path contributes its own string to the key, so a
+    pipeline's digests move with the temp directory and cannot be frozen.
+    """
+
+    class GoldenIn(BaseModel):
+        x: int = 1
+        name: str = "field"
+
+    cab = Cab(name="tool", command="tool", inputs_model=GoldenIn, outputs_model=Outputs, backend="record")
+    prepared = {"x": 1, "name": "field"}
+    assert compute_cache_key(cab, None, prepared) == "0dbb77c832de0bf2a0b7357b7190c75466fc03c90ae18495a66579ef347261f6"
+    assert compute_cache_key(cab, None, prepared, {"x": "deadbeef"}) == "5c08eefff35469b8ec76f0c4bcb702ef7908a38fbfda91ce3bdd3c7ed31606b2"
+
+
+def test_producer_field_threads_across_a_nested_recipe_boundary(tmp_path):
+    """The field has to survive all three wrap sites at once: `OutputRef`
+    wiring inside a recipe, `InputRef` crossing into one, and `output_wiring`
+    re-exporting out of one. The re-export is the subtle one -- the outer
+    recipe exports `cal`'s MS under its own name, and the state must keep
+    being named by `cal`'s output field, not by the export name.
+    """
+    from shinobi.steps import InputRef, OutputRef, Recipe
+
+    ms = tmp_path / "ws" / "data.ms"
+    ms.parent.mkdir(parents=True)
+
+    @shinobi.pystep()
+    def split(ctx, spw: str = "*") -> MsOut:
+        ms.write_text(f"visibilities for {spw}")
+        return MsOut(ms=ms)
+
+    @shinobi.pystep()
+    def flag(ctx, ms: Path) -> MsOut:
+        ms.write_text(ms.read_text() + " | flagged")
+        return MsOut(ms=ms)
+
+    @shinobi.pystep()
+    def cal(ctx, ms: Path) -> MsOut:
+        ms.write_text(ms.read_text() + " | calibrated")
+        return MsOut(ms=ms)
+
+    transform = Recipe(
+        name="transform",
+        inputs_model=SpwInputs,
+        outputs_model=MsOut,
+        steps=[split.model_copy(update={"wiring": {"spw": InputRef(field="spw")}})],
+        output_wiring={"ms": OutputRef(step="split", field="ms")},
+    )
+    prep = Recipe(
+        name="prep",
+        inputs_model=MsOut,
+        outputs_model=MsOut,
+        steps=[
+            flag.model_copy(update={"wiring": {"ms": InputRef(field="ms")}}),
+            cal.model_copy(update={"wiring": {"ms": OutputRef(step="flag", field="ms")}}),
+        ],
+        output_wiring={"ms": OutputRef(step="cal", field="ms")},
+    )
+    pipeline = (
+        Recipe(name="pipe", inputs_model=SpwInputs, outputs_model=MsOut)
+        .add_step("transform", transform, spw=InputRef(field="spw"))
+        .add_step("prep", prep, ms=OutputRef(step="transform", field="ms"))
+        .set_output("ms", OutputRef(step="prep", field="ms"))
+    )
+
+    import json
+
+    cache_dir = tmp_path / "cache"
+    result = pipeline(spw="*", cache=True, cache_dir=str(cache_dir))
+    keys = {name: entry["cache_key"] for name, entry in json.loads((cache_dir / "manifest.json").read_text()).items()}
+
+    # The outer recipe's `ms` is `cal`'s state, named by `cal`'s own output
+    # field -- `as_provenance_key` must not have renamed it at either hop.
+    assert result.output_keys["ms"] == keys["pipe.prep.cal"]
+    assert result.output_keys["ms"].producer_field == "ms"
+    # And the inner recipe's re-export names its own leaf, not the sub-step
+    # slot it sits in.
+    assert result.sub_results["prep"].output_keys["ms"].producer_field == "ms"
+    assert result.sub_results["transform"].output_keys["ms"] == keys["pipe.transform.split"]
+
+    # The chain still behaves: unchanged re-run skips everything, an upstream
+    # param change re-runs the whole suffix.
+    assert pipeline(spw="*", cache=True, cache_dir=str(cache_dir)).success
+    assert ms.read_text() == "visibilities for * | flagged | calibrated"
+
+
+# --- optional bounded content sample (cache.content_sample) ---------------
+
+
+def test_content_sample_is_off_by_default_and_keys_are_unchanged(tmp_path):
+    """The flag is a conditional *append* to each fingerprint entry, so with
+    it off every key is byte-identical to what it always was and no existing
+    cache entry is orphaned.
+    """
+    from shinobi.cache import _walk_fingerprint
+
+    src = tmp_path / "data.ms"
+    src.mkdir()
+    (src / "table.dat").write_bytes(b"x" * 100)
+    assert [len(entry) for entry in _walk_fingerprint(src)] == [3]
+
+
+def test_content_sample_separates_two_datasets_that_fingerprint_identically(tmp_path):
+    """The gap it exists for: `cp -a` and `tar -x` preserve mtimes, so two
+    *different* datasets of the same layout and sizes hash identically inside
+    one granularity window.
+    """
+    from shinobi.cache import _walk_fingerprint, set_content_sample
+
+    a, b = tmp_path / "a.ms", tmp_path / "b.ms"
+    for root, payload in ((a, b"A" * 8192), (b, b"B" * 8192)):
+        root.mkdir()
+        (root / "table.dat").write_bytes(payload)
+    os.utime(b / "table.dat", ns=(1_000, 1_000))
+    os.utime(a / "table.dat", ns=(1_000, 1_000))
+
+    try:
+        set_content_sample(False)
+        # Same size, same mtime, different bytes -- indistinguishable.
+        assert [e[1:] for e in _walk_fingerprint(a)] == [e[1:] for e in _walk_fingerprint(b)]
+
+        set_content_sample(True)
+        invalidate_path_hashes()
+        assert [e[1:] for e in _walk_fingerprint(a)] != [e[1:] for e in _walk_fingerprint(b)]
+    finally:
+        set_content_sample(False)
+
+
+def test_content_sample_does_not_cover_an_out_of_band_middle_edit(tmp_path):
+    """Pinned deliberately, because it is the thing someone will assume the
+    sample covers. A rewritten column in the middle of a large file changes
+    neither its size nor its first and last pages, and stays invisible --
+    by design, not by omission.
+    """
+    from shinobi.cache import _walk_fingerprint, set_content_sample
+
+    src = tmp_path / "data.ms"
+    src.mkdir()
+    table = src / "table.f0"
+    table.write_bytes(b"\x00" * 32768)
+
+    try:
+        set_content_sample(True)
+        # Pin the mtime on both sides: mtime *would* catch this edit, and the
+        # point here is what survives when it doesn't -- a tool that rewrites
+        # a column and restores timestamps, or an edit inside one granularity
+        # window.
+        os.utime(table, ns=(1_000, 1_000))
+        before = _walk_fingerprint(src)
+        with open(table, "r+b") as handle:
+            handle.seek(16384)
+            handle.write(b"REWRITTEN FLAG COLUMN")
+        os.utime(table, ns=(1_000, 1_000))
+        after = _walk_fingerprint(src)
+        assert before == after, "a middle-of-file edit is invisible to the sample, by design"
+    finally:
+        set_content_sample(False)
+
+
+def test_flipping_the_content_sample_flag_invalidates_the_memo(tmp_path):
+    """The sample lives inside `_hash_path`'s memo, so the flag has to clear
+    it -- a second memo with its own invalidation rule is the drift bug this
+    module's docstring warns about.
+    """
+    from shinobi.cache import _hash_path, set_content_sample
+
+    src = tmp_path / "data.ms"
+    src.mkdir()
+    (src / "table.dat").write_bytes(b"payload" * 1000)
+
+    try:
+        set_content_sample(False)
+        plain = _hash_path(src)
+        set_content_sample(True)
+        sampled = _hash_path(src)
+        assert plain != sampled
+        assert len(sampled[0]) == 4 and len(plain[0]) == 3
+    finally:
+        set_content_sample(False)

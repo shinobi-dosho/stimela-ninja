@@ -122,6 +122,21 @@ files you point shinobi at as you would the recipe that loads them.
 Backends invoke commands with **list-form** `subprocess.run` — never
 `shell=True`, never string interpolation into a shell.
 
+### Snapshots copy in-process, not through `cp`
+
+The mutation-chain snapshots (`shinobi.snapshots`) copy and restore
+measurement-set trees through `shinobi.clonefs`, which uses `fcntl.ioctl`,
+`os.copy_file_range` and plain reads/writes **in this process**. It never
+shells out at all — not to `cp`, not to `tar`.
+
+That is the stronger version of the exec-form discipline above, and it is
+deliberate: these operations take *workspace paths* as arguments, which are
+user-supplied data, and a path is exactly the kind of string that acquires a
+shell meaning it did not have when written. Copying in-process removes the
+question rather than answering it, and as a bonus removes a dependency on
+which GNU `cp` version is installed. Should a cold tier ever add `tar`/`zstd`
+(Tier 2, deferred), it must use exec-form argv, as everything else here does.
+
 ### Offload scripts are charset-validated before interpolation
 
 Compiled offload scripts (`shinobi.offload.slurm` and the `slurm` step

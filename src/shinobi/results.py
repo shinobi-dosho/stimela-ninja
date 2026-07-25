@@ -13,11 +13,16 @@ from __future__ import annotations
 
 import signal
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
 from shinobi.resources import Resources
+
+if TYPE_CHECKING:
+    # `shinobi.cache` imports `StepResult` from here, so this one has to stay
+    # type-only or the two modules deadlock at import.
+    from shinobi.cache import ProvenanceKey
 
 
 def explain_returncode(returncode: int) -> str:
@@ -148,7 +153,7 @@ class StepResult:
     # each of its declared outputs is really produced by a different sub-step.
     # Read them through `provenance_key`, never directly.
     cache_key: str | None = None
-    output_keys: "dict[str, Any] | None" = None
+    output_keys: "dict[str, ProvenanceKey] | None" = None
 
     @property
     def success(self) -> bool:
