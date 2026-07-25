@@ -29,6 +29,7 @@ Settings
       resources:                 # machine budget steps are admitted against
         cpus: auto               #   auto | unbounded | a number
         memory: auto             #   auto | unbounded | e.g. "250GiB"
+      enforce_resources: auto    # backend-side limits: auto | always | never
     log:
       dir: "."                   # log output directory
       file: null                  # run-log filename (null = file logging off)
@@ -65,6 +66,30 @@ is not allowed to fill, and getting killed for it. Set an explicit value to
 override, or ``unbounded`` to stop constraining that dimension. Note ``null``
 is *not* the way to spell "unbounded"; elsewhere in this file ``null`` means
 "unset, fall back", and it is not quietly inverted here.
+
+``execution.enforce_resources`` controls whether a *backend* turns a
+declaration into a real limit. Admission control is unaffected by it and
+always applies -- this is only about ``--cpus``/``--memory`` and friends.
+
+``auto`` (the default) emits only what this host can actually enforce.
+Enforcement by a rootless runtime (apptainer, rootless podman) needs the
+relevant cgroup controller **delegated** to your systemd user session, and
+delegation is per controller: a session with ``memory pids`` and no ``cpu``
+can hold every step to its memory declaration, but cannot apply ``--cpus`` at
+all. Under ``auto`` each dimension is decided on its own, so such a host
+enforces memory and warns once that CPU limits were dropped -- rather than
+failing every step that declares both. Check what you have with::
+
+    cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers
+
+``always`` emits everything declared and lets the runtime fail loudly if it
+cannot apply it (the behaviour before this was per-dimension). ``never`` emits
+nothing, leaving the scheduler's admission control as the only consumer of a
+declaration -- for a site that wants planning without backend enforcement.
+Docker is unaffected by the probe either way: its limits are applied by a root
+daemon, whose reach your session's delegation says nothing about. So is a
+Slurm job script, which is compiled here but runs on a compute node this host
+cannot inspect. See :doc:`backends`.
 
 ``backend.run_as_host_user`` (docker/podman only, default ``True``) adds
 ``--user uid:gid`` plus ``HOME=<workdir>`` so bind-mounted outputs come out

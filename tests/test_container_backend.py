@@ -2,6 +2,7 @@ import os
 
 import pytest
 
+from shinobi.backends import container
 from shinobi.backends.container import ApptainerBackend, DockerBackend
 from shinobi.exceptions import BackendError
 from shinobi.loaders import build_model
@@ -263,3 +264,112 @@ def test_undeclared_resources_change_nothing():
     argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["tool"], {})
     assert "--cpus" not in argv
     assert "--memory" not in argv
+
+
+# -- partial cgroup delegation (issue #39) --
+
+
+@pytest.fixture
+def delegate(monkeypatch):
+    """Pretend this session was delegated exactly `controllers`."""
+
+    def _set(*controllers):
+        monkeypatch.setattr(container, "delegated_controllers", lambda *a, **k: frozenset(controllers))
+        container._warned_drops.clear()
+
+    return _set
+
+
+def test_undelegated_dimension_is_dropped_not_the_whole_declaration(delegate, caplog):
+    """The bug: one unenforceable dimension took the other down with it, and
+    the run with it. Memory is delegated here, so memory is still enforced.
+    """
+    delegate("memory", "pids")
+    cab = make_cab().model_copy(update={"resources": Resources(cpus=2, memory="256MiB")})
+    with caplog.at_level("WARNING"):
+        argv, _ = ApptainerBackend(workdir="/work")._wrap(cab, ["tool"], {})
+    assert "--cpus" not in argv
+    assert "--memory" in argv and argv[argv.index("--memory") + 1] == str(256 * 1024**2)
+    # dropping enforcement silently would be the other half of the bug
+    assert "--cpus" in caplog.text and "memory, pids" in caplog.text
+
+
+def test_drop_is_warned_once_per_run(delegate, caplog):
+    delegate("memory")
+    cab = make_cab().model_copy(update={"resources": Resources(cpus=2, memory="256MiB")})
+    with caplog.at_level("WARNING"):
+        for _ in range(3):
+            ApptainerBackend(workdir="/work")._wrap(cab, ["tool"], {})
+    assert caplog.text.count("dropping --cpus") == 1
+
+
+def test_docker_ignores_session_delegation(delegate):
+    """Docker's limits are applied by a root daemon in its own cgroup tree,
+    so what systemd delegated to *this* session is not evidence about them.
+    """
+    delegate("memory")
+    cab = make_cab().model_copy(update={"resources": Resources(cpus=2, memory="256MiB")})
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["tool"], {})
+    assert "--cpus" in argv
+
+
+def test_unknown_delegation_emits_everything(monkeypatch):
+    """`None` means "couldn't tell" -- which must stay the loud old behaviour,
+    never a silent drop.
+    """
+    monkeypatch.setattr(container, "delegated_controllers", lambda *a, **k: None)
+    cab = make_cab().model_copy(update={"resources": Resources(cpus=2, memory="256MiB")})
+    argv, _ = ApptainerBackend(workdir="/work")._wrap(cab, ["tool"], {})
+    assert "--cpus" in argv and "--memory" in argv
+
+
+def test_enforce_always_emits_undelegated_limits(delegate, monkeypatch):
+    delegate("memory")
+    monkeypatch.setenv("SHINOBI_EXECUTION__ENFORCE_RESOURCES", "always")
+    cab = make_cab().model_copy(update={"resources": Resources(cpus=2, memory="256MiB")})
+    argv, _ = ApptainerBackend(workdir="/work")._wrap(cab, ["tool"], {})
+    assert "--cpus" in argv and "--memory" in argv
+
+
+def test_enforce_never_emits_nothing(monkeypatch):
+    monkeypatch.setenv("SHINOBI_EXECUTION__ENFORCE_RESOURCES", "never")
+    cab = make_cab().model_copy(update={"resources": Resources(cpus=4, memory="8GiB")})
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["tool"], {})
+    assert "--cpus" not in argv and "--memory" not in argv
+
+
+def test_remote_build_never_probes_this_host(delegate):
+    """A Slurm job script is compiled here and run on a compute node, whose
+    delegation this host knows nothing about.
+    """
+    delegate("memory")
+    cab = make_cab().model_copy(update={"resources": Resources(cpus=2, memory="256MiB")})
+    argv, _ = container.build_container_argv("apptainer", cab, ["tool"], {}, "/work", runs_here=False)
+    assert "--cpus" in argv
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        # apptainer 1.3.0, verbatim from issue #39
+        (
+            "FATAL:   container creation failed: while applying cgroups config: while setting cgroup limits: openat2 "
+            "/sys/fs/cgroup/user.slice/user-20001.slice/user@20001.service/user.slice/apptainer-3628201.scope/cpu.max: "
+            "no such file or directory"
+        ),
+        # crun/podman's spelling of the same wall
+        "Error: OCI runtime error: crun: the requested cgroup controller `cpu` is not available",
+    ],
+)
+def test_cgroup_failure_hint_names_cause_and_remedy(stderr, delegate):
+    delegate("memory", "pids")
+    hint = container.cgroup_failure_hint(stderr, "apptainer")
+    assert hint is not None
+    assert "`cpu` cgroup controller is not delegated" in hint
+    assert "memory, pids" in hint  # what you *do* have
+    assert "Delegate=cpu" in hint  # and how to get the rest
+
+
+def test_cgroup_failure_hint_stays_out_of_unrelated_failures():
+    assert container.cgroup_failure_hint("Segmentation fault (core dumped)", "apptainer") is None
+    assert container.cgroup_failure_hint("wsclean: error: no such file or directory", "apptainer") is None

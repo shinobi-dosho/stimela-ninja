@@ -30,6 +30,19 @@ def _offline_digest_resolution(monkeypatch):
         monkeypatch.setattr(container, name, lambda *a, **k: None)
 
 
+@pytest.fixture(autouse=True)
+def _full_cgroup_delegation(monkeypatch):
+    # What a rootless runtime may enforce is a property of the *developer's*
+    # systemd session (see resources.delegated_controllers) -- a laptop with
+    # only `memory pids` delegated would otherwise make every apptainer
+    # limit assertion fail there and pass in CI, for no reason to do with the
+    # code. Pin it to "everything delegated"; the tests that care about
+    # partial delegation patch this themselves.
+    from shinobi.backends import container
+
+    monkeypatch.setattr(container, "delegated_controllers", lambda *a, **k: frozenset({"cpu", "memory", "pids", "io"}))
+
+
 @pytest.fixture
 def native():
     return NativeBackend()

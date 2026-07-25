@@ -106,8 +106,9 @@ between a soft scheduling hint and a real limit:
      - Emits ``--cpus`` / ``--memory``, same spelling and same effect
        (verified: ``--memory 256M`` really does produce a cgroup scope with
        ``memory.max=268435456``). Needs cgroup delegation -- cgroups v2 under
-       systemd. Where that is unavailable apptainer fails loudly rather than
-       running unconstrained, which is the right way round.
+       systemd -- and delegation is **per controller**, so shinobi emits only
+       the dimensions this session can enforce and warns about the rest (see
+       below).
    * - ``kubernetes``
      - Sets container ``resources.requests`` and ``resources.limits`` to the
        same values, so the cluster reserves exactly what was declared. If no
@@ -125,6 +126,27 @@ between a soft scheduling hint and a real limit:
 The same values also feed the local scheduler's admission control, so a step's
 declaration is used consistently whether it gates a thread pool or a cluster
 allocation.
+
+Partial cgroup delegation
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A rootless runtime can only apply the controllers systemd delegated to your
+user session, and a shared HPC box very often delegates ``memory pids`` and
+not ``cpu`` -- which is precisely where you most want enforcement and least
+able to change the delegation policy. Handing such a host ``--cpus`` makes it
+refuse to create the container at all::
+
+    FATAL:   container creation failed: while applying cgroups config: ...
+    .../apptainer-3628201.scope/cpu.max: no such file or directory
+
+so a single unenforceable dimension used to take down the enforcement of the
+other, and the run with it. Under the default ``execution.enforce_resources:
+auto`` shinobi probes the delegated set and emits each dimension on its own
+merits: memory limits are still applied, and one warning per run says which
+flags were dropped and why. A run that fails this way anyway (under
+``always``, or on a runtime whose reach could not be probed) gets the cause
+and the remedy spelled out instead of the raw ``openat2`` message. See
+:doc:`config` for the setting and how to inspect your own delegation.
 
 Verification status
 --------------------

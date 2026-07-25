@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -38,11 +39,22 @@ from shinobi.backends._stream import run_streaming
 from shinobi.config import AppConfig
 from shinobi.exceptions import BackendError
 from shinobi.loaders._modelgen import is_file_dtype
+from shinobi.resources import delegated_controllers
 from shinobi.results import BackendRun
 from shinobi.steps.schema import Cab, Scope, path_fields, readonly_path_fields
 
+logger = logging.getLogger(__name__)
+
 _DOCKER_LIKE = {"docker", "podman"}
 _APPTAINER_LIKE = {"apptainer"}
+
+# The cgroup v2 controller each emitted limit needs. `--cpus` is worthless
+# without `cpu`, `--memory` without `memory`; nothing else is emitted.
+_FLAG_CONTROLLERS = {"cpus": "cpu", "memory": "memory"}
+
+# Which (runtime, dropped-flags) combinations have already been warned about
+# -- see `_warn_dropped_limits`. Process-wide, like the delegation it reports.
+_warned_drops: set[tuple[str, tuple[str, ...]]] = set()
 
 # The one authoritative set of container-runtime backend names; also
 # consumed by the pystep adapter (steps/pyfunc.py) to decide whether a
@@ -436,33 +448,165 @@ def bind_dirs(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[str]:
     return [d for d, _ in bind_dir_modes(scope, inputs, workdir)]
 
 
-def _resource_flags(scope: Scope) -> list[str]:
-    """`--cpus`/`--memory` for a step's declared footprint.
+def _rootless(runtime: str) -> bool:
+    """Whether `runtime` applies cgroup limits from *this* user's session,
+    and so can only use the controllers systemd delegated to it.
+
+    apptainer always does (it has no daemon). podman does when we are not
+    root; a rootful podman writes limits as root, which delegation does not
+    constrain. docker never does: limits are applied by a root daemon in its
+    own cgroup tree, so what this session was delegated says nothing about
+    whether they will work.
+    """
+    if runtime == "apptainer":
+        return True
+    if runtime == "podman":
+        return os.geteuid() != 0
+    return False
+
+
+def _resource_flags(scope: Scope, runtime: str, *, runs_here: bool = True) -> list[str]:
+    """`--cpus`/`--memory` for a step's declared footprint, minus whatever
+    this host cannot actually enforce.
 
     One emitter covers every supported runtime: docker, podman and
     apptainer all spell these the same way, and all three accept a raw byte
     count for `--memory`. Verified against apptainer 1.5.2, where
-    `--memory 256M --cpus 2` really does produce an `apptainer-*.scope`
-    cgroup with `memory.max=268435456` and `cpu.max=200000 100000` -- it is
+    `--memory 256M --cpus 1.5` really does produce an `apptainer-*.scope`
+    cgroup with `memory.max=268435456` and `cpu.max=150000 100000` -- it is
     not merely an accepted-and-ignored flag.
 
     This is the half of the feature that is actual *enforcement*: the local
     scheduler only decides whether to start a step, whereas a container
     runtime holds it to its declaration, so a runaway is killed inside its
     own cgroup instead of eating the shared budget its siblings are using.
-    Note apptainer needs cgroup delegation (cgroups v2 under systemd) for
-    this; where that is unavailable it fails loudly rather than silently
-    running unconstrained, which is the right way round.
+    A rootless runtime needs cgroup delegation (cgroups v2 under systemd)
+    for that, and where a controller is missing it fails loudly rather than
+    silently running unconstrained -- which is the right way round, but only
+    at the right granularity. Delegation is per controller: a session with
+    `memory pids` and no `cpu` can enforce every memory declaration in the
+    recipe, and emitting `--cpus` alongside `--memory` throws that away by
+    killing the run. So each dimension is decided on its own, against
+    `delegated_controllers`, and the ones dropped are warned about rather
+    than passed over in silence.
+
+    `execution.enforce_resources` overrides the probe: `"always"` emits
+    everything declared (fail loudly, the old behaviour), `"never"` emits
+    nothing and leaves admission control as the only consumer of a
+    declaration.
+
+    Args:
+        scope: The Cab or Scope being run.
+        runtime: Container runtime the flags are for.
+        runs_here: Whether this argv will execute on the host building it.
+            False for a Slurm job script, whose apptainer runs on a compute
+            node whose delegation this host cannot see -- probing ours and
+            dropping a flag on the strength of it would be worse than
+            useless, so a remote build emits the full declaration.
+
+    Returns:
+        The runtime flags, in declaration order.
     """
     resources = scope.resources
     if resources is None:
         return []
+    mode = AppConfig.load().execution.enforce_resources
+    if mode == "never":
+        return []
+
+    declared = [
+        ("cpus", f"{resources.cpus:g}" if resources.cpus is not None else None),
+        ("memory", str(resources.memory) if resources.memory is not None else None),
+    ]
+    available = delegated_controllers() if mode == "auto" and runs_here and _rootless(runtime) else None
+
     flags: list[str] = []
-    if resources.cpus is not None:
-        flags += ["--cpus", f"{resources.cpus:g}"]
-    if resources.memory is not None:
-        flags += ["--memory", str(resources.memory)]
+    dropped: list[str] = []
+    for flag, value in declared:
+        if value is None:
+            continue
+        if available is not None and _FLAG_CONTROLLERS[flag] not in available:
+            dropped.append(flag)
+            continue
+        flags += [f"--{flag}", value]
+    if dropped:
+        _warn_dropped_limits(runtime, dropped, available or frozenset(), kept=bool(flags))
     return flags
+
+
+def _warn_dropped_limits(runtime: str, dropped: list[str], available: frozenset[str], *, kept: bool) -> None:
+    """Say once per run which limits were dropped and why.
+
+    Once, not per step: the delegated set is a property of the session, so a
+    hundred steps would repeat one identical fact a hundred times and bury
+    it. Keyed by what was dropped, so a different combination still speaks
+    up.
+    """
+    key = (runtime, tuple(dropped))
+    if key in _warned_drops:
+        return
+    _warned_drops.add(key)
+    controllers = [_FLAG_CONTROLLERS[d] for d in dropped]
+    plural = "controller is" if len(dropped) == 1 else "controllers are"
+    them = "it" if len(dropped) == 1 else "them"
+    logger.warning(
+        "%s: dropping %s from containerized steps -- the %s cgroup %s not delegated to this user session (delegated: %s). %s "
+        "Ask an admin for `Delegate=%s` on systemd's user@.service to enforce %s here, or set "
+        "execution.enforce_resources=always to emit %s anyway and fail loudly.",
+        runtime,
+        ", ".join(f"--{d}" for d in dropped),
+        ", ".join(f"`{c}`" for c in controllers),
+        plural,
+        ", ".join(sorted(available)) or "nothing",
+        "Everything else declared is still enforced." if kept else "Nothing declared is enforced at the backend; admission control still applies.",
+        " ".join(controllers),
+        them,
+        them,
+    )
+
+
+# A runtime that cannot create a controller's file in its new cgroup scope
+# says so in one of two dialects: apptainer surfaces the raw `openat2` on the
+# missing `<controller>.max`, crun (podman) names the controller outright.
+_CGROUP_FAILURE_RES = (
+    re.compile(r"cgroup[^\n]*?/(?P<controller>cpu|memory|pids|io|cpuset)\.[a-z_.]+: no such file or directory"),
+    re.compile(r"cgroup controller [`'\"]?(?P<controller>cpu|memory|pids|io|cpuset)[`'\"]? is not available"),
+)
+
+
+def cgroup_failure_hint(stderr: str, runtime: str) -> str | None:
+    """Translate a runtime's cgroup failure into something actionable, or
+    `None` if that isn't what went wrong.
+
+    The raw failure is `openat2 /sys/fs/cgroup/.../apptainer-3628201.scope/
+    cpu.max: no such file or directory`, which names neither the cause
+    (systemd delegated this session `memory pids` and not `cpu`) nor any
+    remedy, and costs the person reading it an hour. Same reasoning as
+    `explain_returncode`'s SIGKILL note: the moment we can tell what a
+    cryptic failure actually means is the moment to say so.
+
+    Args:
+        stderr: The failed run's captured stderr.
+        runtime: The container runtime that produced it.
+
+    Returns:
+        A one-line explanation naming the controller, what is delegated, and
+        the two ways out; `None` when the failure was something else.
+    """
+    for pattern in _CGROUP_FAILURE_RES:
+        match = pattern.search(stderr)
+        if match is None:
+            continue
+        controller = match.group("controller")
+        available = delegated_controllers()
+        delegated = "could not be determined" if available is None else (", ".join(sorted(available)) or "nothing")
+        return (
+            f"{runtime} could not apply the declared resource limits: the `{controller}` cgroup controller is not delegated "
+            f"to this user session (delegated: {delegated}). Ask an admin for `Delegate={controller}` on systemd's "
+            f"user@.service, or set execution.enforce_resources=auto to emit only the limits this host can enforce "
+            f"(=never to emit none, leaving admission control as the only consumer of the declaration)."
+        )
+    return None
 
 
 def build_container_argv(
@@ -475,6 +619,7 @@ def build_container_argv(
     extra_dirs: list[str] | None = None,
     run_as_host_user: bool = False,
     pin: bool = False,
+    runs_here: bool = True,
 ) -> tuple[list[str], str | None]:
     """Wrap argv in a container-runtime invocation. Shared with the Slurm
     backend, which runs cabs under apptainer the same way a plain
@@ -506,13 +651,17 @@ def build_container_argv(
     passwd/nss entry (e.g. `getpwnam`, some MPI stacks) can still fail --
     no bind-mount fully replaces `/etc/passwd` in Linux's user model. No-op
     for apptainer, which already runs as the host user.
+
+    `runs_here` is False when the argv is being *compiled* for another host
+    (a Slurm job script), which is what stops this host's cgroup delegation
+    deciding what a compute node can enforce -- see `_resource_flags`.
     """
     image = scope.image
     if not image:
         name = getattr(scope, "name", "<scope>")
         raise BackendError(f"'{name}' has no image, cannot run under {runtime}")
 
-    limit_flags = _resource_flags(scope)
+    limit_flags = _resource_flags(scope, runtime, runs_here=runs_here)
 
     # With provenance on, resolve (and digest-pin) the image before building
     # the argv, so the reference that runs is the one recorded. Otherwise run
@@ -620,6 +769,10 @@ class ContainerBackend(Backend):
         run = run_streaming(full_argv, label=label or cab.name, stream=stream)
         run.image_digest = image_digest
         run.containerized = True
+        if not run.success:
+            hint = cgroup_failure_hint(run.stderr, self.runtime)
+            if hint:
+                logger.error("%s: %s", label or cab.name, hint)
         return run
 
 

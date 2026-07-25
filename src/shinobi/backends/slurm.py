@@ -84,7 +84,9 @@ class SlurmBackend(Backend):
         resolving it here and again in `run` is a single registry round-trip.
         """
         if cab.image and self.container_runtime:
-            return build_container_argv(self.container_runtime, cab, argv, inputs, self.workdir, pin=pin)
+            # runs_here=False: the job runs on a compute node, so this host's
+            # cgroup delegation says nothing about what it can enforce.
+            return build_container_argv(self.container_runtime, cab, argv, inputs, self.workdir, pin=pin, runs_here=False)
         return argv, None
 
     def _script(

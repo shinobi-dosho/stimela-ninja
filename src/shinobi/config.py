@@ -8,7 +8,7 @@ depend on.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -64,6 +64,15 @@ class ExecutionConfig(BaseModel):
     # declares a footprint, so the default costs nothing; `"auto"` then
     # detects the real cgroup-aware limit rather than trusting /proc/meminfo.
     resources: ResourceBudget = Field(default_factory=ResourceBudget)
+    # Whether a *backend* turns a declaration into a real limit, on top of
+    # admission control (which is unaffected by this and always applies).
+    # `"auto"` emits only the limits the host can actually enforce -- a
+    # rootless runtime on a session with only `memory` delegated gets
+    # `--memory` and not `--cpus`, instead of failing outright and losing
+    # both. `"always"` emits everything declared and lets the runtime fail
+    # loudly if it cannot apply it; `"never"` emits nothing, for a site that
+    # wants scheduler-side admission only. See `shinobi.resources`.
+    enforce_resources: Literal["auto", "always", "never"] = "auto"
 
 
 class CacheConfig(BaseModel):
