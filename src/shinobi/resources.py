@@ -579,6 +579,22 @@ class Budget:
     utilisation, and is the same trade "block in declaration order" already
     makes, extended across recipes.
 
+    ## Backfill
+
+    Blocking on the head costs more than "some" utilisation when the head is
+    large: a 200 GiB step at the front of the queue idles a machine with
+    room for the 2-core steps behind it. `try_backfill` recovers that
+    without giving the guarantee up, by admitting a trailing unit only when
+    the parked head would still fit alongside it -- and alongside every
+    earlier backfill still running -- once the work reserved *now* drains.
+    The head's start time is therefore unchanged: it waits for exactly the
+    work it was already waiting for, and nothing new.
+
+    That test has to be cumulative. Bounding each grant against the total on
+    its own admits two 30 GiB units in a 100 GiB budget behind a 70 GiB
+    head, and the head then cannot start when the original holder finishes.
+    See `_leaves_room_for`.
+
     ## Why this cannot deadlock
 
     - A reservation is only ever held by a step that is *running*; a parked
@@ -608,6 +624,12 @@ class Budget:
         self._memory_used = 0
         self._generation = 0
         self._next_ticket = 0
+        # Of what is reserved above, how much was granted by `try_backfill`.
+        # Tracked separately because the backfill test is cumulative: a new
+        # grant has to leave room for the parked head alongside every earlier
+        # backfill still running, not merely alongside itself.
+        self._backfilled_cpus = 0.0
+        self._backfilled_memory = 0
         # Waiting schedulers, by thread. A recipe's scheduler loop runs on
         # one thread for its whole life, so the thread *is* the waiter
         # identity -- no ticket needs plumbing through the call site.
@@ -636,6 +658,36 @@ class Budget:
     def _fits(self, demand: Resources) -> bool:
         """Whether `demand` fits in what is currently unreserved."""
         return all(reserved + requested <= total for reserved, requested, total in self._dimensions(demand))
+
+    def _leaves_room_for(self, demand: Resources, behind: Resources) -> bool:
+        """Whether granting `demand` still leaves `behind` able to start as
+        soon as the work running *now* drains.
+
+        The three-term test `_dimensions` cannot express: once everything
+        currently reserved finishes, what remains is the outstanding backfill
+        grants plus this one, so `behind` fits iff
+
+            behind + already_backfilled + demand <= total
+
+        holds in every dimension. Bounding each grant against `total` on its
+        own is not enough and was a real bug in an earlier draft: two 30 GiB
+        grants each satisfy `70 + 30 <= 100` individually, and together leave
+        a 70 GiB head unable to start in a 100 GiB budget.
+
+        A dimension the *candidate* leaves unset contributes nothing and is
+        skipped -- work that consumes no CPU cannot delay anyone on CPU, and
+        `behind + already_backfilled <= total` is already true there by
+        induction over the grants that got us here.
+
+        Both `demand` and `behind` must already be `resolved_against` this
+        budget's totals; the callers do that, so `"all"` never reaches the
+        arithmetic here as a string.
+        """
+        pairs = (
+            (behind.cpus, self._backfilled_cpus, demand.cpus, self.total.cpus),
+            (behind.memory, self._backfilled_memory, demand.memory, self.total.memory),
+        )
+        return all((held or 0) + outstanding + requested <= total for held, outstanding, requested, total in pairs if total is not None and requested is not None)
 
     def _exceeds_total(self, demand: Resources) -> bool:
         """Whether `demand` could never fit, even in a completely idle budget."""
@@ -692,14 +744,99 @@ class Budget:
                 self._next_ticket += 1
             return False, self._generation
 
-    def release(self, demand: Resources) -> None:
+    def _backfillable(self, demand: Resources, behind: Resources) -> bool:
+        """Whether `demand` could be backfilled past a head needing `behind`.
+        Caller holds the lock.
+        """
+        oldest = min(self._waiters.values(), default=None)
+        my_ticket = self._waiters.get(threading.get_ident())
+        if oldest is not None and (my_ticket is None or oldest < my_ticket):
+            return False  # a sibling recipe is queued ahead of us
+        return self._fits(demand) and self._leaves_room_for(demand, behind)
+
+    def can_backfill(self, demand: Resources, behind: Resources) -> bool:
+        """Whether `try_backfill` would grant `demand` right now, without
+        reserving anything.
+
+        For deciding whether a candidate is worth the work of preparing --
+        the scheduler resolves a step's wiring before it has a unit to
+        admit, and that is wasted (and surfaces errors early) for a step
+        that could not be admitted anyway. Advisory by nature: capacity can
+        change before the real `try_backfill`, which simply refuses then.
+        """
+        demand = demand.resolved_against(self.total)
+        behind = behind.resolved_against(self.total)
+        if demand.is_empty():
+            return True
+        with self._cond:
+            return self._backfillable(demand, behind)
+
+    def try_backfill(self, demand: Resources, behind: Resources, label: str = "") -> bool:
+        """Reserve `demand` only if doing so cannot delay a unit needing
+        `behind`. Never blocks, never queues.
+
+        Admission blocks on the head of the queue so a large step is never
+        starved by a stream of small ones -- but a head that does not fit
+        also stops everything behind it, idling a machine that has room for
+        work the head will not use anyway. This is the escape hatch, and it
+        is deliberately *not* `try_acquire` with a flag:
+
+        - `try_acquire` refuses on FIFO fairness as well as capacity, and a
+          backfill must keep honouring that (jumping a sibling recipe's older
+          ticket is exactly the cross-recipe starvation the tickets prevent);
+        - but a `try_acquire` **grant pops the caller's ticket**, and the
+          caller here is the very scheduler thread whose head is parked. It
+          would give up the queue position it is holding on the head's behalf.
+
+        So this grants without ever touching `_waiters`: no ticket is taken,
+        and none is dropped.
+
+        Args:
+            demand: What the candidate unit reserves while it runs.
+            behind: What the parked head unit needs. The grant must leave
+                room for it -- see `_leaves_room_for`.
+            label: Step name, for logging.
+
+        Returns:
+            Whether `demand` was reserved. On `True` the caller must later
+            `release(demand, backfilled=True)`.
+
+        Note:
+            Only correct when called *after* this thread's own `try_acquire`
+            refusal in the same pass: that refusal is what registers the
+            ticket which makes the fairness check below read as "we are the
+            oldest waiter" rather than "someone is ahead of us".
+        """
+        # Resolved before anything is compared, exactly as `try_acquire`
+        # does: a `cpus="all"` footprint is symbolic until measured against
+        # this pool, and both sides of the room-to-spare test have to be
+        # real numbers against the same total.
+        demand = demand.resolved_against(self.total)
+        behind = behind.resolved_against(self.total)
+        if demand.is_empty():
+            return True  # reserves nothing, so it can never delay anything
+        with self._cond:
+            if not self._backfillable(demand, behind):
+                return False
+            self._reserve(demand)
+            self._backfilled_cpus += demand.cpus or 0.0
+            self._backfilled_memory += demand.memory or 0
+            logger.debug("backfilled step %s (%s) past a parked head needing %s", label or "<unnamed>", demand.describe(), behind.describe())
+            return True
+
+    def release(self, demand: Resources, *, backfilled: bool = False) -> None:
         """Return `demand` to the budget and wake every parked scheduler.
 
         Args:
-            demand: Exactly what `try_acquire` was granted for this unit --
-                passed as *declared*, `"all"` and all; it is resolved here
-                the same way, against the same total, so what is returned is
-                exactly what was reserved.
+            demand: Exactly what `try_acquire` or `try_backfill` was granted
+                for this unit -- passed as *declared*, `"all"` and all; it is
+                resolved here the same way, against the same total, so what
+                is returned is exactly what was reserved.
+            backfilled: Whether this reservation came from `try_backfill`.
+                Must match how it was granted -- the outstanding-backfill
+                total it feeds is what keeps the cumulative admission test
+                honest, and a missed decrement makes backfill quietly
+                refuse everything for the rest of the run.
         """
         if demand.is_empty():
             return
@@ -707,6 +844,9 @@ class Budget:
         with self._cond:
             self._cpus_used = max(0.0, self._cpus_used - (demand.cpus or 0.0))
             self._memory_used = max(0, self._memory_used - (demand.memory or 0))
+            if backfilled:
+                self._backfilled_cpus = max(0.0, self._backfilled_cpus - (demand.cpus or 0.0))
+                self._backfilled_memory = max(0, self._backfilled_memory - (demand.memory or 0))
             self._generation += 1
             self._cond.notify_all()
 
