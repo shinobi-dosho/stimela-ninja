@@ -53,7 +53,14 @@ def _copy_file_range_availability(request, monkeypatch):
     exactly the kind of environment difference A1 says must cost space and
     never content, so both answers are exercised rather than whichever the
     test machine happens to have.
+
+    Only *absence* can be faked. Claiming the syscall exists on an
+    interpreter that lacks it just walks the code into the AttributeError
+    the gate was added to prevent -- testing the fake rather than the
+    behaviour -- so that direction is skipped instead.
     """
+    if request.param and not hasattr(os, "copy_file_range"):
+        pytest.skip("this interpreter was built without os.copy_file_range, so its presence cannot be simulated")
     monkeypatch.setattr(clonefs, "_has_copy_file_range", lambda: request.param)
     return request.param
 
