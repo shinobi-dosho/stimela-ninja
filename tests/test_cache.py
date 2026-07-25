@@ -1,12 +1,16 @@
+import os
 from pathlib import Path
 
+import pytest
 import shinobi
 from pydantic import BaseModel
 
+from shinobi import cache
 from shinobi.backends.recording import RecordingBackend
-from shinobi.cache import CacheManifest, compute_cache_key, get_cache_manifest
+from shinobi.cache import CacheManifest, compute_cache_key, get_cache_manifest, invalidate_path_hashes
 from shinobi.results import StepResult
 from shinobi.steps import Cab, register_step_backend
+from shinobi.steps.schema import Mutability
 from shinobi.steps.dispatch import _dispatch
 
 
@@ -174,6 +178,73 @@ def test_inplace_mutated_path_not_invalidated_by_its_own_mtime(tmp_path):
     assert calls["n"] == 1
 
 
+class MutableOnlyOutputs(BaseModel):
+    """No path fields -- the flag/gaincal/applycal shape, which rewrites its
+    input in place and declares that with `Mutability.MUTABLE` rather than by
+    re-declaring the MS as an output. Mirrors `_mutator`'s `OkOut` in
+    `tests/test_offload_slurm.py`.
+    """
+
+    ok: bool = True
+
+
+def test_mutable_declared_input_is_not_keyed_on_content_it_overwrites(tmp_path):
+    """Regression: `compute_cache_key` derived "mutated in place" only from
+    `input_paths & output_paths`, ignoring `Mutability.MUTABLE`. A cab
+    declaring its MS mutable but not re-declaring it as an output was keyed
+    on the very bytes it was about to overwrite, so its own side effect moved
+    the key and it re-ran on every resumed run, forever -- the bug
+    `test_inplace_mutated_path_not_invalidated_by_its_own_mtime` pins for the
+    other spelling.
+    """
+    vis = tmp_path / "data.ms"
+    vis.write_text("original")
+    cab = Cab(
+        name="applycal",
+        command="applycal",
+        inputs_model=InPlaceInputs,
+        outputs_model=MutableOnlyOutputs,
+        input_mutability={"vis": Mutability.MUTABLE},
+    )
+
+    before = compute_cache_key(cab, None, {"vis": vis})
+    vis.write_text("rewritten in place by the step itself")
+    # Without this the memoized fingerprint would serve both calls the same
+    # answer and the test would pass no matter what the key logic does.
+    invalidate_path_hashes()
+    after = compute_cache_key(cab, None, {"vis": vis})
+
+    assert before == after, "a MUTABLE input's own rewrite must not move the key"
+
+
+def test_two_boundary_paths_with_identical_content_do_not_share_a_key(tmp_path):
+    """Regression: an unwired boundary path contributed only its content
+    hash, never its path string. `cp -a`/`rsync -a`/`tar -x` preserve mtimes,
+    so two identically-laid-out copies of one MS hashed identically and a step
+    repointed from one to the other took a false cache hit.
+    """
+    cab = Cab(name="t", command="t", inputs_model=InPlaceInputs, outputs_model=Outputs)
+
+    a, b = tmp_path / "A.ms", tmp_path / "B.ms"
+    for root in (a, b):
+        (root / "ANTENNA").mkdir(parents=True)
+        (root / "table.dat").write_text("x")
+        (root / "ANTENNA" / "table.f0").write_text("y")
+    for root in (a, b):  # what `cp -a` leaves behind
+        for path in root.rglob("*"):
+            os.utime(path, (1700000000, 1700000000))
+
+    assert compute_cache_key(cab, None, {"vis": a}) != compute_cache_key(cab, None, {"vis": b})
+
+
+def test_two_missing_boundary_paths_do_not_share_a_key(tmp_path):
+    """Same root cause, starker: a non-existent path hashes to `None`, so
+    every absent boundary input keyed identically to every other one.
+    """
+    cab = Cab(name="t", command="t", inputs_model=InPlaceInputs, outputs_model=Outputs)
+    assert compute_cache_key(cab, None, {"vis": tmp_path / "gone1.ms"}) != compute_cache_key(cab, None, {"vis": tmp_path / "gone2.ms"})
+
+
 def test_reader_after_an_inplace_mutation_is_not_served_a_stale_memoized_hash(tmp_path):
     """`_hash_path` is memoized (an MS is thousands of files and the walk
     runs per unwired boundary input, per step, per run), and this is the
@@ -225,30 +296,209 @@ def test_repeated_hash_of_one_path_walks_it_once_between_executions(tmp_path):
 
     cache_mod.invalidate_path_hashes()
     walks = []
-    original_walk = cache_mod.os.walk
+    original_scandir = cache_mod.os.scandir
 
-    def counting_walk(path, *args, **kwargs):
+    def counting_scandir(path, *args, **kwargs):
         walks.append(path)
-        return original_walk(path, *args, **kwargs)
+        return original_scandir(path, *args, **kwargs)
 
-    cache_mod.os.walk = counting_walk
+    cache_mod.os.scandir = counting_scandir
     try:
         first = cache_mod._hash_path(vis)
         second = cache_mod._hash_path(vis)
     finally:
-        cache_mod.os.walk = original_walk
+        cache_mod.os.scandir = original_scandir
 
     assert first == second
     assert len(walks) == 1
 
     # ...and the memo is dropped the moment anything could have written.
     cache_mod.invalidate_path_hashes()
-    cache_mod.os.walk = counting_walk
+    cache_mod.os.scandir = counting_scandir
     try:
         cache_mod._hash_path(vis)
     finally:
-        cache_mod.os.walk = original_walk
+        cache_mod.os.scandir = original_scandir
     assert len(walks) == 2
+
+
+# -- the directory branch of `_hash_path`, which had no coverage at all --
+
+
+def _make_ms(root: Path) -> Path:
+    """A casacore-shaped tree: a table at the top plus subtable directories,
+    each with its own descriptor, data-manager and lock files. Modelled on
+    the real MSs this project runs against (~60-140 files); the shape is what
+    matters here, not the bytes.
+    """
+    root.mkdir(parents=True)
+    for name in ("table.dat", "table.info", "table.f0", "table.lock"):
+        (root / name).write_text(name)
+    for sub in ("ANTENNA", "FIELD", "SPECTRAL_WINDOW"):
+        (root / sub).mkdir()
+        for name in ("table.dat", "table.f0", "table.lock"):
+            (root / sub / name).write_text(f"{sub}/{name}")
+    return root
+
+
+def _reference_walk(path: Path):
+    """The pre-scandir implementation, kept as the equivalence oracle: any
+    divergence in the rewrite shows up as a digest change and a silently
+    invalidated cache.
+    """
+    entries = []
+    for root, _dirs, files in os.walk(path):
+        for fname in files:
+            fpath = Path(root) / fname
+            st = fpath.stat()
+            entries.append([str(fpath.relative_to(path)), st.st_mtime_ns, st.st_size])
+    return sorted(entries)
+
+
+def test_walk_fingerprint_matches_the_reference_implementation(tmp_path):
+    """The rewrite must be byte-identical on every tree the old code could
+    actually return for -- otherwise it silently invalidates every cached
+    step with a directory input.
+    """
+    ms = _make_ms(tmp_path / "data.ms")
+    (ms / "FIELD" / "link.dat").symlink_to(ms / "table.dat")  # symlinked file: followed
+    (ms / "linkdir").symlink_to(ms / "ANTENNA")  # symlinked dir: not descended, not listed
+
+    assert cache._walk_fingerprint(ms) == _reference_walk(ms)
+
+
+def test_walk_fingerprint_is_order_independent(tmp_path):
+    """Two trees with identical contents built in different creation orders
+    must key identically -- `scandir` yields in directory order, which is not
+    creation order and not sorted.
+    """
+    a, b = tmp_path / "a.ms", tmp_path / "b.ms"
+    a.mkdir()
+    b.mkdir()
+    for name in ("z.dat", "a.dat", "m.dat"):
+        (a / name).write_text(name)
+    for name in ("m.dat", "z.dat", "a.dat"):
+        (b / name).write_text(name)
+    for path in list(a.rglob("*")) + list(b.rglob("*")):
+        os.utime(path, (1700000000, 1700000000))
+
+    assert cache._walk_fingerprint(a) == cache._walk_fingerprint(b)
+
+
+def test_walk_fingerprint_uses_nested_relative_paths(tmp_path):
+    """Entries are keyed by path *relative to the input*, with subdirectories
+    spelled `SUB/name` -- so an absolute move of the MS doesn't change the
+    fingerprint but a rename inside it does.
+    """
+    ms = _make_ms(tmp_path / "data.ms")
+    names = {entry[0] for entry in cache._walk_fingerprint(ms)}
+
+    assert "table.dat" in names
+    assert "ANTENNA/table.f0" in names
+    assert not any(name.startswith("/") for name in names)
+
+
+def test_deep_change_inside_a_subtable_changes_the_fingerprint(tmp_path):
+    """The case the whole directory branch exists for: an MS is rewritten
+    several levels down, with the top-level directory untouched.
+    """
+    ms = _make_ms(tmp_path / "data.ms")
+    before = cache._walk_fingerprint(ms)
+
+    target = ms / "ANTENNA" / "table.f0"
+    os.utime(target, (target.stat().st_atime + 5, target.stat().st_mtime + 5))
+
+    assert cache._walk_fingerprint(ms) != before
+
+
+def test_adding_deleting_or_renaming_a_file_changes_the_fingerprint(tmp_path):
+    ms = _make_ms(tmp_path / "data.ms")
+    before = cache._walk_fingerprint(ms)
+
+    (ms / "FIELD" / "extra.f1").write_text("new")
+    added = cache._walk_fingerprint(ms)
+    assert added != before
+
+    (ms / "FIELD" / "extra.f1").rename(ms / "FIELD" / "renamed.f1")
+    assert cache._walk_fingerprint(ms) != added
+
+    (ms / "FIELD" / "renamed.f1").unlink()
+    assert cache._walk_fingerprint(ms) == before
+
+
+def test_a_dangling_symlink_does_not_raise(tmp_path):
+    """Regression: `os.walk` lists a broken symlink under `files`, and the
+    old per-file `stat` then raised `FileNotFoundError` straight out of
+    `compute_cache_key`, killing the run. A boundary input is data shinobi
+    neither produced nor controls; a fingerprint is the wrong place to fail.
+    """
+    ms = _make_ms(tmp_path / "data.ms")
+    (ms / "broken").symlink_to(ms / "does_not_exist")
+
+    with pytest.raises(FileNotFoundError):  # what the old walk did
+        _reference_walk(ms)
+
+    names = {entry[0] for entry in cache._walk_fingerprint(ms)}
+    assert "broken" not in names
+    assert "table.dat" in names
+
+
+def test_a_symlink_loop_does_not_raise(tmp_path):
+    """Regression: a cycle raised `OSError: [Errno 40] ELOOP`."""
+    ms = _make_ms(tmp_path / "data.ms")
+    (ms / "loop_a").symlink_to(ms / "loop_b")
+    (ms / "loop_b").symlink_to(ms / "loop_a")
+
+    with pytest.raises(OSError, match="Too many levels of symbolic links"):
+        _reference_walk(ms)
+
+    names = {entry[0] for entry in cache._walk_fingerprint(ms)}
+    assert "loop_a" not in names and "loop_b" not in names
+    assert "table.dat" in names
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_an_unreadable_subdirectory_is_skipped_not_fatal(tmp_path):
+    """Regression: a subdirectory with `r` but no `x` raised `PermissionError`
+    (the name is listable, so `os.walk` descended, and the stat then failed).
+    """
+    ms = _make_ms(tmp_path / "data.ms")
+    locked = ms / "FIELD"
+    locked.chmod(0o444)
+    try:
+        with pytest.raises(PermissionError):  # what the old walk did
+            _reference_walk(ms)
+
+        names = {entry[0] for entry in cache._walk_fingerprint(ms)}
+        assert "table.dat" in names
+        assert not any(name.startswith("FIELD/") for name in names)
+    finally:
+        locked.chmod(0o755)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_an_unreadable_input_does_not_key_as_a_missing_one(tmp_path):
+    """An unreadable path used to raise. It now returns a distinct marker
+    rather than `None`: keying it as absent would let a step take a hit
+    against a run where the file genuinely wasn't there, the moment
+    permissions were restored.
+    """
+    ms = _make_ms(tmp_path / "data.ms")
+    ms.chmod(0o000)
+    try:
+        unreadable = cache._walk_fingerprint(ms)
+        assert unreadable is not None
+        assert unreadable != cache._walk_fingerprint(tmp_path / "never_existed.ms")
+    finally:
+        ms.chmod(0o755)
+
+
+def test_a_missing_path_still_keys_as_absent(tmp_path):
+    assert cache._walk_fingerprint(tmp_path / "nope.ms") is None
+    # a path whose *parent* is a regular file -- ENOTDIR, which `Path.exists()`
+    # also treated as absent
+    (tmp_path / "afile").write_text("x")
+    assert cache._walk_fingerprint(tmp_path / "afile" / "under.ms") is None
 
 
 def test_deleting_declared_output_forces_rerun(tmp_path):
