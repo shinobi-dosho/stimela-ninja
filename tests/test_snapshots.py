@@ -54,7 +54,7 @@ def _chain_of(cache_dir, ms: Path):
     return get_journal(str(cache_dir)).get(chain_id(ms))
 
 
-def _pipeline(ms: Path, calls: dict, fail: dict | None = None, flag_cache=None, strategy: str = "default", solver: str = "default"):
+def _pipeline(ms: Path, calls: dict, fail: dict | None = None, flag_cache=None, cal_cache=None, strategy: str = "default", solver: str = "default"):
     """The caracal shape: `split` writes the MS, `flag` and `cal` each read
     and rewrite that same MS in place. Every step's `ms` is on both its
     inputs and its outputs model, so the shipped cache drops it from the key
@@ -89,6 +89,9 @@ def _pipeline(ms: Path, calls: dict, fail: dict | None = None, flag_cache=None, 
     flag_step = flag.model_copy(update={"wiring": {"ms": OutputRef(step="split", field="ms")}, "params": {"strategy": strategy}})
     if flag_cache is not None:
         flag_step = flag_step.model_copy(update={"step": flag_step.step.model_copy(update={"cache": flag_cache})})
+    cal_step = cal.model_copy(update={"wiring": {"ms": OutputRef(step="flag", field="ms")}, "params": {"solver": solver}})
+    if cal_cache is not None:
+        cal_step = cal_step.model_copy(update={"step": cal_step.step.model_copy(update={"cache": cal_cache})})
     return Recipe(
         name="pipe",
         inputs_model=SpwInputs,
@@ -96,7 +99,7 @@ def _pipeline(ms: Path, calls: dict, fail: dict | None = None, flag_cache=None, 
         steps=[
             split.model_copy(update={"wiring": {"spw": InputRef(field="spw")}}),
             flag_step,
-            cal.model_copy(update={"wiring": {"ms": OutputRef(step="flag", field="ms")}, "params": {"solver": solver}}),
+            cal_step,
         ],
         output_wiring={"ms": OutputRef(step="cal", field="ms")},
     )
@@ -364,15 +367,60 @@ def test_an_uncached_mutator_is_never_reverted_by_a_cached_consumer(tmp_path):
     assert _read(ms) == "vis[*]|flag[default]|cal|flag[second]|cal"
 
 
-def test_an_uncached_mutator_detaches_the_chain(tmp_path, caplog):
-    """Rule 1 of the never-worse rules, at the level of journal state."""
+def test_an_uncached_mutator_taints_the_states_it_wrote_past(tmp_path):
+    """Rule 1 of the never-worse rules, at the level of journal state.
+
+    The uncached step advanced the disk to something it cannot name, so
+    every generation recorded before it is now missing that work and must
+    not be restored over it.
+    """
     ms = tmp_path / "data.ms"
     cache_dir = tmp_path / "cache"
-    _pipeline(ms, {}, flag_cache=False)(spw="*", cache=True, cache_dir=str(cache_dir))
+    _pipeline(ms, {}, cal_cache=False)(spw="*", cache=True, cache_dir=str(cache_dir))
 
-    with caplog.at_level("WARNING"):
-        _pipeline(ms, {}, flag_cache=False)(spw="*", cache=True, cache_dir=str(cache_dir))
-    assert "no snapshot protection" in caplog.text
+    chain = _chain_of(cache_dir, ms)
+    assert chain.tainted_through is not None
+    assert chain.taint_blocks(chain.tainted_through)
+
+
+def test_a_taint_survives_the_run_that_recorded_it(tmp_path):
+    """The property a chain-wide flag cannot have, and the reason this is a
+    position instead.
+
+    An uncached or excluded mutator usually *cache-hits* on the next run and
+    never re-raises the alarm, so a flag cleared by the next successful
+    mutator would be gone exactly when the restore that needs it comes
+    around. The taint is cumulative and is never cleared.
+    """
+    ms = tmp_path / "data.ms"
+    cache_dir = tmp_path / "cache"
+    _pipeline(ms, {}, cal_cache=False)(spw="*", cache=True, cache_dir=str(cache_dir))
+    first = _chain_of(cache_dir, ms).tainted_through
+    assert first is not None
+
+    # Several more runs, with protected mutators succeeding throughout.
+    _pipeline(ms, {}, cal_cache=False, strategy="two")(spw="*", cache=True, cache_dir=str(cache_dir))
+    _pipeline(ms, {}, cal_cache=False, strategy="three")(spw="*", cache=True, cache_dir=str(cache_dir))
+
+    chain = _chain_of(cache_dir, ms)
+    assert chain.tainted_through is not None
+    assert chain.taint_blocks(first), "a state behind the taint must stay unrestorable"
+
+
+def test_a_tainted_generation_is_never_evicted(tmp_path):
+    """The taint is resolved by looking its name up among the generations.
+    Evict it and the positional comparison loses its anchor, at which point
+    every restore on the chain refuses.
+    """
+    from shinobi.snapshots import evict
+
+    ms = tmp_path / "data.ms"
+    cache_dir = tmp_path / "cache"
+    _pipeline(ms, {}, cal_cache=False)(spw="*", cache=True, cache_dir=str(cache_dir))
+    tainted = _chain_of(cache_dir, ms).tainted_through
+
+    evict(str(cache_dir), target_bytes=1 << 40)
+    assert get_journal(str(cache_dir)).snapshot_dir(tainted).exists()
 
 
 def test_a_list_valued_mutated_field_is_excluded_loudly(tmp_path, caplog):
@@ -398,9 +446,38 @@ def test_a_list_valued_mutated_field_is_excluded_loudly(tmp_path, caplog):
 
     with caplog.at_level("WARNING"):
         multi(vis=[a, b], cache=True, cache_dir=str(tmp_path / "cache"))
-    assert "list-valued" in caplog.text
+    assert "2 paths" in caplog.text
     # Excluded from protection, not from running.
     assert _read(a) == "a|touched"
+
+
+def test_a_single_element_list_mutated_field_is_protected(tmp_path):
+    """`["/x/obs.ms"]` names exactly one path, so the "one name cannot stand
+    for N paths" objection does not apply -- and this is how an imager
+    declaring `List[MS]` is actually invoked on one measurement set, which is
+    the common shape rather than a corner case.
+    """
+
+    class OneIn(BaseModel):
+        vis: list[Path]
+
+    class OneOut(BaseModel):
+        vis: list[Path]
+
+    ms = tmp_path / "solo.ms"
+    _write(ms, "raw")
+    cache_dir = tmp_path / "cache"
+
+    @shinobi.pystep()
+    def solo(ctx, vis: list[Path]) -> OneOut:
+        _write(vis[0], _read(vis[0]) + "|touched")
+        return OneOut(vis=vis)
+
+    solo(vis=[ms], cache=True, cache_dir=str(cache_dir))
+
+    chain = _chain_of(cache_dir, ms)
+    assert chain is not None, "a single-element list should be tracked, not excluded"
+    assert chain.head is not None
 
 
 # --- crash windows --------------------------------------------------------

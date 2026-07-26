@@ -383,14 +383,20 @@ def _snapshot_guard(
     slice_index: int | None,
     config: AppConfig,
 ) -> SnapshotGuard | None:
-    """A `SnapshotGuard` for this step, or `None` if it mutates nothing Tier
-    1 can protect.
+    """A `SnapshotGuard` for this step, or `None` if it mutates nothing.
+
+    A step whose mutated fields are *all* excluded still gets a guard, and
+    that is deliberate. It cannot be snapshotted, but it does write, and
+    something has to record that -- otherwise the write is invisible to the
+    journal and a later restore rolls the path back over it, discarding work
+    that nothing will regenerate because the step that made it cache-hits.
 
     Every field it declines is warned about exactly once per process --
     these are properties of a recipe's shape, not of a run, so repeating
     them per step per run would bury the ones that matter.
     """
-    protected, excluded = eligible_fields(scope, ctx.prepare_inputs(), input_keys, wired_fields, slice_index is not None)
+    prepared = ctx.prepare_inputs()
+    protected, excluded = eligible_fields(scope, prepared, input_keys, wired_fields, slice_index is not None)
     for exclusion in excluded:
         if (cache_path, exclusion.field) not in _snapshot_warned:
             _snapshot_warned.add((cache_path, exclusion.field))
@@ -400,7 +406,10 @@ def _snapshot_guard(
                 exclusion.field,
                 exclusion.reason,
             )
-    if not protected:
+    # Paths written through an excluded field: unprotectable, but not
+    # unrecordable (see `SnapshotGuard._taint_excluded`).
+    tainting = {exclusion.field: paths for exclusion in excluded if (paths := _written_paths(prepared.get(exclusion.field)))}
+    if not protected and not tainting:
         return None
     return SnapshotGuard(
         journal=get_journal(cache_dir),
@@ -411,7 +420,22 @@ def _snapshot_guard(
         input_keys=input_keys,
         wired_fields=wired_fields,
         force_copy=config.cache.snapshots.mode == "copy",
+        tainting=tainting,
     )
+
+
+def _written_paths(value: Any) -> tuple[Path, ...]:
+    """Every path an excluded mutated field writes to.
+
+    All of them, not one: a many-valued field is excluded precisely because
+    one name cannot stand for N paths, but it still *wrote* to all N, and
+    each of their chains has to record that. Tainting only the first would
+    leave the rest exactly as unprotected as before.
+    """
+    if value is None:
+        return ()
+    values = value if isinstance(value, (list, tuple)) else [value]
+    return tuple(Path(one) for one in values if one is not None)
 
 
 def _dispatch(

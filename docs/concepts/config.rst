@@ -158,10 +158,22 @@ before the step that needs it re-runs.
 * ``off``: the escape hatch -- no snapshots, no journal, no restores, leaving
   exactly the plain skip-cache behaviour described above.
 
-Anything the snapshot layer cannot name -- a scattered or list-valued mutated
+Anything the snapshot layer cannot name -- a scattered or many-valued mutated
 field, a path produced by an uncached step, a snapshot that could not fit --
 is left alone with a warning, and runs exactly as it would with snapshots
 off. It never rolls back something it cannot justify.
+
+.. important::
+
+   With rollback in play, **declaring in-place mutation stops being an
+   optimisation and becomes a correctness requirement.** It used to only
+   affect whether a step re-ran needlessly. Now, a step that rewrites a
+   measurement set another step also uses must say so -- by declaring that
+   path as an output, or marking the input ``mutable`` -- and, if a later
+   step depends on that rewrite, must be **wired** ahead of it so the graph
+   records the ordering. Two steps that touch one path with no edge between
+   them are independent as far as shinobi is concerned, and a rollback of
+   one can discard the other's work without anything noticing.
 
 ``cache.content_sample`` adds a bounded sample (the first and last 4 KiB of
 each file) to the fingerprints of *boundary* inputs -- raw data you supplied,

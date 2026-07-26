@@ -38,21 +38,34 @@ on disk. Per tracked path it holds the chain of generations, the current
 head, the head's *status*, an in-flight marker, and the state each
 consumer last consumed.
 
-**Head status is three-valued, and that is load-bearing.** A single
-"untrusted" flag conflates two situations that need opposite responses:
+**A head is trusted or untrusted.** `UNTRUSTED` means a step was killed
+mid-mutation, so the disk holds a partial write of a state we *can* name
+(or the user ran `cache invalidate`). Forcing a restore is right there, and
+is the whole mid-mutation recovery story. A write we cannot name is a
+different problem and gets a different mechanism:
 
-- `UNTRUSTED` -- a step was killed mid-mutation, so the disk holds a
-  partial write of a state we can name (or the user ran `cache
-  invalidate`). Forcing a restore is right, and is the whole mid-mutation
-  recovery story.
-- `DETACHED` -- some writer the journal cannot name legitimately advanced
-  the disk: an uncached mutating step (caching is per-scope, so a chain can
-  be partly cached), or an out-of-band replacement of the tree. The disk
-  holds *good* state under no name. Restoring here would revert real work,
-  which is worse than the shipped behaviour it is supposed to improve on.
-  So a detached chain gets no Tier 1 handling at all -- proceed against
-  live disk, exactly as shipped, plus a loud warning -- until a cached
-  mutating step succeeds on it and re-establishes a named head.
+**Unnamed writes are recorded positionally, as a taint.** Some writer the
+journal cannot name will legitimately advance the disk: an uncached
+mutating step (caching is per-scope, so a chain can be partly cached), a
+step whose mutated field Tier 1 had to exclude, or an out-of-band
+replacement of the tree. The disk then holds *good* state under no name,
+and every generation recorded before that write is missing it. Rolling
+back to one of those would revert real work -- worse than the shipped
+behaviour this is supposed to improve on.
+
+So the chain records `tainted_through`: the newest generation known to
+predate an unnamed write. A restore whose target is at or behind that
+point refuses and runs against live disk, exactly as shipped. Generations
+*after* it are unaffected, because they were snapshotted from a disk that
+already contained the write.
+
+This is deliberately a position and not a chain-wide flag, for two
+reasons. A flag is all-or-nothing, so it throws away protection for states
+that are perfectly restorable. And a flag has to be cleared by something:
+the obvious candidate is the next successful mutator, but the unnamed
+writer usually *cache-hits* on the following run and never re-raises it --
+so the flag would be gone exactly when the restore that needs it comes
+around. A position is cumulative and never needs clearing.
 
 **The manifest is the success oracle.** Nothing here infers "the step
 finished" from journal state; only a manifest entry recorded by *this run*
@@ -65,8 +78,8 @@ hit over corrupt content, which is the exact bug class this module exists
 to kill.
 
 **Never worse than shipped.** Any field this module cannot name or vouch
-for -- a keyless producer, a scattered or list-valued mutated field, a
-space preflight refusal, a missing snapshot, a detached chain -- degrades
+for -- a keyless producer, a scattered or many-valued mutated field, a
+space preflight refusal, a missing snapshot, a tainted generation -- degrades
 to precisely the shipped behaviour (proceed against live disk) plus a
 warning. It never degrades to a restore it cannot justify.
 
@@ -111,10 +124,6 @@ class HeadStatus(str, Enum):
     # a partial write from an interrupted step, or a state the user
     # explicitly invalidated. Either way: force a restore before re-running.
     UNTRUSTED = "untrusted"
-    # An unnameable writer legitimately advanced the disk. The content is
-    # *good*, it just has no name -- so restoring would revert real work.
-    # Give up protection instead, until a cached step re-establishes a head.
-    DETACHED = "detached"
 
 
 class _Faults:
@@ -213,6 +222,11 @@ class Chain:
     status: HeadStatus = HeadStatus.TRUSTED
     marker: Marker | None = None
     consumed: dict[str, str] = dataclass_field(default_factory=dict)
+    # The newest generation known to predate a write this journal could not
+    # name (see the module docstring). Anything at or behind it is missing
+    # that write; anything after it was snapshotted from a disk that already
+    # contained it. `None` means no such write is known.
+    tainted_through: str | None = None
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -225,6 +239,7 @@ class Chain:
             "status": self.status.value,
             "marker": self.marker.as_json() if self.marker else None,
             "consumed": dict(self.consumed),
+            "tainted_through": self.tainted_through,
         }
 
     @classmethod
@@ -240,10 +255,28 @@ class Chain:
             status=HeadStatus(data.get("status", HeadStatus.TRUSTED.value)),
             marker=Marker(**marker) if marker else None,
             consumed=dict(data.get("consumed", {})),
+            tainted_through=data.get("tainted_through"),
         )
 
     def generation(self, name: str) -> Generation | None:
         return next((g for g in self.generations if g.name == name), None)
+
+    def taint_blocks(self, required: str) -> bool:
+        """Whether restoring to `required` would discard an unnamed write.
+
+        True when `required` is at or behind the taint. An unknown name on
+        either side answers True as well: the comparison is positional, so
+        if it cannot be made the honest answer is "cannot vouch for this",
+        and refusing costs a re-run against live disk while allowing costs
+        somebody's data.
+        """
+        if self.tainted_through is None:
+            return False
+        order = {generation.name: index for index, generation in enumerate(self.generations)}
+        taint, target = order.get(self.tainted_through), order.get(required)
+        if taint is None or target is None:
+            return True
+        return target <= taint
 
 
 def chain_id(path: Path) -> str:
@@ -380,6 +413,21 @@ class Excluded:
     reason: str
 
 
+def _single_key(key: Any) -> ProvenanceKey | None:
+    """The one `ProvenanceKey` in `key`, if there is exactly one.
+
+    List wiring gives a list of keys, one per source. A single-element list
+    names exactly one state, so it is unwrapped and treated like a scalar --
+    the same allowance `eligible_fields` makes for a single-element path
+    list, and for the same reason.
+    """
+    if isinstance(key, ProvenanceKey):
+        return key
+    if isinstance(key, (list, tuple)) and len(key) == 1 and isinstance(key[0], ProvenanceKey):
+        return key[0]
+    return None
+
+
 def eligible_fields(
     scope: Scope,
     prepared: dict[str, Any],
@@ -403,9 +451,13 @@ def eligible_fields(
       index threaded down into `_dispatch`, and scatter-plus-mutation is not
       the shape this is for (a caracal-style pipeline mutates one MS through
       a linear chain and parallelises by nesting recipes).
-    - **List-valued mutated fields.** One `(key, field)` name cannot stand
+    - **Many-valued mutated fields.** One `(key, field)` name cannot stand
       for N paths. A wrong restore here is catastrophic rather than merely
-      wasteful, so the shape is refused rather than misnamed.
+      wasteful, so the shape is refused rather than misnamed. A *single*-
+      element list is not that shape and is protected: `["/x/obs.ms"]` has
+      exactly one path, so the name is unambiguous. This is not a corner
+      case -- it is how an imager taking `List[MS]` is invoked on one
+      measurement set, which is the common caracal shape.
     - **Wired but keyless.** The producer is uncached or uncacheable, so
       there is no name for the state this step is about to consume. Snapshot
       it under the head and a later restore would reinstate the wrong thing.
@@ -421,10 +473,12 @@ def eligible_fields(
             excluded.append(Excluded(name, "the step is scattered, and a scattered mutation has no single consumed state to name"))
             continue
         if isinstance(value, (list, tuple)):
-            excluded.append(Excluded(name, "the field is list-valued, and one (key, field) name cannot stand for several paths"))
-            continue
+            if len(value) != 1:
+                excluded.append(Excluded(name, f"the field holds {len(value)} paths, and one (key, field) name cannot stand for several"))
+                continue
+            value = value[0]
         wired = name in wired_fields if wired_fields is not None else name in keys
-        if wired and not isinstance(keys.get(name), ProvenanceKey):
+        if wired and _single_key(keys.get(name)) is None:
             excluded.append(Excluded(name, "wired to a producer with no cache key (uncached or uncacheable), so the state it consumes has no name"))
             continue
         protected[name] = Path(value)
@@ -466,6 +520,7 @@ class SnapshotGuard:
         input_keys: dict[str, Any] | None,
         wired_fields: set[str] | None,
         force_copy: bool = False,
+        tainting: dict[str, tuple[Path, ...]] | None = None,
     ):
         self.journal = journal
         self.step_path = step_path
@@ -475,6 +530,10 @@ class SnapshotGuard:
         self.wired_fields = wired_fields
         self.force_copy = force_copy
         self.plans = [_FieldPlan(field=name, path=path) for name, path in fields.items()]
+        # Mutated fields Tier 1 declined to protect. It cannot snapshot them,
+        # but it must still record that they *wrote*, or a later restore
+        # would roll the path back over work nothing will regenerate.
+        self.tainting = dict(tainting or {})
 
     # -- pre-run ----------------------------------------------------------
 
@@ -536,36 +595,27 @@ class SnapshotGuard:
             return
 
         if chain is not None and chain.ctime_ns and chain.ctime_ns != st.st_ctime_ns:
-            # The tree's root metadata moved since our last recorded step.
-            # That is how an inode reuse looks, and also how an out-of-band
-            # replacement looks. Detach rather than restore: the disk may
-            # hold good work under no name, and reverting it would be worse
-            # than the shipped behaviour. A false positive costs protection
-            # and a warning, never data.
+            # The tree's root metadata moved since our last recorded step:
+            # entries added, removed or renamed by something that is not in
+            # this journal. That is how an inode reuse looks, and how an
+            # out-of-band replacement looks -- and, in practice, how a step
+            # that writes a new column into an MS without declaring it looks.
+            # Whatever it was, every generation up to here predates it.
             logger.warning(
-                "step %s: %s was modified outside this pipeline (tree identity changed); snapshot protection is detached for it until a cached step rewrites it",
+                "step %s: %s was modified outside this pipeline (tree identity changed); states up to %s can no longer be restored, because they predate that write",
                 self.step_path,
                 plan.path,
+                (chain.head or "the start of the chain"),
             )
-            self._set_status(plan.cid, HeadStatus.DETACHED)
+            self._taint(plan.cid, chain.head)
             chain = self.journal.get(plan.cid)
-
-        if chain is not None and chain.status is HeadStatus.DETACHED:
-            logger.warning(
-                "step %s: no snapshot protection for '%s' -- the chain at %s was advanced by a writer with no cache key, so no named state can be vouched for (running against live disk, as an uncached run would)",
-                self.step_path,
-                plan.field,
-                plan.path,
-            )
-            plan.skip = True
-            return
 
         plan.required = self._required_state(plan, chain, st)
 
     def _required_state(self, plan: _FieldPlan, chain: Chain | None, st: os.stat_result) -> str | None:
         """R: the name of the state this step's DAG position calls for."""
-        key = self.input_keys.get(plan.field)
-        if isinstance(key, ProvenanceKey) and key.producer_field is not None:
+        key = _single_key(self.input_keys.get(plan.field))
+        if key is not None and key.producer_field is not None:
             return state_name(str(key), key.producer_field)
         if chain is not None:
             # An unwired boundary path. What this step consumed last time it
@@ -590,6 +640,29 @@ class SnapshotGuard:
         forced = chain.marker is not None or chain.status is HeadStatus.UNTRUSTED
         if not forced and chain.head == plan.required:
             return  # the disk already holds what this step needs
+
+        if chain.taint_blocks(plan.required):
+            if forced:
+                # The disk is a partial write, so there is no "leave it
+                # alone" option that is safe -- proceeding would re-run the
+                # step against corruption, which is the failure this module
+                # exists to prevent. Roll back and say plainly what it costs.
+                logger.warning(
+                    "step %s: restoring '%s' at %s to %s to recover from an interrupted run, but that state predates a write this journal could not name (an uncached or undeclared mutator). Anything that write produced is being discarded and will not be regenerated unless its step re-runs.",
+                    self.step_path,
+                    plan.field,
+                    plan.path,
+                    plan.required,
+                )
+            else:
+                logger.warning(
+                    "step %s: not restoring '%s' at %s to %s -- that state predates a write this journal could not name (an uncached or undeclared mutator), so rolling back to it would silently discard work nothing will regenerate. Running against live disk instead, exactly as an uncached run would.",
+                    self.step_path,
+                    plan.field,
+                    plan.path,
+                    plan.required,
+                )
+                return
 
         # Whether a state can be restored is a fact about the snapshot
         # directory, not about what the journal remembers recording. The two
@@ -731,6 +804,7 @@ class SnapshotGuard:
         for plan in self.plans:
             if not plan.skip:
                 self._commit_generation(plan)
+        self._taint_excluded()
         faults("S2")
         record()
         faults("S3")
@@ -833,7 +907,11 @@ class SnapshotGuard:
                 chain = Chain(dev=st.st_dev, ino=st.st_ino, ctime_ns=st.st_ctime_ns, path=str(plan.path))
             chain.ctime_ns = st.st_ctime_ns
             if produced is None:
-                chain.status = HeadStatus.DETACHED
+                # An uncached mutator: it just advanced the disk to a state
+                # it cannot name, so every generation up to here is missing
+                # that work and must not be restored over it.
+                if chain.head is not None and (chain.tainted_through is None or not chain.taint_blocks(chain.head)):
+                    chain.tainted_through = chain.head
                 return chain
             if not any(g.name == produced for g in chain.generations):
                 snapshot = self.journal.snapshot_dir(produced)
@@ -845,6 +923,31 @@ class SnapshotGuard:
             return chain
 
         self.journal.update(plan.cid, mutate)
+
+    def _taint_excluded(self) -> None:
+        """Record the writes this step made through fields Tier 1 excluded.
+
+        The taint lands at the chain's *current* head, which is the newest
+        state that predates this write. It is written even though nothing
+        was snapshotted, and that is the whole point: an excluded field is
+        invisible to every other mechanism here, so without this a later
+        restore happily rolls back over it. A path with no chain yet is
+        skipped -- there is no earlier generation for the write to invalidate.
+        """
+        for field, paths in self.tainting.items():
+            for path in paths:
+                cid = chain_id(path)
+                chain = self.journal.get(cid)
+                if chain is None or chain.head is None:
+                    continue
+                logger.info(
+                    "step %s: '%s' wrote to %s without snapshot protection; states up to %s can no longer be restored, because they predate that write",
+                    self.step_path,
+                    field,
+                    path,
+                    chain.head,
+                )
+                self._taint(cid, chain.head)
 
     def after_failure(self) -> None:
         """The step failed (non-zero, or an exception). Put back what we moved.
@@ -884,10 +987,28 @@ class SnapshotGuard:
 
         self.journal.update(plan.cid, mutate)
 
-    def _set_status(self, cid: str, status: HeadStatus) -> None:
+    def _taint(self, cid: str, through: str | None) -> None:
+        """Record that a write this journal cannot name landed after `through`.
+
+        The taint only ever moves *forward*: two unnamed writes at different
+        points in a chain both have to be honoured, and the later one
+        subsumes the earlier.
+
+        `through=None` -- an unnamed write with no generation before it --
+        is a no-op, and deliberately so. Every generation this chain goes on
+        to record will be snapshotted from a disk that already contains that
+        write, so there is nothing for a taint to protect.
+        """
+        if through is None:
+            return
+
         def mutate(chain: Chain | None) -> Chain | None:
-            if chain is not None:
-                chain.status = status
+            if chain is None:
+                return None
+            # `taint_blocks(through)` is true when `through` is at or behind
+            # the taint already recorded, i.e. the existing one is stricter.
+            if chain.tainted_through is None or not chain.taint_blocks(through):
+                chain.tainted_through = through
             return chain
 
         self.journal.update(cid, mutate)
@@ -1153,6 +1274,11 @@ def _protected_names(chains: dict[str, Chain]) -> set[str]:
     for chain in chains.values():
         if chain.head is not None:
             protected.add(chain.head)
+        if chain.tainted_through is not None:
+            # The taint is a *position*, resolved by looking its name up
+            # among the generations. Evict it and the comparison loses its
+            # anchor, at which point every restore on the chain refuses.
+            protected.add(chain.tainted_through)
         protected.update(chain.consumed.values())
     return protected
 
@@ -1325,15 +1451,15 @@ def check(cache_dir: str, manifest) -> dict[str, list[str]]:
 
     journal = get_journal(cache_dir)
     chains = journal.all_chains()
-    report: dict[str, list[str]] = {"off_tip": [], "unreconciled": [], "orphan_trash": [], "disagreements": [], "missing_snapshots": [], "capabilities": []}
+    report: dict[str, list[str]] = {"off_tip": [], "unreconciled": [], "orphan_trash": [], "disagreements": [], "missing_snapshots": [], "unprotected": [], "capabilities": []}
 
     for chain in chains.values():
         if chain.marker is not None:
             report["unreconciled"].append(f"{chain.path}: '{chain.marker.step_path}' (run {chain.marker.run_id}) never finished")
         if chain.status is HeadStatus.UNTRUSTED:
             report["off_tip"].append(f"{chain.path}: head {chain.head} is not vouched for; the next run restores before re-running")
-        elif chain.status is HeadStatus.DETACHED:
-            report["off_tip"].append(f"{chain.path}: detached -- advanced by a writer with no cache key, so no state can be named until a cached step rewrites it")
+        if chain.tainted_through is not None:
+            report["unprotected"].append(f"{chain.path}: states up to {chain.tainted_through} cannot be restored -- a write this journal could not name (an uncached or undeclared mutator) landed after them")
         if not Path(chain.path).exists():
             report["disagreements"].append(f"{chain.path}: tracked but no longer on disk")
         for gen in chain.generations:

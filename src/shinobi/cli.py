@@ -621,6 +621,7 @@ def cache_check(ctx: click.Context) -> None:
         "orphan_trash": "orphaned quarantined trees (no marker explains these; 'ninja clean --cache --force' removes them)",
         "disagreements": "journal/manifest disagreements",
         "missing_snapshots": "generations with no snapshot (a space preflight refused them)",
+        "unprotected": "paths written by something this journal cannot name (rollback is refused past these points)",
         "capabilities": "clone capability by filesystem",
     }
     clean_report = True
