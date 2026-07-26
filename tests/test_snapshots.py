@@ -950,3 +950,121 @@ def test_reconciliation_runs_for_a_recipe_rooted_pipeline(tmp_path):
 
     assert not trash.exists()
     assert journal.get(chain_id(ms)).marker is None
+
+
+# --- a mutating step that shares a path with another consumer -------------
+
+
+class ImagerOut(BaseModel):
+    """An imager that declares the MS it rewrites, not just its FITS."""
+
+    ms: Path
+    image: Path
+
+
+def _imaging_chain(tmp_path, calls, strategy, wire_flag_to_imager):
+    """`split -> solve -> image -> flag`, all touching one MS.
+
+    `image` rewrites a MODEL column in place. `wire_flag_to_imager` decides
+    whether `flag` consumes the imager's MS (an edge, so the graph records
+    that the rewrite came first) or `solve`'s (no edge -- the two are
+    siblings as far as the DAG is concerned).
+    """
+    ms = tmp_path / "obs.ms"
+    img = tmp_path / "obs.fits"
+
+    @shinobi.pystep()
+    def split(ctx, spw: str = "*") -> MsOut:
+        _write(ms, f"vis[{spw}]")
+        (ms / "MODEL").write_text("empty")  # pre-created, so `image` overwrites
+        return MsOut(ms=ms)
+
+    @shinobi.pystep()
+    def solve(ctx, ms: Path) -> MsOut:
+        _write(ms, _read(ms) + "|solve")
+        return MsOut(ms=ms)
+
+    @shinobi.pystep()
+    def image(ctx, ms: Path, image: Path) -> ImagerOut:
+        calls["image"] = calls.get("image", 0) + 1
+        (ms / "MODEL").write_text(f"model-of({_read(ms)})")
+        image.write_text("fits")
+        return ImagerOut(ms=ms, image=image)
+
+    @shinobi.pystep()
+    def flag(ctx, ms: Path, strategy: str = "d") -> MsOut:
+        calls["flag"] = calls.get("flag", 0) + 1
+        calls.setdefault("flag_saw_model", []).append((ms / "MODEL").read_text())
+        _write(ms, _read(ms) + f"|flag[{strategy}]")
+        return MsOut(ms=ms)
+
+    flag_source = "image" if wire_flag_to_imager else "solve"
+    return ms, Recipe(
+        name="pipe",
+        inputs_model=SpwInputs,
+        outputs_model=MsOut,
+        steps=[
+            split.model_copy(update={"wiring": {"spw": InputRef(field="spw")}}),
+            solve.model_copy(update={"wiring": {"ms": OutputRef(step="split", field="ms")}}),
+            image.model_copy(update={"wiring": {"ms": OutputRef(step="solve", field="ms")}, "params": {"image": img}}),
+            flag.model_copy(update={"wiring": {"ms": OutputRef(step=flag_source, field="ms")}, "params": {"strategy": strategy}}),
+        ],
+        output_wiring={"ms": OutputRef(step="flag", field="ms")},
+    )
+
+
+def test_a_mutating_imager_wired_into_the_chain_keeps_its_writes(tmp_path):
+    """The shape that works, and the one to write pipelines in.
+
+    `image` rewrites the MS *and declares it as an output*, and `flag` wires
+    to that output. The rewrite is therefore part of the chain: `flag`'s
+    required state is the imager's generation, whose snapshot was taken
+    after the rewrite, so a rollback restores the model rather than
+    discarding it.
+    """
+    calls = {}
+    ms, pipeline = _imaging_chain(tmp_path, calls, "d", wire_flag_to_imager=True)
+    cache_dir = tmp_path / "cache"
+    pipeline(spw="*", cache=True, cache_dir=str(cache_dir))
+    model = (ms / "MODEL").read_text()
+    assert model.startswith("model-of(")
+
+    _ms, rerun = _imaging_chain(tmp_path, calls, "aggressive", wire_flag_to_imager=True)
+    rerun(spw="*", cache=True, cache_dir=str(cache_dir))
+
+    # `image` cache-hit, so anything a rollback discarded would be gone.
+    assert calls["image"] == 1
+    assert calls["flag"] == 2
+    assert (ms / "MODEL").read_text() == model, "the imager's write must survive the rollback"
+    assert calls["flag_saw_model"] == [model, model]
+
+
+def test_an_unwired_sibling_mutator_is_rolled_away_on_the_very_first_run(tmp_path):
+    """The shape that breaks, pinned deliberately -- and it is worse than a
+    re-run hazard.
+
+    Here `flag` wires to `solve`, not to `image`, so the graph says the two
+    are independent. `flag`'s required state is therefore `solve`'s
+    generation, which is never the head once `image` has run -- so the
+    rollback fires on the **first** run, before any re-run is involved, and
+    discards the imager's write immediately. `image` then cache-hits
+    forever, so nothing regenerates it.
+
+    Tier 1 cannot currently see this. The imager *is* protected, so there is
+    no exclusion to taint; its write landed in a file that already existed,
+    so the tree identity never changed. What would be needed is for a
+    restore to check whether the steps that produced the generations it is
+    about to discard are going to re-run -- see the note on issue #52.
+
+    Until then this is the undeclared-dependency limitation `shinobi.cache`
+    has always documented, with sharper consequences: declare the edge (see
+    the test above) and it goes away.
+    """
+    calls = {}
+    ms, pipeline = _imaging_chain(tmp_path, calls, "d", wire_flag_to_imager=False)
+    cache_dir = tmp_path / "cache"
+    pipeline(spw="*", cache=True, cache_dir=str(cache_dir))
+
+    assert calls["image"] == 1
+    assert calls["flag_saw_model"] == ["empty"], "flag was handed a pre-imaging MS"
+    assert (ms / "MODEL").read_text() == "empty", "known limitation: the sibling's rewrite is rolled away at once"
