@@ -196,6 +196,10 @@ Development
 
 .. code-block:: bash
 
-    uv venv .venv && uv pip install -e . --group dev
+    uv sync --group dev
     .venv/bin/pytest
     .venv/bin/ruff check src tests
+
+``uv.lock`` is committed and ``uv sync`` installs exactly what it pins, which
+is what CI runs too (every job uses ``--locked``). See ``CONTRIBUTING.md`` for
+the lockfile workflow and the repo's pre-commit hook.

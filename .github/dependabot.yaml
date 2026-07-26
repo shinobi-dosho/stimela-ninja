@@ -1,0 +1,60 @@
+# Dependabot configuration. Not an Actions workflow -- GitHub reads this file
+# directly from the default branch; there is nothing in .github/workflows/
+# driving it, and edits on a branch do nothing until they land on main.
+#
+# The `uv` ecosystem below only does anything useful because uv.lock is tracked.
+# Against loose floors alone Dependabot has almost nothing to raise -- `pydantic
+# >=2.6` is already satisfied by every 2.x release, so there is no version to
+# bump. With the lock committed it can move the pins, which is where the actual
+# dependency risk lives.
+#
+# Its PRs update pyproject.toml and uv.lock together, so they satisfy CI's
+# `--locked` jobs rather than tripping them, and the `audit` job re-runs
+# pip-audit against the new pins before anyone merges.
+
+version: 2
+
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+    groups:
+      # pytest, ruff, sphinx and pip-audit churn constantly and cannot affect
+      # what a user of this package installs, so one PR for the lot. Not
+      # risk-free even so: ruff's `select` list is pinned in pyproject.toml, but
+      # a new release can still add checks inside a family already selected.
+      dev-tooling:
+        dependency-type: "development"
+        patterns:
+          - "*"
+      # Routine runtime bumps, batched to keep the queue readable.
+      runtime:
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+        patterns:
+          - "*"
+      # Deliberately no group for runtime *major* bumps. pydantic is the whole
+      # schema layer here and click is the whole CLI; a major on either deserves
+      # its own PR and its own test run, not a batch merged on green.
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"

@@ -29,8 +29,41 @@ jobs:
       - name: Install Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
+      # --locked everywhere: install the versions committed in uv.lock and fail
+      # if the lock does not match pyproject.toml. Without it, a green run only
+      # means the tree passed against whatever PyPI happened to publish that
+      # morning -- a red one tomorrow could be this repo's fault or a
+      # dependency's, and the log cannot tell you which.
       - name: Lint (ruff)
-        run: uv run --python ${{ matrix.python-version }} --group dev ruff check src tests
+        run: uv run --python ${{ matrix.python-version }} --locked --group dev ruff check src tests
 
       - name: Run tests
-        run: uv run --python ${{ matrix.python-version }} --group dev pytest -q
+        run: uv run --python ${{ matrix.python-version }} --locked --group dev pytest -q
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Runtime dependencies only, straight off uv.lock (--frozen), so the
+      # versions audited here are the versions the test jobs installed and the
+      # versions in the diff under review. The exported file is echoed to the
+      # log, which is the record of what was actually checked.
+      #
+      # Same two commands as `.githooks/pre-commit`, so a clean commit and a
+      # green job mean the same thing.
+      - name: Export locked dependencies
+        run: |
+          uv export --frozen --no-emit-project --no-default-groups --no-hashes \
+            --format requirements-txt -o requirements-audit.txt
+
+      - name: pip-audit
+        run: uv run --locked --group audit pip-audit --no-deps --requirement requirements-audit.txt
