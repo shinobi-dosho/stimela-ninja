@@ -34,8 +34,17 @@ jobs:
       # means the tree passed against whatever PyPI happened to publish that
       # morning -- a red one tomorrow could be this repo's fault or a
       # dependency's, and the log cannot tell you which.
+
+      # Lint the whole tree, not just `src tests`. Scoping it there meant
+      # `ruff check .` failed locally on a green commit -- docs/conf.py and
+      # examples/ were never checked, so nobody could trust the bare command.
+      # The formatter is checked for the same reason: it was never enforced,
+      # and two files had quietly drifted out of formatted shape.
       - name: Lint (ruff)
-        run: uv run --python ${{ matrix.python-version }} --locked --group dev ruff check src tests
+        run: uv run --python ${{ matrix.python-version }} --locked --group dev ruff check .
+
+      - name: Format (ruff)
+        run: uv run --python ${{ matrix.python-version }} --locked --group dev ruff format --check .
 
       - name: Run tests
         run: uv run --python ${{ matrix.python-version }} --locked --group dev pytest -q

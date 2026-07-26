@@ -1459,7 +1459,9 @@ def check(cache_dir: str, manifest) -> dict[str, list[str]]:
         if chain.status is HeadStatus.UNTRUSTED:
             report["off_tip"].append(f"{chain.path}: head {chain.head} is not vouched for; the next run restores before re-running")
         if chain.tainted_through is not None:
-            report["unprotected"].append(f"{chain.path}: states up to {chain.tainted_through} cannot be restored -- a write this journal could not name (an uncached or undeclared mutator) landed after them")
+            report["unprotected"].append(
+                f"{chain.path}: states up to {chain.tainted_through} cannot be restored -- a write this journal could not name (an uncached or undeclared mutator) landed after them"
+            )
         if not Path(chain.path).exists():
             report["disagreements"].append(f"{chain.path}: tracked but no longer on disk")
         for gen in chain.generations:

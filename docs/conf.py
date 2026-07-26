@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.abspath("../src"))
 
@@ -20,7 +20,7 @@ from shinobi import __version__  # noqa: E402
 
 project = "stimela-ninja"
 author = "Sphesihle Makhathini"
-copyright = f"{date.today().year}, {author}"
+copyright = f"{datetime.now(tz=timezone.utc).year}, {author}"
 
 version = __version__
 release = __version__
@@ -38,8 +38,18 @@ extensions = [
 ]
 
 templates_path = ["_templates"]
-# design_sandbox.md is internal design scratch, not user-facing docs.
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "design_sandbox.md"]
+# The design_*.md files are internal design scratch, not user-facing docs --
+# they record how a feature was argued into existence, and the user-facing
+# half lives under concepts/ once it ships. Excluded rather than left out of
+# a toctree, which is what "document isn't included in any toctree" means
+# under `sphinx-build -W`.
+exclude_patterns = [
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+    "design_sandbox.md",
+    "design_cache_tiers.md",
+]
 
 # Treat warnings as build-relevant but don't fail the build on missing
 # autodoc targets during early scaffolding.

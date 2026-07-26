@@ -28,11 +28,11 @@ dev = [
 ]
 
 # Not installed by default `uv sync`/`uv run`, and not resolved as a uv
-# dependency-group at all: both simms and dosho pin their own `stimela-ninja`
-# dependency to a git source (for their own standalone dev loop, since
-# stimela-ninja isn't on PyPI yet), which conflicts with resolving
+# dependency-group at all: dosho redirects its own `stimela-ninja` dependency
+# to a git source via [tool.uv.sources], so that it develops against this
+# repo's main rather than the last release. That conflicts with resolving
 # stimela-ninja's *own* lock as the local editable project -- uv locks all
-# dependency-groups together, so any group containing them would break
+# dependency-groups together, so any group containing it would break
 # `uv lock`/`uv sync` for everyone, not just examples users. Install them
 # manually instead, after a normal `uv sync`:
 #   uv pip install --no-deps -e ../dosho   # or the git URL
@@ -98,6 +98,12 @@ consider_namespace_packages = true
 [tool.ruff]
 line-length = 180
 
+# ruff formats Python embedded in Markdown. The design_*.md files are internal
+# scratch (excluded from the docs build too, see docs/conf.py): their snippets
+# are illustrative prose, often hand-aligned to make a point, and are not code
+# this repo ships. Reformatting them is churn against an argument, not a fix.
+exclude = ["docs/design_*.md"]
+
 # Pin the rule set explicitly. Without a `select`, "is this tree lint-clean?"
 # is answered by whichever ruff a given machine happens to have installed --
 # ruff changes its defaults between releases, so the same commit can be clean
@@ -138,6 +144,13 @@ ignore = [
     # it would be a permanent 2-violation floor, not a signal.
     "E501",
 ]
+
+# T20 bans `print` because *the library* must route output through click or
+# logging. `examples/` is not the library: those files are standalone scripts
+# a user runs directly, and printing the rendered DAG to stdout is the whole
+# point of them. The rule stays on everywhere it means something.
+[tool.ruff.lint.per-file-ignores]
+"examples/*" = ["T20"]
 
 # Families deliberately NOT selected, with the violation count each would add
 # today. Each is a real decision to make, not an oversight -- opt one in by

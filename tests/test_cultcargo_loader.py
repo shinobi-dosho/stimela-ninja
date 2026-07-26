@@ -394,10 +394,7 @@ def test_plain_relative_include_may_still_reach_a_sibling_directory(tmp_path):
     (tmp_path / "common" / "base.yml").write_text("vars:\n  cult-cargo:\n    images:\n      registry: quay.io/stimela2\n")
     (tmp_path / "cabs").mkdir()
     main = tmp_path / "cabs" / "main.yml"
-    main.write_text(
-        "_include:\n  - ../common/base.yml\ncabs:\n  breizorro:\n    command: breizorro\n"
-        "    image:\n      _use: vars.cult-cargo.images\n      name: breizorro\n"
-    )
+    main.write_text("_include:\n  - ../common/base.yml\ncabs:\n  breizorro:\n    command: breizorro\n    image:\n      _use: vars.cult-cargo.images\n      name: breizorro\n")
     assert load_file(main)["breizorro"].image == "breizorro"
 
 
@@ -413,10 +410,7 @@ def test_nested_package_scoped_include_rebases_containment_on_the_new_root(tmp_p
     (pkg_b / "shared.yml").write_text("vars:\n  cult-cargo:\n    images:\n      registry: quay.io/stimela2\n")
     (pkg_a / "base.yml").write_text("_include:\n  - (pkg_b)shared.yml\n")
     main = tmp_path / "main.yml"
-    main.write_text(
-        "_include:\n  - (pkg_a)base.yml\ncabs:\n  breizorro:\n    command: breizorro\n"
-        "    image:\n      _use: vars.cult-cargo.images\n      name: breizorro\n"
-    )
+    main.write_text("_include:\n  - (pkg_a)base.yml\ncabs:\n  breizorro:\n    command: breizorro\n    image:\n      _use: vars.cult-cargo.images\n      name: breizorro\n")
     cabs = load_file(main, package_roots={"pkg_a": pkg_a, "pkg_b": pkg_b})
     assert cabs["breizorro"].image == "breizorro"
 
