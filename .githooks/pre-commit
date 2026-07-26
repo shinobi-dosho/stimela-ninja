@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+#
+# stimela-ninja pre-commit hook: audit the project's dependencies against
+# PyPI's advisory database when a commit changes what those dependencies are.
+# Tracked in the repo and enabled per clone with
+#
+#     git config core.hooksPath .githooks
+#
+# (see CONTRIBUTING.md). Git deliberately will not let a repository install an
+# executable hook by itself, so that one command is unavoidable -- but the
+# script is version-controlled, reviewable in diffs, and identical for
+# everyone, which is the part that actually matters.
+#
+# It installs nothing and pins nothing. It uses whatever pip-audit `uv run`
+# resolves for this project's `audit` group, so it agrees with the `audit` CI
+# job by construction.
+#
+# Only on dependency commits. pip-audit is a network round trip per pinned
+# package -- tens of seconds. Charging that to a docstring fix teaches people
+# to reach for --no-verify, and it cannot tell them anything new: the set being
+# audited is the one the previous run already cleared. `pyproject.toml` and
+# `uv.lock` are the two tracked files that can move that set.
+#
+# Runtime dependencies only (`--no-default-groups`), which is the set installing
+# this package inflicts on someone else. A vulnerable pytest is worth knowing
+# about, but it is not worth blocking commits over.
+#
+# Bypass with `git commit --no-verify` when you genuinely need to.
+
+set -uo pipefail
+
+git diff --cached --name-only --diff-filter=ACM -z |
+    tr '\0' '\n' | grep -qxE 'pyproject\.toml|uv\.lock' || exit 0
+
+# The export is a uv operation and pip-audit is resolved through uv, so there
+# is no meaningful degraded mode without it -- say so and get out of the way,
+# rather than blocking a commit on a missing tool.
+if ! command -v uv >/dev/null 2>&1; then
+    echo "pre-commit: 'uv' not on PATH -- skipping dependency audit." >&2
+    exit 0
+fi
+
+# A pyproject.toml edit committed without the matching `uv lock` is the one
+# dependency mistake this hook can catch for free, and it is the one CI is
+# guaranteed to reject: every job there runs --locked. Fail here, where the fix
+# is one command, rather than after a push.
+if ! uv lock --check --quiet 2>/dev/null; then
+    cat >&2 <<'MSG'
+
+pre-commit: uv.lock is out of date with pyproject.toml.
+
+  fix:    uv lock && git add uv.lock
+  bypass: git commit --no-verify
+
+MSG
+    exit 1
+fi
+
+req=$(mktemp) || exit 0
+trap 'rm -f "$req"' EXIT
+
+# Reads the working tree, not the staged blob -- same simplification the rest
+# of git's hook ecosystem makes. Commit a uv.lock you have since regenerated
+# and you audited the regenerated one.
+#
+# --frozen: audit the versions the lock pins, which are the versions CI installs
+# and the versions anyone who ran `uv sync` is running. Re-resolving here would
+# audit a set that may exist on no machine at all.
+if ! uv export --quiet --frozen --no-emit-project --no-default-groups --no-hashes \
+    --format requirements-txt -o "$req"; then
+    echo "pre-commit: 'uv export' failed -- skipping dependency audit." >&2
+    exit 0
+fi
+
+# Captured rather than streamed: pip-audit prints two advisories about hashes
+# on every --no-deps run, which is not something a passing commit should make
+# anyone read. On failure the whole thing goes to stderr, findings included.
+output=$(uv run --quiet --group audit pip-audit --no-deps --requirement "$req" 2>&1)
+status=$?
+
+if [ $status -ne 0 ]; then
+    printf '%s\n' "$output" >&2
+    cat >&2 <<'MSG'
+
+pre-commit: pip-audit rejected the dependencies pinned in uv.lock.
+
+  rerun:  uv export --frozen --no-emit-project --no-default-groups --no-hashes --format requirements-txt |
+              uv run --group audit pip-audit --no-deps -r /dev/stdin
+  fix:    uv lock --upgrade-package <name>, raising the floor in pyproject.toml
+          too if a downstream install could still land on the bad range
+  accept: pip-audit --ignore-vuln <ID>, recorded in pyproject.toml with a reason
+  bypass: git commit --no-verify
+
+MSG
+fi
+
+exit $status

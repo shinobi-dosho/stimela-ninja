@@ -44,9 +44,14 @@ The project uses `uv <https://docs.astral.sh/uv/>`_:
 
     $ git clone https://github.com/shinobi-dosho/stimela-ninja.git
     $ cd stimela-ninja
-    $ uv venv .venv && uv pip install -e . --group dev
+    $ uv sync --group dev
     $ .venv/bin/pytest
     $ .venv/bin/ruff check src tests
+
+``uv.lock`` is committed, so ``uv sync`` gives you the same dependency versions
+CI tests against (it runs every job with ``--locked``). Change
+``pyproject.toml`` and you must re-run ``uv lock`` and commit both; the repo's
+pre-commit hook and CI each reject the mismatch. See ``CONTRIBUTING.md``.
 
 To build the documentation locally:
 

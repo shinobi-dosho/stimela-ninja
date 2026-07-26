@@ -35,12 +35,72 @@ discuss it first is a great way to align before writing code.
 The project uses [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv venv .venv && uv pip install -e . --group dev
+uv sync --group dev
 .venv/bin/pytest
 .venv/bin/ruff check src tests
+
+# enable the repo's pre-commit hook (once per clone)
+git config core.hooksPath .githooks
 ```
 
 (You can equivalently use `uv run pytest` / `uv run ruff check src tests`.)
+
+### The lockfile
+
+`uv.lock` **is** committed, and `uv sync` installs exactly what it pins. CI
+runs every job with `--locked`, so the versions the matrix tests are the
+versions you ran locally — not whatever PyPI published that morning. When a
+build goes red, that keeps "this branch broke it" and "a dependency broke it"
+as separate, answerable questions.
+
+The floors in `pyproject.toml` still define what a downstream `pip install`
+resolves. The lock binds only this repo's checkouts and CI.
+
+Two consequences worth knowing:
+
+- **Change `pyproject.toml`, re-run `uv lock`, commit both.** CI's `--locked`
+  rejects the mismatch, and so does the pre-commit hook.
+- **Dependency upgrades are a deliberate commit**, not a side effect of the
+  clock: `uv lock --upgrade` (or `--upgrade-package <name>`) produces a
+  reviewable diff.
+
+Dependabot (`.github/dependabot.yaml`) opens those upgrade PRs weekly, updating
+`pyproject.toml` and `uv.lock` together so they pass the `--locked` jobs.
+Dev-tooling and runtime minor/patch bumps arrive batched; a runtime major gets
+its own PR on purpose. Security updates are enabled repo-side and are not
+batched or scheduled — those PRs arrive when an advisory does.
+
+### The pre-commit hook
+
+Enabling it is the only setup step that is not `uv`'s job — git will not let a
+repository turn on an executable hook by itself, which is why the `git config`
+above is manual; skip it and you simply get no hook.
+
+`.githooks/pre-commit` is tracked in the repo, and does two things when (and
+only when) the commit touches `pyproject.toml` or `uv.lock`:
+
+1. checks the lock is in sync with `pyproject.toml`;
+2. runs `pip-audit` over the locked runtime dependencies.
+
+Any other commit skips it in milliseconds — pip-audit is a network round trip
+per package, and it cannot tell you anything new about a dependency set you
+have not touched. It installs nothing and pins nothing: pip-audit comes from
+the `audit` dependency group via `uv run`, so it and CI's `audit` job check the
+same versions with the same commands.
+
+Run that audit by hand any time:
+
+```bash
+uv export --frozen --no-emit-project --no-default-groups --no-hashes --format requirements-txt |
+    uv run --group audit pip-audit --no-deps -r /dev/stdin
+```
+
+A finding is usually fixed by `uv lock --upgrade-package <name>`, raising the
+floor in `pyproject.toml` too if the vulnerable range is one a downstream
+install could still land on. If there is no fixed release and the advisory does
+not apply here, pass `--ignore-vuln <ID>` and record why in `pyproject.toml`
+alongside the group. `git commit --no-verify` bypasses the hook when you
+genuinely need to.
 
 ## Testing
 

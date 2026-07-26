@@ -95,10 +95,17 @@ ipython_config.py
 Pipfile.lock
 
 # UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-uv.lock
+#   uv.lock IS tracked here, against the usual advice for a library. Two things
+#   depend on it being a committed artefact rather than a per-machine one: CI
+#   runs `--locked`, so the matrix tests the same package versions a reviewer
+#   ran locally instead of whatever PyPI published that morning; and the
+#   dependency audit (`.githooks/pre-commit`, the `audit` CI job) has an exact
+#   version set to check, so a finding names a version someone actually has.
+#   The cost is the usual one -- resolution changes arrive as reviewable diffs
+#   from `uv lock --upgrade` instead of silently. Floors in pyproject.toml
+#   still define what a *downstream* install gets; the lock binds only this
+#   repo's own checkouts and CI.
+# uv.lock
 
 # poetry
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.

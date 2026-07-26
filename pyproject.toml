@@ -26,6 +26,7 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.5",
 ]
+
 # Not installed by default `uv sync`/`uv run`, and not resolved as a uv
 # dependency-group at all: both simms and dosho pin their own `stimela-ninja`
 # dependency to a git source (for their own standalone dev loop, since
@@ -46,6 +47,16 @@ docs = [
     "furo>=2024.1",
     "sphinx-copybutton>=0.5",
     "myst-parser>=2.0",
+]
+
+# Dependency vulnerability scanning. `.githooks/pre-commit` and the `audit` CI
+# job both run `uv run --group audit pip-audit`. Its own group rather than part
+# of `dev`: every job in the test matrix installs `dev` and none of them audit,
+# so folding it in there buys five extra resolve-and-downloads to serve one job.
+# No upper bound -- pip-audit is a client for PyPI's advisory API, and the
+# useful version of that is whatever is current.
+audit = [
+    "pip-audit>=2.7",
 ]
 
 [project.urls]
