@@ -314,9 +314,12 @@ def test_run_log_recipe_logs_each_substep_once(tmp_path, _detach_file_logging):
     assert "step chained.make_file: finished (returncode 0)" in text
     assert "step chained.use_file: finished (returncode 0)" in text
     assert "step chained: finished (returncode 0)" in text
-    # Sub-step output appears under the sub-step's dotted label only -- the
-    # recipe's own aggregated stdout is not re-logged under `[chained]`.
-    assert "[chained.make_file] " in text
+    # Sub-step output appears under the sub-step's own label only -- the
+    # recipe's aggregated stdout is not re-logged under `[chained]`. The
+    # label is `display_label`'d, so the root scope (`chained`) is dropped
+    # from the forwarded prefix; the lifecycle lines above keep the full
+    # dotted path.
+    assert "[make_file] " in text
     assert "[chained] " not in text
 
 

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field, ValidationError, create_model
+from shinobi.backends._stream import display_label
 from shinobi.cache import as_provenance_key, combine_keys, compute_cache_key, get_cache_manifest, invalidate_path_hashes, set_content_sample
 from shinobi.snapshots import SnapshotGuard, announce_run, eligible_fields, get_journal, new_run_id, reconcile
 from shinobi.config import AppConfig
@@ -317,7 +318,7 @@ class ExecContext:
                 self.scope,
                 prepared,
                 backend_name,
-                label=self._cache_path,
+                label=display_label(self._cache_path),
                 stream=self._stream,
                 pin=self._pin,
                 sandbox_root=self._sandbox_root,
@@ -604,10 +605,15 @@ def _dispatch(
     # already logged its own via its recursive _dispatch -- re-logging the
     # aggregate would duplicate every line.
     if result.kind != "recipe":
+        # `display_label`, not `cache_path`: this prefix is repeated once per
+        # line of the step's output, and the root scope name in it is constant
+        # for the whole run. The lifecycle records below keep the full path --
+        # they are one line per step, and there the identity is the point.
+        shown = display_label(cache_path)
         for line in result.stdout.splitlines():
-            logger.info("[%s] %s", cache_path, line)
+            logger.info("[%s] %s", shown, line)
         for line in result.stderr.splitlines():
-            logger.info("[%s] %s", cache_path, line)
+            logger.info("[%s] %s", shown, line)
     if result.success:
         logger.info("step %s: finished (returncode 0)", cache_path)
     else:
