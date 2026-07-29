@@ -51,10 +51,13 @@ Available backends
     that creates its own output tree behaves as it would natively; an
     absolute output path with no existing ancestor at all is refused before
     the run rather than written into the container and lost. When a write
-    target lands in a directory an input marked ``writable: false`` made
-    read-only, both declarations still hold: the directory is mounted
-    read-write and the read-only input is re-asserted ``:ro`` at its own path
-    inside it, so the tool can write its product but not touch that input.
+    target -- or simply another input -- lands in a directory an input marked
+    ``writable: false`` made read-only, both declarations still hold: the
+    directory is mounted read-write and the read-only input is re-asserted
+    ``:ro`` at its own path inside it, so the write lands but that input stays
+    untouchable. A cab that declares something writable *inside* a
+    ``writable: false`` input is refused instead -- no arrangement of mounts
+    satisfies both.
     For ``docker``/``podman``, the container runs as the invoking
     host user (not root) by default, so bind-mounted outputs come out
     host-owned -- see ``backend.run_as_host_user`` in :doc:`config`.
