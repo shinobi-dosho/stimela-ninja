@@ -7,7 +7,7 @@ from shinobi.backends.kubernetes import KubernetesBackend
 from shinobi.exceptions import BackendError
 from shinobi.loaders import build_model
 from shinobi.resources import Resources
-from shinobi.steps.schema import Cab
+from shinobi.steps.schema import Cab, ParamMeta
 
 
 def make_cab(fields=None, image="tool:latest") -> Cab:
@@ -151,6 +151,30 @@ def test_readonly_inputs_are_mounted_readonly():
     mounts = {m["mountPath"]: m.get("readOnly", False) for m in manifest["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]}
     assert mounts["/refdata"] is True
     assert mounts["/work"] is False  # the workdir is still writable
+
+
+def test_write_target_colliding_with_a_readonly_input_nests_in_the_pod(tmp_path):
+    """The collision resolves the same way it does under docker/podman/
+    apptainer: the directory is mounted read-write for the product, and the
+    `writable: false` input is re-asserted `readOnly` at its own path inside
+    it. A kubelet shadows nested volumeMounts the same way -- verified on a
+    real kind cluster (`test_kubernetes_live.py`).
+    """
+    cab = make_cab().model_copy(
+        update={
+            "inputs_model": build_model("In", {"ref": ("File", False, None), "prefix": ("str", False, None)}, extras={"ref": {"writable": False}}),
+            "outputs_model": build_model("Out", {"image": ("File", False, None)}),
+            "field_meta": {"image": ParamMeta(implicit="{prefix}-image.fits")},
+        }
+    )
+    backend = KubernetesBackend(namespace="ns", workdir="/work")
+    manifest = backend._manifest(cab, ["tool"], {"ref": f"{tmp_path}/table.txt", "prefix": f"{tmp_path}/img"}, "job-1")
+    mounts = manifest["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
+    modes = {m["mountPath"]: m.get("readOnly", False) for m in mounts}
+    assert modes[str(tmp_path)] is False  # writable, for the product
+    assert modes[f"{tmp_path}/table.txt"] is True  # the input stays untouchable
+    paths = [m["mountPath"] for m in mounts]
+    assert paths.index(str(tmp_path)) < paths.index(f"{tmp_path}/table.txt")  # parent before nested
 
 
 def test_pod_runs_as_the_invoking_user_non_root():

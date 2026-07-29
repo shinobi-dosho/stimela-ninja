@@ -50,7 +50,11 @@ Available backends
     does not exist yet contributes its nearest existing ancestor, so a tool
     that creates its own output tree behaves as it would natively; an
     absolute output path with no existing ancestor at all is refused before
-    the run rather than written into the container and lost.
+    the run rather than written into the container and lost. When a write
+    target lands in a directory an input marked ``writable: false`` made
+    read-only, both declarations still hold: the directory is mounted
+    read-write and the read-only input is re-asserted ``:ro`` at its own path
+    inside it, so the tool can write its product but not touch that input.
     For ``docker``/``podman``, the container runs as the invoking
     host user (not root) by default, so bind-mounted outputs come out
     host-owned -- see ``backend.run_as_host_user`` in :doc:`config`.
@@ -63,7 +67,12 @@ Available backends
     ``sacct``.
 
 ``kubernetes``
-    Runs the command as a batch ``Job`` via ``kubectl``.
+    Runs the command as a batch ``Job`` via ``kubectl``. Mounts carry the same
+    read-only classification as the container backends, but the nested-mount
+    case above is **refused** rather than emitted: whether a kubelet shadows a
+    nested ``readOnly`` volumeMount the way docker, podman and apptainer shadow a
+    nested ``:ro`` bind is unverified, and a silent failure there would hand
+    the step write access to an input the cab declared read-only.
 
 Choosing a backend
 ------------------

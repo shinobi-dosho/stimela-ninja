@@ -331,11 +331,10 @@ def test_output_under_an_input_directory_adds_no_second_mount(tmp_path):
     assert mounts == {"/work:/work", f"{tmp_path}:{tmp_path}"}  # the input's mount already covers it
 
 
-def test_declared_output_upgrades_a_read_only_input_directory_to_writable(tmp_path):
-    # `writable: false` on an input cannot be honoured for a directory the cab
-    # itself declares it writes into -- the mount would be one the tool
-    # provably cannot use. Writable wins, as it does between two inputs.
-    cab = Cab(
+def make_readonly_input_cab() -> Cab:
+    """A cab whose write target and whose `writable: false` input can be aimed
+    at the same directory -- the collision the nesting rule exists for."""
+    return Cab(
         name="wsclean",
         command="wsclean",
         image="tool:latest",
@@ -347,28 +346,125 @@ def test_declared_output_upgrades_a_read_only_input_directory_to_writable(tmp_pa
         outputs_model=build_model("Out", {"restored_image": ("File", False, None)}),
         field_meta={"restored_image": ParamMeta(implicit="{prefix}-MFS-image.fits")},
     )
-    modes = dict(bind_dir_modes(cab, {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/img"}, "/work"))
-    assert modes == {"/work": True, str(tmp_path): True}
 
 
-def test_absolute_output_outside_a_read_only_input_directory_nests_its_own_mount(tmp_path):
-    # The read-only classification survives when the write target is a
-    # *subdirectory*: the parent stays `:ro`, the target is mounted inside it.
+def test_declared_output_reasserts_a_read_only_input_nested_inside_the_directory_it_upgrades(tmp_path):
+    # Both declarations hold: the directory goes read-write so the tool can
+    # write its product, and the `writable: false` input is re-asserted `:ro`
+    # at its own path inside it. Verified against real docker, podman and apptainer.
+    cab = make_readonly_input_cab()
+    mounts = bind_dir_modes(cab, {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/img"}, "/work")
+    assert mounts == [("/work", True), (str(tmp_path), True), (f"{tmp_path}/obs.ms", False)]
+    # the nested `:ro` entry must follow the directory it nests in, so a
+    # runtime that honours emission order rather than depth still gets it right
+    assert [m[0] for m in mounts].index(str(tmp_path)) < [m[0] for m in mounts].index(f"{tmp_path}/obs.ms")
+
+
+def test_docker_emits_the_nested_read_only_input_as_a_mount(tmp_path):
+    cab = make_readonly_input_cab()
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["wsclean"], {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/img"})
+    mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    assert mounts == ["/work:/work", f"{tmp_path}:{tmp_path}", f"{tmp_path}/obs.ms:{tmp_path}/obs.ms:ro"]
+
+
+def test_apptainer_binds_the_nested_read_only_input(tmp_path):
+    cab = make_readonly_input_cab()
+    argv, _ = ApptainerBackend(workdir="/work")._wrap(cab, ["wsclean"], {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/img"})
+    binds = [argv[i + 1] for i, a in enumerate(argv) if a == "--bind"]
+    assert binds == ["/work:/work", f"{tmp_path}:{tmp_path}", f"{tmp_path}/obs.ms:{tmp_path}/obs.ms:ro"]
+
+
+def test_no_nested_mount_when_nothing_was_marked_read_only(tmp_path):
+    # The upgrade path only re-asserts what a `writable: false` earned; an
+    # ordinary writable input in the same directory adds no nested entry.
+    cab = make_cab({"prefix": ("str", False, None), "ms": ("MS", False, None)})
+    cab = cab.model_copy(
+        update={
+            "outputs_model": build_model("Out", {"restored_image": ("File", False, None)}),
+            "field_meta": {"restored_image": ParamMeta(implicit="{prefix}-MFS-image.fits")},
+        }
+    )
+    mounts = bind_dir_modes(cab, {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/img"}, "/work")
+    assert mounts == [("/work", True), (str(tmp_path), True)]
+
+
+def test_write_target_under_a_read_only_directory_keeps_the_parent_read_only(tmp_path):
+    # The other nesting shape: read-write target inside a read-only parent.
+    # The parent keeps `:ro` for the input; the target is mounted inside it.
     (tmp_path / "products").mkdir()
+    cab = make_readonly_input_cab()
+    mounts = bind_dir_modes(cab, {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/products/img"}, "/work")
+    assert mounts == [("/work", True), (str(tmp_path), False), (f"{tmp_path}/products", True)]
+
+
+def test_write_target_inside_a_read_only_input_is_refused(tmp_path):
+    # Nesting resolves a target *beside* a read-only input; it cannot resolve
+    # one *inside* it. "Never write this" and "put a product here" name the
+    # same tree, so the declarations contradict and the run is refused on
+    # every backend -- rather than mounting the read-only input read-write,
+    # which is what happened before: `readonly_paths` is keyed by parent, so a
+    # fresh mount key that IS a read-only input path recorded no upgrade.
+    store = tmp_path / "store"
+    store.mkdir()
     cab = Cab(
-        name="wsclean",
-        command="wsclean",
+        name="tool",
+        command="tool",
         image="tool:latest",
         inputs_model=create_model(
             "In",
             prefix=(Optional[str], None),
-            ms=(Optional[Path], Field(None, json_schema_extra={"writable": False})),
+            store=(Optional[Path], Field(None, json_schema_extra={"writable": False})),
         ),
-        outputs_model=build_model("Out", {"restored_image": ("File", False, None)}),
-        field_meta={"restored_image": ParamMeta(implicit="{prefix}-MFS-image.fits")},
+        outputs_model=build_model("Out", {"img": ("File", False, None)}),
+        field_meta={"img": ParamMeta(implicit="{prefix}-image.fits")},
     )
-    modes = dict(bind_dir_modes(cab, {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/products/img"}, "/work"))
-    assert modes == {"/work": True, str(tmp_path): False, f"{tmp_path}/products": True}
+    with pytest.raises(BackendError) as exc:
+        bind_dir_modes(cab, {"store": str(store), "prefix": f"{store}/out"}, "/work")
+    assert "'store'" in str(exc.value)  # names the input, not just the path
+    assert "writable: false" in str(exc.value)
+
+
+def test_write_target_deep_inside_a_read_only_input_is_refused(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    cab = Cab(
+        name="tool",
+        command="tool",
+        image="tool:latest",
+        inputs_model=create_model(
+            "In",
+            prefix=(Optional[str], None),
+            store=(Optional[Path], Field(None, json_schema_extra={"writable": False})),
+        ),
+        outputs_model=build_model("Out", {"img": ("File", False, None)}),
+        field_meta={"img": ParamMeta(implicit="{prefix}-image.fits")},
+    )
+    with pytest.raises(BackendError):
+        bind_dir_modes(cab, {"store": str(store), "prefix": f"{store}/a/b/out"}, "/work")
+
+
+def test_refusal_holds_even_when_the_directory_is_writable_for_other_reasons(tmp_path):
+    # The contradiction is in the schema, not in how the mount table came out:
+    # a writable sibling input making the parent read-write must not let a
+    # target inside the read-only input through.
+    store = tmp_path / "store"
+    store.mkdir()
+    cab = Cab(
+        name="tool",
+        command="tool",
+        image="tool:latest",
+        inputs_model=create_model(
+            "In",
+            prefix=(Optional[str], None),
+            store=(Optional[Path], Field(None, json_schema_extra={"writable": False})),
+            scratch=(Optional[Path], Field(None, json_schema_extra={"writable": True})),
+        ),
+        outputs_model=build_model("Out", {"img": ("File", False, None)}),
+        field_meta={"img": ParamMeta(implicit="{prefix}-image.fits")},
+    )
+    inputs = {"store": str(store), "scratch": f"{tmp_path}/scratch.ms", "prefix": f"{store}/out"}
+    with pytest.raises(BackendError):
+        bind_dir_modes(cab, inputs, "/work")
 
 
 def test_apptainer_image_uri_scheme_handling():
