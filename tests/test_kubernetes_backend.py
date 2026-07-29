@@ -153,12 +153,12 @@ def test_readonly_inputs_are_mounted_readonly():
     assert mounts["/work"] is False  # the workdir is still writable
 
 
-def test_write_target_colliding_with_a_readonly_input_is_refused(tmp_path):
-    """docker, podman and apptainer keep both promises here with a nested `:ro`
-    mount (verified on all three). Whether a kubelet shadows a nested `readOnly`
-    volumeMount the same way is unverified, and failing silently would hand
-    the step write access to an input the cab declared read-only -- so the k8s
-    backend refuses the combination instead of guessing.
+def test_write_target_colliding_with_a_readonly_input_nests_in_the_pod(tmp_path):
+    """The collision resolves the same way it does under docker/podman/
+    apptainer: the directory is mounted read-write for the product, and the
+    `writable: false` input is re-asserted `readOnly` at its own path inside
+    it. A kubelet shadows nested volumeMounts the same way -- verified on a
+    real kind cluster (`test_kubernetes_live.py`).
     """
     cab = make_cab().model_copy(
         update={
@@ -168,9 +168,13 @@ def test_write_target_colliding_with_a_readonly_input_is_refused(tmp_path):
         }
     )
     backend = KubernetesBackend(namespace="ns", workdir="/work")
-    inputs = {"ref": f"{tmp_path}/table.txt", "prefix": f"{tmp_path}/img"}
-    with pytest.raises(BackendError, match="nested mount"):
-        backend._manifest(cab, ["tool"], inputs, "job-1")
+    manifest = backend._manifest(cab, ["tool"], {"ref": f"{tmp_path}/table.txt", "prefix": f"{tmp_path}/img"}, "job-1")
+    mounts = manifest["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
+    modes = {m["mountPath"]: m.get("readOnly", False) for m in mounts}
+    assert modes[str(tmp_path)] is False  # writable, for the product
+    assert modes[f"{tmp_path}/table.txt"] is True  # the input stays untouchable
+    paths = [m["mountPath"] for m in mounts]
+    assert paths.index(str(tmp_path)) < paths.index(f"{tmp_path}/table.txt")  # parent before nested
 
 
 def test_pod_runs_as_the_invoking_user_non_root():

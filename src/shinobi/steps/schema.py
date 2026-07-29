@@ -285,7 +285,7 @@ def readonly_path_fields(model: type[BaseModel]) -> set[str]:
     """Names of the `path_fields` explicitly marked ``writable: false`` in
     their schema (carried onto the field's ``json_schema_extra`` by
     ``loaders.worker_schema``). The container backend bind-mounts the
-    directories these contribute read-only (``backends.container.bind_dirs``).
+    directories these contribute read-only (``backends.container.bind_dir_modes``).
     A path field with no ``writable`` marker (the default, including every
     Python-typed pystep input) is treated as writable.
     """

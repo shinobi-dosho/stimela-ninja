@@ -148,15 +148,14 @@ class KubernetesBackend(Backend):
         # backend, and dropping it here would silently hand every step
         # read-write host access it never asked for.
         #
-        # `allow_nested_modes=False` for the same reason. Where a cab's write
-        # target collides with a `writable: false` input, docker, podman and
-        # apptainer keep both promises with a nested `:ro` mount -- verified on
-        # all three, in either emission order. Whether a kubelet shadows a nested `readOnly`
-        # volumeMount the same way is *unverified* (the live k8s tests need a
-        # cluster and none was available), and the failure mode is silent: the
-        # step would get write access to an input the cab declared read-only.
-        # Refuse that combination here until it is proven on a real cluster.
-        dir_modes = bind_dir_modes(cab, inputs, self.workdir, allow_nested_modes=False)
+        # That extends to the nested case: where a cab's write target collides
+        # with a `writable: false` input, the directory is mounted read-write
+        # and the input re-asserted `readOnly` at its own path inside it. A
+        # kubelet shadows nested volumeMounts exactly as docker, podman and
+        # apptainer shadow nested binds -- verified on a real kind cluster, in
+        # both volumeMount orders, with the pod running as root so that only
+        # the mount could refuse the write (`test_kubernetes_live.py`).
+        dir_modes = bind_dir_modes(cab, inputs, self.workdir)
         volumes = [{"name": f"vol{i}", "hostPath": {"path": d}} for i, (d, _) in enumerate(dir_modes)]
         mounts = [{"name": f"vol{i}", "mountPath": d, **({} if writable else {"readOnly": True})} for i, (d, writable) in enumerate(dir_modes)]
 

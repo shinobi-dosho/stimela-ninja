@@ -42,7 +42,7 @@ Dialect, as actually used by caracal2 (see its `caracal/schemas/`):
 `writable` (seen in caracal2's `caracal_base.yaml`) is carried onto the
 generated field's `json_schema_extra`: a `writable: false` directory input is
 bind-mounted read-only by the container backend (see `_leaf_field` and
-`backends.container.bind_dirs`). `must_exist`/`path_policies` are still dropped
+`backends.container.bind_dir_modes`). `must_exist`/`path_policies` are still dropped
 (path-behaviour hints with no consumer yet).
 """
 
@@ -240,7 +240,7 @@ def _leaf_field(value: dict[str, Any]) -> tuple[Any, Any]:
 
     # `writable` is carried onto the field (via json_schema_extra) so the
     # container backend can mount a `writable: false` directory input read-only
-    # (`readonly_path_fields` + `bind_dirs`). It's the one path-behaviour hint
+    # (`readonly_path_fields` + `bind_dir_modes`). It's the one path-behaviour hint
     # with a consumer; `must_exist`/`path_policies` are still dropped.
     # `abbreviation` rides the same channel so `clickutil.build_options` can
     # emit a `-<abbrev>` short flag (see `steps.schema.ParamMeta`).

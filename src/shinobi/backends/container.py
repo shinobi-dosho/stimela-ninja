@@ -25,9 +25,8 @@ writable contributor makes the shared mount read-write. Where that collides
 with a declared write target -- the tool must write there, the input must stay
 untouchable -- both hold by nesting: the directory goes read-write and each
 read-only input inside it is re-asserted ``:ro`` at its own path. Verified
-identical on docker, podman and apptainer, in either emission order; a caller that
-cannot rely on nested-mount shadowing passes ``allow_nested_modes=False`` and
-gets a refusal instead. See ``bind_dir_modes``.
+identical on docker, podman, apptainer and a real kubelet, in either emission
+order. See ``bind_dir_modes``.
 """
 
 from __future__ import annotations
@@ -484,13 +483,7 @@ def _nearest_existing_dir(path: Path) -> Path | None:
         current = current.parent
 
 
-def bind_dir_modes(
-    scope: Scope,
-    inputs: dict[str, Any],
-    workdir: str,
-    *,
-    allow_nested_modes: bool = True,
-) -> list[tuple[str, bool]]:
+def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[tuple[str, bool]]:
     """`(path, writable)` for every bind mount: the parent directory of
     each File/MS-valued input, plus every absolute directory the scope is
     *declared* to write into, plus the working directory itself (always
@@ -528,34 +521,30 @@ def bind_dir_modes(
     be able to write its product, and the input it was told not to touch must
     stay untouchable. Both are honoured by *nesting* -- the directory is
     mounted read-write, and each read-only input inside it is re-asserted
-    `:ro` at its own path (a write target that is merely a subdirectory of a
-    read-only mount nests the other way round: the parent keeps `:ro`, the
-    target is mounted read-write inside it). Verified identical on docker and
-    apptainer, in both emission orders and for file- and directory-valued
-    inputs alike; the returned list is ordered parent-before-nested anyway, so
-    a runtime that honours order rather than depth still gets it right.
-
-    `allow_nested_modes=False` says the caller cannot express a nested mount
-    whose mode differs from its parent's, and turns every case that would need
-    one into a `BackendError` instead. The Kubernetes backend passes it,
-    because nothing here has been verified against a real kubelet and a
-    `readOnly` volumeMount that silently fails to shadow its parent would hand
-    a step write access to an input the cab declared read-only. Refusing is
-    the honest answer until someone proves the ordering on a real cluster.
+    `:ro` at its own path. A write target under a directory whose `:ro` a
+    *sibling* input earned nests the other way round: the parent keeps `:ro`,
+    the target is mounted read-write inside it. What no arrangement can
+    resolve is a target inside a read-only input's *own* path -- "never write
+    this" and "put a product here" over one tree -- so that is refused
+    outright, on every backend. Every runtime shadows a nested
+    mount the same way -- verified on docker, podman, apptainer and a real
+    kubelet (`readOnly` volumeMounts on a kind cluster), in both emission
+    orders and for file- and directory-valued inputs alike. The returned list
+    is ordered parent-before-nested anyway, so a runtime that honoured
+    emission order rather than path depth would still get it right.
 
     Raises:
         BackendError: If an absolute declared output directory has no
             existing ancestor short of the filesystem root -- unmountable,
             and silently discarding the step's product is the one outcome
-            this function exists to prevent. Or, under
-            `allow_nested_modes=False`, if honouring both a write target and
-            a `writable: false` input would require a nested mount.
+            this function exists to prevent.
     """
     modes: dict[str, bool] = {workdir: True}  # workdir is always writable
     order: list[str] = [workdir]
     # Read-only inputs by the directory they contributed, so that one whose
     # directory an output later upgrades can be re-asserted at its own path.
     readonly_paths: dict[str, list[str]] = {}
+    readonly_owner: dict[str, str] = {}  # read-only input path -> the field that declared it
     upgraded: list[str] = []
     declared = path_fields(scope.inputs_model)
     readonly = readonly_path_fields(scope.inputs_model)
@@ -583,6 +572,7 @@ def bind_dir_modes(
             parent = str(path.parent)
             if not writable and str(path) not in readonly_paths.setdefault(parent, []):
                 readonly_paths[parent].append(str(path))
+                readonly_owner[str(path)] = name
             if parent not in modes:
                 modes[parent] = writable
                 order.append(parent)
@@ -591,21 +581,10 @@ def bind_dir_modes(
 
     scope_name = getattr(scope, "name", "<scope>")
 
-    def refuse_nesting(target: str, source: str, blocked: str) -> BackendError:
-        return BackendError(
-            f"{scope_name}: declared {source} writes to '{target}', inside '{blocked}' which is mounted "
-            f"read-only because an input there is marked `writable: false`. Honouring both needs a nested "
-            f"mount whose mode differs from its parent's, which this backend cannot express reliably. Point "
-            f"the output somewhere else, or drop `writable: false` from the input if the tool really does "
-            f"write into that directory."
-        )
-
-    def make_writable(key: str, source: str) -> None:
+    def make_writable(key: str) -> None:
         """Mark `key` read-write, recording a read-only -> read-write flip so
         the inputs that earned it `:ro` can be re-asserted underneath."""
         if modes.get(key) is False:
-            if not allow_nested_modes and readonly_paths.get(key):
-                raise refuse_nesting(key, source, key)
             upgraded.append(key)
         modes[key] = True
 
@@ -614,8 +593,26 @@ def bind_dir_modes(
         # the sandbox's half of `declared_output_dirs` besides.
         if not outdir.is_absolute():
             continue
+        # A write target that *is*, or is inside, an input the cab marked
+        # `writable: false` is a contradiction in the declarations themselves
+        # -- "never write this" and "put a product here" name the same tree,
+        # and no arrangement of mounts honours both. Nesting resolves the
+        # neighbouring shape (a target beside such an input, or under a
+        # directory whose `:ro` a *sibling* input earned); it cannot resolve
+        # this one, so refuse before any of it. Checked ahead of the coverage
+        # test below because the contradiction is in the schema, not in how
+        # the mount table happened to come out.
+        conflict = next((p for paths in readonly_paths.values() for p in paths if outdir.is_relative_to(Path(p))), None)
+        if conflict is not None:
+            field = readonly_owner[conflict]
+            raise BackendError(
+                f"{scope_name}: declared {source} writes to '{outdir}', inside input '{field}' ('{conflict}') "
+                f"which is marked `writable: false`. Nothing can honour both -- the cab declares that input "
+                f"untouchable and declares a product inside it. Drop `writable: false` from '{field}' if the "
+                f"tool really does write there, or point the output outside it."
+            )
         if str(outdir) in modes:
-            make_writable(str(outdir), source)  # writable wins, same as for inputs
+            make_writable(str(outdir))  # writable wins, same as for inputs
             continue
         # Already inside a read-write mount: visible on the host as-is,
         # whether or not it exists yet. A read-only one is not skipped --
@@ -623,9 +620,6 @@ def bind_dir_modes(
         # read-only parent, which keeps its own classification).
         if any(outdir.is_relative_to(Path(d)) and w for d, w in modes.items()):
             continue
-        enclosing_readonly = next((d for d, w in modes.items() if not w and outdir.is_relative_to(Path(d))), None)
-        if enclosing_readonly is not None and not allow_nested_modes:
-            raise refuse_nesting(str(outdir), source, enclosing_readonly)
         target = _nearest_existing_dir(outdir)
         if target is None:
             raise BackendError(
@@ -637,7 +631,7 @@ def bind_dir_modes(
         key = str(target)
         if key not in modes:
             order.append(key)
-        make_writable(key, source)
+        make_writable(key)
 
     # Re-assert every `writable: false` input that a declared output has just
     # made its directory writable around, as a `:ro` mount at the input's own
@@ -648,18 +642,6 @@ def bind_dir_modes(
     for directory in upgraded:
         mounts.extend((path, False) for path in readonly_paths.get(directory, ()))
     return mounts
-
-
-def bind_dirs(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[str]:
-    """Parent directories of every File/MS-valued input, plus every absolute
-    directory the scope declares it writes into, plus the working directory
-    itself -- and, where those two collide, the path of each read-only input
-    re-asserted inside the directory that collision made writable (so not
-    every entry is a directory). Order-preserving, de-duplicated. See
-    `bind_dir_modes` for how each is derived and for the read-only/read-write
-    classification (this drops the classification, returning just the paths --
-    used by callers that mount everything read-write)."""
-    return [d for d, _ in bind_dir_modes(scope, inputs, workdir)]
 
 
 def _rootless(runtime: str) -> bool:

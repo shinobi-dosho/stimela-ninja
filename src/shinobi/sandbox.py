@@ -121,7 +121,7 @@ def absolutize_path_inputs(scope: Scope, prepared: dict[str, Any], workspace: Pa
     """A copy of `prepared` with every relative path-typed input value
     anchored at `workspace`, so the tool still finds (and mutates in place)
     the caller's real files when its cwd is the sandbox. Same field
-    classification as container bind-mounting (`backends.container.bind_dirs`):
+    classification as container bind-mounting (`backends.container.bind_dir_modes`):
     declared fields via `path_fields`, dynamically pattern-matched Cab inputs
     via their `ParamMeta.dtype`. Non-path values pass through untouched --
     notably, a *string*-typed output-prefix input stays relative, so the tool
