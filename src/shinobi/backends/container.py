@@ -21,10 +21,12 @@ reaches the host instead of dying with the container.
 
 A directory contributed *only* by input fields marked ``writable: false`` in
 the schema (``readonly_path_fields``) is bind-mounted read-only (``:ro``); any
-writable contributor makes the shared mount read-write. Where that collides
-with a declared write target -- the tool must write there, the input must stay
-untouchable -- both hold by nesting: the directory goes read-write and each
-read-only input inside it is re-asserted ``:ro`` at its own path. Verified
+writable contributor makes the shared mount read-write. Wherever that collides
+with something that must be able to write -- a declared write target, or simply
+another input -- both hold by nesting: the directory goes read-write and each
+read-only input inside it is re-asserted ``:ro`` at its own path. A cab that
+declares something writable *inside* a read-only input is refused instead;
+no arrangement of mounts satisfies that. Verified
 identical on docker, podman, apptainer and a real kubelet, in either emission
 order. See ``bind_dir_modes``.
 """
@@ -494,9 +496,11 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
     schema (`readonly_path_fields`). Any writable contributor -- including the
     default for an unmarked field, or a Python-typed pystep input, or a
     dynamically-named `ParamPattern` cab input (which carries no `writable`
-    metadata) -- makes the shared directory read-write. This means an in-place
-    MS in a writable `msdir` stays writable even if a read-only input happens to
-    resolve to the same parent.
+    metadata) -- makes the shared *directory* read-write, so an in-place MS in a
+    writable `msdir` stays writable even when a read-only input resolves to the
+    same parent. The read-only input is not collateral of that, though: it is
+    re-asserted `:ro` at its own path, nested inside (see below). Only a
+    directory with no writable contributor at all is mounted `:ro` whole.
 
     Covers both declared fields (via `path_fields`, which inspects the type
     annotation) and dynamically-named `ParamPattern` inputs. Pattern-matched
@@ -516,17 +520,18 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
     contributes its nearest existing ancestor -- the tool then creates its own
     output tree exactly as it would natively.
 
-    A declared write target and an input marked `writable: false` can name the
-    same directory, and then neither declaration can be dropped: the tool must
-    be able to write its product, and the input it was told not to touch must
-    stay untouchable. Both are honoured by *nesting* -- the directory is
-    mounted read-write, and each read-only input inside it is re-asserted
-    `:ro` at its own path. A write target under a directory whose `:ro` a
+    An input marked `writable: false` can share a directory with something
+    that has to be writable -- a declared write target, or another input -- and
+    then neither declaration can be dropped: the write must land, and the input
+    it was told not to touch must stay untouchable. Both are honoured by
+    *nesting* -- the directory is mounted read-write, and each read-only input
+    inside it is re-asserted `:ro` at its own path. A write target under a directory whose `:ro` a
     *sibling* input earned nests the other way round: the parent keeps `:ro`,
     the target is mounted read-write inside it. What no arrangement can
-    resolve is a target inside a read-only input's *own* path -- "never write
-    this" and "put a product here" over one tree -- so that is refused
-    outright, on every backend. Every runtime shadows a nested
+    resolve is something writable inside a read-only input's *own* path --
+    "never write this" and "write here" over one tree -- whether that is a
+    write target, another input, or the working directory. All three are
+    refused outright, on every backend. Every runtime shadows a nested
     mount the same way -- verified on docker, podman, apptainer and a real
     kubelet (`readOnly` volumeMounts on a kind cluster), in both emission
     orders and for file- and directory-valued inputs alike. The returned list
@@ -537,7 +542,10 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
         BackendError: If an absolute declared output directory has no
             existing ancestor short of the filesystem root -- unmountable,
             and silently discarding the step's product is the one outcome
-            this function exists to prevent.
+            this function exists to prevent. Or if a `writable: false` input
+            contains something that must be writable -- a write target, another
+            input, or the working directory -- which no mount arrangement can
+            satisfy.
     """
     modes: dict[str, bool] = {workdir: True}  # workdir is always writable
     order: list[str] = [workdir]
@@ -545,7 +553,7 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
     # directory an output later upgrades can be re-asserted at its own path.
     readonly_paths: dict[str, list[str]] = {}
     readonly_owner: dict[str, str] = {}  # read-only input path -> the field that declared it
-    upgraded: list[str] = []
+    writable_owner: dict[str, str] = {}  # writable mount dir -> an input field that made it writable
     declared = path_fields(scope.inputs_model)
     readonly = readonly_path_fields(scope.inputs_model)
     # Only Cabs carry dynamically-named `ParamPattern` inputs; bare Scopes
@@ -573,6 +581,8 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
             if not writable and str(path) not in readonly_paths.setdefault(parent, []):
                 readonly_paths[parent].append(str(path))
                 readonly_owner[str(path)] = name
+            if writable:
+                writable_owner.setdefault(parent, name)
             if parent not in modes:
                 modes[parent] = writable
                 order.append(parent)
@@ -580,13 +590,6 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
                 modes[parent] = modes[parent] or writable  # writable wins
 
     scope_name = getattr(scope, "name", "<scope>")
-
-    def make_writable(key: str) -> None:
-        """Mark `key` read-write, recording a read-only -> read-write flip so
-        the inputs that earned it `:ro` can be re-asserted underneath."""
-        if modes.get(key) is False:
-            upgraded.append(key)
-        modes[key] = True
 
     for outdir, source in declared_output_dirs(scope, inputs):
         # Relative outputs land under the (always-mounted) workdir, and are
@@ -612,7 +615,7 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
                 f"tool really does write there, or point the output outside it."
             )
         if str(outdir) in modes:
-            make_writable(str(outdir))  # writable wins, same as for inputs
+            modes[str(outdir)] = True  # writable wins, same as for inputs
             continue
         # Already inside a read-write mount: visible on the host as-is,
         # whether or not it exists yet. A read-only one is not skipped --
@@ -631,16 +634,37 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
         key = str(target)
         if key not in modes:
             order.append(key)
-        make_writable(key)
+        modes[key] = True
 
-    # Re-assert every `writable: false` input that a declared output has just
-    # made its directory writable around, as a `:ro` mount at the input's own
-    # path nested inside that directory. Both declarations then hold exactly:
-    # the tool can write its product, and the input it was told not to touch
-    # is still read-only. Emitted last, after the directory they nest in.
+    # The same contradiction from the other side: an input the cab marked
+    # `writable: false` cannot contain something else that has to be writable.
+    # A writable input *inside* a read-only one (a sub-table of an MS declared
+    # untouchable), or a working directory sitting inside it, is the same
+    # "never write this" / "write here" collision a write target would be, and
+    # is refused the same way. Checked over the final mount table so it catches
+    # a directory made writable by any route.
+    for ro_path, field in readonly_owner.items():
+        intruder = next((d for d in order if modes[d] and Path(d).is_relative_to(Path(ro_path))), None)
+        if intruder is None:
+            continue
+        culprit = f"the step's working directory ('{intruder}')" if intruder == workdir else f"input {writable_owner.get(intruder, '?')!r} (in '{intruder}')"
+        raise BackendError(
+            f"{scope_name}: input '{field}' ('{ro_path}') is marked `writable: false`, but {culprit} has to be "
+            f"mounted read-write inside it. Nothing can honour both -- the cab declares that input untouchable "
+            f"and something writable within it. Drop `writable: false` from '{field}' if the tool really does "
+            f"write inside it, or move what needs writing outside it."
+        )
+
+    # Re-assert every `writable: false` input that shares a directory with
+    # something writable -- another input, or a declared write target -- as a
+    # `:ro` mount at the input's own path, nested inside that directory. Both
+    # declarations then hold exactly: whatever needs to write can, and the
+    # input the cab said not to touch stays untouchable. Emitted after the
+    # directory they nest in, walking `order` so that stays true.
     mounts = [(d, modes[d]) for d in order]
-    for directory in upgraded:
-        mounts.extend((path, False) for path in readonly_paths.get(directory, ()))
+    for directory in order:
+        if modes[directory]:
+            mounts.extend((path, False) for path in readonly_paths.get(directory, ()))
     return mounts
 
 

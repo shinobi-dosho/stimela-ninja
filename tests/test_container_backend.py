@@ -226,14 +226,49 @@ def test_apptainer_mounts_writable_false_directory_read_only():
     assert binds == {"/work:/work", "/rawdata:/rawdata:ro"}
 
 
-def test_shared_parent_stays_writable_when_any_contributor_is_writable():
-    # a read-only and a writable input resolving to the same parent -> writable
-    # wins (an in-place MS in msdir must stay writable).
+def test_shared_parent_stays_writable_and_reasserts_the_read_only_input():
+    # A read-only and a writable input resolving to the same parent: writable
+    # still wins for the *directory* (an in-place MS in msdir must stay
+    # writable), but the read-only input beside it is no longer collateral --
+    # it is re-asserted `:ro` at its own path, nested inside. Verified live on
+    # docker: the writable MS mutates, the read-only one refuses the write.
     cab = make_cab_with_paths(ro_fields=["raw"], rw_fields=["work_ms"])
     argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["tool"], {"raw": "/shared/a.ms", "work_ms": "/shared/b.ms"})
-    mounts = {argv[i + 1] for i, a in enumerate(argv) if a == "-v"}
+    mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
     assert "/shared:/shared" in mounts
     assert "/shared:/shared:ro" not in mounts
+    assert "/shared/a.ms:/shared/a.ms:ro" in mounts  # the read-only input itself
+    assert mounts.index("/shared:/shared") < mounts.index("/shared/a.ms:/shared/a.ms:ro")
+
+
+def test_read_only_input_alone_still_mounts_its_whole_parent_read_only():
+    # No writable contributor -> nothing to nest inside; the directory itself
+    # carries the classification, exactly as before.
+    cab = make_cab_with_paths(ro_fields=["raw"])
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["tool"], {"raw": "/shared/a.ms"})
+    mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    assert mounts == ["/work:/work", "/shared:/shared:ro"]
+
+
+def test_writable_input_inside_a_read_only_directory_input_is_refused(tmp_path):
+    # The reverse of the write-target contradiction, and the same verdict: a
+    # cab cannot declare a directory untouchable and something writable inside
+    # it. Before, the inner input silently mounted its parent read-write.
+    store = tmp_path / "store"
+    (store / "sub").mkdir(parents=True)
+    cab = make_cab_with_paths(ro_fields=["store"], rw_fields=["inner"])
+    with pytest.raises(BackendError) as exc:
+        bind_dir_modes(cab, {"store": str(store), "inner": f"{store}/sub/x.ms"}, "/work")
+    assert "'store'" in str(exc.value) and "'inner'" in str(exc.value)
+
+
+def test_workdir_inside_a_read_only_directory_input_is_refused(tmp_path):
+    # The working directory is always writable, so it collides the same way.
+    store = tmp_path / "store"
+    store.mkdir()
+    cab = make_cab_with_paths(ro_fields=["store"])
+    with pytest.raises(BackendError, match="working directory"):
+        bind_dir_modes(cab, {"store": str(store)}, f"{store}/run")
 
 
 def test_unmarked_path_field_mounts_read_write():
