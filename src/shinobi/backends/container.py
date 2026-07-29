@@ -586,11 +586,12 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
 
 
 def bind_dirs(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[str]:
-    """Parent directories of every File/MS-valued input, plus the working
-    directory itself. Order-preserving, de-duplicated. See `bind_dir_modes`
-    for the read-only/read-write classification (this drops it, returning just
-    the directories -- used by callers that mount everything read-write, e.g.
-    the Kubernetes backend)."""
+    """Parent directories of every File/MS-valued input, plus every absolute
+    directory the scope declares it writes into, plus the working directory
+    itself. Order-preserving, de-duplicated. See `bind_dir_modes` for how each
+    is derived and for the read-only/read-write classification (this drops the
+    classification, returning just the directories -- used by callers that
+    mount everything read-write, e.g. the Kubernetes backend)."""
     return [d for d, _ in bind_dir_modes(scope, inputs, workdir)]
 
 

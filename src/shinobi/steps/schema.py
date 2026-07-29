@@ -344,9 +344,11 @@ def declared_output_dirs(scope: Scope, prepared: dict[str, Any]) -> list[tuple[P
     for name in scope.outputs_model.model_fields:
         if name not in declared:
             continue
-        # Same priority as `_fill_outputs`: a same-named input -- even one
-        # that is present but None -- beats `implicit`, which beats the
-        # field default.
+        # Same priority as `_fill_outputs`: a same-named input beats
+        # `implicit`, which beats the field default. Membership, not
+        # truthiness, is what decides -- a *present* input wins even when its
+        # value is None, so the `continue` below is that input suppressing
+        # the template, not a fallthrough to it.
         value = None
         if name in prepared:
             value = prepared[name]
