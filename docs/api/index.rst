@@ -34,6 +34,8 @@ Supporting types used when defining cabs, not re-exported at the top level.
 
 .. autofunction:: shinobi.steps.schema.path_fields
 
+.. autofunction:: shinobi.steps.schema.declared_output_dirs
+
 Execution
 ---------
 

@@ -215,6 +215,127 @@ def test_bind_dir_modes_classifies_read_only_and_workdir():
     assert modes == {"/work": True, "/rawdata": False, "/msdir": True}
 
 
+# -- declared output directories ----------------------------------------------
+#
+# A tool's output stem is conventionally a *string*-typed input (wsclean's
+# `prefix`), so it contributes no path field and no mount of its own. Point one
+# outside the workdir and, without the output side being read too, the tool
+# writes into the container: silently discarded on `docker run --rm`.
+
+
+def make_prefix_cab(implicit="{prefix}-MFS-image.fits", harvest=(), outputs=None) -> Cab:
+    """The wsclean shape: a string-typed output stem, and a path-typed output
+    field whose `implicit` template is what actually declares where it lands."""
+    return Cab(
+        name="wsclean",
+        command="wsclean",
+        image="tool:latest",
+        inputs_model=build_model("In", {"prefix": ("str", False, None), "ms": ("MS", False, None)}),
+        outputs_model=build_model("Out", outputs if outputs is not None else {"restored_image": ("File", False, None)}),
+        field_meta={"restored_image": ParamMeta(implicit=implicit)} if implicit else {},
+        harvest=list(harvest),
+    )
+
+
+def test_string_typed_output_prefix_mounts_its_directory_read_write(tmp_path):
+    outdir = tmp_path / "imaging"
+    outdir.mkdir()
+    cab = make_prefix_cab()
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["wsclean"], {"prefix": f"{outdir}/img"})
+    mounts = {argv[i + 1] for i, a in enumerate(argv) if a == "-v"}
+    assert mounts == {"/work:/work", f"{outdir}:{outdir}"}
+
+
+def test_output_directory_that_does_not_exist_yet_mounts_nearest_existing_ancestor(tmp_path):
+    # The tool creates its own output tree (`mkdir -p`); mounting the deepest
+    # existing ancestor gives it exactly what a native run would have.
+    cab = make_prefix_cab()
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["wsclean"], {"prefix": f"{tmp_path}/run1/deep/img"})
+    mounts = {argv[i + 1] for i, a in enumerate(argv) if a == "-v"}
+    assert mounts == {"/work:/work", f"{tmp_path}:{tmp_path}"}
+
+
+def test_unmountable_output_directory_is_refused_by_name():
+    cab = make_prefix_cab()
+    with pytest.raises(BackendError) as exc:
+        DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["wsclean"], {"prefix": "/no-such-root-a9f3/run1/img"})
+    message = str(exc.value)
+    assert "restored_image" in message  # names the declaration...
+    assert "/no-such-root-a9f3/run1" in message  # ...and the directory
+
+
+def test_apptainer_binds_declared_output_directory(tmp_path):
+    cab = make_prefix_cab()
+    argv, _ = ApptainerBackend(workdir="/work")._wrap(cab, ["wsclean"], {"prefix": f"{tmp_path}/img"})
+    binds = {argv[i + 1] for i, a in enumerate(argv) if a == "--bind"}
+    assert binds == {"/work:/work", f"{tmp_path}:{tmp_path}"}
+
+
+def test_harvest_pattern_directory_is_mounted(tmp_path):
+    # No path-typed output field at all -- `harvest` is the whole declaration.
+    cab = make_prefix_cab(implicit=None, outputs={}, harvest=["{prefix}-*.fits"])
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["wsclean"], {"prefix": f"{tmp_path}/img"})
+    mounts = {argv[i + 1] for i, a in enumerate(argv) if a == "-v"}
+    assert mounts == {"/work:/work", f"{tmp_path}:{tmp_path}"}
+
+
+def test_relative_output_prefix_adds_no_mount():
+    # It lands under the workdir, which is always mounted; and the sandbox
+    # relies on exactly this staying relative.
+    cab = make_prefix_cab()
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["wsclean"], {"prefix": "img/run1"})
+    mounts = {argv[i + 1] for i, a in enumerate(argv) if a == "-v"}
+    assert mounts == {"/work:/work"}
+
+
+def test_output_under_an_input_directory_adds_no_second_mount(tmp_path):
+    ms = tmp_path / "obs.ms"
+    cab = make_prefix_cab()
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["wsclean"], {"ms": str(ms), "prefix": f"{tmp_path}/img"})
+    mounts = {argv[i + 1] for i, a in enumerate(argv) if a == "-v"}
+    assert mounts == {"/work:/work", f"{tmp_path}:{tmp_path}"}  # the input's mount already covers it
+
+
+def test_declared_output_upgrades_a_read_only_input_directory_to_writable(tmp_path):
+    # `writable: false` on an input cannot be honoured for a directory the cab
+    # itself declares it writes into -- the mount would be one the tool
+    # provably cannot use. Writable wins, as it does between two inputs.
+    cab = Cab(
+        name="wsclean",
+        command="wsclean",
+        image="tool:latest",
+        inputs_model=create_model(
+            "In",
+            prefix=(Optional[str], None),
+            ms=(Optional[Path], Field(None, json_schema_extra={"writable": False})),
+        ),
+        outputs_model=build_model("Out", {"restored_image": ("File", False, None)}),
+        field_meta={"restored_image": ParamMeta(implicit="{prefix}-MFS-image.fits")},
+    )
+    modes = dict(bind_dir_modes(cab, {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/img"}, "/work"))
+    assert modes == {"/work": True, str(tmp_path): True}
+
+
+def test_absolute_output_outside_a_read_only_input_directory_nests_its_own_mount(tmp_path):
+    # The read-only classification survives when the write target is a
+    # *subdirectory*: the parent stays `:ro`, the target is mounted inside it.
+    (tmp_path / "products").mkdir()
+    cab = Cab(
+        name="wsclean",
+        command="wsclean",
+        image="tool:latest",
+        inputs_model=create_model(
+            "In",
+            prefix=(Optional[str], None),
+            ms=(Optional[Path], Field(None, json_schema_extra={"writable": False})),
+        ),
+        outputs_model=build_model("Out", {"restored_image": ("File", False, None)}),
+        field_meta={"restored_image": ParamMeta(implicit="{prefix}-MFS-image.fits")},
+    )
+    modes = dict(bind_dir_modes(cab, {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/products/img"}, "/work"))
+    assert modes == {"/work": True, str(tmp_path): False, f"{tmp_path}/products": True}
+
+
 def test_apptainer_image_uri_scheme_handling():
     from shinobi.backends.container import _apptainer_image_uri
 

@@ -22,7 +22,7 @@ from shinobi.sandbox import (
     relativize_path_outputs,
 )
 from shinobi.steps.dispatch import register_step_backend
-from shinobi.steps.schema import Cab, ParamMeta, Recipe, Scope, StepRef
+from shinobi.steps.schema import Cab, ParamMeta, Recipe, Scope, StepRef, declared_output_dirs
 
 WORK_ROOT = ".shinobi/work"
 
@@ -347,6 +347,23 @@ def test_prepare_parents_none_input_suppresses_implicit_like_fill_outputs(tmp_pa
     )
     prepare_output_parents(cab, {"image": None}, tmp_path)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_declared_output_dirs_decides_priority_by_membership_not_truthiness():
+    # The rule `_fill_outputs` uses, stated at the resolver both halves share:
+    # a *present* same-named input wins even when its value is None (so the
+    # template is suppressed, not fallen through to); an absent one lets the
+    # template resolve. Container bind mounts ride on this as much as
+    # sandbox pre-creation does.
+    cab = Cab(
+        name="c",
+        command="/bin/true",
+        inputs_model=build_model("In", {"image": ("str", False, None), "prefix": ("str", False, None)}),
+        outputs_model=build_model("Out", {"image": ("File", False, None)}),
+        field_meta={"image": ParamMeta(implicit="{prefix}/out.fits")},
+    )
+    assert declared_output_dirs(cab, {"image": None, "prefix": "img"}) == []
+    assert declared_output_dirs(cab, {"prefix": "img"}) == [(Path("img"), "output 'image'")]
 
 
 def test_prepare_parents_skips_malformed_implicit_templates(tmp_path):
