@@ -68,7 +68,7 @@ from typing import TYPE_CHECKING, Any, Callable, get_type_hints
 
 from pydantic import BaseModel, create_model
 
-from shinobi.backends._stream import run_streaming
+from shinobi.backends._stream import display_label, run_streaming
 from shinobi.config import AppConfig
 from shinobi.exceptions import CabRunError
 from shinobi.results import StepResult, explain_returncode
@@ -453,7 +453,7 @@ def _run_pystep_subprocess(
 
         launch = launcher.build(runner_path, workdir, extra_dirs, run_prepared)
 
-        run = run_streaming(launch.argv, label=ctx._cache_path or scope.name, stream=ctx._stream, cwd=launch.cwd, env=launch.env)
+        run = run_streaming(launch.argv, label=display_label(ctx._cache_path) if ctx._cache_path else scope.name, stream=ctx._stream, cwd=launch.cwd, env=launch.env)
 
         if run.returncode != 0:
             stderr_tail = (run.stderr or "").strip()

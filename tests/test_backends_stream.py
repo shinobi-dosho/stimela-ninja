@@ -6,7 +6,9 @@ changing the blocking `Backend.run() -> BackendRun` contract.
 
 import sys
 
-from shinobi.backends._stream import run_streaming
+import pytest
+
+from shinobi.backends._stream import display_label, run_streaming
 
 _ARGV = [
     sys.executable,
@@ -51,3 +53,23 @@ def test_nonzero_returncode_preserved_when_streaming():
     result = run_streaming([sys.executable, "-c", "import sys; sys.exit(3)"], label="t", stream=True)
     assert result.returncode == 3
     assert not result.success
+
+
+# ---- display_label ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "cache_path,expected",
+    [
+        ("myrecipe.stepA", "stepA"),
+        ("myrecipe.stepA.stepB", "stepA.stepB"),
+        ("caracal_pipeline_241f3ea5a2b77240.selfcal.cycle1_solve", "selfcal.cycle1_solve"),
+        # a scattered slice keeps its index -- that is per-line information
+        ("myrecipe.transform[2].split", "transform[2].split"),
+        # no root to drop: a step run outside any recipe
+        ("standalone_cab", "standalone_cab"),
+        ("", ""),
+    ],
+)
+def test_display_label_drops_only_the_root_scope(cache_path, expected):
+    assert display_label(cache_path) == expected

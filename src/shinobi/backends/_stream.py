@@ -7,6 +7,9 @@ returns a complete `BackendRun(returncode, stdout, stderr)`.
 `stream=True` adds a side channel (each line echoed to the terminal, via
 `click.echo`, as it arrives, prefixed with a caller-supplied label) on top
 of that same contract -- it does not change what's captured or returned.
+
+`display_label` is the label callers should derive from a step's dotted
+cache path -- see its own docstring.
 """
 
 from __future__ import annotations
@@ -18,6 +21,26 @@ from typing import Any
 import click
 
 from shinobi.results import BackendRun
+
+
+def display_label(cache_path: str) -> str:
+    """A step's dotted cache path as shown to a human, i.e. without its root
+    scope name.
+
+    The cache path is rooted at the top-level scope (`myrecipe.stepA.stepB`)
+    because that is what keys the cache manifest, and it must stay that way.
+    But the root segment is the *same on every line of a run*, and this
+    prefix is repeated once per line of forwarded tool output -- so in a log
+    it is pure column width. A 36-character root (caracal generates
+    `caracal_pipeline_<sha256[:16]>` to keep two pipeline configs from
+    colliding in one cache dir) pushed real content off the right of an
+    80-column terminal entirely.
+
+    A path with no dot is a step run outside any recipe: there is no root to
+    drop, and it is returned unchanged.
+    """
+    root, dot, rest = cache_path.partition(".")
+    return rest if dot else cache_path
 
 
 def _pump(stream, sink: list[str], *, label: str, err: bool) -> None:
