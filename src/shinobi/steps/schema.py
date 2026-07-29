@@ -297,6 +297,90 @@ def readonly_path_fields(model: type[BaseModel]) -> set[str]:
     return result
 
 
+_GLOB_CHARS = frozenset("*?[")
+
+
+def declared_output_dirs(scope: Scope, prepared: dict[str, Any]) -> list[tuple[Path, str]]:
+    """``(directory, source)`` for every directory the step is *declared* to
+    write into, resolved before the run from the declarations alone -- never
+    from the shape of an input's value.
+
+    This is the answer to "where does this tool put its products", which a
+    field's dtype cannot express: the established way to declare an output
+    stem is a *string*-typed input (wsclean's ``prefix``, ddfacet's
+    ``Output-Name``), deliberately so, because a path dtype would be
+    rewritten by `sandbox.absolutize_path_inputs` and the tool would then
+    write outside the sandbox. The write target is instead declared by the
+    output side: a path-typed output field whose ``implicit`` template names
+    the input (``"{prefix}-MFS-image.fits"``), or a ``harvest`` glob.
+
+    Knowable pre-run means, per path-typed output field and in declaration
+    order: its value taken from a same-named input, its resolved ``implicit``
+    template, or its field default -- the same priority as `_fill_outputs`.
+    Then the literal (glob-free) directory prefix of each ``harvest``
+    pattern. `source` describes the declaration (``output 'restored_image'``,
+    ``harvest pattern '{prefix}-*.fits'``) so callers can name it in an error.
+
+    Both relative and absolute directories are returned, order-preserving
+    and de-duplicated; ``.`` and anything containing ``..`` is dropped. The
+    two consumers filter complementary halves: `sandbox` pre-creates the
+    *relative* ones inside the scratch dir, the container backend bind-mounts
+    the *absolute* ones so a product declared outside the workdir still
+    reaches the host. Best-effort by design -- a template that fails to
+    resolve is skipped here, not raised; output filling and harvest report
+    those errors with full context.
+    """
+    dirs: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+
+    def add(path: Path, source: str) -> None:
+        if path == Path(".") or ".." in path.parts or path in seen:
+            return
+        seen.add(path)
+        dirs.append((path, source))
+
+    field_meta = getattr(scope, "field_meta", {})
+    declared = path_fields(scope.outputs_model)
+    for name in scope.outputs_model.model_fields:
+        if name not in declared:
+            continue
+        # Same priority as `_fill_outputs`: a same-named input -- even one
+        # that is present but None -- beats `implicit`, which beats the
+        # field default.
+        value = None
+        if name in prepared:
+            value = prepared[name]
+        else:
+            meta = field_meta.get(name)
+            if meta is not None and isinstance(meta.implicit, str):
+                try:
+                    value = meta.implicit.format(**prepared)
+                except Exception:  # noqa: BLE001 -- best-effort; output filling reports the real error
+                    pass
+            else:
+                field = scope.outputs_model.model_fields[name]
+                if not field.is_required():
+                    value = field.get_default(call_default_factory=True)
+        if value is None:
+            continue
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            add(Path(str(item)).parent, f"output {name!r}")
+
+    for pattern in scope.harvest:
+        try:
+            resolved = Path(pattern.format(**prepared))
+        except Exception:  # noqa: BLE001 -- best-effort; harvest reports the real error
+            continue
+        literal: list[str] = []
+        for part in resolved.parts[:-1]:
+            if _GLOB_CHARS & set(part):
+                break
+            literal.append(part)
+        if literal:
+            add(Path(*literal), f"harvest pattern {pattern!r}")
+    return dirs
+
+
 class Scope(BaseModel):
     """Definition: schema, metadata, backend config. Never carries
     inputs/outputs/func fields -- those live in ExecContext/StepRef.

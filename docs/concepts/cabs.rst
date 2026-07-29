@@ -57,6 +57,42 @@ loaders use, :func:`shinobi.loaders.build_model`, builds one from a
 ``File`` and ``MS`` dtypes are meaningful beyond typing: the container and
 cluster backends inspect them to decide which paths to bind-mount.
 
+.. _declaring-where-a-tool-writes:
+
+Declaring where a tool writes
+-----------------------------
+
+Many tools name their output *family* with a single stem parameter -- wsclean's
+``prefix``, ddfacet's ``Output-Name`` -- from which they derive a dozen actual
+files. Declare that stem as a plain ``str``, not as a ``File``: a path dtype
+would be rewritten to an absolute workspace path when the step runs
+:doc:`sandboxed <sandbox>`, and the tool would then write its family outside
+the sandbox where harvest cannot see it.
+
+That leaves the *outputs* side to say where the products land, and it must say
+so, because nothing else can:
+
+.. code-block:: python
+
+    wsclean = Cab(
+        name="wsclean",
+        command="wsclean",
+        image="quay.io/stimela/wsclean:latest",
+        inputs_model=build_model("In", {"prefix": ("str", True, None)}),
+        outputs_model=build_model("Out", {"restored_image": ("File", False, None)}),
+        field_meta={"restored_image": ParamMeta(implicit="{prefix}-MFS-image.fits")},
+        harvest=["{prefix}-*.fits"],  # the rest of the family
+    )
+
+An ``implicit`` template on a ``File``-dtype output, or a ``harvest`` glob, is
+what tells shinobi that ``prefix`` names a write target. Both are resolved
+against the step's own inputs *before* the run, and drive real behaviour: the
+sandbox pre-creates the directories they imply, and the container backends
+bind-mount them so a product written outside the working directory reaches the
+host instead of dying inside the container. A cab that declares neither is
+taken at its word -- a bare ``str`` stem is just a string, and a value pointing
+somewhere no declaration mentions gets no mount.
+
 Turning parameters into argv
 ----------------------------
 

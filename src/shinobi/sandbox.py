@@ -50,7 +50,7 @@ from typing import Any
 
 from shinobi.exceptions import ParameterError, StepError
 from shinobi.loaders._modelgen import is_file_dtype
-from shinobi.steps.schema import Cab, Scope, path_fields
+from shinobi.steps.schema import Cab, Scope, declared_output_dirs, path_fields
 
 
 def create_sandbox(root: str, label: str) -> Path:
@@ -65,73 +65,24 @@ def create_sandbox(root: str, label: str) -> Path:
     return Path(tempfile.mkdtemp(prefix=f"{safe_label}-", dir=root_path)).resolve()
 
 
-_GLOB_CHARS = frozenset("*?[")
-
-
 def prepare_output_parents(scope: Scope, prepared: dict[str, Any], sandbox_dir: Path) -> list[Path]:
     """Pre-create, inside the fresh sandbox, the parent directories of every
-    relative output path knowable before the run. Tools generally don't
-    ``mkdir -p`` their own output stems (wsclean's ``-name``, ragavi's
-    ``htmlname``), so a relative output like ``plots/gain.html`` that works
-    in the workspace -- where the caller made ``plots/`` -- crashes the tool
-    inside an empty sandbox. Knowable pre-run means: a declared path-typed
-    output's value taken from the same-named input, its resolved ``implicit``
-    template, or its field default (the same priority as output filling);
-    plus the literal (glob-free) directory prefix of each ``harvest``
-    pattern -- the declaration through which string-typed output stems say
-    where their files land. Best-effort by design: a template that fails to
-    resolve is skipped here, not raised -- output filling and harvest report
-    those errors with full context.
+    *relative* declared output directory (`schema.declared_output_dirs`).
+    Tools generally don't ``mkdir -p`` their own output stems (wsclean's
+    ``-name``, ragavi's ``htmlname``), so a relative output like
+    ``plots/gain.html`` that works in the workspace -- where the caller made
+    ``plots/`` -- crashes the tool inside an empty sandbox.
+
+    Absolute declared outputs are skipped: they bypass the sandbox entirely
+    (the tool writes them straight to their destination), which is also why
+    the container backend takes exactly the half this one drops -- it has to
+    bind-mount them for the write to reach the host at all.
 
     Returns every directory it created, for `prune_unused_parents`: harvest
     assumes anything present in the sandbox was written by the tool, so the
     dirs the tool never used must be removed again before harvesting.
     """
-    dirs: set[Path] = set()
-
-    def collect(value: Any) -> None:
-        for item in value if isinstance(value, (list, tuple)) else [value]:
-            path = Path(str(item))
-            if path.is_absolute() or ".." in path.parts:
-                continue
-            if path.parent != Path("."):
-                dirs.add(path.parent)
-
-    field_meta = getattr(scope, "field_meta", {})
-    for name in path_fields(scope.outputs_model):
-        # Same priority as `_fill_outputs`: a same-named input -- even one
-        # that is present but None -- beats `implicit`, which beats the
-        # field default.
-        value = None
-        if name in prepared:
-            value = prepared[name]
-        else:
-            meta = field_meta.get(name)
-            if meta is not None and isinstance(meta.implicit, str):
-                try:
-                    value = meta.implicit.format(**prepared)
-                except Exception:  # noqa: BLE001 -- best-effort; output filling reports the real error
-                    pass
-            else:
-                field = scope.outputs_model.model_fields[name]
-                if not field.is_required():
-                    value = field.get_default(call_default_factory=True)
-        if value is not None:
-            collect(value)
-    for pattern in scope.harvest:
-        try:
-            resolved = Path(pattern.format(**prepared))
-        except Exception:  # noqa: BLE001 -- best-effort; harvest reports the real error
-            continue
-        if resolved.is_absolute() or ".." in resolved.parts:
-            continue
-        literal: list[str] = []
-        for part in resolved.parts[:-1]:
-            if _GLOB_CHARS & set(part):
-                break
-            literal.append(part)
-        if literal:
-            dirs.add(Path(*literal))
+    dirs = {d for d, _ in declared_output_dirs(scope, prepared) if not d.is_absolute()}
     created: list[Path] = []
     for rel in sorted(dirs):
         path = sandbox_dir

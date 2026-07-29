@@ -12,6 +12,13 @@ sees the same paths the caller used. This is why Backend.run() is handed
 the validated inputs model, not just argv -- argv is just strings by that
 point, with no memory of which of them are paths.
 
+The cab's *output* side is read the same way, because a tool's output stem is
+conventionally declared as a string-typed input (wsclean's ``prefix``) that
+contributes no path field of its own: the directories a path-typed output or
+``harvest`` pattern resolves to (``schema.declared_output_dirs``) are mounted
+read-write when absolute, so a product written outside the workdir still
+reaches the host instead of dying with the container.
+
 A directory contributed *only* by input fields marked ``writable: false`` in
 the schema (``readonly_path_fields``) is bind-mounted read-only (``:ro``); any
 writable contributor makes the shared mount read-write. See ``bind_dir_modes``.
@@ -41,7 +48,7 @@ from shinobi.exceptions import BackendError
 from shinobi.loaders._modelgen import is_file_dtype
 from shinobi.resources import delegated_controllers
 from shinobi.results import BackendRun
-from shinobi.steps.schema import Cab, Scope, path_fields, readonly_path_fields
+from shinobi.steps.schema import Cab, Scope, declared_output_dirs, path_fields, readonly_path_fields
 
 logger = logging.getLogger(__name__)
 
@@ -452,9 +459,29 @@ def _pin_image(runtime: str, image: str) -> tuple[str, str | None]:
     return ref, None
 
 
+def _nearest_existing_dir(path: Path) -> Path | None:
+    """The deepest of `path` and its ancestors that exists as a directory on
+    this host, or `None` if that search only reaches the filesystem root.
+
+    A declared output directory need not exist yet -- a tool that creates its
+    own output tree (``mkdir -p``) is given the nearest existing ancestor to
+    write into, which is exactly what it would have had running natively. The
+    root is refused rather than mounted: binding `/` read-write to satisfy a
+    typo'd output path is never the lesser evil.
+    """
+    current = path
+    while True:
+        if current.parent == current:  # reached `/` without finding anything
+            return None
+        if os.path.isdir(current):
+            return current
+        current = current.parent
+
+
 def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[tuple[str, bool]]:
     """`(directory, writable)` for every bind mount: the parent directory of
-    each File/MS-valued input, plus the working directory itself (always
+    each File/MS-valued input, plus every absolute directory the scope is
+    *declared* to write into, plus the working directory itself (always
     writable). Order-preserving, de-duplicated.
 
     A directory is read-only (`writable=False`) only when *every* input that
@@ -471,6 +498,27 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
     inputs are only checked for `Cab` scopes (which have `match_pattern`); bare
     `Scope` instances (e.g. from `@shinobi.pystep`) have fully-typed signatures
     so all inputs are declared.
+
+    Inputs alone are not enough: a tool's *output* stem is conventionally a
+    string-typed input (wsclean's ``prefix``), which contributes no path field
+    and so no mount. Point one at an absolute directory the inputs don't
+    already cover and, without the second source below, the tool would write
+    into the container's own filesystem -- discarded silently on `docker run
+    --rm`, and a hard failure on apptainer's read-only image. So every
+    absolute `schema.declared_output_dirs` entry (a path-typed output's
+    resolved value or ``implicit`` template, a ``harvest`` pattern's literal
+    prefix) is mounted read-write too, and one that doesn't exist yet
+    contributes its nearest existing ancestor -- the tool then creates its own
+    output tree exactly as it would natively. A declared write target is a
+    writable contributor like any other, so it upgrades a directory an input
+    marked `writable: false` to read-write rather than losing to it; the
+    alternative is a mount the tool provably cannot use.
+
+    Raises:
+        BackendError: If an absolute declared output directory has no
+            existing ancestor short of the filesystem root -- unmountable,
+            and silently discarding the step's product is the one outcome
+            this function exists to prevent.
     """
     modes: dict[str, bool] = {workdir: True}  # workdir is always writable
     order: list[str] = [workdir]
@@ -503,6 +551,36 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
                 order.append(parent)
             else:
                 modes[parent] = modes[parent] or writable  # writable wins
+
+    for outdir, source in declared_output_dirs(scope, inputs):
+        # Relative outputs land under the (always-mounted) workdir, and are
+        # the sandbox's half of `declared_output_dirs` besides.
+        if not outdir.is_absolute():
+            continue
+        if str(outdir) in modes:
+            modes[str(outdir)] = True  # writable wins, same as for inputs
+            continue
+        # Already inside a read-write mount: visible on the host as-is,
+        # whether or not it exists yet. A read-only one is not skipped --
+        # falling through mounts the write target itself (nested inside the
+        # read-only parent, which keeps its own classification).
+        if any(outdir.is_relative_to(Path(d)) and w for d, w in modes.items()):
+            continue
+        target = _nearest_existing_dir(outdir)
+        if target is None:
+            name = getattr(scope, "name", "<scope>")
+            raise BackendError(
+                f"{name}: declared {source} writes to '{outdir}', which cannot be bind-mounted -- no part of "
+                f"that path exists on this host. Create the directory, or point the output under the working "
+                f"directory ('{workdir}'). Left unmounted, the tool would write inside the container and the "
+                f"product would be lost when it exits."
+            )
+        key = str(target)
+        if key in modes:
+            modes[key] = True
+        else:
+            modes[key] = True
+            order.append(key)
 
     return [(d, modes[d]) for d in order]
 
