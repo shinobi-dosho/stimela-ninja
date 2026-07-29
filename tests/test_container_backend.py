@@ -75,6 +75,41 @@ def test_docker_wrap_user_flags_default_on():
     ]
 
 
+def test_rootless_podman_gets_home_but_not_user_flags():
+    """A rootless podman already runs the container as the invoking user, so
+    `--user` adds nothing and costs everything: it names a uid *inside* the
+    user namespace, which on a bind-mounted host path is an unmapped subuid
+    with no write access, so every output write fails with EACCES. Verified
+    against real rootless podman 4.9.3.
+    """
+    from shinobi.backends.container import PodmanBackend
+
+    cab = make_cab({"threshold": ("float", False, None)})
+    argv, _ = PodmanBackend(workdir="/work", run_as_host_user=True)._wrap(cab, ["tool"], {"threshold": 1.0})
+    assert "--user" not in argv
+    assert "HOME=/work" in argv  # the intent still holds, only the flag doesn't apply
+
+
+def test_rootful_podman_keeps_user_flags(monkeypatch):
+    # Running podman as root is the daemon-shaped case docker is in: nothing
+    # maps the container's root back to a human, so `--user` is needed.
+    from shinobi.backends.container import PodmanBackend
+
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    cab = make_cab({"threshold": ("float", False, None)})
+    argv, _ = PodmanBackend(workdir="/work", run_as_host_user=True)._wrap(cab, ["tool"], {"threshold": 1.0})
+    assert "--user" in argv
+    assert argv[argv.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
+
+
+def test_docker_keeps_user_flags_regardless_of_invoking_uid():
+    # docker's root daemon writes as root whatever this session is, so the
+    # rootless reasoning must not leak across to it.
+    cab = make_cab({"threshold": ("float", False, None)})
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=True)._wrap(cab, ["tool"], {"threshold": 1.0})
+    assert "--user" in argv
+
+
 def test_docker_wrap_user_flags_can_be_disabled():
     cab = make_cab({"threshold": ("float", False, None)})
     argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["tool", "--threshold", "1.0"], {"threshold": 1.0})

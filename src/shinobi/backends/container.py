@@ -596,14 +596,22 @@ def bind_dirs(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[str]:
 
 
 def _rootless(runtime: str) -> bool:
-    """Whether `runtime` applies cgroup limits from *this* user's session,
-    and so can only use the controllers systemd delegated to it.
+    """Whether `runtime` acts as *this* user's session rather than through a
+    root daemon. Two consequences ride on the same fact, so they share this
+    predicate rather than each testing for podman by hand:
 
-    apptainer always does (it has no daemon). podman does when we are not
+    * cgroup limits are applied from this session, and so can only use the
+      controllers systemd delegated to it (`_resource_flags`);
+    * the container already runs as the invoking user, so `--user uid:gid`
+      is unnecessary *and* actively harmful -- it names a uid inside the
+      user namespace, which for a bind-mounted host path is an unmapped
+      subuid with no write access (`build_container_argv`).
+
+    apptainer always qualifies (it has no daemon). podman does when we are not
     root; a rootful podman writes limits as root, which delegation does not
-    constrain. docker never does: limits are applied by a root daemon in its
-    own cgroup tree, so what this session was delegated says nothing about
-    whether they will work.
+    constrain, and needs `--user` exactly as docker does. docker never does:
+    limits are applied by a root daemon in its own cgroup tree, so what this
+    session was delegated says nothing about whether they will work.
     """
     if runtime == "apptainer":
         return True
@@ -792,7 +800,10 @@ def build_container_argv(
     `run_as_host_user`, for docker/podman only, adds `--user uid:gid` plus
     `HOME=<workdir>` so bind-mounted outputs come out owned by the invoking
     host user instead of root -- the modern equivalent of stimela-classic's
-    `/etc/passwd`-bind-mount trick. Setting `HOME` to the (writable,
+    `/etc/passwd`-bind-mount trick. A *rootless* podman gets the `HOME` half
+    only: it already runs the container as the invoking user, so `--user`
+    would name an unmapped subuid inside the user namespace and make every
+    write to a bind mount fail (see `_rootless`). Setting `HOME` to the (writable,
     bind-mounted) workdir covers the common case of tools that fall back to
     `getpwuid()` only when `$HOME` is unset; tools that need a real
     passwd/nss entry (e.g. `getpwnam`, some MPI stacks) can still fail --
@@ -831,7 +842,17 @@ def build_container_argv(
         mounts = [flag for d, w in dir_modes for flag in ("-v", f"{d}:{d}" if w else f"{d}:{d}:ro")]
         user_flags: list[str] = []
         if run_as_host_user:
-            user_flags = ["--user", f"{os.getuid()}:{os.getgid()}", "-e", f"HOME={workdir}"]
+            # `--user` is what a *root-daemon* runtime needs to stop writing
+            # root-owned files into a bind mount. A rootless podman has no
+            # such daemon: it already maps the container's root to the
+            # invoking host user, so the flag's goal is met before it is
+            # passed -- and passing it anyway asks for uid N *inside* the user
+            # namespace, an unmapped subuid with no rights on the bind-mounted
+            # host path, which turns every output write into EACCES. Emit only
+            # the `HOME` half there; it is the flag, not the intent, that
+            # doesn't apply.
+            user_flags = [] if _rootless(runtime) else ["--user", f"{os.getuid()}:{os.getgid()}"]
+            user_flags += ["-e", f"HOME={workdir}"]
         return [runtime, "run", "--rm", *user_flags, *limit_flags, *mounts, "-w", workdir, run_ref, *argv], digest
 
     # apptainer
