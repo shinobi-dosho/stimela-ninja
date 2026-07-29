@@ -154,8 +154,8 @@ def test_readonly_inputs_are_mounted_readonly():
 
 
 def test_write_target_colliding_with_a_readonly_input_is_refused(tmp_path):
-    """docker and apptainer keep both promises here with a nested `:ro` mount
-    (verified on both). Whether a kubelet shadows a nested `readOnly`
+    """docker, podman and apptainer keep both promises here with a nested `:ro`
+    mount (verified on all three). Whether a kubelet shadows a nested `readOnly`
     volumeMount the same way is unverified, and failing silently would hand
     the step write access to an input the cab declared read-only -- so the k8s
     backend refuses the combination instead of guessing.

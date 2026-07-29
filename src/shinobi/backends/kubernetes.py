@@ -149,9 +149,9 @@ class KubernetesBackend(Backend):
         # read-write host access it never asked for.
         #
         # `allow_nested_modes=False` for the same reason. Where a cab's write
-        # target collides with a `writable: false` input, docker and apptainer
-        # keep both promises with a nested `:ro` mount -- verified on both, in
-        # either emission order. Whether a kubelet shadows a nested `readOnly`
+        # target collides with a `writable: false` input, docker, podman and
+        # apptainer keep both promises with a nested `:ro` mount -- verified on
+        # all three, in either emission order. Whether a kubelet shadows a nested `readOnly`
         # volumeMount the same way is *unverified* (the live k8s tests need a
         # cluster and none was available), and the failure mode is silent: the
         # step would get write access to an input the cab declared read-only.

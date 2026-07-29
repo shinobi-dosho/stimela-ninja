@@ -316,7 +316,7 @@ def make_readonly_input_cab() -> Cab:
 def test_declared_output_reasserts_a_read_only_input_nested_inside_the_directory_it_upgrades(tmp_path):
     # Both declarations hold: the directory goes read-write so the tool can
     # write its product, and the `writable: false` input is re-asserted `:ro`
-    # at its own path inside it. Verified against real docker and apptainer.
+    # at its own path inside it. Verified against real docker, podman and apptainer.
     cab = make_readonly_input_cab()
     mounts = bind_dir_modes(cab, {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/img"}, "/work")
     assert mounts == [("/work", True), (str(tmp_path), True), (f"{tmp_path}/obs.ms", False)]

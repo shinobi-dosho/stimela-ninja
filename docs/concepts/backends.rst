@@ -70,7 +70,7 @@ Available backends
     Runs the command as a batch ``Job`` via ``kubectl``. Mounts carry the same
     read-only classification as the container backends, but the nested-mount
     case above is **refused** rather than emitted: whether a kubelet shadows a
-    nested ``readOnly`` volumeMount the way docker and apptainer shadow a
+    nested ``readOnly`` volumeMount the way docker, podman and apptainer shadow a
     nested ``:ro`` bind is unverified, and a silent failure there would hand
     the step write access to an input the cab declared read-only.
 

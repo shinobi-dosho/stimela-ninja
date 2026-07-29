@@ -25,7 +25,7 @@ writable contributor makes the shared mount read-write. Where that collides
 with a declared write target -- the tool must write there, the input must stay
 untouchable -- both hold by nesting: the directory goes read-write and each
 read-only input inside it is re-asserted ``:ro`` at its own path. Verified
-identical on docker and apptainer, in either emission order; a caller that
+identical on docker, podman and apptainer, in either emission order; a caller that
 cannot rely on nested-mount shadowing passes ``allow_nested_modes=False`` and
 gets a refusal instead. See ``bind_dir_modes``.
 """
