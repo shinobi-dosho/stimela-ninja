@@ -44,7 +44,10 @@ class BackendConfig(BaseModel):
     # this one is opt-OUT: root-by-default is Docker's own footgun, not
     # behavior worth preserving silently. Set to False for images that
     # specifically require running as root. No-op for apptainer, which
-    # already runs as the host user.
+    # already runs as the host user, and `--user`-free under a rootless
+    # podman, which already runs the container as the invoking user (asking
+    # for a uid inside its user namespace would break every bind-mount
+    # write instead of fixing ownership -- see `_rootless`).
     run_as_host_user: bool = True
     # `venv` backend settings; reachable as SHINOBI_BACKEND__VENV__DEFAULT /
     # __ENVS via the env_nested_delimiter below.

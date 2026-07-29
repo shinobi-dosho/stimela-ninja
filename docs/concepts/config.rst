@@ -96,9 +96,12 @@ cannot inspect. See :doc:`backends`.
 
 ``backend.run_as_host_user`` (docker/podman only, default ``True``) adds
 ``--user uid:gid`` plus ``HOME=<workdir>`` so bind-mounted outputs come out
-owned by the invoking host user instead of root. It's a no-op for
-``apptainer``, which already runs as the host user; set it to ``False`` for
-images that need to run as root. See :doc:`backends`.
+owned by the invoking host user instead of root. A *rootless* ``podman``
+gets the ``HOME`` half only -- it already runs the container as the invoking
+user, and ``--user`` there names an unmapped subuid inside the user
+namespace, which would make every write to a bind mount fail. It's a no-op
+for ``apptainer``, which already runs as the host user; set it to ``False``
+for images that need to run as root. See :doc:`backends`.
 
 ``backend.venv`` configures the ``venv`` backend. ``backend.venv.default`` is
 the venv a ``venv``-backend step uses when it declares none of its own (a path,
