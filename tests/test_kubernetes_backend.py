@@ -7,7 +7,7 @@ from shinobi.backends.kubernetes import KubernetesBackend
 from shinobi.exceptions import BackendError
 from shinobi.loaders import build_model
 from shinobi.resources import Resources
-from shinobi.steps.schema import Cab
+from shinobi.steps.schema import Cab, ParamMeta
 
 
 def make_cab(fields=None, image="tool:latest") -> Cab:
@@ -151,6 +151,26 @@ def test_readonly_inputs_are_mounted_readonly():
     mounts = {m["mountPath"]: m.get("readOnly", False) for m in manifest["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]}
     assert mounts["/refdata"] is True
     assert mounts["/work"] is False  # the workdir is still writable
+
+
+def test_write_target_colliding_with_a_readonly_input_is_refused(tmp_path):
+    """docker and apptainer keep both promises here with a nested `:ro` mount
+    (verified on both). Whether a kubelet shadows a nested `readOnly`
+    volumeMount the same way is unverified, and failing silently would hand
+    the step write access to an input the cab declared read-only -- so the k8s
+    backend refuses the combination instead of guessing.
+    """
+    cab = make_cab().model_copy(
+        update={
+            "inputs_model": build_model("In", {"ref": ("File", False, None), "prefix": ("str", False, None)}, extras={"ref": {"writable": False}}),
+            "outputs_model": build_model("Out", {"image": ("File", False, None)}),
+            "field_meta": {"image": ParamMeta(implicit="{prefix}-image.fits")},
+        }
+    )
+    backend = KubernetesBackend(namespace="ns", workdir="/work")
+    inputs = {"ref": f"{tmp_path}/table.txt", "prefix": f"{tmp_path}/img"}
+    with pytest.raises(BackendError, match="nested mount"):
+        backend._manifest(cab, ["tool"], inputs, "job-1")
 
 
 def test_pod_runs_as_the_invoking_user_non_root():

@@ -147,7 +147,16 @@ class KubernetesBackend(Backend):
         # cab's `writable: false` inputs earn is honoured by the container
         # backend, and dropping it here would silently hand every step
         # read-write host access it never asked for.
-        dir_modes = bind_dir_modes(cab, inputs, self.workdir)
+        #
+        # `allow_nested_modes=False` for the same reason. Where a cab's write
+        # target collides with a `writable: false` input, docker and apptainer
+        # keep both promises with a nested `:ro` mount -- verified on both, in
+        # either emission order. Whether a kubelet shadows a nested `readOnly`
+        # volumeMount the same way is *unverified* (the live k8s tests need a
+        # cluster and none was available), and the failure mode is silent: the
+        # step would get write access to an input the cab declared read-only.
+        # Refuse that combination here until it is proven on a real cluster.
+        dir_modes = bind_dir_modes(cab, inputs, self.workdir, allow_nested_modes=False)
         volumes = [{"name": f"vol{i}", "hostPath": {"path": d}} for i, (d, _) in enumerate(dir_modes)]
         mounts = [{"name": f"vol{i}", "mountPath": d, **({} if writable else {"readOnly": True})} for i, (d, writable) in enumerate(dir_modes)]
 

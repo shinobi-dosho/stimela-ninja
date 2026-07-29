@@ -296,11 +296,10 @@ def test_output_under_an_input_directory_adds_no_second_mount(tmp_path):
     assert mounts == {"/work:/work", f"{tmp_path}:{tmp_path}"}  # the input's mount already covers it
 
 
-def test_declared_output_upgrades_a_read_only_input_directory_to_writable(tmp_path):
-    # `writable: false` on an input cannot be honoured for a directory the cab
-    # itself declares it writes into -- the mount would be one the tool
-    # provably cannot use. Writable wins, as it does between two inputs.
-    cab = Cab(
+def make_readonly_input_cab() -> Cab:
+    """A cab whose write target and whose `writable: false` input can be aimed
+    at the same directory -- the collision the nesting rule exists for."""
+    return Cab(
         name="wsclean",
         command="wsclean",
         image="tool:latest",
@@ -312,8 +311,69 @@ def test_declared_output_upgrades_a_read_only_input_directory_to_writable(tmp_pa
         outputs_model=build_model("Out", {"restored_image": ("File", False, None)}),
         field_meta={"restored_image": ParamMeta(implicit="{prefix}-MFS-image.fits")},
     )
-    modes = dict(bind_dir_modes(cab, {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/img"}, "/work"))
-    assert modes == {"/work": True, str(tmp_path): True}
+
+
+def test_declared_output_reasserts_a_read_only_input_nested_inside_the_directory_it_upgrades(tmp_path):
+    # Both declarations hold: the directory goes read-write so the tool can
+    # write its product, and the `writable: false` input is re-asserted `:ro`
+    # at its own path inside it. Verified against real docker and apptainer.
+    cab = make_readonly_input_cab()
+    mounts = bind_dir_modes(cab, {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/img"}, "/work")
+    assert mounts == [("/work", True), (str(tmp_path), True), (f"{tmp_path}/obs.ms", False)]
+    # the nested `:ro` entry must follow the directory it nests in, so a
+    # runtime that honours emission order rather than depth still gets it right
+    assert [m[0] for m in mounts].index(str(tmp_path)) < [m[0] for m in mounts].index(f"{tmp_path}/obs.ms")
+
+
+def test_docker_emits_the_nested_read_only_input_as_a_mount(tmp_path):
+    cab = make_readonly_input_cab()
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["wsclean"], {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/img"})
+    mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    assert mounts == ["/work:/work", f"{tmp_path}:{tmp_path}", f"{tmp_path}/obs.ms:{tmp_path}/obs.ms:ro"]
+
+
+def test_apptainer_binds_the_nested_read_only_input(tmp_path):
+    cab = make_readonly_input_cab()
+    argv, _ = ApptainerBackend(workdir="/work")._wrap(cab, ["wsclean"], {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/img"})
+    binds = [argv[i + 1] for i, a in enumerate(argv) if a == "--bind"]
+    assert binds == ["/work:/work", f"{tmp_path}:{tmp_path}", f"{tmp_path}/obs.ms:{tmp_path}/obs.ms:ro"]
+
+
+def test_no_nested_mount_when_nothing_was_marked_read_only(tmp_path):
+    # The upgrade path only re-asserts what a `writable: false` earned; an
+    # ordinary writable input in the same directory adds no nested entry.
+    cab = make_cab({"prefix": ("str", False, None), "ms": ("MS", False, None)})
+    cab = cab.model_copy(
+        update={
+            "outputs_model": build_model("Out", {"restored_image": ("File", False, None)}),
+            "field_meta": {"restored_image": ParamMeta(implicit="{prefix}-MFS-image.fits")},
+        }
+    )
+    mounts = bind_dir_modes(cab, {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/img"}, "/work")
+    assert mounts == [("/work", True), (str(tmp_path), True)]
+
+
+def test_nesting_is_refused_when_the_caller_cannot_express_it(tmp_path):
+    # `allow_nested_modes=False` -- the Kubernetes backend's posture, since a
+    # kubelet's nested-readOnly behaviour is unverified and failing silently
+    # there would hand a step write access to a read-only input.
+    cab = make_readonly_input_cab()
+    with pytest.raises(BackendError) as exc:
+        bind_dir_modes(cab, {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/img"}, "/work", allow_nested_modes=False)
+    assert "writable: false" in str(exc.value)
+    assert str(tmp_path) in str(exc.value)
+
+
+def test_write_target_under_a_read_only_directory_is_refused_when_nesting_is_unavailable(tmp_path):
+    # The other nesting shape -- read-write target inside a read-only parent --
+    # is equally unavailable to a caller that cannot express nested modes.
+    (tmp_path / "products").mkdir()
+    cab = make_readonly_input_cab()
+    inputs = {"ms": f"{tmp_path}/obs.ms", "prefix": f"{tmp_path}/products/img"}
+    assert bind_dir_modes(cab, inputs, "/work")  # fine where nesting works
+    with pytest.raises(BackendError) as exc:
+        bind_dir_modes(cab, inputs, "/work", allow_nested_modes=False)
+    assert f"{tmp_path}/products" in str(exc.value)
 
 
 def test_absolute_output_outside_a_read_only_input_directory_nests_its_own_mount(tmp_path):
