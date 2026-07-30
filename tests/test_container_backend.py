@@ -502,6 +502,42 @@ def test_refusal_holds_even_when_the_directory_is_writable_for_other_reasons(tmp
         bind_dir_modes(cab, inputs, "/work")
 
 
+def test_scratch_directory_is_mounted_like_a_product(tmp_path):
+    """A `scratch` declaration exists to get a cache/log directory mounted
+    without it being harvested. The mount half is indistinguishable from a
+    product's -- the tool has to be able to write there either way.
+    """
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    cab = Cab(
+        name="ddf",
+        command="ddf",
+        image="tool:latest",
+        inputs_model=build_model("In", {"cache_dir": ("str", False, None)}),
+        outputs_model=OUT,
+        scratch=["{cache_dir}/*"],
+    )
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["ddf"], {"cache_dir": str(cache)})
+    mounts = {argv[i + 1] for i, a in enumerate(argv) if a == "-v"}
+    assert mounts == {"/work:/work", f"{cache}:{cache}"}
+
+
+def test_unset_scratch_target_adds_no_mount():
+    # An optional cache directory left unset declares nothing -- and must not
+    # resolve to a literal "None" path.
+    cab = Cab(
+        name="ddf",
+        command="ddf",
+        image="tool:latest",
+        inputs_model=build_model("In", {"cache_dir": ("str", False, None)}),
+        outputs_model=OUT,
+        scratch=["{cache_dir}/*"],
+    )
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["ddf"], {"cache_dir": None})
+    mounts = {argv[i + 1] for i, a in enumerate(argv) if a == "-v"}
+    assert mounts == {"/work:/work"}
+
+
 def test_apptainer_image_uri_scheme_handling():
     from shinobi.backends.container import _apptainer_image_uri
 

@@ -27,12 +27,13 @@ from shinobi.steps.schema import Cab, ParamMeta, Recipe, Scope, StepRef, declare
 WORK_ROOT = ".shinobi/work"
 
 
-def make_scope(inputs=None, outputs=None, harvest=None) -> Scope:
+def make_scope(inputs=None, outputs=None, harvest=None, scratch=None) -> Scope:
     return Scope(
         name="s",
         inputs_model=build_model("In", inputs or {}),
         outputs_model=build_model("Out", outputs or {}),
         harvest=harvest or [],
+        scratch=scratch or [],
     )
 
 
@@ -616,3 +617,75 @@ def test_recipe_sandbox_is_inherited_by_steps(workspace):
     assert result.success
     assert (workspace / "out.dat").exists()
     assert not (workspace / "junk.log").exists()
+
+
+# ---------------------------------------------------------------- scratch
+#
+# `scratch` declares a write target that is not a product: mounted and
+# pre-created like one, never harvested. The two properties were previously
+# welded together, which forced a choice between "the tool cannot write here"
+# and "the cache follows the products into the caller's workspace".
+
+
+def test_scratch_dirs_are_pre_created_like_output_parents(tmp_path):
+    # Tools no more `mkdir -p` a cache directory than an output stem.
+    scope = make_scope(inputs={"cache": ("str", True, None)}, scratch=["{cache}/*"])
+    created = prepare_output_parents(scope, {"cache": "cache/ddf"}, tmp_path)
+
+    assert (tmp_path / "cache" / "ddf").is_dir()
+    assert (tmp_path / "cache" / "ddf") in created  # and so prunable if unused
+
+
+def test_harvest_leaves_scratch_behind(tmp_path):
+    # The whole point: the declared output travels, the scratch tree does not.
+    scope = make_scope(
+        inputs={"cache": ("str", True, None)},
+        outputs={"product": ("File", False, "out.fits")},
+        scratch=["{cache}/*"],
+    )
+    sandbox = _sandbox_with(tmp_path, "out.fits", "cache/ddf/chunk0.npy", "cache/ddf/chunk1.npy")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    moved = harvest_outputs(scope, scope.outputs_model(), {"cache": "cache/ddf"}, sandbox, workspace)
+
+    assert [p.name for p in moved] == ["out.fits"]
+    assert (workspace / "out.fits").exists()
+    assert not (workspace / "cache").exists()  # swept with the sandbox instead
+
+
+def test_scratch_and_harvest_over_the_same_stem_still_harvests(tmp_path):
+    # Declaring both is not a contradiction to resolve here: harvest decides
+    # what survives, and it wins for anything it names.
+    scope = make_scope(
+        inputs={"prefix": ("str", True, None)},
+        harvest=["{prefix}-*.fits"],
+        scratch=["{prefix}-*.log"],
+    )
+    sandbox = _sandbox_with(tmp_path, "img-0.fits", "img-0.log")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    moved = harvest_outputs(scope, scope.outputs_model(), {"prefix": "img"}, sandbox, workspace)
+
+    assert [p.name for p in moved] == ["img-0.fits"]
+    assert not (workspace / "img-0.log").exists()
+
+
+def test_a_pattern_referencing_a_none_field_declares_nothing(tmp_path):
+    # An unset optional write target must not resolve to a literal "None"
+    # directory -- which `"{cache}/*".format(cache=None)` would produce, and
+    # which pre-creation would then really create.
+    scope = make_scope(inputs={"cache": ("str", False, None)}, scratch=["{cache}/*"])
+
+    assert declared_output_dirs(scope, {"cache": None}) == []
+    prepare_output_parents(scope, {"cache": None}, tmp_path)
+    assert list(tmp_path.iterdir()) == []
+    # and the same for a harvest pattern, which had the same hazard
+    scope = make_scope(inputs={"prefix": ("str", False, None)}, harvest=["{prefix}-*"])
+    assert declared_output_dirs(scope, {"prefix": None}) == []
+
+
+def test_scratch_dirs_are_reported_with_their_source():
+    scope = make_scope(inputs={"cache": ("str", True, None)}, scratch=["{cache}/*"])
+    assert declared_output_dirs(scope, {"cache": "/scratch/ddf"}) == [(Path("/scratch/ddf"), "scratch pattern '{cache}/*'")]
