@@ -14,10 +14,13 @@ point, with no memory of which of them are paths.
 
 The cab's *output* side is read the same way, because a tool's output stem is
 conventionally declared as a string-typed input (wsclean's ``prefix``) that
-contributes no path field of its own: the directories a path-typed output or
-``harvest`` pattern resolves to (``schema.declared_output_dirs``) are mounted
-read-write when absolute, so a product written outside the workdir still
-reaches the host instead of dying with the container.
+contributes no path field of its own: the directories a path-typed output, a
+``harvest`` pattern or a ``scratch`` pattern resolves to
+(``schema.declared_output_dirs``) are mounted read-write when absolute, so a
+product written outside the workdir still reaches the host instead of dying
+with the container. ``scratch`` covers the same need for a write target that
+is not a product (a cache tree, a logfile): mounted identically, never
+harvested.
 
 A directory contributed *only* by input fields marked ``writable: false`` in
 the schema (``readonly_path_fields``) is bind-mounted read-only (``:ro``); any

@@ -312,21 +312,34 @@ def declared_output_dirs(scope: Scope, prepared: dict[str, Any]) -> list[tuple[P
     rewritten by `sandbox.absolutize_path_inputs` and the tool would then
     write outside the sandbox. The write target is instead declared by the
     output side: a path-typed output field whose ``implicit`` template names
-    the input (``"{prefix}-MFS-image.fits"``), or a ``harvest`` glob.
+    the input (``"{prefix}-MFS-image.fits"``), a ``harvest`` glob, or a
+    ``scratch`` glob for a write target that is *not* a product.
 
     Knowable pre-run means, per path-typed output field and in declaration
     order: its value taken from a same-named input, its resolved ``implicit``
     template, or its field default -- the same priority as `_fill_outputs`.
-    Then the literal (glob-free) directory prefix of each ``harvest``
-    pattern. `source` describes the declaration (``output 'restored_image'``,
-    ``harvest pattern '{prefix}-*.fits'``) so callers can name it in an error.
+    Then the literal (glob-free) directory prefix of each ``harvest`` and
+    ``scratch`` pattern. `source` describes the declaration (``output
+    'restored_image'``, ``harvest pattern '{prefix}-*.fits'``, ``scratch
+    pattern '{cache_dir}/*'``) so callers can name it in an error.
+
+    A pattern that references a field whose value is `None` is skipped, not
+    resolved: substituting it would produce a literal ``None`` path segment
+    (``"{cache_dir}/*"`` -> ``"None/*"``), which is a real directory name and
+    would have the sandbox create one. An unset optional write target declares
+    nothing, which is the same answer a path-typed output whose value is None
+    already gives.
 
     Both relative and absolute directories are returned, order-preserving
     and de-duplicated; ``.`` and anything containing ``..`` is dropped. The
     two consumers filter complementary halves: `sandbox` pre-creates the
     *relative* ones inside the scratch dir, the container backend bind-mounts
     the *absolute* ones so a product declared outside the workdir still
-    reaches the host. Best-effort by design -- a template that fails to
+    reaches the host. Both consumers treat a ``scratch`` directory exactly
+    like a product's: it is mounted so the tool's write lands on the host, and
+    pre-created so the tool doesn't have to. Only `harvest` differs -- it never
+    rescues a ``scratch`` path out of a sandbox, which is the whole point of
+    the distinction. Best-effort by design -- a template that fails to
     resolve is skipped here, not raised; output filling and harvest report
     those errors with full context.
     """
@@ -368,18 +381,24 @@ def declared_output_dirs(scope: Scope, prepared: dict[str, Any]) -> list[tuple[P
         for item in value if isinstance(value, (list, tuple)) else [value]:
             add(Path(str(item)).parent, f"output {name!r}")
 
-    for pattern in scope.harvest:
-        try:
-            resolved = Path(pattern.format(**prepared))
-        except Exception:  # noqa: BLE001 -- best-effort; harvest reports the real error
-            continue
-        literal: list[str] = []
-        for part in resolved.parts[:-1]:
-            if _GLOB_CHARS & set(part):
-                break
-            literal.append(part)
-        if literal:
-            add(Path(*literal), f"harvest pattern {pattern!r}")
+    # A None-valued field is *absent* for templating purposes, so a pattern
+    # needing it raises KeyError below and is skipped rather than resolving to
+    # a literal "None" path segment.
+    present = {name: value for name, value in prepared.items() if value is not None}
+
+    for kind, patterns in (("harvest", scope.harvest), ("scratch", scope.scratch)):
+        for pattern in patterns:
+            try:
+                resolved = Path(pattern.format(**present))
+            except Exception:  # noqa: BLE001 -- best-effort; harvest reports the real error
+                continue
+            literal: list[str] = []
+            for part in resolved.parts[:-1]:
+                if _GLOB_CHARS & set(part):
+                    break
+                literal.append(part)
+            if literal:
+                add(Path(*literal), f"{kind} pattern {pattern!r}")
     return dirs
 
 
@@ -431,6 +450,25 @@ class Scope(BaseModel):
     # tool whose dynamically-named output family can't be enumerated as
     # literal output fields). Only consulted when the step runs sandboxed.
     harvest: list[str] = Field(default_factory=list)
+    # Where the step writes things that are *not* products: a cache tree, a
+    # scratch/wisdom directory, a tool logfile. Same shape as `harvest` --
+    # cwd-relative globs, `str.format`-resolved against the step's own prepared
+    # inputs -- and the same effect on *setup*: the directory is bind-mounted by
+    # the container backends (`declared_output_dirs`, so an absolute one reaches
+    # the host instead of dying with the container) and pre-created inside a
+    # sandbox. The difference is the only one that matters: harvest never
+    # rescues a `scratch` path back into the workspace, so under a sandbox it is
+    # written and then swept with the rest of the scratch dir.
+    #
+    # This exists because the two properties are genuinely independent, and
+    # conflating them forced a bad choice: declaring a cache directory as an
+    # output got it mounted but also dragged the cache into the caller's
+    # workspace on every sandboxed run, while leaving it undeclared kept the
+    # workspace clean but left the tool writing into the container (discarded on
+    # `docker run --rm`, and a hard failure on apptainer's read-only image).
+    # DDFacet's `Cache-Dir`/`Cache-DirWisdomFFTW`/`Montblanc-LogFile` and
+    # killMS's `ImageSkyModel-DDFCacheDir` are the shapes this is for.
+    scratch: list[str] = Field(default_factory=list)
     # What this step costs to run, for the scheduler's admission control
     # (`shinobi.resources`). Undeclared (the default) means "free": the step
     # is admitted on `max_workers` alone, exactly as before this field

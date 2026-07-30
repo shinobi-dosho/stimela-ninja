@@ -15,9 +15,21 @@ outputs (and the literal directory prefix of harvest patterns) are
 pre-created inside the fresh sandbox before the run
 (`prepare_output_parents`), because tools generally don't ``mkdir -p``
 their own output stems and would otherwise crash on e.g. ``plots/gain.html``.
+
 The ones the tool never used are removed again before harvesting
 (`prune_unused_parents`), preserving harvest's invariant that everything
 present in the sandbox was written by the tool.
+
+``Scope.scratch`` is the deliberate asymmetry in that pair: it declares a
+write target that is *not* a product -- a cache tree, a scratch/wisdom
+directory, a tool logfile -- so it is pre-created here (and bind-mounted by
+the container backends) exactly like an output's directory, and then *not*
+harvested. Under a sandbox it is therefore written and then swept with
+everything else. Without it the two properties were welded together and a cab
+had to choose: declare a cache as an output and drag it into the caller's
+workspace on every run, or leave it undeclared and have the tool write into
+the container (discarded on ``docker run --rm``, a hard failure on
+apptainer's read-only image).
 
 Boundaries of the mechanism, by design:
 

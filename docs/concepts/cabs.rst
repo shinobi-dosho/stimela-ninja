@@ -84,13 +84,27 @@ so, because nothing else can:
         harvest=["{prefix}-*.fits"],  # the rest of the family
     )
 
-An ``implicit`` template on a ``File``-dtype output, or a ``harvest`` glob, is
-what tells shinobi that ``prefix`` names a write target. Both are resolved
-against the step's own inputs *before* the run, and drive real behaviour: the
-sandbox pre-creates the directories they imply, and the container backends
-bind-mount them so a product written outside the working directory reaches the
-host instead of dying inside the container. A cab that declares neither is
-taken at its word -- a bare ``str`` stem is just a string, and a value pointing
+Not everything a tool writes is a product, though. A cache tree, a scratch
+directory, a tool logfile: those must be *writable* -- so the container
+backends have to mount them -- but they must not follow the products back out
+of a sandbox into the caller's workspace. Declare those with ``scratch``,
+which has the same shape as ``harvest`` and the opposite effect on rescue:
+
+.. code-block:: python
+
+    ddfacet = Cab(
+        ...,
+        harvest=["{output_name}.*"],       # products: mounted, and rescued
+        scratch=["{cache_dir}/*"],         # cache: mounted, never rescued
+    )
+
+An ``implicit`` template on a ``File``-dtype output, or a ``harvest`` or
+``scratch`` glob, is what tells shinobi that ``prefix`` names a write target.
+All three are resolved against the step's own inputs *before* the run, and
+drive real behaviour: the sandbox pre-creates the directories they imply, and
+the container backends bind-mount them so a write outside the working
+directory reaches the host instead of dying inside the container. A cab that
+declares none of them is taken at its word -- a bare ``str`` stem is just a string, and a value pointing
 somewhere no declaration mentions gets no mount.
 
 Turning parameters into argv
