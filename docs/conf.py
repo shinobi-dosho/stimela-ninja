@@ -49,6 +49,7 @@ exclude_patterns = [
     ".DS_Store",
     "design_sandbox.md",
     "design_cache_tiers.md",
+    "design_remote_venv.md",
 ]
 
 # Treat warnings as build-relevant but don't fail the build on missing
