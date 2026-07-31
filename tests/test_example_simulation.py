@@ -1,14 +1,22 @@
-"""Smoke tests for examples/example-simulation.py -- must pass with none of
-simms/wsclean/cubical actually installed (RecordingBackend intercepts every
-step, including the two that have `backend="native"` baked onto their Cab).
+"""Smoke tests for examples/example-simulation.py.
 
-The example itself imports `dosho` (the native shinobi cab repository) for
-its real wsclean/cubical/simms cabs -- only installed via a manual
-`uv pip install --no-deps -e ../dosho` (dosho pins its own stimela-ninja
-dependency to a git source, which conflicts with resolving stimela-ninja's
-own lock, so it can't be a uv dependency-group), not CI's default
-`--group dev`. Skip cleanly rather than erroring out collection when it
-isn't present.
+The example imports `dosho` (the native shinobi cab repository) for its real
+wsclean/cubical/simms cabs. dosho is now a plain dependency group --
+`uv sync --group examples` -- since it dropped the [tool.uv.sources] redirect
+that used to make it unresolvable alongside this project (dosho #42). It is
+still not in CI's default `--group dev`, so skip cleanly rather than erroring
+out collection when it is absent.
+
+`RecordingBackend` intercepts every *Cab* step, including the ones carrying
+`backend="native"`, so wsclean and cubical need nothing installed. It cannot
+intercept a **pystep**: as of simms 3.0, dosho's `skysim`/`telsim` are
+`@shinobi.pystep` `StepRef`s rather than binary Cabs, and a pystep runs its
+own Python body (`ctx.import_func("runit", "simms.apps.telsim")`) instead of
+dispatching through a backend. A backend override cannot reach it, so the one
+test that dispatches those steps needs the real `simms` module -- which has no
+docker image and is not on PyPI, hence still a manual install:
+
+    uv pip install --no-deps simms @ git+https://github.com/wits-cfa/simms.git
 """
 
 import importlib.util
@@ -65,16 +73,17 @@ def test_dryrun_dag_renders():
         assert name in rendered
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("simms") is None,
+    reason="dosho's skysim/telsim are pysteps, not Cabs -- a backend override cannot intercept them, so dispatching this recipe imports simms for real",
+)
 def test_recipe_dispatches_with_correct_argv_shape(monkeypatch):
     mod = load_example()
     recorder = RecordingBackend()
-    # telsim/skysim have backend="native" baked onto the Cab (no docker
-    # image exists for simms yet) -- that beats any backend override
-    # passed to _dispatch, so intercept "native" too, not just a custom
-    # name, to guarantee this test never shells out regardless of whether
-    # simms happens to be installed in the current environment. Shadow it
-    # via monkeypatch so the override can't leak into later tests that run
-    # real native commands (the _STEP_BACKENDS registry is module-global).
+    # wsclean/cubical are Cabs, so intercepting "native" keeps them from
+    # shelling out (that override beats any backend passed to _dispatch).
+    # Shadow it via monkeypatch so the override can't leak into later tests
+    # that run real native commands (_STEP_BACKENDS is module-global).
     from shinobi.steps.dispatch import _STEP_BACKENDS
 
     monkeypatch.setitem(_STEP_BACKENDS, "native", recorder)
