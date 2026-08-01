@@ -68,7 +68,7 @@ package, deliberately, is fine. One entry covers a whole tree --
 the remainder as subdirectories, so ``{"caracal": ...}`` resolves
 ``(caracal.schemas)`` and ``(caracal.anything.else)`` alike.
 
-The same applies to ``shinobi.loaders.cultcargo.load_file``/``loads``, which
+The same applies to ``shinobi.loaders.yaml_cab.load_file``/``loads``, which
 have always worked this way.
 
 Two cab-level limitations to check first

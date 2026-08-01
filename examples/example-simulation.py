@@ -13,7 +13,7 @@ against this file while writing it.
 Every cab here comes from **dosho** (https://github.com/shinobi-dosho/dosho),
 the native shinobi cab repository -- not hand-loaded YAML, not a
 hand-declared `Cab`. This is the intended way to use cabs now; see
-`ninja_selfcal.py` for the older `shinobi.loaders.cultcargo`/hand-declared
+`ninja_selfcal.py` for the older `shinobi.loaders.yaml_cab`/hand-declared
 path this example used to take (kept as a second example of that path,
 not because it's still recommended).
 

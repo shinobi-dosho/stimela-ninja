@@ -1,13 +1,29 @@
-"""Load cult-cargo style YAML cab definitions into shinobi Cab objects.
+"""Load YAML cab definitions in the scabha dialect into shinobi `Cab` objects.
 
-The cult-cargo cab *schema* (inputs/outputs/policies/wranglers) is a good
-design and is reused as-is here -- it's stimela2's recipe/alias layer that
-shinobi drops, not this. This loader lets shinobi use the existing library
-of cult-cargo tool wrappers without anyone having to rewrite them.
+**Lineage.** shinobi's cab schema is borrowed from scabha, the schema library
+underneath Stimela 2.0, and the vocabulary here is deliberately scabha's:
+`inputs`/`outputs` with `dtype`/`required`/`default`/`info`/`choices`,
+`policies`, `management.wranglers`, `image`, `flavour`, `command`. Reusing it
+was a design decision, not an accident of history -- the cab schema is the part
+of stimela2 that got it right, and shinobi's own `Cab` mirrors it closely
+enough that loading a scabha cab is a translation rather than an
+interpretation. What shinobi drops is the layer *above* the cab: stimela2's
+recipe, alias and expression machinery (see stimela-ninja's `AGENTS.md`).
 
-Real cult-cargo cab files, however, are not self-contained: they rely on
-composition mechanisms from stimela2's config system, which this loader
-implements a deliberately minimal version of:
+cult-cargo is the largest published library of cabs written in this dialect and
+is what this loader is usually pointed at, but the dialect is scabha's and
+nothing here is specific to that project. `shinobi.loaders.worker_schema` reads
+a scabha-derived *config* dialect through the same shared helpers.
+
+**Support is deliberately partial.** This reads the static, declarative subset
+and refuses the parts that are a programming language wearing YAML. The
+boundary is drawn once, here and in SECURITY.md, and the sections below say
+exactly where it falls: composition mechanisms this implements, then the
+scabha features it does not.
+
+Composition mechanisms, implemented in a deliberately minimal form -- real
+scabha cab files are not self-contained and rely on stimela2's config system
+for these:
 
 * ``_include: [file, ...]`` -- merges other YAML files in (relative to the
   including file), most often to pull in a shared ``vars:``/``lib:``
@@ -42,10 +58,27 @@ implements a deliberately minimal version of:
   ``_include`` naming a package with no registered root raises a clear
   ``CabLoadError``.
 
-Deliberately NOT implemented (this is the boundary -- see SECURITY.md):
+Deliberately NOT implemented (this is the boundary -- see SECURITY.md). Each of
+these is a place where scabha stops describing a tool and starts computing
+something, which is the line shinobi does not cross in a cab:
 
-* The ``=config.x.y``/``${...}`` expression language cult-cargo values
-  can contain -- left as literal strings.
+* **Expressions and substitutions.** The ``=config.x.y`` / ``=recipe.ms`` /
+  ``${...}`` / ``=IFSET(...)`` language scabha values can contain. Left as
+  literal strings, so a cab carrying one loads with that value verbatim rather
+  than resolved -- visible in the built `Cab`, not silently dropped.
+  `ParamMeta.implicit` is the one templating shinobi does resolve, and it is
+  plain ``str.format`` against the step's own validated inputs: no name
+  resolution across steps, no function calls, no conditionals.
+
+* **Conditionals and control flow.** Anything whose value depends on evaluating
+  a predicate at load or run time. A cab is a parameter table; branching over
+  it belongs in the Python that calls the step, where it is visible to the
+  reader and to the DAG.
+
+* **Aliases and propagation.** stimela2 propagates parameter values up and down
+  between recipe and step level, which is what forces its expression language
+  to exist. shinobi wires steps with typed `InputRef`/`OutputRef` objects
+  instead, so there is nothing to propagate.
 * ``dynamic_schema: dotted.path`` -- a reference to a Python function that
   would need importing and *calling* to get a cab's real schema (real
   cult-cargo's ``wsclean.yml``/``cubical.yml``/``quartical.yml`` use this).

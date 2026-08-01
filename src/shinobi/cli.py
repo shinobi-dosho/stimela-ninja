@@ -66,8 +66,8 @@ def version() -> None:
 @click.argument("cab_file")
 @click.argument("cab_name")
 def show_cab(cab_file: str, cab_name: str) -> None:
-    """Show a cab's schema, as loaded from a cult-cargo style YAML FILE."""
-    from shinobi.loaders.cultcargo import load_file
+    """Show a cab's schema, as loaded from a scabha-dialect YAML FILE."""
+    from shinobi.loaders.yaml_cab import load_file
 
     cabs = load_file(cab_file)
     if cab_name not in cabs:

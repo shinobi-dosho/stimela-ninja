@@ -26,7 +26,7 @@ and credit you in the release notes if you'd like.
 
 ## Security posture
 
-Cab definitions — especially cult-cargo YAML, which shinobi loads from
+Cab definitions — especially YAML cabs in the scabha dialect, which shinobi loads from
 arbitrary files — are effectively untrusted content that can contain
 executable code as data. Real cult-cargo cabs exist where `command:` is
 inline Python/shell source (e.g. `bdsf.catalog`) or a dotted reference to a
@@ -74,7 +74,7 @@ other cab, no in-process code execution.
 `dynamic_schema: dotted.path` (real cult-cargo's `wsclean.yml` uses this) is
 a related, separate risk — resolving it means *importing* an arbitrary
 module and *calling* a function it names, at cab-load time. Not implemented;
-`shinobi.loaders.cultcargo` warns when it sees the key rather than silently
+`shinobi.loaders.yaml_cab` warns when it sees the key rather than silently
 producing a possibly-incomplete schema (a cab relying solely on
 `dynamic_schema` with no static `inputs:`/`outputs:` loads empty).
 
@@ -86,7 +86,7 @@ an explicit `package_roots={"cultcargo": Path(...)}` mapping into the
 loader, and a dotted name is resolved against the longest registered prefix
 as a plain filesystem lookup — never through Python's import machinery.
 
-This applies to **both** loader dialects — `shinobi.loaders.cultcargo`
+This applies to **both** loader dialects — `shinobi.loaders.yaml_cab`
 (cab schemas) and `shinobi.loaders.worker_schema` (scabha-dialect config
 schemas) — which share one `resolve_package_root` helper precisely so
 neither can drift away from the rule. A package-scoped `_include` naming a

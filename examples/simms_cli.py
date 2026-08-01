@@ -4,7 +4,7 @@ Unlike the recipe examples (which wire cabs together programmatically and
 never touch the command line), this one exposes two single cabs as
 `ninja run` targets so the *CLI* layer -- `clickutil.build_options` -- is
 what gets tested. Both cabs come straight from the vendored, genuine
-cult-cargo YAML (`input-dir/simms-cabs.yaml`), whose `choices:` and
+scabha-dialect YAML (`input-dir/simms-cabs.yaml`), whose `choices:` and
 `abbreviation:` keys drive the two features shown here:
 
 * **Choice fields** -- a `choices:` list narrows the field to a
@@ -51,7 +51,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from shinobi.loaders.cultcargo import load_file
+from shinobi.loaders.yaml_cab import load_file
 
 _CABS = load_file(Path(__file__).parent / "input-dir" / "simms-cabs.yaml")
 

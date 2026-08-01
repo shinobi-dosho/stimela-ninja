@@ -1,6 +1,6 @@
 """Cab loaders, plus the public helpers for building a cab's schema by hand.
 
-The `shinobi.loaders.cultcargo` and `shinobi.loaders.stimela_classic`
+The `shinobi.loaders.yaml_cab` and `shinobi.loaders.stimela_classic`
 submodules load cab definitions from their respective on-disk formats.
 `build_model` (and `sanitize_unique`) are the same helpers those loaders use
 to turn a flat ``{name: (dtype, required, default)}`` spec into the pydantic

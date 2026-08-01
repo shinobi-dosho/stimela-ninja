@@ -15,7 +15,7 @@ MS name -- every step is wired one from the recipe's inputs or a previous
 step's output.
 
 * `wsclean` loads from a real cult-cargo cab definition
-  (examples/cultcargo/wsclean.yml, vendored) via `shinobi.loaders.cultcargo`
+  (examples/cultcargo/wsclean.yml, vendored) via `shinobi.loaders.yaml_cab`
   -- its ~170 real parameters, not a hand-declared subset.
 * The CASA tasks and `msutils` load from real stimela-classic
   `parameters.json` definitions (examples/stimela_classic/, vendored) via
@@ -43,7 +43,7 @@ from pydantic import BaseModel
 
 from shinobi import Cab, InputRef, OutputRef, Recipe
 from shinobi.loaders import build_model, sanitize_unique
-from shinobi.loaders.cultcargo import load_file
+from shinobi.loaders.yaml_cab import load_file
 from shinobi.loaders.stimela_classic import load_file as load_classic_cab
 from shinobi.steps.schema import ParamMeta, ParamPattern, ParamSegment
 

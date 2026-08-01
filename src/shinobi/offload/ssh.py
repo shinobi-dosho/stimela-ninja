@@ -191,7 +191,7 @@ def _find_include_entries(node: Any) -> list[Any]:
 
 def _include_deps(yaml_path: Path, warnings: list[str]) -> list[Path]:
     """Follow cult-cargo `_include:` the same way
-    `shinobi.loaders.cultcargo._load_raw` resolves it (relative to the
+    `shinobi.loaders.yaml_cab._load_raw` resolves it (relative to the
     including file, and wherever `_include` appears in the document -- not
     just at the top level), returning every included file path found (not
     the merged content -- we only need the file list to sync).
@@ -216,7 +216,7 @@ def _include_deps(yaml_path: Path, warnings: list[str]) -> list[Path]:
 
 def find_cab_deps(pyfile: Path) -> tuple[list[Path], list[str]]:
     """Statically scan `pyfile` for `load_file(...)` calls (matching both
-    `shinobi.loaders.cultcargo.load_file` and
+    `shinobi.loaders.yaml_cab.load_file` and
     `shinobi.loaders.stimela_classic.load_file` -- same name, harmless to
     treat alike) and resolve the cab file(s) each one loads, including
     cult-cargo `_include:` chains. Returns (dep_paths, warnings); an
