@@ -20,7 +20,10 @@ The entry point's target is a module (or any object) exposing
   the only shape that can express a pystep, whose body is real code.
 
 Either raises `KeyError` when `name` isn't one of its cabs, which is how the
-search falls through to the next provider. A provider may expose both: the
+search falls through to the next provider. A provider whose documents are not
+self-contained may also expose `loader_options() -> dict`, passed to the
+dialect's loader -- `images` for symbolic image names, `package_roots` for
+package-scoped includes. A provider may expose both: the
 document path is tried first, so a mixed provider can serve most cabs as data
 and the rest as objects. A provider entry can
 be either shape -- a `Cab` for real "binary"-flavour tools, or a `StepRef`
@@ -37,7 +40,7 @@ cost of every installed provider unless something calls `list_cabs`).
 from __future__ import annotations
 
 from importlib.metadata import EntryPoint, entry_points
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from shinobi.exceptions import CabLoadError
 
@@ -59,7 +62,7 @@ def _provider_entry_points() -> list[EntryPoint]:
 _DIALECTS = ("yaml_cab", "stimela-classic")
 
 
-def build_document(dialect: str, text: str, name: str | None = None) -> "Cab | StepRef":
+def build_document(dialect: str, text: str, name: str | None = None, **options: Any) -> "Cab | StepRef":
     """Build a cab from its definition text, in the named dialect.
 
     This is the half of the provider protocol shinobi owns: a provider that
@@ -71,6 +74,11 @@ def build_document(dialect: str, text: str, name: str | None = None) -> "Cab | S
         text: The definition's raw text.
         name: Which cab to take, for dialects whose document can hold several
             (cult-cargo). Optional when the document defines exactly one.
+        **options: Passed through to the dialect's own loader -- `images`,
+            `package_roots`. A document is not always self-contained: it may
+            name an image symbolically or include from an installed package,
+            and neither can be resolved without something only the provider
+            has. See `loader_options` in this module's docstring.
 
     Raises:
         CabLoadError: On an unknown dialect, or when `name` does not name a cab
@@ -79,7 +87,7 @@ def build_document(dialect: str, text: str, name: str | None = None) -> "Cab | S
     if dialect == "yaml_cab":
         from shinobi.loaders import yaml_cab
 
-        cabs = yaml_cab.loads(text)
+        cabs = yaml_cab.loads(text, **options)
         # A requested name must be one the document defines. Falling back to
         # "it only defines one, so that must be it" would turn a provider
         # returning the wrong document into a silently wrong cab, under the
@@ -100,6 +108,22 @@ def build_document(dialect: str, text: str, name: str | None = None) -> "Cab | S
     raise CabLoadError(f"unknown cab dialect {dialect!r} (known: {', '.join(_DIALECTS)})")
 
 
+def _loader_options(module: Any) -> dict[str, Any]:
+    """A provider's `loader_options()`, or nothing if it has none.
+
+    A document is not always self-contained. dosho's name their image
+    symbolically (`image: WSCLEAN`) so a deployment's overrides still decide
+    the reference at load time; another provider might use package-scoped
+    includes. Neither is resolvable from the text alone, and shinobi has no
+    manifest and no package map of its own -- the provider does.
+
+    Optional, so a provider whose documents *are* self-contained implements
+    nothing.
+    """
+    fn = getattr(module, "loader_options", None)
+    return dict(fn()) if fn is not None else {}
+
+
 def get(name: str) -> "Cab | StepRef":
     """Resolve a cab by name, trying every installed `shinobi.cabs`
     provider in name order. Within a provider, `get_document` is tried
@@ -116,7 +140,9 @@ def get(name: str) -> "Cab | StepRef":
                 found = fn(name)
             except KeyError:
                 continue
-            return build_document(*found, name=name) if resolver == "get_document" else found
+            if resolver != "get_document":
+                return found
+            return build_document(*found, name=name, **_loader_options(module))
     installed = ", ".join(ep.name for ep in providers) or "none installed"
     raise CabLoadError(f"no such cab {name!r} in any shinobi.cabs provider ({installed})")
 
