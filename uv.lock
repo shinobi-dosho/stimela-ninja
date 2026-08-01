@@ -224,6 +224,20 @@ wheels = [
 ]
 
 [[package]]
+name = "dosho"
+version = "0.1.0b3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "pyyaml" },
+    { name = "stimela-ninja" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/50/02/95018d05c3c987037a2b36903898214159073be3fa7774cd1fa6be2e0eda/dosho-0.1.0b3.tar.gz", hash = "sha256:5809af83d596bca2a1cd21d081b6c3ee3904da84318bf28f451c4909d361da1f", size = 143559, upload-time = "2026-07-26T21:56:10.792Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0f/84/192343ae38ffb2f053a19a9d9482959a12ff569c0b143a013bea21484bd2/dosho-0.1.0b3-py3-none-any.whl", hash = "sha256:954baa5ce36dc7d5aed736955812dd1179f0419365d4845d1d6aacfec491ff8c", size = 159096, upload-time = "2026-07-26T21:56:09.754Z" },
+]
+
+[[package]]
 name = "filelock"
 version = "3.32.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1079,6 +1093,9 @@ docs = [
     { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "sphinx-copybutton" },
 ]
+examples = [
+    { name = "dosho" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1102,6 +1119,7 @@ docs = [
     { name = "sphinx", specifier = ">=7.2" },
     { name = "sphinx-copybutton", specifier = ">=0.5" },
 ]
+examples = [{ name = "dosho" }]
 
 [[package]]
 name = "tomli"

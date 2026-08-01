@@ -27,19 +27,21 @@ dev = [
     "ruff>=0.5",
 ]
 
-# Not installed by default `uv sync`/`uv run`, and not resolved as a uv
-# dependency-group at all: dosho redirects its own `stimela-ninja` dependency
-# to a git source via [tool.uv.sources], so that it develops against this
-# repo's main rather than the last release. That conflicts with resolving
-# stimela-ninja's *own* lock as the local editable project -- uv locks all
-# dependency-groups together, so any group containing it would break
-# `uv lock`/`uv sync` for everyone, not just examples users. Install them
-# manually instead, after a normal `uv sync`:
-#   uv pip install --no-deps -e ../dosho   # or the git URL
+# dosho (the native shinobi cab repository) supplies the real
+# wsclean/cubical/simms cabs `examples/example-simulation.py` imports.
+#
+# This was previously impossible to express as a dependency group: dosho
+# redirected its own `stimela-ninja` dependency to a git source via
+# [tool.uv.sources], which gave uv two different sources for one package name
+# once this project was also in the resolution -- and since uv locks all
+# dependency-groups together, that broke `uv lock` for everyone rather than
+# only for examples users. dosho dropped the redirect once `Scope.scratch`
+# shipped in 0.1.0b5 (dosho #42), so a plain group resolves cleanly now.
+examples = ["dosho"]
+
+# simms is still a manual install: it has no docker image, so it runs via
+# NativeBackend, and it is not on PyPI.
 #   uv pip install --no-deps simms @ git+https://github.com/wits-cfa/simms.git
-# simms has no docker image yet, so it must be installed to run via
-# NativeBackend. dosho (the native shinobi cab repository) supplies that
-# example's real wsclean/cubical/simms cabs.
 
 # Documentation build (Sphinx + Furo + autodoc). `uv sync --group docs`.
 docs = [
