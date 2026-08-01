@@ -99,9 +99,34 @@ if [[ "$ci_status" == skip ]] && command -v uv >/dev/null; then
         simms_note="⚠️ simms could not be installed, so dosho's skysim/telsim pysteps were **skipped**, not tested."
     fi
 
-    ci_status=pass
-    ci_detail=$(uv run --no-sync pytest -q 2>&1) || ci_status=fail
-    cd "$ROOT/dosho"
+    # simms depends on stimela-ninja, so installing it resolves that dependency
+    # and drags a PyPI *wheel* over the editable checkout -- silently switching
+    # the whole run to testing a released stimela-ninja against dosho tip, which
+    # is not what this job is for. Re-assert the checkout; --no-deps so nothing
+    # else is re-resolved on the way past.
+    uv pip install --quiet --no-deps -e . 2>/dev/null || true
+
+    # Then verify it, because that failure is invisible on its own: the suite
+    # still runs, still passes or fails plausibly, and reports on a tree nobody
+    # is looking at. One import is cheap; a week of confident results about the
+    # wrong code is not.
+    want=$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$PWD/src/shinobi")
+    got=$(uv run --no-sync python -c \
+        'import shinobi,os;print(os.path.realpath(os.path.dirname(shinobi.__file__)))' 2>/dev/null || true)
+    if [[ "$got" != "$want" ]]; then
+        ci_status=fail
+        ci_detail="environment is not testing this checkout: shinobi imports from
+${got:-<unimportable>}
+expected
+$want
+Something in the install chain replaced the editable project (simms and dosho
+both depend on stimela-ninja). Tests were not run."
+        cd "$ROOT/dosho"
+    else
+        ci_status=pass
+        ci_detail=$(uv run --no-sync pytest -q 2>&1) || ci_status=fail
+        cd "$ROOT/dosho"
+    fi
 fi
 
 body="$RUNNER_TEMP/dosho-watch-body.md"
