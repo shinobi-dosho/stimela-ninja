@@ -15,6 +15,29 @@ is what this loader is usually pointed at, but the dialect is scabha's and
 nothing here is specific to that project. `shinobi.loaders.worker_schema` reads
 a scabha-derived *config* dialect through the same shared helpers.
 
+**shinobi-native keys.** shinobi's own `Cab` carries a few things scabha has
+no vocabulary for, so the dialect accepts them as an extension rather than
+inventing a second format for cabs authored against shinobi directly. A
+document using none of them is a plain scabha document, and cult-cargo's own
+files remain a readable subset.
+
+Per field, alongside the scabha keys: ``path_prefix: true`` marks a
+string-typed input naming a filesystem path the tool writes under (see
+`ParamMeta.path_prefix`), and ``mutable: true`` marks an input the step may
+change in place (`Mutability.MUTABLE`). Both are registered in
+`_LEAF_SPEC_KEYS`, which matters more than it looks: `_is_section` tells a
+leaf param from a nested CLI section by whether the mapping has *any* known
+param-spec key, so a spec carrying only an unregistered key is read as a
+section and the field disappears without a word.
+
+Per cab: ``sandbox``, ``harvest`` and ``scratch``, which mirror the `Scope`
+fields of the same names.
+
+Not yet read: ``input_patterns``/``output_patterns``. They are nested
+`ParamPattern` structures rather than scalars, and three of dosho's
+forty-two cabs use them -- worth its own design rather than a hurried
+mapping.
+
 **Support is deliberately partial.** This reads the static, declarative subset
 and refuses the parts that are a programming language wearing YAML. The
 boundary is drawn once, here and in SECURITY.md, and the sections below say
@@ -125,7 +148,7 @@ from shinobi.loaders._modelgen import (
     sanitize_unique,
     validate_choices,
 )
-from shinobi.steps.schema import Cab, ParamMeta, Policies
+from shinobi.steps.schema import Cab, Mutability, ParamMeta, Policies
 
 
 def load_file(path: str | Path, *, package_roots: dict[str, Path] | None = None) -> dict[str, Cab]:
@@ -244,7 +267,13 @@ def _load_raw_cached(path: Path, roots_key: tuple[tuple[str, Path], ...], contai
     )
 
 
-_LEAF_SPEC_KEYS = COMMON_LEAF_KEYS | {"nom_de_guerre", "mkdir", "element_choices"}
+# shinobi-native per-field keys. They must be here as well as read in
+# `_collect`: `_is_section` decides leaf-vs-section by whether a mapping has
+# *any* known param-spec key, so a spec carrying only a new key would
+# otherwise be mistaken for a nested CLI section and vanish.
+_SHINOBI_LEAF_KEYS = {"path_prefix", "mutable"}
+
+_LEAF_SPEC_KEYS = COMMON_LEAF_KEYS | {"nom_de_guerre", "mkdir", "element_choices"} | _SHINOBI_LEAF_KEYS
 
 
 def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path]) -> Cab:
@@ -273,8 +302,8 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
     policies_spec = spec.get("policies") or {}
     wranglers = ((spec.get("management") or {}).get("wranglers")) or {}
 
-    in_fields, field_meta = _collect(spec.get("inputs") or {})
-    out_fields, out_meta = _collect(spec.get("outputs") or {})
+    in_fields, field_meta, input_mutability = _collect(spec.get("inputs") or {})
+    out_fields, out_meta, _out_mutability = _collect(spec.get("outputs") or {})
 
     in_choices = {field: meta.choices for field, meta in field_meta.items() if meta.choices}
     out_choices = {field: meta.choices for field, meta in out_meta.items() if meta.choices}
@@ -293,8 +322,21 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
         policies=Policies(**policies_spec),
         inputs_model=build_model(f"{name}_Inputs", in_fields, choices=in_choices, extras=in_extras),
         outputs_model=build_model(f"{name}_Outputs", out_fields, choices=out_choices),
-        field_meta=field_meta,
+        # Output metas merged over input ones, the same way
+        # `dosho._builder.define_cab` composes them, so a cab built from a
+        # document and the same cab built in Python agree. Without the output
+        # half an `implicit` output template is silently dropped: nothing
+        # resolves the output's value, and `declared_output_dirs` finds no
+        # write directory to mount, which is how a tool's products end up
+        # inside the container. The merge replaces whole `ParamMeta` objects,
+        # so a name declared on both sides keeps the output's -- a sharp edge
+        # inherited deliberately rather than diverging from dosho here.
+        field_meta={**field_meta, **out_meta},
         wranglers=wranglers,
+        input_mutability=input_mutability,
+        sandbox=spec.get("sandbox"),
+        harvest=list(spec.get("harvest") or []),
+        scratch=list(spec.get("scratch") or []),
     )
 
 
@@ -315,7 +357,7 @@ def _collect(
     *,
     _prefix: str = "",
     _seen: dict[str, str] | None = None,
-) -> tuple[dict[str, tuple[str, bool, Any]], dict[str, ParamMeta]]:
+) -> tuple[dict[str, tuple[str, bool, Any]], dict[str, ParamMeta], dict[str, Mutability]]:
     """Split a cult-cargo inputs/outputs mapping into modelgen field specs
     and per-field ParamMeta (nom_de_guerre/implicit/info/positional/
     repeat_as_tokens). Recurses into stimela2-style CLI-section nesting
@@ -323,6 +365,7 @@ def _collect(
     """
     fields: dict[str, tuple[str, bool, Any]] = {}
     metas: dict[str, ParamMeta] = {}
+    mutability: dict[str, Mutability] = {}
     seen = _seen if _seen is not None else {}
     for key, value in raw.items():
         if value is not None and not isinstance(value, dict):
@@ -334,9 +377,10 @@ def _collect(
         value = value or {}
         dotted_key = f"{_prefix}.{key}" if _prefix else key
         if _is_section(value):
-            sub_fields, sub_metas = _collect(value, _prefix=dotted_key, _seen=seen)
+            sub_fields, sub_metas, sub_mut = _collect(value, _prefix=dotted_key, _seen=seen)
             fields.update(sub_fields)
             metas.update(sub_metas)
+            mutability.update(sub_mut)
             continue
         field = sanitize_unique(dotted_key, seen)
         implicit = value.get("implicit")
@@ -351,7 +395,10 @@ def _collect(
         repeat_as_tokens = param_policies.get("repeat") == "list"
         choices = validate_choices(value.get("choices"), error=CabLoadError)
         abbreviation = value.get("abbreviation")
-        if nom or implicit is not None or value.get("info") or positional or positional_head or repeat_as_tokens or choices or abbreviation:
+        path_prefix = bool(value.get("path_prefix", False))
+        if value.get("mutable"):
+            mutability[field] = Mutability.MUTABLE
+        if nom or implicit is not None or value.get("info") or positional or positional_head or repeat_as_tokens or choices or abbreviation or path_prefix:
             metas[field] = ParamMeta(
                 nom_de_guerre=nom,
                 implicit=implicit,
@@ -360,6 +407,7 @@ def _collect(
                 positional_head=positional_head,
                 repeat_as_tokens=repeat_as_tokens,
                 choices=choices,
+                path_prefix=path_prefix,
                 abbreviation=abbreviation,
             )
-    return fields, metas
+    return fields, metas, mutability
