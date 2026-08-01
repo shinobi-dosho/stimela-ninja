@@ -39,10 +39,20 @@ caller-supplied ``images`` mapping (see `loads`) -- the same shape as
 not go looking for one. It lets a document say ``image: WSCLEAN`` and leave
 which reference that is to the deployment that loads it.
 
-Not yet read: ``input_patterns``/``output_patterns``. They are nested
-`ParamPattern` structures rather than scalars, and three of dosho's
-forty-two cabs use them -- worth its own design rather than a hurried
-mapping.
+Also per cab: ``input_patterns``/``output_patterns``, families of
+dynamically-named params (`ParamPattern`). A pattern is a ``separator`` plus
+ordered ``segments``; each segment is either a ``regex`` (a level that cannot
+be enumerated ahead of time) or ``attrs`` (the known level, each attr a param
+spec in its own right). ``ParamPattern``'s own validator enforces the real
+rule -- exactly one segment carries ``attrs`` -- so the loader only produces
+the shape and lets it object, naming the cab and key when it does.
+
+An attr spec is read by the same `_param_meta` as a declared field, with one
+asymmetry: an attr keeps its ``dtype``, a field does not. A declared field's
+dtype is already its model annotation, and repeating it on `field_meta` would
+make every field of every cab differ from its Python-authored equivalent; a
+pattern attr has no model field at all, which is the reason
+`ParamMeta.dtype` exists.
 
 **Support is deliberately partial.** This reads the static, declarative subset
 and refuses the parts that are a programming language wearing YAML. The
@@ -154,7 +164,7 @@ from shinobi.loaders._modelgen import (
     sanitize_unique,
     validate_choices,
 )
-from shinobi.steps.schema import Cab, Mutability, ParamMeta, Policies
+from shinobi.steps.schema import Cab, Mutability, ParamMeta, ParamPattern, ParamSegment, Policies
 
 
 def load_file(
@@ -370,6 +380,8 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
         field_meta={**field_meta, **out_meta},
         wranglers=wranglers,
         input_mutability=input_mutability,
+        input_patterns=_param_patterns(spec.get("input_patterns"), cab=name, key="input_patterns"),
+        output_patterns=_param_patterns(spec.get("output_patterns"), cab=name, key="output_patterns"),
         sandbox=spec.get("sandbox"),
         harvest=list(spec.get("harvest") or []),
         scratch=list(spec.get("scratch") or []),
@@ -386,6 +398,87 @@ def _is_section(value: dict) -> bool:
     (implicit `{}`) leaf convention.
     """
     return bool(value) and not (set(value) & _LEAF_SPEC_KEYS)
+
+
+def _param_patterns(raw: Any, *, cab: str, key: str) -> list[ParamPattern]:
+    """Read `input_patterns:`/`output_patterns:` into `ParamPattern`s.
+
+    A pattern is a `separator` plus an ordered list of `segments`; each segment
+    is either a `regex` (a level that cannot be enumerated) or `attrs` (the
+    known level, each attr a param spec in its own right). `ParamPattern`'s own
+    validator enforces the real rule -- exactly one segment carries `attrs` --
+    so this only has to produce the shape and let it complain.
+
+    Errors name the cab and the key, because a pattern is the one part of a cab
+    a reader cannot check by eye against the tool's `--help`.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise CabLoadError(f"cab '{cab}': '{key}' must be a list of patterns, got {type(raw).__name__}")
+    patterns: list[ParamPattern] = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise CabLoadError(f"cab '{cab}': '{key}[{i}]' must be a mapping, got {type(entry).__name__}")
+        segments_raw = entry.get("segments")
+        if not isinstance(segments_raw, list) or not segments_raw:
+            raise CabLoadError(f"cab '{cab}': '{key}[{i}]' needs a non-empty 'segments' list")
+        segments: list[ParamSegment] = []
+        for j, seg in enumerate(segments_raw):
+            if not isinstance(seg, dict):
+                raise CabLoadError(f"cab '{cab}': '{key}[{i}].segments[{j}]' must be a mapping, got {type(seg).__name__}")
+            attrs_raw = seg.get("attrs")
+            if attrs_raw is None:
+                segments.append(ParamSegment(regex=seg.get("regex")))
+                continue
+            if not isinstance(attrs_raw, dict):
+                raise CabLoadError(f"cab '{cab}': '{key}[{i}].segments[{j}].attrs' must be a mapping, got {type(attrs_raw).__name__}")
+            # An attr always gets a ParamMeta, even an empty one. Unlike a
+            # declared field, where an all-default meta carries no information
+            # and is dropped, the *set of attr names* is what the pattern
+            # matches on -- dropping an empty one would delete the attr.
+            attrs = {name: _param_meta(spec or {}, with_dtype=True) for name, spec in attrs_raw.items()}
+            segments.append(ParamSegment(attrs=attrs))
+        try:
+            patterns.append(ParamPattern(separator=entry.get("separator", "."), segments=segments))
+        except ValueError as exc:
+            raise CabLoadError(f"cab '{cab}': '{key}[{i}]' is not a valid pattern -- {exc}") from exc
+    return patterns
+
+
+_DEFAULT_PARAM_META = ParamMeta()
+
+
+def _param_meta(value: dict[str, Any], *, nom_de_guerre: str | None = None, with_dtype: bool = False) -> ParamMeta:
+    """Build a `ParamMeta` from a param-spec mapping.
+
+    Shared by declared fields and by `ParamPattern` attrs, which are the same
+    shape -- an attr is a param spec that happens to name part of a pattern
+    rather than a whole field. Keeping one reader means a key added for one is
+    understood by the other, which is the drift `AGENTS.md` warns about for
+    these loaders.
+
+    `with_dtype` is the one asymmetry, and it is not cosmetic. A declared
+    field's dtype lives in its model annotation, so repeating it here would
+    put something on `field_meta` that the Python-authored equivalent does not
+    have -- every field of every cab would then differ on a round trip. A
+    pattern attr has no model field at all, which is exactly why
+    `ParamMeta.dtype` exists (see its docstring): it is the only way a backend
+    can tell a dynamically-named input is file-like.
+    """
+    policies = value.get("policies") or {}
+    return ParamMeta(
+        nom_de_guerre=nom_de_guerre,
+        implicit=value.get("implicit"),
+        info=value.get("info"),
+        positional=bool(policies.get("positional", False)),
+        positional_head=bool(policies.get("positional_head", False)),
+        repeat_as_tokens=policies.get("repeat") == "list",
+        choices=validate_choices(value.get("choices"), error=CabLoadError),
+        dtype=value.get("dtype") if with_dtype else None,
+        path_prefix=bool(value.get("path_prefix", False)),
+        abbreviation=value.get("abbreviation"),
+    )
 
 
 def _collect(
@@ -425,25 +518,13 @@ def _collect(
         # the tool's real flag name: an explicit nom_de_guerre, else the
         # original (unsanitised) param name if sanitising changed it.
         nom = value.get("nom_de_guerre") or (dotted_key if dotted_key != field else None)
-        param_policies = value.get("policies") or {}
-        positional = bool(param_policies.get("positional", False))
-        positional_head = bool(param_policies.get("positional_head", False))
-        repeat_as_tokens = param_policies.get("repeat") == "list"
-        choices = validate_choices(value.get("choices"), error=CabLoadError)
-        abbreviation = value.get("abbreviation")
-        path_prefix = bool(value.get("path_prefix", False))
         if value.get("mutable"):
             mutability[field] = Mutability.MUTABLE
-        if nom or implicit is not None or value.get("info") or positional or positional_head or repeat_as_tokens or choices or abbreviation or path_prefix:
-            metas[field] = ParamMeta(
-                nom_de_guerre=nom,
-                implicit=implicit,
-                info=value.get("info"),
-                positional=positional,
-                positional_head=positional_head,
-                repeat_as_tokens=repeat_as_tokens,
-                choices=choices,
-                path_prefix=path_prefix,
-                abbreviation=abbreviation,
-            )
+        meta = _param_meta(value, nom_de_guerre=nom)
+        # Only carry a meta that says something. Compared against the default
+        # rather than testing each attribute: the old form was a long boolean
+        # chain that had to be edited every time `ParamMeta` gained a field,
+        # and was one edit behind more than once.
+        if meta != _DEFAULT_PARAM_META:
+            metas[field] = meta
     return fields, metas, mutability
