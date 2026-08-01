@@ -672,3 +672,62 @@ def test_the_new_keys_are_optional():
     assert cab.input_mutability == {}
     assert cab.harvest == [] and cab.scratch == [] and cab.sandbox is None
     assert cab.field_meta.get("x") is None
+
+
+# --------------------------------------------------------------------------
+# Symbolic image keys
+# --------------------------------------------------------------------------
+
+_IMG_DOC = """
+cabs:
+  probe:
+    command: probe
+    image: WSCLEAN
+"""
+
+
+def test_image_key_resolves_through_the_caller_mapping():
+    cab = loads(_IMG_DOC, images={"WSCLEAN": "ghcr.io/org/wsclean:3.6"})["probe"]
+    assert cab.image == "ghcr.io/org/wsclean:3.6"
+
+
+def test_image_key_is_left_alone_without_a_mapping():
+    """No mapping means no resolution -- shinobi has no manifest of its own."""
+    assert loads(_IMG_DOC)["probe"].image == "WSCLEAN"
+
+
+def test_a_literal_reference_passes_through_the_mapping():
+    """The older form. cult-cargo's own files carry references directly, and a
+    mapping supplied for other cabs must not disturb them.
+    """
+    doc = """
+    cabs:
+      probe:
+        command: probe
+        image: quay.io/stimela2/breizorro:0.1.2
+    """
+    cab = loads(doc, images={"WSCLEAN": "ghcr.io/org/wsclean:3.6"})["probe"]
+    assert cab.image == "quay.io/stimela2/breizorro:0.1.2"
+
+
+def test_an_unmapped_bare_name_is_not_rejected():
+    """`ubuntu` is a legitimate image name. Refusing bare names to catch a
+    misspelled key would break more than it caught, so a typo instead fails
+    at pull time -- loudly, and in the runtime that can actually tell.
+    """
+    doc = "cabs:\n  probe:\n    command: probe\n    image: ubuntu\n"
+    assert loads(doc, images={"WSCLEAN": "x"})["probe"].image == "ubuntu"
+
+
+def test_the_dict_image_form_still_resolves():
+    """cult-cargo writes `image: {_use: ..., name: breizorro}`; the name that
+    falls out of that is resolved like any other.
+    """
+    doc = """
+    cabs:
+      probe:
+        command: probe
+        image: {name: BREIZORRO}
+    """
+    cab = loads(doc, images={"BREIZORRO": "ghcr.io/org/breizorro:0.2"})["probe"]
+    assert cab.image == "ghcr.io/org/breizorro:0.2"
