@@ -134,3 +134,120 @@ def test_list_cabs_works_across_mixed_cab_and_pystep_providers(monkeypatch):
     ep_psteps = _fake_entry_point("b-psteps", pystep_provider)
     _patch_entry_points(monkeypatch, [ep_cabs, ep_psteps])
     assert cabs.list_cabs() == {"a-cabs": ["wsclean"], "b-psteps": ["listobs"]}
+
+
+# --------------------------------------------------------------------------
+# Document-shaped providers (`get_document`)
+# --------------------------------------------------------------------------
+
+_YAML_CAB_DOC = """\
+cabs:
+  breizorro:
+    command: breizorro
+    inputs:
+      threshold:
+        dtype: float
+        default: 6.5
+    outputs:
+      outfile:
+        dtype: File
+"""
+
+_CLASSIC_DOC = """\
+{"task": "flagms", "binary": "flagms", "base": "stimela/flagms",
+ "parameters": [{"name": "msname", "dtype": "str", "required": true, "info": "MS"}]}
+"""
+
+
+class FakeDocumentProvider:
+    """The shape this protocol exists for: a provider that hands back text
+    and never imports shinobi to build anything.
+    """
+
+    def __init__(self, docs: dict[str, tuple[str, str]]):
+        self._docs = docs
+
+    def get_document(self, name: str) -> tuple[str, str]:
+        return self._docs[name]
+
+    def list_cabs(self) -> list[str]:
+        return list(self._docs)
+
+
+def test_build_document_yaml_cab_selects_by_name():
+    cab = cabs.build_document("yaml_cab", _YAML_CAB_DOC, "breizorro")
+    assert cab.name == "breizorro"
+    assert cab.command == "breizorro"
+    assert "threshold" in cab.inputs_model.model_fields
+
+
+def test_build_document_yaml_cab_without_a_name_when_unambiguous():
+    """A single-cab document needs no name -- the common case for a
+    provider that ships one file per cab."""
+    assert cabs.build_document("yaml_cab", _YAML_CAB_DOC).name == "breizorro"
+
+
+def test_build_document_stimela_classic():
+    cab = cabs.build_document("stimela-classic", _CLASSIC_DOC, "flagms")
+    assert cab.name == "flagms"
+    assert "msname" in cab.inputs_model.model_fields
+
+
+def test_build_document_rejects_an_unknown_dialect():
+    with pytest.raises(CabLoadError, match="unknown cab dialect 'toml-ish'"):
+        cabs.build_document("toml-ish", "irrelevant")
+
+
+def test_build_document_rejects_a_name_the_document_does_not_define():
+    with pytest.raises(CabLoadError, match="not 'wsclean'"):
+        cabs.build_document("yaml_cab", _YAML_CAB_DOC, "wsclean")
+
+
+def test_get_resolves_through_a_document_provider(monkeypatch):
+    module = FakeDocumentProvider({"breizorro": ("yaml_cab", _YAML_CAB_DOC)})
+    _patch_entry_points(monkeypatch, [_fake_entry_point("datadosho", module)])
+    cab = cabs.get("breizorro")
+    assert isinstance(cab, Cab)
+    assert cab.command == "breizorro"
+
+
+def test_get_still_resolves_object_providers(monkeypatch):
+    """The change is additive: a provider exposing only `get` is untouched."""
+    module = FakeProviderModule(["wsclean"])
+    _patch_entry_points(monkeypatch, [_fake_entry_point("dosho", module)])
+    assert cabs.get("wsclean").name == "wsclean"
+
+
+def test_document_and_object_providers_coexist(monkeypatch):
+    """The split dosho is heading for: binary cabs as data, pysteps as code."""
+    data = FakeDocumentProvider({"breizorro": ("yaml_cab", _YAML_CAB_DOC)})
+    code = FakePystepProviderModule(["casa-listobs"])
+    _patch_entry_points(
+        monkeypatch,
+        [_fake_entry_point("a-data", data), _fake_entry_point("b-code", code)],
+    )
+    assert isinstance(cabs.get("breizorro"), Cab)
+    assert isinstance(cabs.get("casa-listobs"), StepRef)
+
+
+class MixedProvider(FakeDocumentProvider):
+    """One provider serving most cabs as data and the rest as objects --
+    `get_document` is tried first, and a KeyError there falls through to
+    `get` rather than to the next provider."""
+
+    def get(self, name: str) -> StepRef:
+        if name != "a-pystep":
+            raise KeyError(name)
+        return _make_pystep(name)
+
+    def list_cabs(self) -> list[str]:
+        return [*self._docs, "a-pystep"]
+
+
+def test_get_document_miss_falls_through_to_get_on_the_same_provider(monkeypatch):
+    module = MixedProvider({"breizorro": ("yaml_cab", _YAML_CAB_DOC)})
+    _patch_entry_points(monkeypatch, [_fake_entry_point("mixed", module)])
+    assert isinstance(cabs.get("breizorro"), Cab)
+    assert isinstance(cabs.get("a-pystep"), StepRef)
+    with pytest.raises(CabLoadError, match="no such cab 'nope'"):
+        cabs.get("nope")
