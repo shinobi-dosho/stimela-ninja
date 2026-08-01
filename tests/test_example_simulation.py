@@ -77,7 +77,12 @@ def test_dryrun_dag_renders():
     importlib.util.find_spec("simms") is None,
     reason="dosho's skysim/telsim are pysteps, not Cabs -- a backend override cannot intercept them, so dispatching this recipe imports simms for real",
 )
-def test_recipe_dispatches_with_correct_argv_shape(monkeypatch):
+def test_recipe_dispatches_with_correct_argv_shape(monkeypatch, tmp_path):
+    # Run somewhere disposable. When simms *is* installed the pysteps below
+    # are not intercepted by anything -- telsim writes a real MeasurementSet
+    # (~6 MB) and skysim computes real visibilities into it. Without this the
+    # repo gains an untracked example-simulation.ms/ every run.
+    monkeypatch.chdir(tmp_path)
     mod = load_example()
     recorder = RecordingBackend()
     # wsclean/cubical are Cabs, so intercepting "native" keeps them from
@@ -96,26 +101,21 @@ def test_recipe_dispatches_with_correct_argv_shape(monkeypatch):
     calls_by_name: dict[str, list[list[str]]] = {}
     for cab, argv, _ in recorder.calls:
         calls_by_name.setdefault(cab.name, []).append(argv)
-    assert set(calls_by_name) == {"simms-telsim", "simms-skysim", "cubical", "wsclean"}
+    # Only the Cab steps reach a backend. simms-telsim/simms-skysim are
+    # pysteps, which run their own body instead of dispatching through one,
+    # so the recorder never sees them -- asserting otherwise was asserting
+    # that dosho had not yet moved simms to @shinobi.pystep, which it has.
+    assert set(calls_by_name) == {"cubical", "wsclean"}
     # image_sim (pre-calibration, populates MODEL_DATA) + one per Briggs
     # robust value.
     assert len(calls_by_name["wsclean"]) == 4
 
-    # multi-word `command` split + positional `ms` (no --ms flag, bare
-    # value last) for both simms steps.
-    telsim_argv = calls_by_name["simms-telsim"][0]
-    assert telsim_argv[:2] == ["simms", "telsim"]
-    assert "--ms" not in telsim_argv
-    assert "--telescope" in telsim_argv
-    assert telsim_argv[-1] == "example-simulation.ms"
-
-    skysim_argv = calls_by_name["simms-skysim"][0]
-    assert skysim_argv[:2] == ["simms", "skysim"]
-    assert "--ms" not in skysim_argv
-    assert "--ascii-sky" in skysim_argv
-    assert skysim_argv[skysim_argv.index("--ascii-sky") + 1] == str(mod._INPUT_DIR / "testsky.txt")
-    # skysim's ms is wired from telsim's own (positional) ms output.
-    assert skysim_argv[-1] == "example-simulation.ms"
+    # The simms steps are pysteps, so there is no argv to inspect -- what
+    # remains checkable, and is the part worth checking, is that their output
+    # still flows through the wiring into the Cab steps. cubical is wired the
+    # MS telsim produced.
+    cubical_argv = calls_by_name["cubical"][0]
+    assert any("example-simulation.ms" in str(a) for a in cubical_argv), cubical_argv
 
     # wsclean's own real outputs are FITS image products (image/image_mfs/
     # ...), not the MS -- image_sim's `input_ms` is an *outputs_model-only*
