@@ -33,6 +33,12 @@ section and the field disappears without a word.
 Per cab: ``sandbox``, ``harvest`` and ``scratch``, which mirror the `Scope`
 fields of the same names.
 
+``image:`` may also name a *key* rather than a reference, resolved through the
+caller-supplied ``images`` mapping (see `loads`) -- the same shape as
+``package_roots``, and for the same reason: shinobi has no manifest and does
+not go looking for one. It lets a document say ``image: WSCLEAN`` and leave
+which reference that is to the deployment that loads it.
+
 Not yet read: ``input_patterns``/``output_patterns``. They are nested
 `ParamPattern` structures rather than scalars, and three of dosho's
 forty-two cabs use them -- worth its own design rather than a hurried
@@ -151,13 +157,19 @@ from shinobi.loaders._modelgen import (
 from shinobi.steps.schema import Cab, Mutability, ParamMeta, Policies
 
 
-def load_file(path: str | Path, *, package_roots: dict[str, Path] | None = None) -> dict[str, Cab]:
-    """Load a cult-cargo cab definition file into `Cab` instances.
+def load_file(
+    path: str | Path,
+    *,
+    package_roots: dict[str, Path] | None = None,
+    images: dict[str, str] | None = None,
+) -> dict[str, Cab]:
+    """Load a YAML cab definition file into `Cab` instances.
 
     Args:
         path: Path to the YAML cab definition file.
         package_roots: Mapping of package name to filesystem root, used to
             resolve `_include` directives that reference other packages.
+        images: Mapping of image *key* to full reference. See `loads`.
 
     Returns:
         A dict mapping cab name to its built `Cab` instance.
@@ -167,21 +179,41 @@ def load_file(path: str | Path, *, package_roots: dict[str, Path] | None = None)
     raw = _load_raw(path.resolve(), roots)
     resolved = resolve_use(raw, raw, error=CabLoadError)
     cabs_section = resolved.get("cabs", resolved)
-    return {name: _build_cabdef(name, spec, roots) for name, spec in cabs_section.items()}
+    return {name: _build_cabdef(name, spec, roots, images or {}) for name, spec in cabs_section.items()}
 
 
-def loads(text: str, *, package_roots: dict[str, Path] | None = None) -> dict[str, Cab]:
+def loads(
+    text: str,
+    *,
+    package_roots: dict[str, Path] | None = None,
+    images: dict[str, str] | None = None,
+) -> dict[str, Cab]:
     """Parse cab defs from a YAML string. Supports ``_use`` (resolved
     against the document itself) and package-scoped ``_include`` (resolved
     against `package_roots`), but not a plain relative-path ``_include``,
     since there's no base directory to resolve a relative file path against.
+
+    ``images`` maps an image *key* to its full reference, for a document that
+    names images symbolically (``image: WSCLEAN``) rather than by a baked-in
+    reference. Caller-supplied for the same reason ``package_roots`` is:
+    shinobi has no manifest of its own and will not go looking for one. A cab
+    repository passes its own -- dosho's `images.yaml` is exactly this -- so a
+    deployment's overrides still decide the reference at load time instead of
+    it being fixed when the document was written.
+
+    An image string absent from the mapping is left alone, because a
+    literal reference is the older and still-valid form (cult-cargo's files
+    carry ``quay.io/stimela2/...`` directly). A key that is simply misspelled
+    therefore reaches the runtime as an image name and fails there -- loudly,
+    at pull time, which is the safe direction: the alternative rejects every
+    legitimate bare name (``ubuntu``) to catch a typo.
     """
     roots = package_roots or {}
     raw = yaml.safe_load(text) or {}
     raw = resolve_directive(raw, "_include", lambda entry: _include_entry_to_dict(entry, None, roots))
     resolved = resolve_use(raw, raw, error=CabLoadError)
     cabs_section = resolved.get("cabs", resolved)
-    return {name: _build_cabdef(name, spec, roots) for name, spec in cabs_section.items()}
+    return {name: _build_cabdef(name, spec, roots, images or {}) for name, spec in cabs_section.items()}
 
 
 _PKG_INCLUDE_RE = re.compile(r"^\((?P<pkg>[\w.]+)\)(?P<rest>.*)$")
@@ -276,10 +308,14 @@ _SHINOBI_LEAF_KEYS = {"path_prefix", "mutable"}
 _LEAF_SPEC_KEYS = COMMON_LEAF_KEYS | {"nom_de_guerre", "mkdir", "element_choices"} | _SHINOBI_LEAF_KEYS
 
 
-def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path]) -> Cab:
+def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path], images: dict[str, str] | None = None) -> Cab:
     image = spec.get("image")
     if isinstance(image, dict):
         image = image.get("name")
+    # A symbolic key resolves through the caller's mapping; anything else is
+    # already a reference (see `loads`).
+    if images and isinstance(image, str):
+        image = images.get(image, image)
 
     flavour = spec.get("flavour", "binary")
     if isinstance(flavour, dict):
