@@ -69,9 +69,11 @@ class ParamMeta(BaseModel):
     (see e.g. wsclean's `-size <w> <h>`/`-weight briggs <n>`, which need
     two separate argv tokens, not `"4096,4096"` as one).
 
-    `path_prefix`: this string-typed input names a filesystem path *stem*
-    that the tool writes products under -- wsclean's `prefix`, ddfacet's
-    `Output-Name`. It is a **declaration of intent only, and deliberately
+    `write_path`: this string-typed input names a filesystem path the tool
+    writes to. Two shapes, both covered: a *stem* products are built from
+    (wsclean's `prefix`, ddfacet's `Output-Name`, which never exists as a
+    file itself), and a *complete* path written directly (a cache directory,
+    a logfile). It is a **declaration of intent only, and deliberately
     changes nothing about how the value is handled**. In particular it does
     not make the field a path: a path dtype here would be rewritten by
     `sandbox.absolutize_path_inputs` and the tool would then write outside
@@ -81,10 +83,10 @@ class ParamMeta(BaseModel):
     template names this field, a `harvest` glob, or a `scratch` glob.
 
     What it buys is enforcement. That convention previously existed only as
-    prose and authorial discipline: a stem whose write target nobody
-    declared produces no error, just products that stay inside the container
-    or outside the harvest. Marking the field lets `Cab` check that
-    something does declare it (see `Cab._path_prefix_declares_a_write_target`).
+    prose and authorial discipline: a write path nobody declared a target for
+    produces no error, just products that stay inside the container or
+    outside the harvest. Marking the field lets `Cab` check that something
+    does declare it (see `Cab._write_path_declares_a_write_target`).
 
     `choices`: the field's allowed values (cult-cargo/classic's `choices`
     key). A loader that sets this also narrows the field's real annotation
@@ -122,7 +124,7 @@ class ParamMeta(BaseModel):
     dtype: str | None = None
     choices: list[Any] | None = None
     abbreviation: str | None = None
-    path_prefix: bool = False
+    write_path: bool = False
 
 
 class Policies(BaseModel):
@@ -329,7 +331,7 @@ def declared_output_dirs(scope: Scope, prepared: dict[str, Any]) -> list[tuple[P
     ``Output-Name``), deliberately so, because a path dtype would be
     rewritten by `sandbox.absolutize_path_inputs` and the tool would then
     write outside the sandbox. Such an input can say so with
-    ``ParamMeta.path_prefix``, which changes nothing here -- this function
+    ``ParamMeta.write_path``, which changes nothing here -- this function
     reads the declarations either way -- but lets `Cab` reject a stem that
     *no* declaration names, which is the authoring mistake this convention
     is otherwise silent about. The write target is instead declared by the
@@ -638,8 +640,8 @@ class Cab(Scope):
         return None
 
     @model_validator(mode="after")
-    def _path_prefix_declares_a_write_target(self) -> "Cab":
-        """A `ParamMeta.path_prefix` input must be named by something that
+    def _write_path_declares_a_write_target(self) -> "Cab":
+        """A `ParamMeta.write_path` input must be named by something that
         declares where the tool writes.
 
         The stem itself is a plain string and mounts nothing -- deliberately,
@@ -655,7 +657,7 @@ class Cab(Scope):
         should hear about it when the cab is built, not when a pipeline has
         already run.
         """
-        marked = [name for name, meta in self.field_meta.items() if meta.path_prefix]
+        marked = [name for name, meta in self.field_meta.items() if meta.write_path]
         if not marked:
             return self
         # `implicit` templates reference *input field* names, so scan the
@@ -666,10 +668,10 @@ class Cab(Scope):
         orphaned = [name for name in marked if "{" + name not in haystack]
         if orphaned:
             raise ValueError(
-                f"cab '{self.name}': {orphaned!r} marked path_prefix but named by no write "
+                f"cab '{self.name}': {orphaned!r} marked write_path but named by no write "
                 "declaration -- add an output whose `implicit` template references it (e.g. "
                 f'implicit="{{{orphaned[0]}}}-image.fits"), or a harvest/scratch pattern. '
-                "A path_prefix input mounts nothing by itself, so without one the tool's "
+                "A write_path input mounts nothing by itself, so without one the tool's "
                 "products are silently left behind."
             )
         return self

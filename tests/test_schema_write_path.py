@@ -1,4 +1,4 @@
-"""`ParamMeta.path_prefix`: declaring that a string input is a path stem.
+"""`ParamMeta.write_path`: declaring that a string input is a path stem.
 
 The convention it formalises predates it -- `declared_output_dirs` documents
 why a tool's output stem is typed `str` rather than `File` (a path dtype would
@@ -34,7 +34,7 @@ def test_marker_does_not_make_the_field_a_path():
     starts failing, the sandbox will begin absolutizing output stems and tools
     will write outside it -- the exact bug the str convention avoids.
     """
-    cab = _cab(field_meta={"prefix": ParamMeta(path_prefix=True), "dirty": ParamMeta(implicit="{prefix}-dirty.fits")})
+    cab = _cab(field_meta={"prefix": ParamMeta(write_path=True), "dirty": ParamMeta(implicit="{prefix}-dirty.fits")})
     assert "prefix" not in path_fields(cab.inputs_model)
 
 
@@ -42,37 +42,37 @@ def test_marker_does_not_change_declared_output_dirs():
     """Mounting still comes from the output side, marked or not."""
     meta = {"dirty": ParamMeta(implicit="{prefix}-dirty.fits")}
     plain = _cab(field_meta=meta)
-    marked = _cab(field_meta={**meta, "prefix": ParamMeta(path_prefix=True)})
+    marked = _cab(field_meta={**meta, "prefix": ParamMeta(write_path=True)})
     args = {"prefix": "/data/out/img"}
     assert declared_output_dirs(plain, args) == declared_output_dirs(marked, args)
 
 
 def test_an_output_implicit_template_satisfies_the_check():
-    _cab(field_meta={"prefix": ParamMeta(path_prefix=True), "dirty": ParamMeta(implicit="{prefix}-dirty.fits")})
+    _cab(field_meta={"prefix": ParamMeta(write_path=True), "dirty": ParamMeta(implicit="{prefix}-dirty.fits")})
 
 
 def test_a_harvest_pattern_satisfies_the_check():
-    _cab(harvest=["{prefix}-*.fits"], field_meta={"prefix": ParamMeta(path_prefix=True)})
+    _cab(harvest=["{prefix}-*.fits"], field_meta={"prefix": ParamMeta(write_path=True)})
 
 
 def test_a_scratch_pattern_satisfies_the_check():
-    _cab(scratch=["{prefix}.log"], field_meta={"prefix": ParamMeta(path_prefix=True)})
+    _cab(scratch=["{prefix}.log"], field_meta={"prefix": ParamMeta(write_path=True)})
 
 
 def test_an_unreferenced_stem_is_rejected():
     """The failure the marker exists to catch: the tool runs, writes, and the
     products are silently left inside the container or outside the harvest.
     """
-    with pytest.raises(ValueError, match="marked path_prefix but named by no write declaration"):
-        _cab(field_meta={"prefix": ParamMeta(path_prefix=True)})
+    with pytest.raises(ValueError, match="marked write_path but named by no write declaration"):
+        _cab(field_meta={"prefix": ParamMeta(write_path=True)})
 
 
 def test_an_input_side_implicit_does_not_satisfy_the_check():
     """Only the *output* side declares where the tool writes. An `implicit` on
     the input itself is a supplied value, not a write target.
     """
-    with pytest.raises(ValueError, match="marked path_prefix"):
-        _cab(field_meta={"prefix": ParamMeta(path_prefix=True, implicit="{prefix}-x")})
+    with pytest.raises(ValueError, match="marked write_path"):
+        _cab(field_meta={"prefix": ParamMeta(write_path=True, implicit="{prefix}-x")})
 
 
 def test_unmarked_stems_are_left_alone():
