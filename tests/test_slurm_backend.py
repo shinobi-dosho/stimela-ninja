@@ -33,7 +33,7 @@ def test_script_contains_sbatch_directives_and_command():
 
 def test_unsafe_cab_name_is_rejected():
     """Regression test: the backend used to interpolate `cab.name` (which
-    can come from untrusted cult-cargo YAML) straight into a `#SBATCH` line
+    can come from an untrusted YAML cab definition) straight into a `#SBATCH` line
     with no charset check, unlike the offload compiler's `_safe` -- a
     newline in the name could inject arbitrary further directives. Now both
     go through the same `shinobi.backends.slurm_script.safe_slurm_name`.

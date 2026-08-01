@@ -238,7 +238,7 @@ def _script(
     cab to several steps (an unrolled loop always does), and a per-cab job
     name would point them all at the same `--output`/`--error` file to
     overwrite. The cab name is still charset-validated even though it is no
-    longer interpolated -- it arrives from untrusted cult-cargo YAML (see
+    longer interpolated -- it arrives from an untrusted YAML cab definition (see
     SECURITY.md), and that guarantee should not quietly lapse just because
     this particular use of it moved.
     """

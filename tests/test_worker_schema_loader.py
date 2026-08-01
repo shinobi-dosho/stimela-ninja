@@ -155,7 +155,7 @@ def test_package_scoped_include_resolves_longest_prefix(tmp_path):
 def test_package_scoped_include_cannot_traverse_out_of_its_root(tmp_path):
     """This dialect shares the unguarded join the cultcargo one had: the
     `(?P<file>.+)` part of `_PKG_INCLUDE_RE` cannot contain `..` only because
-    nothing checked. See `test_cultcargo_loader`'s equivalents.
+    nothing checked. See `test_yaml_cab_loader`'s equivalents.
     """
     (tmp_path / "outside").mkdir()
     (tmp_path / "outside" / "secret.yaml").write_text("shared:\n  stolen:\n    dtype: bool\n")

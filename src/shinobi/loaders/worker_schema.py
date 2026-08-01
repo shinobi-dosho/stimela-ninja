@@ -5,8 +5,8 @@ depending on scabha itself.
 This is a *config* schema, not a *cab* schema: there's no `command`,
 `policies`, or `image` here, just nested `inputs:`/`outputs:` parameter
 groups describing what a pipeline worker accepts in its config file. See
-`shinobi.loaders.cultcargo` for the sibling loader that builds executable
-`Cab`s from cult-cargo YAML -- this module deliberately does not reuse
+`shinobi.loaders.yaml_cab` for the sibling loader that builds executable
+`Cab`s from scabha-dialect YAML -- this module deliberately does not reuse
 `Scope`/`Cab` for the result, since a worker config is never dispatched as
 a step.
 
@@ -21,9 +21,9 @@ Dialect, as actually used by caracal2 (see its `caracal/schemas/`):
 * `choices` (a list) maps to `typing.Literal`.
 * `implicit` is a template/expression string (`"{current.x}-y.json"` or
   `"=IFSET(...)"`) -- left as a raw, unevaluated string, matching
-  `loaders.cultcargo`'s policy on cult-cargo's own expression language.
+  `loaders.yaml_cab`'s policy on cult-cargo's own expression language.
   A field with `implicit` set is never required from the caller, same
-  rule as `loaders.cultcargo._collect`.
+  rule as `loaders.yaml_cab._collect`.
 * `_include: "(module.path)filename.yaml"` -- a single package-scoped
   string (different from cult-cargo's list-of-plain-paths form), or a
   plain relative-path string, or a list of either. Resolved recursively
@@ -32,12 +32,12 @@ Dialect, as actually used by caracal2 (see its `caracal/schemas/`):
   `package_roots={"module.path": Path(...)}` mapping, never by importing
   the named module -- importing it would execute an arbitrary
   `__init__.py` named by a config file. Same mechanism, and the same
-  `resolve_package_root` helper, as `loaders.cultcargo`; see SECURITY.md's
+  `resolve_package_root` helper, as `loaders.yaml_cab`; see SECURITY.md's
   "never import a cab package".
 * `_use: dotted.path` or `_use: [dotted.path, ...]` -- deep-merges one or
   more dotted lookups (against the fully `_include`-resolved document)
   into the dict it appears in, with that dict's own sibling keys winning
-  -- same convention as `loaders.cultcargo`, extended to accept a list.
+  -- same convention as `loaders.yaml_cab`, extended to accept a list.
 
 `writable` (seen in caracal2's `caracal_base.yaml`) is carried onto the
 generated field's `json_schema_extra`: a `writable: false` directory input is

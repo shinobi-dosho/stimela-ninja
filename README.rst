@@ -55,7 +55,7 @@ Architecture
   for turning parameters into a CLI invocation. Define one directly in Python,
   or load one from existing `cult-cargo
   <https://github.com/caracal-pipeline/cult-cargo>`_ YAML
-  (``shinobi.loaders.cultcargo``) -- that schema format is good design and
+  (``shinobi.loaders.yaml_cab``) -- that schema format is good design and
   is reused as-is, including its ``_include`` (file composition) and ``_use``
   (dotted-path deep-merge) mechanisms, verified against real upstream cab
   files. Package-scoped includes resolve against an explicit

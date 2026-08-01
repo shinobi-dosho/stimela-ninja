@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from shinobi.loaders.cultcargo import load_file
+from shinobi.loaders.yaml_cab import load_file
 
 _CABS_DIR = Path(__file__).parent / "cabs"
 

@@ -67,7 +67,7 @@ Building argv
 Loaders
 -------
 
-.. automodule:: shinobi.loaders.cultcargo
+.. automodule:: shinobi.loaders.yaml_cab
    :members:
 
 .. automodule:: shinobi.loaders.stimela_classic

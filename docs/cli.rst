@@ -139,7 +139,7 @@ manifest.
 ``ninja cab`` -- inspect a cab schema by file
 ----------------------------------------------
 
-Dumps a cab's resolved schema (as loaded from a cult-cargo style YAML file) as
+Dumps a cab's resolved schema (as loaded from a scabha-dialect YAML file) as
 JSON:
 
 .. code-block:: console
