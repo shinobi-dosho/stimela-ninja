@@ -251,3 +251,56 @@ def test_get_document_miss_falls_through_to_get_on_the_same_provider(monkeypatch
     assert isinstance(cabs.get("a-pystep"), StepRef)
     with pytest.raises(CabLoadError, match="no such cab 'nope'"):
         cabs.get("nope")
+
+
+# --------------------------------------------------------------------------
+# loader_options: what a provider knows and the document cannot say
+# --------------------------------------------------------------------------
+
+_KEYED_IMAGE_DOC = """\
+cabs:
+  breizorro:
+    command: breizorro
+    image: BREIZORRO
+"""
+
+
+class ProviderWithOptions(FakeDocumentProvider):
+    """dosho's shape: documents name images symbolically, and the mapping from
+    key to reference is the provider's to supply.
+    """
+
+    def loader_options(self) -> dict:
+        return {"images": {"BREIZORRO": "ghcr.io/org/breizorro:0.2.0"}}
+
+
+def test_loader_options_reach_the_dialect(monkeypatch):
+    module = ProviderWithOptions({"breizorro": ("yaml_cab", _KEYED_IMAGE_DOC)})
+    _patch_entry_points(monkeypatch, [_fake_entry_point("dosho", module)])
+    assert cabs.get("breizorro").image == "ghcr.io/org/breizorro:0.2.0"
+
+
+def test_without_loader_options_a_key_stays_unresolved(monkeypatch):
+    """The gap this closes. Without the provider's mapping the key reaches the
+    runtime as an image name, which fails at pull time rather than silently --
+    but it is still wrong, and the provider is the only thing that can say so.
+    """
+    module = FakeDocumentProvider({"breizorro": ("yaml_cab", _KEYED_IMAGE_DOC)})
+    _patch_entry_points(monkeypatch, [_fake_entry_point("dosho", module)])
+    assert cabs.get("breizorro").image == "BREIZORRO"
+
+
+def test_loader_options_are_optional(monkeypatch):
+    """A provider whose documents are self-contained implements nothing."""
+    doc = "cabs:\n  p:\n    command: p\n    image: quay.io/org/p:1\n"
+    module = FakeDocumentProvider({"p": ("yaml_cab", doc)})
+    _patch_entry_points(monkeypatch, [_fake_entry_point("plain", module)])
+    assert cabs.get("p").image == "quay.io/org/p:1"
+
+
+def test_build_document_takes_options_directly():
+    """Usable without the entry-point machinery, which is how a provider's own
+    `get()` can share one code path with `shinobi.cabs.get()`.
+    """
+    cab = cabs.build_document("yaml_cab", _KEYED_IMAGE_DOC, "breizorro", images={"BREIZORRO": "ghcr.io/org/b:1"})
+    assert cab.image == "ghcr.io/org/b:1"
