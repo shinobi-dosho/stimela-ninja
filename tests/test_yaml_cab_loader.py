@@ -543,3 +543,48 @@ def test_non_list_choices_raise():
     bad = "cabs:\n  pick:\n    command: pick\n    inputs:\n      mode:\n        dtype: str\n        choices: auto\n"
     with pytest.raises(CabLoadError, match="'choices' must be a list"):
         loads(bad)
+
+
+def test_output_implicit_template_survives_the_load():
+    """An `implicit` on an *output* is how a cab declares where it writes.
+
+    Only input metas used to reach the built `Cab`, so an output template was
+    dropped on the floor: nothing filled the output's value, and
+    `declared_output_dirs` saw no write directory, so a container run left the
+    tool's products inside the container. Silent in both directions -- the
+    existing coverage only exercised `implicit` on an input, which worked.
+    """
+    from shinobi.steps.schema import declared_output_dirs
+
+    cab = loads(
+        """
+        cabs:
+          probe:
+            command: probe
+            inputs:
+              prefix: {dtype: str}
+            outputs:
+              dirty: {dtype: File, implicit: "{prefix}-dirty.fits"}
+        """
+    )["probe"]
+    assert cab.field_meta["dirty"].implicit == "{prefix}-dirty.fits"
+    dirs = declared_output_dirs(cab, {"prefix": "/data/out/img"})
+    assert [(str(d), s) for d, s in dirs] == [("/data/out", "output 'dirty'")]
+
+
+def test_output_meta_wins_over_an_input_of_the_same_name():
+    """Pins the merge order against `dosho._builder.define_cab`'s, so a cab
+    built from a document and the same cab built in Python agree.
+    """
+    cab = loads(
+        """
+        cabs:
+          probe:
+            command: probe
+            inputs:
+              out: {dtype: str, info: from-the-input}
+            outputs:
+              out: {dtype: File, info: from-the-output}
+        """
+    )["probe"]
+    assert cab.field_meta["out"].info == "from-the-output"

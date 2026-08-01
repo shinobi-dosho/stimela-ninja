@@ -293,7 +293,16 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
         policies=Policies(**policies_spec),
         inputs_model=build_model(f"{name}_Inputs", in_fields, choices=in_choices, extras=in_extras),
         outputs_model=build_model(f"{name}_Outputs", out_fields, choices=out_choices),
-        field_meta=field_meta,
+        # Output metas merged over input ones, the same way
+        # `dosho._builder.define_cab` composes them, so a cab built from a
+        # document and the same cab built in Python agree. Without the output
+        # half an `implicit` output template is silently dropped: nothing
+        # resolves the output's value, and `declared_output_dirs` finds no
+        # write directory to mount, which is how a tool's products end up
+        # inside the container. The merge replaces whole `ParamMeta` objects,
+        # so a name declared on both sides keeps the output's -- a sharp edge
+        # inherited deliberately rather than diverging from dosho here.
+        field_meta={**field_meta, **out_meta},
         wranglers=wranglers,
     )
 
