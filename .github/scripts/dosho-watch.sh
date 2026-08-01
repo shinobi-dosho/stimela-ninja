@@ -182,9 +182,17 @@ prev=$(gh issue list --repo "$REPO" --label dosho-watch --state open --limit 1 \
 prev_num=""
 if [[ -n "$prev" ]]; then
     IFS=$'\t' read -r prev_num prev_title prev_created <<<"$prev"
+    # Only ever treat a plain integer as an issue number. If the query shape
+    # changes under us, or jq returns something unexpected, the alternative is
+    # PATCHing repos/<repo>/issues/<whatever-that-was> -- better to fall
+    # through and open a new issue than to address an endpoint by garbage.
+    [[ "$prev_num" =~ ^[0-9]+$ ]] || prev_num=""
     prev_failing=no; [[ "$prev_title" == *"CI FAILING"* ]] && prev_failing=yes
     now_failing=no;  [[ "$ci_status" == fail ]] && now_failing=yes
-    [[ "$prev_failing" == "$now_failing" ]] || prev_num=""
+    if [[ "$prev_failing" != "$now_failing" ]]; then
+        superseded=$prev_num   # verdict changed: new issue, and retire this one
+        prev_num=""
+    fi
 fi
 
 if [[ -n "$prev_num" ]]; then
@@ -204,7 +212,19 @@ if [[ -n "$prev_num" ]]; then
         -f title="$title" -F body=@"$body" --silent
     echo "updated existing issue #$prev_num (verdict unchanged)"
 else
-    gh issue create --repo "$REPO" --label dosho-watch \
+    new_url=$(gh issue create --repo "$REPO" --label dosho-watch \
         --title "$title" \
-        --body-file "$body"
+        --body-file "$body")
+    echo "$new_url"
+
+    # A verdict change retires the issue that reported the old one. Leaving it
+    # open is how you end up with a standing "CI FAILING" describing something
+    # fixed days ago -- the same stale-signal problem the rolling update above
+    # exists to avoid, just slower.
+    if [[ -n "${superseded:-}" ]]; then
+        gh issue comment "$superseded" --repo "$REPO" \
+            --body "Superseded by $new_url — the CI verdict changed, so this report no longer describes the current state." || true
+        gh issue close "$superseded" --repo "$REPO" || true
+        echo "closed superseded issue #$superseded"
+    fi
 fi
