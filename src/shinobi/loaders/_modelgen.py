@@ -315,7 +315,7 @@ def resolve_package_root(dotted: str, package_roots: dict[str, Path], *, error: 
     from a name read out of a YAML file -- so shinobi never imports a
     package for any reason, and callers supply an explicit
     `package_roots={"cultcargo": Path(...)}` mapping instead (see
-    SECURITY.md's "never import a cab package", and `loaders.cultcargo`'s
+    SECURITY.md's "never import a cab package", and `loaders.yaml_cab`'s
     module docstring for the longer rationale). Shared here so both
     dialects resolve it the same way, and neither can drift back to
     `importlib`.

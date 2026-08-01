@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 
-from shinobi.loaders.cultcargo import load_file
+from shinobi.loaders.yaml_cab import load_file
 
 _TOOL_NAME = os.environ.get("TOOL_NAME", "tool") + ".yml"
 

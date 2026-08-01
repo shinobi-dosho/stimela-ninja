@@ -1,6 +1,6 @@
 """Load stimela-classic style `parameters.json` cab definitions into
 shinobi `Cab` objects. This is a *different* cab schema format from
-cult-cargo's YAML (see `shinobi.loaders.cultcargo`) -- useful for exactly
+scabha-dialect YAML (see `shinobi.loaders.yaml_cab`) -- useful for exactly
 the tools cult-cargo doesn't have a loadable definition for (several CASA
 tasks, msutils -- see AGENTS.md/examples/ninja_selfcal.py for which ones
 and why).

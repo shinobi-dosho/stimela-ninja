@@ -4,7 +4,7 @@ import pydantic
 import pytest
 
 from shinobi.exceptions import CabLoadError
-from shinobi.loaders.cultcargo import load_file, loads
+from shinobi.loaders.yaml_cab import load_file, loads
 from shinobi.policies import build_argv
 from shinobi.steps.schema import path_fields
 

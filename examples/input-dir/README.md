@@ -9,8 +9,8 @@ that example now gets its `telsim`/`skysim` cabs from
 [dosho](https://github.com/shinobi-dosho/dosho) (`dosho.cabs.simms`), the
 native shinobi cab repository, instead of loading this vendored YAML
 directly. It's kept as a real-file regression fixture for
-`shinobi.loaders.cultcargo`'s own dtype handling
-(`tests/test_cultcargo_loader.py::test_bracket_list_dtype_resolves_on_real_simms_example`
+`shinobi.loaders.yaml_cab`'s own dtype handling
+(`tests/test_yaml_cab_loader.py::test_bracket_list_dtype_resolves_on_real_simms_example`
 locks in bracket-syntax `List[<inner>]` dtype support against this file's
 `telsim` cab's `subarray-list`/`subarray-range` fields) -- a genuine
 cult-cargo-format YAML file, not a synthetic one, so it's still useful for
