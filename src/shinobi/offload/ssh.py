@@ -319,6 +319,36 @@ class RemoteHandle:
     exit_file: str
 
 
+def _venv_activation(remote_path: str) -> str:
+    """The shell fragment that activates a venv under `remote_path`, if any.
+
+    An `if`/`elif` chain rather than `A && B || C && D`, which is what this
+    used to be and which parses as `((A && B) || C) && D`. Two consequences,
+    both wrong: with both directories present it sourced *both*, `.venv` last,
+    contradicting the documented `venv/`-first order; and with only `venv/`
+    present it ran `source .venv/...` regardless, putting "No such file or
+    directory" into the log of a run that was fine. Exactly one branch runs
+    here.
+
+    The `else` matters as much as the ordering. `--add-venv` defaults to on,
+    so a remote with no venv at all used to source nothing and say nothing,
+    leaving `ninja run` to resolve against whatever the login shell's PATH
+    happened to hold -- a difference that shows up as a confusing failure much
+    later, if at all.
+
+    No parens anywhere: `source` inside a `(...)` subshell would change only
+    that subshell's PATH, discarded the instant it exits and long before
+    `ninja run` sees it. `if`/`then`/`fi` does not fork, so it satisfies that
+    as readily as the chain it replaced.
+    """
+    return (
+        "if [ -f venv/bin/activate ]; then . venv/bin/activate; "
+        "elif [ -f .venv/bin/activate ]; then . .venv/bin/activate; "
+        f"else echo 'ninja: no venv found under {remote_path} "
+        "(tried venv/, .venv/) -- running against the login shell PATH' >&2; fi; "
+    )
+
+
 def launch_remote(remote: RemoteSpec, remote_target: str, argv: list[str], *, add_venv: bool) -> RemoteHandle:
     """Launch `ninja run <remote_target> <argv...>` detached on
     `remote.host`, under `remote.path`. See the module docstring for the
@@ -336,15 +366,7 @@ def launch_remote(remote: RemoteSpec, remote_target: str, argv: list[str], *, ad
     log_path = f"{remote.path.rstrip('/')}/{log_file}"
     exit_path = f"{remote.path.rstrip('/')}/{exit_file}"
 
-    venv_snippet = ""
-    if add_venv:
-        # No wrapping parens here: `source` inside a `(...)` subshell would
-        # only change *that* subshell's PATH, discarded the instant it
-        # exits -- before `ninja run` (below) ever sees it. This whole
-        # `inner` string already runs inside `wrapped`'s own subshell, so
-        # the source just needs to stay in that same shell, not be nested
-        # in another one.
-        venv_snippet = "test -f venv/bin/activate && source venv/bin/activate || test -f .venv/bin/activate && source .venv/bin/activate; "
+    venv_snippet = _venv_activation(remote.path) if add_venv else ""
 
     inner = f"cd {shlex.quote(remote.path)}; {venv_snippet}ninja run {shlex.quote(remote_target)} {shlex.join(argv)}"
     wrapped = f"({inner}); echo $? > {shlex.quote(exit_path)}"
