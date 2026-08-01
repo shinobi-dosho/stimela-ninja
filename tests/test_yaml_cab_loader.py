@@ -604,7 +604,7 @@ def _shinobi_doc(extra_field: str = "") -> str:
         harvest: ["{{prefix}}-*.fits"]
         scratch: ["{{cache}}/*"]
         inputs:
-          prefix: {{dtype: str, path_prefix: true}}
+          prefix: {{dtype: str, write_path: true}}
           cache:  {{dtype: str}}
           ms:     {{dtype: MS, mutable: true}}
           {extra_field}
@@ -627,9 +627,9 @@ def test_mutable_marks_an_input_mutable():
     assert cab.input_mutability == {"ms": Mutability.MUTABLE}
 
 
-def test_path_prefix_reaches_the_field_meta():
+def test_write_path_reaches_the_field_meta():
     cab = loads(_shinobi_doc())["probe"]
-    assert cab.field_meta["prefix"].path_prefix is True
+    assert cab.field_meta["prefix"].write_path is True
     # and the Cab validator is satisfied by the harvest/implicit declarations
     from shinobi.steps.schema import declared_output_dirs
 
@@ -648,7 +648,7 @@ def test_a_spec_carrying_only_a_shinobi_key_is_a_leaf_not_a_section():
           probe:
             command: probe
             inputs:
-              stem: {path_prefix: true}
+              stem: {write_path: true}
               inplace: {mutable: true}
             outputs:
               out: {dtype: File, implicit: "{stem}.fits"}
@@ -656,7 +656,7 @@ def test_a_spec_carrying_only_a_shinobi_key_is_a_leaf_not_a_section():
     )["probe"]
     assert "stem" in cab.inputs_model.model_fields
     assert "inplace" in cab.inputs_model.model_fields
-    assert cab.field_meta["stem"].path_prefix is True
+    assert cab.field_meta["stem"].write_path is True
 
 
 def test_the_new_keys_are_optional():

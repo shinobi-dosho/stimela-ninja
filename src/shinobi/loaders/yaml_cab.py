@@ -21,9 +21,10 @@ inventing a second format for cabs authored against shinobi directly. A
 document using none of them is a plain scabha document, and cult-cargo's own
 files remain a readable subset.
 
-Per field, alongside the scabha keys: ``path_prefix: true`` marks a
-string-typed input naming a filesystem path the tool writes under (see
-`ParamMeta.path_prefix`), and ``mutable: true`` marks an input the step may
+Per field, alongside the scabha keys: ``write_path: true`` marks a
+string-typed input naming a filesystem path the tool writes to -- a stem
+products are built from, or a complete path written directly (see
+`ParamMeta.write_path`) -- and ``mutable: true`` marks an input the step may
 change in place (`Mutability.MUTABLE`). Both are registered in
 `_LEAF_SPEC_KEYS`, which matters more than it looks: `_is_section` tells a
 leaf param from a nested CLI section by whether the mapping has *any* known
@@ -313,7 +314,7 @@ def _load_raw_cached(path: Path, roots_key: tuple[tuple[str, Path], ...], contai
 # `_collect`: `_is_section` decides leaf-vs-section by whether a mapping has
 # *any* known param-spec key, so a spec carrying only a new key would
 # otherwise be mistaken for a nested CLI section and vanish.
-_SHINOBI_LEAF_KEYS = {"path_prefix", "mutable"}
+_SHINOBI_LEAF_KEYS = {"write_path", "mutable"}
 
 _LEAF_SPEC_KEYS = COMMON_LEAF_KEYS | {"nom_de_guerre", "mkdir", "element_choices"} | _SHINOBI_LEAF_KEYS
 
@@ -476,7 +477,7 @@ def _param_meta(value: dict[str, Any], *, nom_de_guerre: str | None = None, with
         repeat_as_tokens=policies.get("repeat") == "list",
         choices=validate_choices(value.get("choices"), error=CabLoadError),
         dtype=value.get("dtype") if with_dtype else None,
-        path_prefix=bool(value.get("path_prefix", False)),
+        write_path=bool(value.get("write_path", False)),
         abbreviation=value.get("abbreviation"),
     )
 
