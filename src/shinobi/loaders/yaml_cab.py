@@ -360,6 +360,7 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
     # short flag. Only meaningful on inputs (outputs aren't CLI options).
     in_extras = {field: {"abbreviation": meta.abbreviation} for field, meta in field_meta.items() if meta.abbreviation}
 
+    input_patterns = _param_patterns(spec.get("input_patterns"), cab=name, key="input_patterns")
     return Cab(
         name=name,
         command=spec["command"],
@@ -367,7 +368,18 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
         image=image,
         flavour=flavour,
         policies=Policies(**policies_spec),
-        inputs_model=build_model(f"{name}_Inputs", in_fields, choices=in_choices, extras=in_extras),
+        # `allow_extra` when the cab has input patterns, matching
+        # `dosho._builder.define_cab`. A pattern exists precisely to accept
+        # names no field declares -- cubical's `g1-solvable`, QuartiCal's
+        # `K.time_interval` -- so without it the model rejects every value the
+        # pattern was written to match, and the pattern silently does nothing.
+        inputs_model=build_model(
+            f"{name}_Inputs",
+            in_fields,
+            choices=in_choices,
+            extras=in_extras,
+            allow_extra=bool(input_patterns),
+        ),
         outputs_model=build_model(f"{name}_Outputs", out_fields, choices=out_choices),
         # Output metas merged over input ones, the same way
         # `dosho._builder.define_cab` composes them, so a cab built from a
@@ -381,7 +393,7 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
         field_meta={**field_meta, **out_meta},
         wranglers=wranglers,
         input_mutability=input_mutability,
-        input_patterns=_param_patterns(spec.get("input_patterns"), cab=name, key="input_patterns"),
+        input_patterns=input_patterns,
         output_patterns=_param_patterns(spec.get("output_patterns"), cab=name, key="output_patterns"),
         sandbox=spec.get("sandbox"),
         harvest=list(spec.get("harvest") or []),

@@ -817,3 +817,26 @@ def test_malformed_patterns_are_rejected_by_name(doc, match):
     """
     with pytest.raises(CabLoadError, match=match):
         loads(f"cabs:\n  probe:\n    command: probe\n    {doc}\n")
+
+
+def test_input_patterns_make_the_model_accept_extras():
+    """A pattern exists to accept names no field declares. Without
+    `allow_extra` the model rejects every value the pattern was written to
+    match, so the pattern silently does nothing -- the cab loads, looks
+    correct, and fails at the first dynamic parameter.
+
+    Not caught by the round-trip comparator: it compares `model_fields`, and
+    this lives in `model_config`.
+    """
+    cab = loads(_PATTERN_DOC)["probe"]
+    assert cab.inputs_model.model_config.get("extra") == "allow"
+    validated = cab.inputs_model(**{"g1-time-int": 4})
+    assert validated.model_extra == {"g1-time-int": 4}
+
+
+def test_a_cab_without_patterns_still_rejects_extras():
+    """Scoped to cabs that need it: an unexpected parameter should still be an
+    error everywhere else, which is most cabs.
+    """
+    cab = loads("cabs:\n  p:\n    command: p\n    inputs: {x: {dtype: int}}\n")["p"]
+    assert cab.inputs_model.model_config.get("extra") is None
