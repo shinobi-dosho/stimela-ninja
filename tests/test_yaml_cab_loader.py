@@ -588,3 +588,87 @@ def test_output_meta_wins_over_an_input_of_the_same_name():
         """
     )["probe"]
     assert cab.field_meta["out"].info == "from-the-output"
+
+
+# --------------------------------------------------------------------------
+# shinobi-native keys: the scabha dialect plus what shinobi's own Cab carries
+# --------------------------------------------------------------------------
+
+
+def _shinobi_doc(extra_field: str = "") -> str:
+    return f"""
+    cabs:
+      probe:
+        command: probe
+        sandbox: true
+        harvest: ["{{prefix}}-*.fits"]
+        scratch: ["{{cache}}/*"]
+        inputs:
+          prefix: {{dtype: str, path_prefix: true}}
+          cache:  {{dtype: str}}
+          ms:     {{dtype: MS, mutable: true}}
+          {extra_field}
+        outputs:
+          dirty: {{dtype: File, implicit: "{{prefix}}-dirty.fits"}}
+    """
+
+
+def test_shinobi_native_cab_level_keys():
+    cab = loads(_shinobi_doc())["probe"]
+    assert cab.sandbox is True
+    assert cab.harvest == ["{prefix}-*.fits"]
+    assert cab.scratch == ["{cache}/*"]
+
+
+def test_mutable_marks_an_input_mutable():
+    from shinobi.steps.schema import Mutability
+
+    cab = loads(_shinobi_doc())["probe"]
+    assert cab.input_mutability == {"ms": Mutability.MUTABLE}
+
+
+def test_path_prefix_reaches_the_field_meta():
+    cab = loads(_shinobi_doc())["probe"]
+    assert cab.field_meta["prefix"].path_prefix is True
+    # and the Cab validator is satisfied by the harvest/implicit declarations
+    from shinobi.steps.schema import declared_output_dirs
+
+    assert declared_output_dirs(cab, {"prefix": "/out/img", "cache": "/c"})
+
+
+def test_a_spec_carrying_only_a_shinobi_key_is_a_leaf_not_a_section():
+    """`_is_section` decides leaf-vs-section by whether a mapping has any known
+    param-spec key. A new key that isn't registered makes a spec using only it
+    look like a nested CLI section, and the field silently disappears -- so
+    both new keys are in `_LEAF_SPEC_KEYS`, and this is what checks it.
+    """
+    cab = loads(
+        """
+        cabs:
+          probe:
+            command: probe
+            inputs:
+              stem: {path_prefix: true}
+              inplace: {mutable: true}
+            outputs:
+              out: {dtype: File, implicit: "{stem}.fits"}
+        """
+    )["probe"]
+    assert "stem" in cab.inputs_model.model_fields
+    assert "inplace" in cab.inputs_model.model_fields
+    assert cab.field_meta["stem"].path_prefix is True
+
+
+def test_the_new_keys_are_optional():
+    """A plain scabha document -- cult-cargo's own files -- is unaffected."""
+    cab = loads(
+        """
+        cabs:
+          plain:
+            command: plain
+            inputs: {x: {dtype: int}}
+        """
+    )["plain"]
+    assert cab.input_mutability == {}
+    assert cab.harvest == [] and cab.scratch == [] and cab.sandbox is None
+    assert cab.field_meta.get("x") is None
