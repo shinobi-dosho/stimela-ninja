@@ -731,3 +731,89 @@ def test_the_dict_image_form_still_resolves():
     """
     cab = loads(doc, images={"BREIZORRO": "ghcr.io/org/breizorro:0.2"})["probe"]
     assert cab.image == "ghcr.io/org/breizorro:0.2"
+
+
+# --------------------------------------------------------------------------
+# ParamPattern: dynamically-named inputs and outputs
+# --------------------------------------------------------------------------
+
+_PATTERN_DOC = """
+cabs:
+  probe:
+    command: probe
+    input_patterns:
+      - separator: "-"
+        segments:
+          - regex: ".+?"
+          - attrs:
+              solvable: {}
+              time-int: {dtype: int}
+              load-from: {dtype: File, info: gain table}
+    output_patterns:
+      - separator: "."
+        segments:
+          - attrs:
+              dirty: {dtype: File}
+          - regex: ".+"
+"""
+
+
+def test_input_pattern_round_trips_into_a_matchable_pattern():
+    cab = loads(_PATTERN_DOC)["probe"]
+    pattern = cab.input_patterns[0]
+    assert pattern.separator == "-"
+    assert pattern.segments[0].regex == ".+?"
+    assert sorted(pattern.segments[1].attrs) == ["load-from", "solvable", "time-int"]
+
+
+def test_matched_attrs_carry_their_dtype():
+    """The reason `ParamMeta.dtype` exists: a dynamically-named input has no
+    model field, so this is the only thing telling a backend it is file-like.
+    """
+    cab = loads(_PATTERN_DOC)["probe"]
+    assert cab.match_pattern("g1-time-int").dtype == "int"
+    assert cab.match_pattern("g1-load-from").dtype == "File"
+    assert cab.match_pattern("g1-load-from").info == "gain table"
+
+
+def test_an_attr_with_an_empty_spec_survives():
+    """An all-default `ParamMeta` is dropped for a declared field, where it says
+    nothing. For an attr the *name* is the information -- dropping it would
+    delete the attr from the pattern and stop it matching.
+    """
+    cab = loads(_PATTERN_DOC)["probe"]
+    assert cab.match_pattern("g1-solvable") is not None
+
+
+def test_the_attrs_segment_need_not_be_last():
+    """wsclean's output names are the opposite shape from cubical's inputs: a
+    known image type followed by an open-ended tail.
+    """
+    cab = loads(_PATTERN_DOC)["probe"]
+    assert cab.match_output_pattern("dirty.per-band") is not None
+
+
+def test_patterns_are_optional():
+    cab = loads("cabs:\n  p:\n    command: p\n")["p"]
+    assert cab.input_patterns == [] and cab.output_patterns == []
+
+
+@pytest.mark.parametrize(
+    ("doc", "match"),
+    [
+        ("input_patterns: {}", "must be a list of patterns"),
+        ("input_patterns:\n      - segments: []", "non-empty 'segments'"),
+        ("input_patterns:\n      - segments: [{regex: 'x'}]", "not a valid pattern"),
+        (
+            "input_patterns:\n      - segments: [{attrs: {a: {}}}, {attrs: {b: {}}}]",
+            "not a valid pattern",
+        ),
+        ("input_patterns:\n      - segments: [{attrs: []}]", "attrs. must be a mapping"),
+    ],
+)
+def test_malformed_patterns_are_rejected_by_name(doc, match):
+    """A pattern is the one part of a cab a reader cannot check by eye against
+    the tool's own --help, so the errors name the cab and the key.
+    """
+    with pytest.raises(CabLoadError, match=match):
+        loads(f"cabs:\n  probe:\n    command: probe\n    {doc}\n")
