@@ -69,6 +69,23 @@ class ParamMeta(BaseModel):
     (see e.g. wsclean's `-size <w> <h>`/`-weight briggs <n>`, which need
     two separate argv tokens, not `"4096,4096"` as one).
 
+    `path_prefix`: this string-typed input names a filesystem path *stem*
+    that the tool writes products under -- wsclean's `prefix`, ddfacet's
+    `Output-Name`. It is a **declaration of intent only, and deliberately
+    changes nothing about how the value is handled**. In particular it does
+    not make the field a path: a path dtype here would be rewritten by
+    `sandbox.absolutize_path_inputs` and the tool would then write outside
+    the sandbox, which is precisely why the convention types these as
+    strings (see `declared_output_dirs`). Mounting and pre-creation still
+    come from the *output* side -- a path-typed output whose `implicit`
+    template names this field, a `harvest` glob, or a `scratch` glob.
+
+    What it buys is enforcement. That convention previously existed only as
+    prose and authorial discipline: a stem whose write target nobody
+    declared produces no error, just products that stay inside the container
+    or outside the harvest. Marking the field lets `Cab` check that
+    something does declare it (see `Cab._path_prefix_declares_a_write_target`).
+
     `choices`: the field's allowed values (cult-cargo/classic's `choices`
     key). A loader that sets this also narrows the field's real annotation
     on `inputs_model`/`outputs_model` to `typing.Literal[*choices]` (see
@@ -105,6 +122,7 @@ class ParamMeta(BaseModel):
     dtype: str | None = None
     choices: list[Any] | None = None
     abbreviation: str | None = None
+    path_prefix: bool = False
 
 
 class Policies(BaseModel):
@@ -310,7 +328,11 @@ def declared_output_dirs(scope: Scope, prepared: dict[str, Any]) -> list[tuple[P
     stem is a *string*-typed input (wsclean's ``prefix``, ddfacet's
     ``Output-Name``), deliberately so, because a path dtype would be
     rewritten by `sandbox.absolutize_path_inputs` and the tool would then
-    write outside the sandbox. The write target is instead declared by the
+    write outside the sandbox. Such an input can say so with
+    ``ParamMeta.path_prefix``, which changes nothing here -- this function
+    reads the declarations either way -- but lets `Cab` reject a stem that
+    *no* declaration names, which is the authoring mistake this convention
+    is otherwise silent about. The write target is instead declared by the
     output side: a path-typed output field whose ``implicit`` template names
     the input (``"{prefix}-MFS-image.fits"``), a ``harvest`` glob, or a
     ``scratch`` glob for a write target that is *not* a product.
@@ -614,6 +636,43 @@ class Cab(Scope):
             if meta is not None:
                 return meta
         return None
+
+    @model_validator(mode="after")
+    def _path_prefix_declares_a_write_target(self) -> "Cab":
+        """A `ParamMeta.path_prefix` input must be named by something that
+        declares where the tool writes.
+
+        The stem itself is a plain string and mounts nothing -- deliberately,
+        see `declared_output_dirs`. The write target is declared by the output
+        side, so a stem nothing references is a cab that will run and then lose
+        its products: inside the container on a container backend, or outside
+        the harvest under a sandbox. Both are silent.
+
+        Accepts any of the three declarations `declared_output_dirs` itself
+        reads: an output field's `implicit` template naming the field, a
+        `harvest` pattern, or a `scratch` pattern. Checked here rather than at
+        run time because it is a property of the definition alone -- an author
+        should hear about it when the cab is built, not when a pipeline has
+        already run.
+        """
+        marked = [name for name, meta in self.field_meta.items() if meta.path_prefix]
+        if not marked:
+            return self
+        # `implicit` templates reference *input field* names, so scan the
+        # output side's templates plus the two glob lists.
+        declarations = [str(meta.implicit) for name, meta in self.field_meta.items() if name in self.outputs_model.model_fields and isinstance(meta.implicit, str)]
+        declarations += list(self.harvest or []) + list(self.scratch or [])
+        haystack = " ".join(declarations)
+        orphaned = [name for name in marked if "{" + name not in haystack]
+        if orphaned:
+            raise ValueError(
+                f"cab '{self.name}': {orphaned!r} marked path_prefix but named by no write "
+                "declaration -- add an output whose `implicit` template references it (e.g. "
+                f'implicit="{{{orphaned[0]}}}-image.fits"), or a harvest/scratch pattern. '
+                "A path_prefix input mounts nothing by itself, so without one the tool's "
+                "products are silently left behind."
+            )
+        return self
 
 
 class InputRef(BaseModel):
