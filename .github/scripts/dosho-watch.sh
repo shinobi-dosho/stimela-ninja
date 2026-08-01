@@ -61,12 +61,47 @@ fi
 # to the locked commit.
 ci_status=skip
 ci_detail="uv not on PATH; tests not run"
+simms_note=""
 if command -v uv >/dev/null; then
+    cd "$ROOT/stimela-ninja"
+    # Guarded, because `set -e` is in force and this script's whole job is to
+    # report. An unguarded failure here would abort before the issue is
+    # written, so the watch would go *silent* on exactly the days something
+    # was wrong -- the failure mode this script exists to prevent.
+    if ! { uv sync --quiet --python 3.12 --group dev \
+        && uv pip install --quiet "$ROOT/dosho"; } 2>"$RUNNER_TEMP/setup.err"; then
+        ci_status=fail
+        ci_detail="environment setup failed before tests ran:
+$(cat "$RUNNER_TEMP/setup.err")"
+        cd "$ROOT/dosho"
+    fi
+fi
+
+if [[ "$ci_status" == skip ]] && command -v uv >/dev/null; then
+    cd "$ROOT/stimela-ninja"
+
+    # simms, installed separately and tolerantly. dosho's skysim/telsim are
+    # `@shinobi.pystep` StepRefs, not Cabs, so a backend override cannot
+    # intercept them -- they run their own body and `import_func` the real
+    # `simms.apps.*` at execution time. Without simms present the one test
+    # that dispatches them skips, and dosho's pysteps go unexercised in the
+    # only place that tests them against dosho main.
+    #
+    # Not --no-deps: the simms app modules import dask/daskms/numpy at module
+    # level, so a dependency-less install fails the same way one module later.
+    #
+    # Failure here is reported, never fatal. simms is an unreleased git
+    # dependency; an upstream breakage there is not stimela-ninja breaking,
+    # and folding it into ci_status would say it was.
+    if uv pip install --quiet "simms @ git+https://github.com/wits-cfa/simms.git" 2>/dev/null; then
+        simms_note="simms installed from git -- dosho's skysim/telsim pysteps ran for real."
+    else
+        simms_note="⚠️ simms could not be installed, so dosho's skysim/telsim pysteps were **skipped**, not tested."
+    fi
+
     ci_status=pass
-    ci_detail=$({ cd "$ROOT/stimela-ninja" \
-        && uv sync --quiet --python 3.12 --group dev \
-        && uv pip install --quiet "$ROOT/dosho" \
-        && uv run --no-sync pytest -q; } 2>&1) || ci_status=fail
+    ci_detail=$(uv run --no-sync pytest -q 2>&1) || ci_status=fail
+    cd "$ROOT/dosho"
 fi
 
 body="$RUNNER_TEMP/dosho-watch-body.md"
@@ -86,6 +121,7 @@ body="$RUNNER_TEMP/dosho-watch-body.md"
             ;;
         *) echo "⚠️ Skipped: $ci_detail" ;;
     esac
+    [[ -n "$simms_note" ]] && { echo; echo "$simms_note"; }
     echo
     section() {
         [[ -z "$2" ]] && return 0
@@ -110,6 +146,40 @@ title="dosho watch $(date -u +%F): $n_commits new commits"
 [[ "$ci_status" == fail ]] && title="$title — CI FAILING"
 gh label create dosho-watch --repo "$REPO" \
     --color D93F0B --description "automated dosho monitoring" 2>/dev/null || true
-gh issue create --repo "$REPO" --label dosho-watch \
-    --title "$title" \
-    --body-file "$body"
+
+# Roll the open issue forward while the verdict is unchanged, rather than
+# opening one per day. Six consecutive identical "CI FAILING" issues is how
+# this ran before, and it trains you to skim past the seventh -- the signal
+# was correct every day and read on none of them. A *changed* verdict is
+# news and still gets its own issue; a repeated one is the same news.
+prev=$(gh issue list --repo "$REPO" --label dosho-watch --state open --limit 1 \
+    --json number,title,createdAt --jq '.[0] | select(.) | "\(.number)\t\(.title)\t\(.createdAt)"' || true)
+prev_num=""
+if [[ -n "$prev" ]]; then
+    IFS=$'\t' read -r prev_num prev_title prev_created <<<"$prev"
+    prev_failing=no; [[ "$prev_title" == *"CI FAILING"* ]] && prev_failing=yes
+    now_failing=no;  [[ "$ci_status" == fail ]] && now_failing=yes
+    [[ "$prev_failing" == "$now_failing" ]] || prev_num=""
+fi
+
+if [[ -n "$prev_num" ]]; then
+    # Say how long this verdict has stood, so a stale failure reads as stale.
+    days=$(( ( $(date -u +%s) - $(date -u -d "$prev_created" +%s) ) / 86400 ))
+    { echo "_Rolling update: the CI verdict has been unchanged since" \
+           "${prev_created%%T*} (${days}d). Refreshed daily in place;" \
+           "a change of verdict opens a new issue._"
+      echo
+      cat "$body"
+    } > "$body.rolled" && mv "$body.rolled" "$body"
+
+    # gh api, not `gh issue edit`: the latter routes through the deprecated
+    # Projects (classic) GraphQL surface and can abort before applying the
+    # change, reporting an error while leaving the issue untouched.
+    gh api -X PATCH "repos/$REPO/issues/$prev_num" \
+        -f title="$title" -F body=@"$body" --silent
+    echo "updated existing issue #$prev_num (verdict unchanged)"
+else
+    gh issue create --repo "$REPO" --label dosho-watch \
+        --title "$title" \
+        --body-file "$body"
+fi
