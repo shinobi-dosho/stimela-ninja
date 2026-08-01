@@ -53,8 +53,10 @@ def _provider_entry_points() -> list[EntryPoint]:
 
 # dialect tag -> the loader entry that turns one document into cabs. Both
 # existing loaders already expose `loads(text)`, so this is a dispatch table
-# and not a new parsing layer.
-_DIALECTS = ("cultcargo", "stimela-classic")
+# and not a new parsing layer. The tags name *dialects*, not the projects that
+# publish files in them -- `yaml_cab` is scabha's cab dialect, of which
+# cult-cargo is the largest published library.
+_DIALECTS = ("yaml_cab", "stimela-classic")
 
 
 def build_document(dialect: str, text: str, name: str | None = None) -> "Cab | StepRef":
@@ -74,10 +76,10 @@ def build_document(dialect: str, text: str, name: str | None = None) -> "Cab | S
         CabLoadError: On an unknown dialect, or when `name` does not name a cab
             the document defines.
     """
-    if dialect == "cultcargo":
-        from shinobi.loaders import cultcargo
+    if dialect == "yaml_cab":
+        from shinobi.loaders import yaml_cab
 
-        cabs = cultcargo.loads(text)
+        cabs = yaml_cab.loads(text)
         # A requested name must be one the document defines. Falling back to
         # "it only defines one, so that must be it" would turn a provider
         # returning the wrong document into a silently wrong cab, under the
@@ -87,10 +89,10 @@ def build_document(dialect: str, text: str, name: str | None = None) -> "Cab | S
         if name is not None:
             if name in cabs:
                 return cabs[name]
-            raise CabLoadError(f"cult-cargo document defines {sorted(cabs)!r}, not {name!r}")
+            raise CabLoadError(f"yaml_cab document defines {sorted(cabs)!r}, not {name!r}")
         if len(cabs) == 1:
             return next(iter(cabs.values()))
-        raise CabLoadError(f"cult-cargo document defines {sorted(cabs)!r}; no name was given to choose between them")
+        raise CabLoadError(f"yaml_cab document defines {sorted(cabs)!r}; no name was given to choose between them")
     if dialect == "stimela-classic":
         from shinobi.loaders import stimela_classic
 
