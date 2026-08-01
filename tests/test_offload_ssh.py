@@ -1,9 +1,12 @@
 from pathlib import Path
 
+import subprocess
+
 import pytest
 
 from shinobi.exceptions import BackendError
 from shinobi.offload.ssh import (
+    _venv_activation,
     RemoteSpec,
     find_cab_deps,
     launch_remote,
@@ -143,7 +146,7 @@ def test_launch_remote_captures_pid_from_echoed_output(monkeypatch):
     remote_cmd = args[-1]
     assert remote_cmd.startswith("bash -lc ")
     assert "setsid bash -c" in remote_cmd
-    assert "source venv/bin/activate" in remote_cmd
+    assert ". venv/bin/activate" in remote_cmd
     assert "recipe.py:tool" in remote_cmd
     assert "/remote/path/ninja-run-" in remote_cmd  # log/exit paths are absolute, not cwd-relative
 
@@ -197,3 +200,82 @@ def test_status_ssh_reports_success_and_failure(monkeypatch):
         lambda args, **kwargs: _FakeProc(returncode=0, stdout="1\n"),
     )
     assert "FINISHED (exit 1)" in status_ssh(handle)
+
+
+# --------------------------------------------------------------------------
+# The venv activation snippet
+# --------------------------------------------------------------------------
+
+
+def _run_snippet(tmp_path, snippet: str, *, present: tuple[str, ...]) -> str:
+    """Run the fragment for real, against a given on-disk shape.
+
+    Executed rather than pattern-matched: the bug it replaces was a shell
+    *precedence* error -- `A && B || C && D` parses as `((A && B) || C) && D` --
+    which reads perfectly plausibly and which no amount of substring assertion
+    would have caught.
+    """
+    for name in present:
+        (tmp_path / name / "bin").mkdir(parents=True)
+        (tmp_path / name / "bin" / "activate").write_text(f'echo "sourced {name}"\n')
+    out = subprocess.run(["bash", "-c", snippet], cwd=tmp_path, capture_output=True, text=True, check=False)
+    return (out.stdout + out.stderr).strip()
+
+
+@pytest.mark.parametrize(
+    ("present", "expected"),
+    [
+        (("venv", ".venv"), "sourced venv"),
+        (("venv",), "sourced venv"),
+        ((".venv",), "sourced .venv"),
+    ],
+)
+def test_exactly_one_venv_is_sourced(tmp_path, present, expected):
+    """`venv/` wins when both exist, and only one is ever sourced.
+
+    The `&&`/`||` chain this replaced sourced *both* when both were present,
+    `.venv` last -- so the documented `venv/`-first order was backwards in
+    exactly the case where it mattered.
+    """
+    out = _run_snippet(tmp_path, _venv_activation("/remote/path"), present=present)
+    assert out == expected
+
+
+def test_a_missing_second_venv_is_not_an_error(tmp_path):
+    """With only `venv/` present the old chain still ran `source .venv/...`,
+    putting "No such file or directory" in the log of a run that was fine.
+    """
+    out = _run_snippet(tmp_path, _venv_activation("/remote/path"), present=("venv",))
+    assert "No such file" not in out
+
+
+def test_no_venv_at_all_says_so(tmp_path):
+    """`--add-venv` defaults to on, so this is the common case on a host that
+    has no venv -- and it used to be silent, leaving `ninja run` to resolve
+    against whatever the login shell's PATH held.
+    """
+    out = _run_snippet(tmp_path, _venv_activation("/some/where"), present=())
+    assert "no venv found under /some/where" in out
+    assert "venv/, .venv/" in out
+
+
+def test_the_activation_reaches_the_calling_shell(tmp_path):
+    """`source` inside `( ... )` would change only that subshell's environment,
+    discarded the instant it exits and long before `ninja run` sees it.
+
+    Tested by running it and looking, rather than by asserting the fragment
+    has no parentheses -- it does have some, in the message text, and a
+    structural check would either fail on those or be weakened until it proved
+    nothing. What matters is whether the activation survives into the next
+    command, so that is what this asks.
+    """
+    (tmp_path / "venv" / "bin").mkdir(parents=True)
+    (tmp_path / "venv" / "bin" / "activate").write_text("export NINJA_PROBE=activated\n")
+    out = subprocess.run(
+        ["bash", "-c", _venv_activation("/remote/path") + 'echo "$NINJA_PROBE"'],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert out.stdout.strip() == "activated"
