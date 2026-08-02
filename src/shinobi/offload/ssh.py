@@ -81,6 +81,11 @@ class RemoteSpec:
 # the normal case, but the check is free and the failure mode is not.
 _SAFE_HOST = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*(@[A-Za-z0-9_][A-Za-z0-9._:-]*)?$")
 
+# An environment variable name `launch_remote` is willing to `export`. Values
+# are quoted and so need no such check; a name is not quotable -- `export
+# 'A B'=x` is a syntax error and `export A=1; rm -rf /` is not.
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 
 def parse_remote(spec: str) -> RemoteSpec:
     """Parse 'user@host:/path' (or 'host:/path') into a RemoteSpec.
@@ -356,6 +361,7 @@ def launch_remote(
     *,
     add_venv: bool,
     launcher: list[str] | None = None,
+    env: dict[str, str] | None = None,
 ) -> RemoteHandle:
     """Launch `ninja run <remote_target> <argv...>` detached on
     `remote.host`, under `remote.path`. See the module docstring for the
@@ -376,6 +382,18 @@ def launch_remote(
     caracal run leaves `caracal-run-<ts>.log` beside a `ninja run`'s
     `ninja-run-<ts>.log` rather than overwriting it. `RemoteHandle` carries
     both names, so `status_ssh` needs no convention of its own.
+
+    `env` is exported into the detached shell *after* the venv activation,
+    so it wins over anything the venv's own `activate` sets. A remote run
+    otherwise inherits only what the login shell gives it, which is the
+    wrong environment more often than it sounds: the case this was added
+    for is a host whose profile points `APPTAINER_CACHEDIR`/`TMPDIR` at a
+    filesystem that has since filled up, where every containerised step
+    dies in SIF creation with "no space left on device" and no amount of
+    per-run configuration can reach it. Values are `shlex.quote`d; names
+    are checked against `_ENV_NAME` rather than trusted, since they land
+    in an `export` and a malformed one would otherwise be a shell
+    injection rather than an error.
     """
     launcher = list(launcher) if launcher else ["ninja", "run"]
     if not launcher:
@@ -395,7 +413,13 @@ def launch_remote(
 
     venv_snippet = _venv_activation(remote.path) if add_venv else ""
 
-    inner = f"cd {shlex.quote(remote.path)}; {venv_snippet}{shlex.join(launcher)} {shlex.quote(remote_target)} {shlex.join(argv)}"
+    env_snippet = ""
+    for name, value in (env or {}).items():
+        if not _ENV_NAME.match(name):
+            raise ValueError(f"{name!r} is not a valid environment variable name -- it is emitted into an `export`, so anything else would be shell syntax rather than a setting")
+        env_snippet += f"export {name}={shlex.quote(value)}; "
+
+    inner = f"cd {shlex.quote(remote.path)}; {venv_snippet}{env_snippet}{shlex.join(launcher)} {shlex.quote(remote_target)} {shlex.join(argv)}"
     wrapped = f"({inner}); echo $? > {shlex.quote(exit_path)}"
     remote_cmd = f"setsid bash -c {shlex.quote(wrapped)} </dev/null >{shlex.quote(log_path)} 2>&1 & echo $!"
 

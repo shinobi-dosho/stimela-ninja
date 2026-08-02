@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import shlex
 import subprocess
 
 import pytest
@@ -190,6 +191,65 @@ def test_launch_remote_defaults_to_ninja_run(monkeypatch):
 
     assert "ninja run recipe.py:tool" in captured["args"][-1]
     assert handle.log_file.startswith("ninja-run-")
+
+
+def test_launch_remote_exports_env_after_the_venv_activation(monkeypatch):
+    """Order matters: the venv's own `activate` sets PATH and can set more,
+    so a caller-supplied override has to come after it to win.
+    """
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        return _FakeProc(returncode=0, stdout="7\n")
+
+    monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", fake_run)
+    launch_remote(
+        RemoteSpec("host", "/remote/path"),
+        "recipe.py:tool",
+        [],
+        add_venv=True,
+        env={"APPTAINER_CACHEDIR": "/home/u/.apptainer/cache"},
+    )
+
+    remote_cmd = captured["args"][-1]
+    assert "export APPTAINER_CACHEDIR=/home/u/.apptainer/cache" in remote_cmd
+    assert remote_cmd.index("bin/activate") < remote_cmd.index("export APPTAINER_CACHEDIR")
+    assert remote_cmd.index("export APPTAINER_CACHEDIR") < remote_cmd.index("ninja run")
+
+
+def test_launch_remote_quotes_env_values(monkeypatch):
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        return _FakeProc(returncode=0, stdout="7\n")
+
+    monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", fake_run)
+    launch_remote(
+        RemoteSpec("host", "/remote/path"),
+        "recipe.py:tool",
+        [],
+        add_venv=False,
+        env={"EVIL": "x; rm -rf /"},
+    )
+
+    # Two layers of quoting sit between here and the export -- `bash -lc
+    # <inner>` and `setsid bash -c <wrapped>` -- so unwrap them the way the
+    # remote shells will, rather than matching the doubly-escaped text.
+    inner = shlex.split(captured["args"][-1])[2]
+    wrapped = shlex.split(inner)[3]
+    assert "export EVIL='x; rm -rf /'" in wrapped  # one word, not a command separator
+
+
+@pytest.mark.parametrize("name", ["A B", "1BAD", "A=B", "", "A;rm -rf /"])
+def test_launch_remote_refuses_a_malformed_env_name(monkeypatch, name):
+    monkeypatch.setattr(
+        "shinobi.offload.ssh.subprocess.run",
+        lambda args, **kwargs: _FakeProc(returncode=0, stdout="7\n"),
+    )
+    with pytest.raises(ValueError, match="not a valid environment variable name"):
+        launch_remote(RemoteSpec("host", "/p"), "r.py:t", [], add_venv=False, env={name: "x"})
 
 
 def test_launch_remote_raises_on_non_pid_output(monkeypatch):
