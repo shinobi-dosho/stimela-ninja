@@ -105,6 +105,15 @@ for orchestration code the static cab-dep scan can't see:
     $ ninja run myrecipe.py:selfcal --ms data.ms --remote user@cluster:/scratch/run1
     $ ninja run myrecipe.py:selfcal --ms data.ms --remote user@cluster:/scratch/run1 --include extra_cabs.yml
 
+``--provenance/--no-provenance``, ``--sandbox/--no-sandbox`` and ``--quiet``
+are forwarded to the remote ``ninja run``, since they mean the same thing
+there as locally -- a detached run is precisely the one you can't re-inspect
+afterwards, so a missing manifest or an unsandboxed workdir would only be
+discovered after the fact. ``--dryrun`` and ``--cache-dir``/``--no-cache``
+are refused instead: the first has nothing to launch, and a cache path is
+local to the machine that holds it (configure caching in the remote host's
+own ``AppConfig``).
+
 .. _ninja-replay:
 
 ``ninja replay`` -- reproduce a recorded run
