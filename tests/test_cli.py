@@ -1,9 +1,12 @@
+from pathlib import Path
+
 import pytest
 from click.testing import CliRunner
 
 from shinobi.cli import main
 
 FIXTURES = "tests/fixtures/sample_targets.py"
+FIXTURES_ABS = Path(FIXTURES).resolve()
 
 
 # -- ninja compile (offload) --
@@ -204,6 +207,87 @@ def test_run_remote_rejects_malformed_spec():
     result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet", "--remote", "no-colon-here"])
     assert result.exit_code != 0
     assert "user@host:/path" in result.output
+
+
+class _FakeProc:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _remote_launch_cmd(monkeypatch, tmp_path, argv):
+    """Invoke `ninja run ... --remote` with ssh/rsync mocked out, and return
+    (result, the remote command string that `launch_remote` would have run).
+    """
+    commands = []
+
+    def fake_run(args, **kwargs):
+        commands.append(args)
+        # `launch_remote` echoes the detached pid; sync's ssh/rsync don't care.
+        return _FakeProc(returncode=0, stdout="12345\n")
+
+    monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", fake_run)
+    # the handle.json lands under cwd/.shinobi -- keep it out of the checkout
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(main, argv)
+    launch = [c[-1] for c in commands if c[0] == "ssh" and "setsid" in c[-1]]
+    return result, launch[-1] if launch else None
+
+
+def test_run_remote_forwards_provenance_sandbox_and_quiet(monkeypatch, tmp_path):
+    """These three mean the same thing remotely as locally, so they have to
+    reach the remote `ninja run` -- they used to be swallowed by click's
+    typed parameters and never forwarded (issue #88).
+    """
+    result, remote_cmd = _remote_launch_cmd(
+        monkeypatch,
+        tmp_path,
+        [
+            "run",
+            f"{FIXTURES_ABS}:greet",
+            "--remote",
+            "user@host:/path",
+            "--provenance",
+            "--sandbox",
+            "--quiet",
+            "--text",
+            "hi",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "--provenance" in remote_cmd
+    assert "--sandbox" in remote_cmd
+    assert "--quiet" in remote_cmd
+    # the target's own derived parameters still ride along, after the flags
+    assert "--text hi" in remote_cmd
+    assert remote_cmd.index("--quiet") < remote_cmd.index("--text")
+
+
+def test_run_remote_forwards_the_negative_form_of_the_tristate_pairs(monkeypatch, tmp_path):
+    """`--no-provenance` is an override of the remote AppConfig, not the
+    same thing as saying nothing -- so it has to travel too.
+    """
+    result, remote_cmd = _remote_launch_cmd(
+        monkeypatch,
+        tmp_path,
+        ["run", f"{FIXTURES_ABS}:greet", "--remote", "user@host:/path", "--no-provenance", "--no-sandbox", "--text", "hi"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "--no-provenance" in remote_cmd
+    assert "--no-sandbox" in remote_cmd
+
+
+def test_run_remote_forwards_nothing_extra_when_the_flags_are_unset(monkeypatch, tmp_path):
+    result, remote_cmd = _remote_launch_cmd(
+        monkeypatch,
+        tmp_path,
+        ["run", f"{FIXTURES_ABS}:greet", "--remote", "user@host:/path", "--text", "hi"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "provenance" not in remote_cmd
+    assert "sandbox" not in remote_cmd
+    assert "--quiet" not in remote_cmd
 
 
 def test_run_help_shows_remote_options():

@@ -137,6 +137,31 @@ def _resolve_target(target: str):
         raise click.ClickException(f"no '{attr}' in {location}") from None
 
 
+def _forwarded_run_flags(*, quiet: bool, provenance: bool | None, sandbox: bool | None) -> list[str]:
+    """Reconstruct the argv form of the `ninja run` options that mean the
+    same thing on the remote host as they do locally.
+
+    They have to be rebuilt rather than read off `ctx.args`: click consumes
+    every option `run` declares into a typed parameter, so `ctx.args` (under
+    `ignore_unknown_options`/`allow_extra_args`) holds only the *unknown*
+    extras -- the target's own derived parameters. Anything `run` declares
+    and doesn't forward is silently dropped, which is exactly what these
+    three used to be.
+
+    The tri-state pairs forward their negative form too: `--no-provenance`
+    is a deliberate override of a remote `AppConfig.provenance.enabled`, not
+    the same thing as saying nothing.
+    """
+    flags: list[str] = []
+    if quiet:
+        flags.append("--quiet")
+    if provenance is not None:
+        flags.append("--provenance" if provenance else "--no-provenance")
+    if sandbox is not None:
+        flags.append("--sandbox" if sandbox else "--no-sandbox")
+    return flags
+
+
 def _run_remote(
     ctx: click.Context,
     target: str,
@@ -144,6 +169,9 @@ def _run_remote(
     dryrun: bool,
     cache_dir: str | None,
     no_cache: bool,
+    quiet: bool,
+    provenance: bool | None,
+    sandbox: bool | None,
     remote: str,
     add_venv: bool,
     include_paths: tuple[str, ...],
@@ -200,7 +228,12 @@ def _run_remote(
     sync_to_remote(base_dir, rel_paths, remote_spec)
 
     remote_target = f"{pyfile.relative_to(base_dir)}:{attr}"
-    handle = launch_remote(remote_spec, remote_target, ctx.args, add_venv=add_venv)
+    # `ninja run`'s own flags first, then `ctx.args` (the target's derived
+    # parameters). Order is what keeps them separable: a target parameter
+    # taking a value can't swallow a trailing `--sandbox` if the flags never
+    # trail it.
+    run_argv = [*_forwarded_run_flags(quiet=quiet, provenance=provenance, sandbox=sandbox), *ctx.args]
+    handle = launch_remote(remote_spec, remote_target, run_argv, add_venv=add_venv)
 
     handle_path = _handle_path(None, f"{pyfile.stem}.{attr}")
     handle_path.parent.mkdir(parents=True, exist_ok=True)
@@ -265,7 +298,7 @@ def _run_remote(
     "--remote",
     "remote",
     default=None,
-    help="Launch on a remote host instead of locally: 'user@host:/path'. Syncs the target file and its statically-discoverable cab deps, then runs detached -- see `ninja status`.",
+    help="Launch on a remote host instead of locally: 'user@host:/path'. Syncs the target file and its statically-discoverable cab deps, then runs detached -- see `ninja status`. --provenance/--sandbox/--quiet are forwarded to the remote run; --dryrun and --cache-dir/--no-cache are refused.",
 )
 @click.option(
     "--add-venv/--no-add-venv",
@@ -313,6 +346,9 @@ def run(
             dryrun=dryrun,
             cache_dir=cache_dir,
             no_cache=no_cache,
+            quiet=quiet,
+            provenance=provenance,
+            sandbox=sandbox,
             remote=remote,
             add_venv=add_venv,
             include_paths=include_paths,
