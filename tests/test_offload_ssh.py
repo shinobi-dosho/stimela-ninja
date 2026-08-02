@@ -151,6 +151,47 @@ def test_launch_remote_captures_pid_from_echoed_output(monkeypatch):
     assert "/remote/path/ninja-run-" in remote_cmd  # log/exit paths are absolute, not cwd-relative
 
 
+def test_launch_remote_honours_a_custom_launcher(monkeypatch):
+    """A downstream CLI runs its own entry point, and its log/exit files
+    are named after it so they can't collide with a `ninja run`'s.
+    """
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        return _FakeProc(returncode=0, stdout="4321\n")
+
+    monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", fake_run)
+    handle = launch_remote(
+        RemoteSpec("host", "/remote/path"),
+        "line.yaml",
+        ["--backend", "apptainer"],
+        add_venv=False,
+        launcher=["caracal", "run"],
+    )
+
+    remote_cmd = captured["args"][-1]
+    assert "caracal run line.yaml --backend apptainer" in remote_cmd
+    assert "ninja run" not in remote_cmd
+    assert handle.log_file.startswith("caracal-run-")
+    assert handle.exit_file.startswith("caracal-run-")
+    assert "/remote/path/caracal-run-" in remote_cmd
+
+
+def test_launch_remote_defaults_to_ninja_run(monkeypatch):
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        return _FakeProc(returncode=0, stdout="1\n")
+
+    monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", fake_run)
+    handle = launch_remote(RemoteSpec("host", "/p"), "recipe.py:tool", [], add_venv=False)
+
+    assert "ninja run recipe.py:tool" in captured["args"][-1]
+    assert handle.log_file.startswith("ninja-run-")
+
+
 def test_launch_remote_raises_on_non_pid_output(monkeypatch):
     monkeypatch.setattr(
         "shinobi.offload.ssh.subprocess.run",

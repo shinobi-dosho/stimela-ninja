@@ -349,15 +349,42 @@ def _venv_activation(remote_path: str) -> str:
     )
 
 
-def launch_remote(remote: RemoteSpec, remote_target: str, argv: list[str], *, add_venv: bool) -> RemoteHandle:
+def launch_remote(
+    remote: RemoteSpec,
+    remote_target: str,
+    argv: list[str],
+    *,
+    add_venv: bool,
+    launcher: list[str] | None = None,
+) -> RemoteHandle:
     """Launch `ninja run <remote_target> <argv...>` detached on
     `remote.host`, under `remote.path`. See the module docstring for the
     detach mechanism. Returns a `RemoteHandle` for later `status_ssh`
     polling.
+
+    `launcher` is the argv prefix the target is handed to, defaulting to
+    `["ninja", "run"]`. A downstream CLI that builds shinobi recipes of its
+    own -- caracal, whose targets are pipeline YAML rather than
+    `file.py:name` -- passes its own entry point here instead of
+    reimplementing the detach: the quoting in `_ssh`, the absolute
+    log/exit redirects, and `_venv_activation`'s branch order are each
+    load-bearing and have each been a bug, so a second copy of them is a
+    second place to fix. It is `shlex.join`ed like any other argv, so a
+    multi-word launcher stays one word per element.
+
+    The log and exit filenames follow the launcher's first element, so a
+    caracal run leaves `caracal-run-<ts>.log` beside a `ninja run`'s
+    `ninja-run-<ts>.log` rather than overwriting it. `RemoteHandle` carries
+    both names, so `status_ssh` needs no convention of its own.
     """
+    launcher = list(launcher) if launcher else ["ninja", "run"]
+    if not launcher:
+        raise ValueError("launcher must be a non-empty argv prefix")
+
     ts = int(time.time())
-    log_file = f"ninja-run-{ts}.log"
-    exit_file = f"ninja-run-{ts}.exit"
+    stem = f"{Path(launcher[0]).name}-run"
+    log_file = f"{stem}-{ts}.log"
+    exit_file = f"{stem}-{ts}.exit"
     # Absolute, not just cd-relative: the outer `>log_path`/`>exit_path`
     # redirects are opened by the shell that runs *before* `inner`'s own
     # `cd remote.path`, so a bare filename would land wherever the SSH
@@ -368,7 +395,7 @@ def launch_remote(remote: RemoteSpec, remote_target: str, argv: list[str], *, ad
 
     venv_snippet = _venv_activation(remote.path) if add_venv else ""
 
-    inner = f"cd {shlex.quote(remote.path)}; {venv_snippet}ninja run {shlex.quote(remote_target)} {shlex.join(argv)}"
+    inner = f"cd {shlex.quote(remote.path)}; {venv_snippet}{shlex.join(launcher)} {shlex.quote(remote_target)} {shlex.join(argv)}"
     wrapped = f"({inner}); echo $? > {shlex.quote(exit_path)}"
     remote_cmd = f"setsid bash -c {shlex.quote(wrapped)} </dev/null >{shlex.quote(log_path)} 2>&1 & echo $!"
 
