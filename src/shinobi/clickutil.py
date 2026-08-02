@@ -17,11 +17,20 @@ and flattened to a single dotted-by-underscore option
 (`--obsinfo-plotelev-enable`). `unflatten_kwargs` is the inverse: turn
 `build_options`'s flat kwargs back into the nested dict
 `model(**nested)` expects.
+
+The other half of this module is `LazyGroup`, which has nothing to do with
+pydantic: a `click.Group` whose subcommands are built when they are
+invoked. See its own docstring for what it adds to click's published
+recipe and why.
 """
 
 from __future__ import annotations
 
+import importlib
 import types
+from collections.abc import Callable
+from dataclasses import dataclass
+from gettext import gettext
 from pathlib import Path
 from typing import Any, Literal, Union, get_args, get_origin
 
@@ -234,3 +243,186 @@ def unflatten_kwargs(model: type[BaseModel], flat_kwargs: dict[str, Any]) -> dic
             node = node.setdefault(part, {})
         node[path[-1]] = flat_kwargs[flat_name]
     return nested
+
+
+# ---------------------------------------------------------------------------
+# Lazily-built subcommands
+# ---------------------------------------------------------------------------
+#
+# A CLI whose subcommands are expensive to *create* -- not to run -- pays that
+# cost on every invocation, including ones that never touch them. `ninja
+# status` should not build `ninja run`'s target options; caracal's `run
+# --remote-status` reads a JSON handle and makes one ssh call, and was paying
+# ~3s to import 19 worker schemas and their cab libraries first.
+#
+# This is click's documented recipe
+# (https://click.palletsprojects.com/en/stable/complex/) plus three things it
+# does not cover; each is marked below.
+
+
+@dataclass(frozen=True)
+class LazySubcommand:
+    """A subcommand to build on first use.
+
+    Attributes:
+        factory: Called with no arguments to produce the `click.Command`.
+        short_help: One-line description for the parent group's `--help`.
+            Supplied here so listing the commands does not have to build
+            them; when empty, the group falls back to building the command
+            and asking it, which is correct but costs what laziness saved.
+    """
+
+    factory: Callable[[], click.Command]
+    short_help: str = ""
+
+
+#: What a lazy subcommand may be declared as: a `LazySubcommand`, a bare
+#: factory, or click's own `"module.attr"` / `"module:attr"` import path.
+#: Declared after `LazySubcommand` because a union alias is evaluated when
+#: it is assigned, `from __future__ import annotations` notwithstanding.
+LazySpec = LazySubcommand | Callable[[], click.Command] | str
+
+
+class LazyGroup(click.Group):
+    """A `click.Group` that builds a subcommand when it is needed.
+
+    Three things here are not in click's published recipe, each because a
+    real CLI hit it:
+
+    - **Factories.** The recipe maps a name to the import path of an
+      existing `click.Command`. A command that is *constructed* -- from a
+      schema, a plugin manifest, a generated model -- has no such object to
+      point at, so a declaration may be any zero-argument callable.
+    - **Help that builds nothing.** `click.Group.format_commands` asks
+      every command for a short help string, so a group's own `--help`
+      builds all of them -- the recipe says as much in passing. A
+      `LazySubcommand` may declare `short_help` instead.
+    - **A deferred mapping.** Discovering the *names* can itself cost
+      something, and a group is constructed on every invocation, so
+      `lazy_subcommands` may be a callable.
+
+    Loaded commands are cached per name. The recipe reloads on each
+    `get_command`, which is invisible when the target is a module-level
+    object (the module import is cached) and is not when a factory does
+    real work -- `format_commands` followed by an invocation would build
+    twice.
+
+    Args:
+        lazy_subcommands: Command name -> `LazySpec`, or a zero-argument
+            callable returning that mapping. Pass the callable when
+            *discovering* the names costs something -- caracal scans 19
+            YAML headers for its worker commands, which is cheap next to
+            building them and not next to doing nothing. It is called at
+            most once.
+            Eagerly registered commands (`@group.command()`, `add_command`)
+            keep working alongside these and take precedence on a name
+            clash, so a lazy entry can be overridden without unregistering
+            it.
+    """
+
+    def __init__(
+        self,
+        *args,
+        lazy_subcommands: dict[str, LazySpec] | Callable[[], dict[str, LazySpec]] | None = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self._specs_source = lazy_subcommands
+        self._specs: dict[str, LazySpec] | None = None
+        self._loaded: dict[str, click.Command] = {}
+
+    @property
+    def lazy_subcommands(self) -> dict[str, LazySpec]:
+        """The declarations, resolving the callable form on first access."""
+        if self._specs is None:
+            source = self._specs_source
+            self._specs = dict(source() if callable(source) else (source or {}))
+        return self._specs
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        # A sorted union rather than the recipe's `base + lazy`: with both
+        # kinds present that concatenation lists eager commands first and
+        # only sorts within each half, so `caracal cache` would sort after
+        # `caracal transform`.
+        return sorted({*super().list_commands(ctx), *self.lazy_subcommands})
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        # Eager first: an explicitly registered command is the more
+        # specific declaration, and this is what lets one shadow a lazy
+        # entry rather than racing it.
+        command = super().get_command(ctx, cmd_name)
+        if command is not None:
+            return command
+        if cmd_name not in self.lazy_subcommands:
+            return None
+        if cmd_name not in self._loaded:
+            self._loaded[cmd_name] = self._lazy_load(cmd_name)
+        return self._loaded[cmd_name]
+
+    def _lazy_load(self, cmd_name: str) -> click.Command:
+        """Resolve one declaration into a real command.
+
+        Raises:
+            ValueError: If the declaration does not produce a
+                `click.Command` -- the same failure the published recipe
+                guards, and worth keeping: the alternative is click
+                reporting something unhelpful much later.
+        """
+        spec = self.lazy_subcommands[cmd_name]
+        source = spec
+
+        if isinstance(spec, LazySubcommand):
+            command = spec.factory()
+        elif callable(spec):
+            command = spec()
+        else:
+            command = _import_command(spec)
+
+        if not isinstance(command, click.Command):
+            raise ValueError(f"lazy loading of {cmd_name!r} from {source!r} returned a non-command object: {command!r}")
+        return command
+
+    def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        """Render the command list, building only what has no declared
+        `short_help`.
+
+        Mirrors `click.Group.format_commands`; the difference is the source
+        of each row's help text.
+        """
+        rows: list[tuple[str, str]] = []
+        names = self.list_commands(ctx)
+        if not names:
+            return
+        limit = formatter.width - 6 - max(len(name) for name in names)
+
+        for name in names:
+            declared = self.lazy_subcommands.get(name)
+            if isinstance(declared, LazySubcommand) and declared.short_help and name not in self._loaded:
+                rows.append((name, _shorten(declared.short_help, limit)))
+                continue
+            command = self.get_command(ctx, name)
+            if command is None or command.hidden:
+                continue
+            rows.append((name, command.get_short_help_str(limit)))
+
+        if rows:
+            with formatter.section(gettext("Commands")):
+                formatter.write_dl(rows)
+
+
+def _import_command(path: str) -> object:
+    """Resolve click's `"module.attr"` (or `"module:attr"`) import path."""
+    modname, sep, attr = path.rpartition(":")
+    if not sep:
+        modname, _, attr = path.rpartition(".")
+    if not modname or not attr:
+        raise ValueError(f"lazy subcommand path must be 'module.attr' or 'module:attr', got {path!r}")
+    return getattr(importlib.import_module(modname), attr)
+
+
+def _shorten(text: str, limit: int) -> str:
+    """One line, no longer than `limit`, ellipsised like click's own."""
+    line = " ".join(text.split())
+    if len(line) <= limit:
+        return line
+    return line[: max(0, limit - 3)].rstrip() + "..."
