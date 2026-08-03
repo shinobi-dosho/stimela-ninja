@@ -76,6 +76,16 @@ class ExecutionConfig(BaseModel):
     # loudly if it cannot apply it; `"never"` emits nothing, for a site that
     # wants scheduler-side admission only. See `shinobi.resources`.
     enforce_resources: Literal["auto", "always", "never"] = "auto"
+    # Whether a step about to run deletes the previous run's product from
+    # each declared output path it writes directly to
+    # (`sandbox.clear_stale_outputs`). On by default: re-running a step is
+    # supposed to replace its products, which is what a sandboxed relative
+    # output already gets from harvest, and without this an absolute one
+    # instead lands on top of the last run -- a hard failure with CASA-family
+    # tools and a silently corrupt product with anything that appends.
+    # Set false for a workspace where nothing may be deleted without the
+    # tool itself doing it.
+    clear_stale_outputs: bool = True
 
 
 class SnapshotConfig(BaseModel):

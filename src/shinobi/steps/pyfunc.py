@@ -64,7 +64,7 @@ import pickle
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, get_type_hints
+from typing import TYPE_CHECKING, Any, Callable, Sequence, get_type_hints
 
 from pydantic import BaseModel, create_model
 
@@ -74,6 +74,7 @@ from shinobi.exceptions import CabRunError
 from shinobi.results import StepResult, explain_returncode
 from shinobi.sandbox import (
     absolutize_path_inputs,
+    clear_stale_outputs,
     create_sandbox,
     discard_sandbox,
     harvest_outputs,
@@ -81,7 +82,7 @@ from shinobi.sandbox import (
     prune_unused_parents,
     relativize_path_outputs,
 )
-from shinobi.steps.schema import Scope, StepRef
+from shinobi.steps.schema import ParamMeta, Scope, StepRef
 
 if TYPE_CHECKING:
     from shinobi.steps.dispatch import ExecContext
@@ -420,6 +421,11 @@ def _run_pystep_subprocess(
         sandbox_dir = create_sandbox(ctx._sandbox_root, ctx._cache_path or scope.name)
         precreated = prepare_output_parents(scope, prepared, sandbox_dir)
         run_prepared = absolutize_path_inputs(scope, prepared, Path(workspace))
+    # Same pre-run replacement a cab gets (`dispatch._run_cab`): a declared
+    # output the child writes straight to its destination must not still hold
+    # the last run's product when the function starts.
+    if ctx._clear_outputs:
+        clear_stale_outputs(scope, run_prepared, Path(workspace), sandboxed=sandbox_dir is not None)
 
     with tempfile.TemporaryDirectory(prefix="shinobi_pystep_") as tmpdir:
         io_dir = Path(tmpdir) / "io"
@@ -540,6 +546,11 @@ def _make_adapter(func: Callable, outputs_model: type[BaseModel], is_empty: bool
                 )
 
         prepared = ctx.prepare_inputs()
+        # In-process: no sandbox (os.chdir is process-global, see the module
+        # docstring), so every declared output is written straight to its
+        # destination and a re-run needs the previous product cleared.
+        if ctx._clear_outputs:
+            clear_stale_outputs(ctx.scope, prepared, Path.cwd(), sandboxed=False)
         ret = func(ctx, **prepared) if wants_ctx else func(**prepared)
         if is_empty:
             if ret is not None:
@@ -571,6 +582,7 @@ def pystep(
     backend: str | None = None,
     sandbox: bool | None = None,
     harvest: list[str] | None = None,
+    write_paths: Sequence[str] | None = None,
     **params: Any,
 ) -> Callable[[Callable], StepRef]:
     """Decorate (or directly call on an existing function, matching
@@ -600,6 +612,14 @@ def pystep(
     an in-process run ignores it (`os.chdir` is process-global, and recipes
     run steps on a thread pool), executing in the caller's cwd as always.
 
+    `write_paths` names the parameters that are *destinations this function
+    creates* rather than data it reads (`ParamMeta.write_path`) -- the one
+    thing no signature can express, since `outputvis: Path` returned as the
+    output and `vis: Path` rewritten in place are the same annotation. Only
+    a named parameter has its stale product cleared before a re-run
+    (`sandbox.clear_stale_outputs`); everything else is treated as the
+    caller's data and left alone.
+
     `**params` are per-call constants, same as `@shinobi.step`.
     """
 
@@ -615,6 +635,9 @@ def pystep(
         """
         inputs_model, wants_ctx = _inputs_model_from_signature(func)
         outputs_model, is_empty = _outputs_model_from_return(func)
+        unknown = sorted(set(write_paths or ()) - set(inputs_model.model_fields))
+        if unknown:
+            raise TypeError(f"pystep {func.__name__!r}: write_paths names {unknown}, which {'is' if len(unknown) == 1 else 'are'} not a parameter of the function")
         adapter = _make_adapter(func, outputs_model, is_empty, wants_ctx)
         # `adapter` is a generic closure defined once in this module --
         # every pystep's adapter has identical source text. Anything that
@@ -634,6 +657,7 @@ def pystep(
             backend=backend,
             sandbox=sandbox,
             harvest=harvest or [],
+            field_meta={name: ParamMeta(write_path=True) for name in write_paths or ()},
         )
         return StepRef(name=step_name, step=scope, func=adapter, params=params)
 

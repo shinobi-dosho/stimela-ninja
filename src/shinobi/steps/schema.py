@@ -88,6 +88,21 @@ class ParamMeta(BaseModel):
     outside the harvest. Marking the field lets `Cab` check that something
     does declare it (see `Cab._write_path_declares_a_write_target`).
 
+    A **path**-typed input may be marked too, and there it is the *only*
+    thing that distinguishes the two identical-looking spellings of an
+    output field that echoes a same-named input. ``mstransform`` takes
+    ``outputvis`` and creates it; ``flagdata`` takes ``vis`` and rewrites
+    the caller's own data; both declare that one name on `inputs_model` and
+    on `outputs_model`, so `mutated_path_fields` -- and any other structural
+    test -- sees one shape. Marking ``outputvis`` says which it is, and
+    `sandbox.clear_stale_outputs` then clears the stale product before a
+    re-run instead of leaving the tool to trip over it. The default (unmarked)
+    is the safe reading: an echoed path is the caller's data and is never
+    deleted. Note the marker still changes nothing about how the *value* is
+    handled -- a path-typed one is anchored at the workspace by
+    `sandbox.absolutize_path_inputs` exactly as before, which is what a
+    complete destination path (as opposed to a stem) wants.
+
     `choices`: the field's allowed values (cult-cargo/classic's `choices`
     key). A loader that sets this also narrows the field's real annotation
     on `inputs_model`/`outputs_model` to `typing.Literal[*choices]` (see
@@ -320,6 +335,85 @@ def readonly_path_fields(model: type[BaseModel]) -> set[str]:
 _GLOB_CHARS = frozenset("*?[")
 
 
+def paths_overlap(a: Path, b: Path) -> bool:
+    """Whether two canonical paths can name the same bytes: equal, or one
+    inside the other. Containment is not a nicety here -- a Measurement Set
+    *is* a directory, so ``/data/obs.ms`` and ``/data/obs.ms/CORRECTED``
+    name the same data while comparing unequal.
+
+    Shared by the two places that compare resolved path values rather than
+    the way each step happened to spell them: `offload.slurm`'s
+    `MutationOrder` (which steps must be ordered against each other) and
+    `sandbox.clear_stale_outputs` (whether a declared output is really an
+    input this step reads). Both are wrong in the same expensive way if
+    they disagree, so there is one predicate.
+    """
+    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
+
+
+def write_path_fields(scope: Scope) -> set[str]:
+    """Names of the inputs the scope declares as write targets
+    (`ParamMeta.write_path`) -- paths the tool *creates*, as opposed to
+    data it reads. See `ParamMeta.write_path`, and
+    `sandbox.clear_stale_outputs` for the one behaviour that turns on it.
+    """
+    return {name for name, meta in scope.field_meta.items() if meta.write_path}
+
+
+def declared_output_paths(scope: Scope, prepared: dict[str, Any]) -> list[tuple[Path, str]]:
+    """``(path, source)`` for every path-typed output field the step is
+    *declared* to produce, resolved before the run from the declarations
+    alone -- the products themselves, where `declared_output_dirs` (built on
+    this) reports only the directories they land in.
+
+    Knowable pre-run means, per path-typed output field and in declaration
+    order: its value taken from a same-named input, its resolved ``implicit``
+    template, or its field default -- the same priority as `_fill_outputs`.
+    A list-valued field contributes each element. A field that resolves to
+    `None` contributes nothing (an unset optional product declares no path).
+    `source` names the declaration (``output 'restored_image'``) so callers
+    can report it.
+
+    Deliberately *not* included: `harvest`/`scratch` glob patterns. Those
+    describe a family whose member names the tool chooses at run time, so
+    they can only be matched against the filesystem after the fact -- which
+    is exactly the distinction `sandbox._move` already draws between a
+    declared destination and a glob-matched one.
+
+    Best-effort by design -- a template that fails to resolve is skipped
+    here, not raised; output filling reports those errors with full context.
+    """
+    paths: list[tuple[Path, str]] = []
+    declared = path_fields(scope.outputs_model)
+    for name in scope.outputs_model.model_fields:
+        if name not in declared:
+            continue
+        # Same priority as `_fill_outputs`: a same-named input beats
+        # `implicit`, which beats the field default. Membership, not
+        # truthiness, is what decides -- a *present* input wins even when its
+        # value is None, so the `continue` below is that input suppressing
+        # the template, not a fallthrough to it.
+        value = None
+        if name in prepared:
+            value = prepared[name]
+        else:
+            meta = scope.field_meta.get(name)
+            if meta is not None and isinstance(meta.implicit, str):
+                try:
+                    value = meta.implicit.format(**prepared)
+                except Exception:  # noqa: BLE001 -- best-effort; output filling reports the real error
+                    pass
+            else:
+                field = scope.outputs_model.model_fields[name]
+                if not field.is_required():
+                    value = field.get_default(call_default_factory=True)
+        if value is None:
+            continue
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            paths.append((Path(str(item)), f"output {name!r}"))
+    return paths
+
+
 def declared_output_dirs(scope: Scope, prepared: dict[str, Any]) -> list[tuple[Path, str]]:
     """``(directory, source)`` for every directory the step is *declared* to
     write into, resolved before the run from the declarations alone -- never
@@ -339,13 +433,14 @@ def declared_output_dirs(scope: Scope, prepared: dict[str, Any]) -> list[tuple[P
     the input (``"{prefix}-MFS-image.fits"``), a ``harvest`` glob, or a
     ``scratch`` glob for a write target that is *not* a product.
 
-    Knowable pre-run means, per path-typed output field and in declaration
-    order: its value taken from a same-named input, its resolved ``implicit``
-    template, or its field default -- the same priority as `_fill_outputs`.
-    Then the literal (glob-free) directory prefix of each ``harvest`` and
-    ``scratch`` pattern. `source` describes the declaration (``output
-    'restored_image'``, ``harvest pattern '{prefix}-*.fits'``, ``scratch
-    pattern '{cache_dir}/*'``) so callers can name it in an error.
+    Knowable pre-run means the parent of each `declared_output_paths` entry
+    (per path-typed output field, its value taken from a same-named input,
+    its resolved ``implicit`` template, or its field default -- the same
+    priority as `_fill_outputs`), then the literal (glob-free) directory
+    prefix of each ``harvest`` and ``scratch`` pattern. `source` describes
+    the declaration (``output 'restored_image'``, ``harvest pattern
+    '{prefix}-*.fits'``, ``scratch pattern '{cache_dir}/*'``) so callers can
+    name it in an error.
 
     A pattern that references a field whose value is `None` is skipped, not
     resolved: substituting it would produce a literal ``None`` path segment
@@ -376,34 +471,8 @@ def declared_output_dirs(scope: Scope, prepared: dict[str, Any]) -> list[tuple[P
         seen.add(path)
         dirs.append((path, source))
 
-    field_meta = getattr(scope, "field_meta", {})
-    declared = path_fields(scope.outputs_model)
-    for name in scope.outputs_model.model_fields:
-        if name not in declared:
-            continue
-        # Same priority as `_fill_outputs`: a same-named input beats
-        # `implicit`, which beats the field default. Membership, not
-        # truthiness, is what decides -- a *present* input wins even when its
-        # value is None, so the `continue` below is that input suppressing
-        # the template, not a fallthrough to it.
-        value = None
-        if name in prepared:
-            value = prepared[name]
-        else:
-            meta = field_meta.get(name)
-            if meta is not None and isinstance(meta.implicit, str):
-                try:
-                    value = meta.implicit.format(**prepared)
-                except Exception:  # noqa: BLE001 -- best-effort; output filling reports the real error
-                    pass
-            else:
-                field = scope.outputs_model.model_fields[name]
-                if not field.is_required():
-                    value = field.get_default(call_default_factory=True)
-        if value is None:
-            continue
-        for item in value if isinstance(value, (list, tuple)) else [value]:
-            add(Path(str(item)).parent, f"output {name!r}")
+    for path, source in declared_output_paths(scope, prepared):
+        add(path.parent, source)
 
     # A None-valued field is *absent* for templating purposes, so a pattern
     # needing it raises KeyError below and is skipped rather than resolving to
@@ -458,6 +527,17 @@ class Scope(BaseModel):
     # in config -- never in a shared cab repo.
     venv: str | None = None
     input_mutability: dict[str, Mutability] = Field(default_factory=dict)
+    # Per-field metadata, keyed by declared field name (see `ParamMeta`). A
+    # `Cab` fills most of it from its cab definition -- argv spelling
+    # (`nom_de_guerre`, `positional`), `implicit` templates, `choices`. It
+    # lives here on `Scope` rather than on `Cab` because two entries say
+    # something about a step's *filesystem* behaviour, which a `@pystep`
+    # (a bare `Scope`) has exactly as much of as a cab does: an output
+    # field's `implicit` template, read by `declared_output_paths`, and
+    # `write_path`, read by `sandbox.clear_stale_outputs`. An entry is
+    # shared between an input and a same-named output field, which is why
+    # `implicit` on such a name also changes what `build_argv` passes in.
+    field_meta: dict[str, ParamMeta] = Field(default_factory=dict)
     # Step-level skip-if-unchanged caching (shinobi.cache), same precedence
     # shape as `backend`: explicit call-time `cache=`/`cache_dir=` kwarg >
     # this Scope's own value > the enclosing recipe's > `AppConfig.cache`'s
@@ -582,7 +662,6 @@ class Cab(Scope):
     command: str
     flavour: str = "binary"
     policies: Policies = Field(default_factory=Policies)
-    field_meta: dict[str, ParamMeta] = Field(default_factory=dict)
     input_patterns: list[ParamPattern] = Field(default_factory=list)
     # Output-side analog of `input_patterns`: validation only -- lets
     # `recipe.outputs(step, name)` accept a dynamically-named output (e.g.
@@ -656,16 +735,24 @@ class Cab(Scope):
         run time because it is a property of the definition alone -- an author
         should hear about it when the cab is built, not when a pipeline has
         already run.
+
+        A fourth: the marked field is *itself* a path-typed output field.
+        That is the complete-destination shape (``mstransform``'s
+        ``outputvis``, echoed straight back as the product), where the output
+        field names the write target by being it -- no template needed. It
+        mounts and harvests on its own, so nothing here is silent; the marker
+        is carrying the other meaning (see `ParamMeta.write_path`).
         """
         marked = [name for name, meta in self.field_meta.items() if meta.write_path]
         if not marked:
             return self
+        declared_outputs = path_fields(self.outputs_model)
         # `implicit` templates reference *input field* names, so scan the
         # output side's templates plus the two glob lists.
         declarations = [str(meta.implicit) for name, meta in self.field_meta.items() if name in self.outputs_model.model_fields and isinstance(meta.implicit, str)]
         declarations += list(self.harvest or []) + list(self.scratch or [])
         haystack = " ".join(declarations)
-        orphaned = [name for name in marked if "{" + name not in haystack]
+        orphaned = [name for name in marked if "{" + name not in haystack and name not in declared_outputs]
         if orphaned:
             raise ValueError(
                 f"cab '{self.name}': {orphaned!r} marked write_path but named by no write "

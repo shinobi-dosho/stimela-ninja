@@ -39,7 +39,12 @@ Boundaries of the mechanism, by design:
   files in place. A tool that drops junk *next to an input* therefore
   writes into the workspace; the sandbox can't catch that.
 * Absolute-path outputs bypass the sandbox entirely (the tool writes them
-  straight to their declared destination); harvest skips them.
+  straight to their declared destination); harvest skips them. What harvest
+  gives a relative output -- the previous run's product *replaced* rather
+  than written over -- these get from `clear_stale_outputs` instead, which
+  runs before the tool and deletes exactly the declared destinations the
+  tool is about to write directly. It is also what gives an unsandboxed run
+  that guarantee at all, since there the same is true of every output.
 * Harvest moves by `os.replace`/rename, so the sandbox root must live on
   the same filesystem as the workspace (`AppConfig.sandbox.dir` is
   workspace-relative for exactly this reason). Directory moves fall back
@@ -54,6 +59,7 @@ Boundaries of the mechanism, by design:
 
 from __future__ import annotations
 
+import logging
 import shutil
 import tempfile
 import warnings
@@ -62,7 +68,17 @@ from typing import Any
 
 from shinobi.exceptions import ParameterError, StepError
 from shinobi.loaders._modelgen import is_file_dtype
-from shinobi.steps.schema import Cab, Scope, declared_output_dirs, path_fields
+from shinobi.steps.schema import (
+    Cab,
+    Scope,
+    declared_output_dirs,
+    declared_output_paths,
+    path_fields,
+    paths_overlap,
+    write_path_fields,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def create_sandbox(root: str, label: str) -> Path:
@@ -129,19 +145,21 @@ def _anchor(value: Any, workspace: Path) -> Any:
     return value if path.is_absolute() else workspace / path
 
 
-def absolutize_path_inputs(scope: Scope, prepared: dict[str, Any], workspace: Path) -> dict[str, Any]:
-    """A copy of `prepared` with every relative path-typed input value
-    anchored at `workspace`, so the tool still finds (and mutates in place)
-    the caller's real files when its cwd is the sandbox. Same field
-    classification as container bind-mounting (`backends.container.bind_dir_modes`):
-    declared fields via `path_fields`, dynamically pattern-matched Cab inputs
-    via their `ParamMeta.dtype`. Non-path values pass through untouched --
-    notably, a *string*-typed output-prefix input stays relative, so the tool
-    writes that output family inside the sandbox for harvest to pick up.
+def path_input_names(scope: Scope, prepared: dict[str, Any]) -> set[str]:
+    """Which of `prepared`'s keys are path-typed *inputs*. Same field
+    classification as container bind-mounting
+    (`backends.container.bind_dir_modes`): declared fields via `path_fields`,
+    dynamically pattern-matched Cab inputs via their `ParamMeta.dtype`.
+
+    Factored out because two callers need the identical answer for opposite
+    reasons: `absolutize_path_inputs` anchors exactly these at the workspace,
+    and `clear_stale_outputs` refuses to delete anything one of them points
+    at. A field either side classified differently would be a path the tool
+    writes for real and the deleter believes is scratch, or the reverse.
     """
     declared = path_fields(scope.inputs_model)
     match_pattern = scope.match_pattern if isinstance(scope, Cab) else None
-    anchored = dict(prepared)
+    names: set[str] = set()
     for name, value in prepared.items():
         if value is None:
             continue
@@ -151,8 +169,134 @@ def absolutize_path_inputs(scope: Scope, prepared: dict[str, Any], workspace: Pa
             meta = match_pattern(name)
             if meta is None or meta.dtype is None or not is_file_dtype(meta.dtype):
                 continue
-        anchored[name] = _anchor(value, workspace)
+        names.add(name)
+    return names
+
+
+def absolutize_path_inputs(scope: Scope, prepared: dict[str, Any], workspace: Path) -> dict[str, Any]:
+    """A copy of `prepared` with every relative path-typed input value
+    (`path_input_names`) anchored at `workspace`, so the tool still finds
+    (and mutates in place) the caller's real files when its cwd is the
+    sandbox. Non-path values pass through untouched -- notably, a
+    *string*-typed output-prefix input stays relative, so the tool writes
+    that output family inside the sandbox for harvest to pick up.
+    """
+    anchored = dict(prepared)
+    for name in path_input_names(scope, prepared):
+        anchored[name] = _anchor(prepared[name], workspace)
     return anchored
+
+
+def _input_paths_to_keep(scope: Scope, run_inputs: dict[str, Any]) -> list[Path]:
+    """Resolved values of every path input that carries data *in* -- the
+    paths `clear_stale_outputs` must never delete.
+
+    That is every `path_input_names` value except the ones the scope
+    declares as write targets (`schema.write_path_fields`). The exclusion is
+    the whole point: an output field that echoes a same-named input is
+    written the same way whether the tool created that path
+    (``mstransform``'s ``outputvis``) or rewrote the caller's data in place
+    (``flagdata``'s ``vis``), and only the declaration tells them apart.
+    Unmarked means "caller's data", so a cab that says nothing keeps
+    today's behaviour and its inputs.
+    """
+    keep: list[Path] = []
+    writes = write_path_fields(scope)
+    for name in path_input_names(scope, run_inputs) - writes:
+        value = run_inputs[name]
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            if item is not None:
+                keep.append(Path(str(item)).resolve())
+    return keep
+
+
+def clear_stale_outputs(scope: Scope, run_inputs: dict[str, Any], workspace: Path, *, sandboxed: bool) -> list[Path]:
+    """Delete the previous run's product from each declared output path the
+    tool is about to write **directly**, before it starts. Returns what was
+    removed.
+
+    Re-running a step is supposed to replace the previous run's products,
+    and for an output the tool writes inside a sandbox that is exactly what
+    happens: fresh scratch dir, tool writes, `harvest_outputs` moves the new
+    product over the destination (`_move`). An output the tool writes
+    straight to its destination gets none of that -- it lands on top of
+    whatever the last run left. Tools that refuse to overwrite then fail the
+    step (CASA is a whole family: ``mstransform``, ``split``, ``importuvfits``
+    all check the output for existence first), and tools that append or merge
+    silently produce a corrupt product, which is the worse half. This closes
+    that gap so both kinds of output get the same guarantee.
+
+    "Directly" is decided from the value the *tool* receives (`run_inputs`,
+    i.e. post-`absolutize_path_inputs`), not from the caller's spelling: a
+    relative output under a sandbox is written inside the scratch dir and is
+    left alone here, and everything else -- an absolute path, a path-typed
+    input anchored into one, any output at all when unsandboxed -- resolves
+    to its real destination. Note that a *path*-typed input naming a
+    destination is anchored, so it is in the second group even when the
+    caller spelled it relative and a sandbox is on; only a string-typed
+    stem's products stay behind in the scratch dir for harvest.
+
+    Two things are never cleared, and both are load-bearing:
+
+    * **A path the step reads** (`_input_paths_to_keep`), compared resolved
+      and by containment (`schema.paths_overlap`), so the in-place-mutation
+      idiom is safe: ``flagdata(vis=...) -> vis`` declares one path on both
+      models, and that "output" is the caller's MS, not this step's product.
+      Deleting it would destroy data mid-pipeline. An MS *is* a directory,
+      so containment matters -- an output resolving inside a declared input
+      is that input's data too.
+    * **`harvest`/`scratch` glob matches.** Only declared output *fields*
+      are cleared (`schema.declared_output_paths`). A glob's matches are
+      named by the tool at run time, so they can collide with workspace data
+      this step knows nothing about -- the same reason `_move` refuses to
+      replace an undeclared directory rather than rmtree it silently.
+
+    Every removal is logged at INFO naming the path and the declaration it
+    came from, because deleting a declared *directory* (an MS, an image
+    tree) is a real deletion and not the ordinary file overwrite `_move`
+    performs. `AppConfig.execution.clear_stale_outputs` turns the whole
+    thing off.
+
+    The cost, stated plainly: a re-run that then *fails* leaves neither the
+    new product nor the old one, where a sandboxed relative output would
+    still have the old one (nothing is harvested over a failure). That is
+    unavoidable rather than a choice -- a tool that refuses to overwrite has
+    already failed by the time anything could harvest, so the deletion has to
+    happen before it starts -- and it is exactly what a per-cab `overwrite`
+    flag does. With Tier 1 snapshots on (`shinobi.snapshots`) the marker left
+    by the failed run restores it on the next one.
+    """
+    # Nothing declared, nothing to clear -- and no `resolve()`/`stat` calls
+    # for a step that declares no path outputs at all, which is the common
+    # case and is on the critical path of every single run.
+    candidates = [(path, source) for path, source in declared_output_paths(scope, run_inputs) if path.is_absolute() or not sandboxed]
+    if not candidates:
+        return []
+    keep = _input_paths_to_keep(scope, run_inputs)
+    workspace = workspace.resolve()
+    removed: list[Path] = []
+    for path, source in candidates:
+        dst = path if path.is_absolute() else workspace / path
+        if not dst.exists() and not dst.is_symlink():
+            continue
+        # Resolve for comparison only -- removal below acts on `dst` itself,
+        # so a symlinked destination loses the link, never the target.
+        resolved = dst.resolve()
+        if any(paths_overlap(resolved, kept) for kept in keep):
+            continue
+        if workspace.is_relative_to(resolved):
+            # The declaration resolved to the workspace itself or an ancestor
+            # of it (a mis-templated output, an empty stem). Clearing that is
+            # never what was meant, and it would take the run's inputs with it.
+            warnings.warn(
+                f"'{scope.name}' {source} resolved to {resolved}, which contains the workspace -- not clearing it; the tool will see whatever the previous run left there",
+                stacklevel=3,
+            )
+            continue
+        logger.info("step %s: clearing stale %s at %s before re-running", scope.name, source, dst)
+        _remove(dst)
+        removed.append(dst)
+    return removed
 
 
 def _relativize(value: Any, workspace: Path) -> Any:
@@ -272,18 +416,30 @@ def _move(src: Path, dst: Path, declared: bool) -> None:
         StepError: If `dst` is an existing directory and `declared` is False.
     """
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.is_dir() and not dst.is_symlink():
-        if not declared:
-            raise StepError(
-                f"harvest would replace the directory '{dst}', which this step never declared as an "
-                f"output -- it matched a harvest glob, so the name came from the tool, not the schema. "
-                f"Refusing to delete it. Declare it as an output field if it really is this step's "
-                f"product, or move the existing directory aside."
-            )
-        shutil.rmtree(dst)
-    elif dst.exists() or dst.is_symlink():
-        dst.unlink()
+    if dst.is_dir() and not dst.is_symlink() and not declared:
+        raise StepError(
+            f"harvest would replace the directory '{dst}', which this step never declared as an "
+            f"output -- it matched a harvest glob, so the name came from the tool, not the schema. "
+            f"Refusing to delete it. Declare it as an output field if it really is this step's "
+            f"product, or move the existing directory aside."
+        )
+    if dst.exists() or dst.is_symlink():
+        _remove(dst)
     shutil.move(str(src), str(dst))
+
+
+def _remove(path: Path) -> None:
+    """Delete `path`, whatever it is. A real directory goes with its whole
+    tree; a symlink (even one pointing at a directory) is unlinked, so the
+    link goes and its target does not. Shared by `_move`'s replace-the-
+    destination step and `clear_stale_outputs`, which must agree on what
+    "the previous product is gone" means for a directory-shaped product
+    like an MS.
+    """
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
 
 
 def harvest_outputs(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbox_dir: Path, workspace: Path) -> list[Path]:

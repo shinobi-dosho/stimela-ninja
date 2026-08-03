@@ -36,6 +36,7 @@ from shinobi.resources import Budget, Resources
 from shinobi.results import StepResult, explain_returncode
 from shinobi.sandbox import (
     absolutize_path_inputs,
+    clear_stale_outputs,
     create_sandbox,
     discard_sandbox,
     harvest_outputs,
@@ -192,6 +193,7 @@ class ExecContext:
         stream: bool = True,
         pin: bool = False,
         sandbox_root: str | None = None,
+        clear_outputs: bool = True,
         input_keys: dict[str, Any] | None = None,
         budget: Budget | None = None,
         run_id: str = "",
@@ -215,6 +217,9 @@ class ExecContext:
             sandbox_root: Scratch root for sandboxed execution
                 (`shinobi.sandbox`), or `None` when this step runs
                 unsandboxed -- the root doubles as the enabled flag.
+            clear_outputs: Whether a re-run deletes the previous run's
+                product from each declared output path the tool writes
+                directly (`sandbox.clear_stale_outputs`).
             input_keys: Per-input-field cache keys of the steps that
                 produced this step's wired inputs (see `shinobi.cache`).
                 Only an enclosing recipe can know these; a top-level call
@@ -246,6 +251,10 @@ class ExecContext:
         # Sandbox scratch root, or None when unsandboxed. Read by the pystep
         # container path and threaded to _run_cab/_run_recipe via ctx.run().
         self._sandbox_root = sandbox_root
+        # Whether a re-run clears the previous product from the declared
+        # output paths the tool writes directly (sandbox.clear_stale_outputs).
+        # Read by the pystep paths and threaded to _run_cab via ctx.run().
+        self._clear_outputs = clear_outputs
         # Upstream provenance for this step's wired inputs. A Recipe scope is
         # never cached itself, so it doesn't consume these -- it forwards them
         # to _run_recipe, which resolves each sub-step's InputRef wiring
@@ -322,6 +331,7 @@ class ExecContext:
                 stream=self._stream,
                 pin=self._pin,
                 sandbox_root=self._sandbox_root,
+                clear_outputs=self._clear_outputs,
             )
         elif isinstance(self.scope, Recipe):
             result = _run_recipe(
@@ -540,6 +550,7 @@ def _dispatch(
         stream=stream_enabled,
         pin=provenance_enabled,
         sandbox_root=config.sandbox.dir if sandbox_enabled else None,
+        clear_outputs=config.execution.clear_stale_outputs,
         input_keys=_input_keys,
         budget=_budget,
         run_id=run_id,
@@ -687,6 +698,7 @@ def _run_cab(
     stream: bool = True,
     pin: bool = False,
     sandbox_root: str | None = None,
+    clear_outputs: bool = True,
 ) -> StepResult:
     # Sandboxed run (shinobi.sandbox): the tool's cwd is a private scratch
     # dir; path-typed inputs are anchored back at the workspace so the tool
@@ -696,11 +708,16 @@ def _run_cab(
     # declared output paths stay stable whether or not a sandbox was used.
     sandbox_dir = None
     run_inputs = prepared
+    workspace = Path.cwd()
     if sandbox_root is not None:
-        workspace = Path.cwd()
         sandbox_dir = create_sandbox(sandbox_root, label or cab.name)
         precreated = prepare_output_parents(cab, prepared, sandbox_dir)
         run_inputs = absolutize_path_inputs(cab, prepared, workspace)
+    # Against `run_inputs`, so the destinations are the ones the tool is
+    # really given, and before the run, because a tool that refuses to
+    # overwrite has already failed by the time anything harvests.
+    if clear_outputs:
+        clear_stale_outputs(cab, run_inputs, workspace, sandboxed=sandbox_dir is not None)
     argv = build_argv(cab, run_inputs)
     backend = get_step_backend(backend_name)
     import shlex
