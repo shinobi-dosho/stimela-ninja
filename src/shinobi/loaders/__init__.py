@@ -11,6 +11,6 @@ class. The implementation lives in the internal `_modelgen` module.
 
 from __future__ import annotations
 
-from shinobi.loaders._modelgen import build_model, sanitize_unique
+from shinobi.loaders._modelgen import build_model, merge_field_meta, merge_param_meta, sanitize_unique
 
-__all__ = ["build_model", "sanitize_unique"]
+__all__ = ["build_model", "merge_field_meta", "merge_param_meta", "sanitize_unique"]
