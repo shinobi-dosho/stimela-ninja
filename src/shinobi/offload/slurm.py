@@ -53,7 +53,7 @@ from shinobi.backends.slurm_script import (
 from shinobi.exceptions import BackendError
 from shinobi.graph import check_offloadable
 from shinobi.policies import build_argv
-from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, path_fields
+from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, path_fields, paths_overlap
 
 
 class OffloadCompileError(ValueError):
@@ -115,15 +115,6 @@ def _touched_paths(cab: Cab, resolved: dict[str, Any]) -> list[tuple[Path, bool]
     return touched
 
 
-def _overlaps(a: Path, b: Path) -> bool:
-    """Whether two canonical paths can name the same bytes: equal, or one
-    inside the other. Containment is not a nicety here -- a Measurement Set
-    *is* a directory, so a step rewriting `/data/obs.ms` and a step reading
-    `/data/obs.ms/CORRECTED` touch the same data while comparing unequal.
-    """
-    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
-
-
 @dataclass
 class _PathState:
     """Who last wrote a path, and who has read it since. Exactly what is
@@ -178,7 +169,7 @@ class MutationOrder:
         """
         required: set[str] = set()
         for path, mutates in _touched_paths(cab, resolved):
-            overlapping = [state for known, state in self._accesses.items() if _overlaps(path, known)]
+            overlapping = [state for known, state in self._accesses.items() if paths_overlap(path, known)]
             for state in overlapping:
                 if mutates and state.readers_since_write:
                     # Write-after-read: follow everyone who read the current

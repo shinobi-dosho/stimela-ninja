@@ -85,6 +85,69 @@ Two declarations feed the harvest allowlist:
         harvest=["{prefix}-*.fits"],   # the per-band/interval image family
     )
 
+.. _clearing-stale-outputs:
+
+Re-running replaces the previous product
+----------------------------------------
+
+Harvest gives a relative output more than tidiness: the tool writes into a
+fresh scratch dir and the new product is *moved over* the destination, so a
+re-run replaces what the last run left. An output the tool writes straight to
+its destination -- an absolute path, a **path-typed input** naming a
+destination (which sandboxing anchors at the workspace), or any output at all
+when sandboxing is off -- never went through that. It landed on top of the
+previous run's product. CASA-family tools (``mstransform``, ``split``,
+``importuvfits``) check the output for existence and refuse, failing the step
+until a human moves the product aside; tools that append or merge instead
+succeed and produce something corrupt.
+
+So before a step runs, shinobi deletes the previous run's product from each
+declared output path the tool writes directly
+(``sandbox.clear_stale_outputs``, on by default, off via
+``execution.clear_stale_outputs``). Each removal is logged with the path and
+the declaration it came from.
+
+Two things are never cleared:
+
+* **Paths the step reads.** Compared resolved and by containment, since an MS
+  is a directory: an output resolving inside a declared input, or a declared
+  output directory that *holds* one, is the caller's data either way.
+* **``harvest``/``scratch`` glob matches** -- the tool chose those names at
+  run time, so they can collide with workspace data the step knows nothing
+  about. Only declared output *fields* are cleared. Same reason harvest
+  refuses to replace an undeclared directory.
+
+That leaves one shape the framework cannot read off the declarations. An
+output field that echoes a same-named input looks identical whether the tool
+*created* that path or *rewrote the caller's data* in it:
+
+.. code-block:: python
+
+    # both: one name on inputs_model and on outputs_model
+    mstransform(vis=..., outputvis="obs_mst.ms") -> outputvis   # created here
+    flagdata(vis="obs.ms")                       -> vis         # the caller's MS
+
+The default reading is the safe one -- an echoed path is the caller's data and
+is never deleted -- and a cab whose output really is its own product says so
+once, in its definition:
+
+.. code-block:: python
+
+    Cab(name="mstransform", ...,
+        field_meta={"outputvis": ParamMeta(write_path=True)})
+
+    @shinobi.pystep(image=CASA6, write_paths=["outputvis"])
+    def mstransform(vis: Path, outputvis: Path) -> MstransformOutputs: ...
+
+``write_path`` changes nothing about how the value is handled (its other,
+older job is declaring that a *string* input is an output stem, so a cab that
+names no write target for it fails to build); it is simply the declaration of
+which of those two a path is. Note the
+cost of clearing before the tool starts: a re-run that then fails leaves
+neither product. That is unavoidable -- a tool that refuses to overwrite has
+already failed by the time anything could harvest -- and Tier 1 snapshots
+restore it when they are enabled.
+
 Sandboxed state and cache portability
 -------------------------------------
 
