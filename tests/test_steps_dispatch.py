@@ -992,7 +992,25 @@ def test_scatter_slices_are_admitted_individually():
 # reaches 2 with or without backfill -- without it, the blocked head simply
 # runs first and overlaps the step behind it *later*. What backfill changes is
 # that a step behind a parked head starts **while the head is still parked**,
-# so it shows up ahead of the head in start order.
+# so it shows up ahead of **the head** in start order.
+#
+# Ahead of the head, and nothing more: these assert on *pairs* the scheduler
+# really orders, not on the whole list. A step's place in `probe.order` is
+# where its worker thread reached the backend, and two steps admitted together
+# reach it in whatever order the OS runs their threads -- so `a` (the first
+# admission) and `c` (the backfill) race, harmlessly, every run. Asserting the
+# full list made that race a test failure, and it fired for real the moment
+# `_run_cab` grew a step of pre-run work before calling the backend. Every
+# pair asserted below is separated by a blocking wait, which is what makes it
+# a guarantee rather than a coin toss.
+
+
+def _assert_starts_before(order, first, second, why=""):
+    """Assert `first` reached the backend before `second`, naming the order
+    actually observed (and why it was expected) when it did not."""
+    assert first in order and second in order, f"{first!r}/{second!r} missing from {order}"
+    detail = f" -- {why}" if why else ""
+    assert order.index(first) < order.index(second), f"expected {first!r} to start before {second!r}, got {order}{detail}"
 
 
 def _independent_recipe(cabs, *, max_workers):
@@ -1025,7 +1043,10 @@ def test_an_undeclared_step_backfills_past_a_blocked_head():
         [_sized_cab("a", "probe", "60GiB"), _sized_cab("b", "probe", "60GiB"), _cab("c", "probe")],
         max_workers=3,
     )
-    assert order == ["a", "c", "b"], "the undeclared step did not overtake the parked head"
+    assert sorted(order) == ["a", "b", "c"], f"not every step ran: {order}"
+    # `b` waits on `a`'s memory, so it cannot start until `a` has finished.
+    _assert_starts_before(order, "a", "b")
+    _assert_starts_before(order, "c", "b", "the undeclared step must overtake the parked head")
 
 
 def test_a_sized_step_backfills_only_when_the_head_still_fits_beside_it():
@@ -1040,12 +1061,15 @@ def test_a_sized_step_backfills_only_when_the_head_still_fits_beside_it():
         [_sized_cab("a", "probe", "50GiB"), _sized_cab("b", "probe", "70GiB"), _sized_cab("c", "probe", "25GiB")],
         max_workers=3,
     )
-    assert fits == ["a", "c", "b"]
+    assert sorted(fits) == ["a", "b", "c"], f"not every step ran: {fits}"
+    _assert_starts_before(fits, "a", "b")
+    _assert_starts_before(fits, "c", "b", "a candidate that fits beside the head must go now")
 
     too_big = _order_of(
         [_sized_cab("a", "probe", "50GiB"), _sized_cab("b", "probe", "70GiB"), _sized_cab("c", "probe", "40GiB")],
         max_workers=3,
     )
+    # Nothing races here: `c` waits for the head, and the head waits for `a`.
     assert too_big == ["a", "b", "c"], "a candidate that would delay the head was admitted anyway"
 
 
