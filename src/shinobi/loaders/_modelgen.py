@@ -221,6 +221,52 @@ def deep_merge(base: Any, override: Any) -> Any:
     return override
 
 
+def merge_param_meta(base: Any, override: Any) -> Any:
+    """Merge two `ParamMeta`s describing one field name, attribute by
+    attribute: `override` wins wherever it says something, and `base`
+    survives wherever `override` left the default.
+
+    This exists for the *dual declaration* -- one name on `inputs` and on
+    `outputs`, the echo-the-input-back idiom every MS-producing cab uses.
+    Each side declares what it knows: the output side carries `implicit`
+    (how the product's path is derived), the input side carries
+    `write_path` (whether the tool creates that path or rewrites the
+    caller's data). Replacing the whole object, as the loaders used to,
+    keeps only the last one collected -- so the input's `write_path` was
+    silently dropped for precisely the fields it exists to mark, and
+    `sandbox.clear_stale_outputs` then read every such cab as "the caller's
+    data, leave it alone". Silent, and on the half of the schema that
+    decides whether a re-run works at all.
+
+    Attribute-wise rather than "the input wins" so the output's `implicit`
+    still overrides -- that is what the whole-object merge got right, and
+    what every loaded cab already depends on.
+    """
+    from shinobi.steps.schema import ParamMeta
+
+    default = ParamMeta()
+    values: dict[str, Any] = {}
+    for field in ParamMeta.model_fields:
+        chosen = getattr(override, field)
+        if chosen == getattr(default, field):
+            chosen = getattr(base, field)
+        values[field] = chosen
+    return ParamMeta(**values)
+
+
+def merge_field_meta(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """`base` updated with `override`, merging (not replacing) the entry of
+    any field name both declare -- see `merge_param_meta`. The one way a
+    loader is allowed to compose a cab's input-side and output-side metas,
+    so a cab built from a document and the same cab built in Python cannot
+    disagree about what its fields declare.
+    """
+    merged = dict(base)
+    for field, meta in override.items():
+        merged[field] = merge_param_meta(merged[field], meta) if field in merged else meta
+    return merged
+
+
 def get_path(root: dict[str, Any], dotted: str, *, error: type[Exception]) -> Any:
     """Look up a dotted path (`a.b.c`) in a nested dict, raising `error`
     with a clear message if any segment is missing.

@@ -159,6 +159,7 @@ from shinobi.loaders._modelgen import (
     build_model,
     contain_include,
     deep_merge,
+    merge_field_meta,
     resolve_directive,
     resolve_package_root,
     resolve_use,
@@ -387,10 +388,11 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
         # half an `implicit` output template is silently dropped: nothing
         # resolves the output's value, and `declared_output_dirs` finds no
         # write directory to mount, which is how a tool's products end up
-        # inside the container. The merge replaces whole `ParamMeta` objects,
-        # so a name declared on both sides keeps the output's -- a sharp edge
-        # inherited deliberately rather than diverging from dosho here.
-        field_meta={**field_meta, **out_meta},
+        # inside the container. `merge_field_meta` merges a dual-declared
+        # name attribute-wise instead of replacing the whole `ParamMeta`:
+        # the sharp edge that used to be inherited here dropped the input
+        # side's `write_path` for exactly the fields that carry it.
+        field_meta=merge_field_meta(field_meta, out_meta),
         wranglers=wranglers,
         input_mutability=input_mutability,
         input_patterns=input_patterns,

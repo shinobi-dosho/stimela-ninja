@@ -638,6 +638,19 @@ def pystep(
         unknown = sorted(set(write_paths or ()) - set(inputs_model.model_fields))
         if unknown:
             raise TypeError(f"pystep {func.__name__!r}: write_paths names {unknown}, which {'is' if len(unknown) == 1 else 'are'} not a parameter of the function")
+        # `**params` accepts any name, so a *keyword this decorator does not
+        # have* lands there silently instead of failing -- which is how a cab
+        # written against a newer shinobi (`write_paths=[...]`) installs
+        # against an older one and quietly declares nothing. A per-call
+        # constant only means something for a parameter the function has, so
+        # anything else is a mistake worth naming at decoration time.
+        stray = sorted(set(params) - set(inputs_model.model_fields))
+        if stray:
+            raise TypeError(
+                f"pystep {func.__name__!r}: {stray} {'is' if len(stray) == 1 else 'are'} neither a parameter of the "
+                f"function nor an option of @shinobi.pystep -- a per-call constant has to name a parameter "
+                f"(and a keyword this version does not know would otherwise be swallowed here silently)"
+            )
         adapter = _make_adapter(func, outputs_model, is_empty, wants_ctx)
         # `adapter` is a generic closure defined once in this module --
         # every pystep's adapter has identical source text. Anything that

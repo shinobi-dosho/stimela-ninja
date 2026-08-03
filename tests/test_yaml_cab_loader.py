@@ -636,6 +636,78 @@ def test_write_path_reaches_the_field_meta():
     assert declared_output_dirs(cab, {"prefix": "/out/img", "cache": "/c"})
 
 
+def test_write_path_survives_a_same_named_output():
+    """The dual declaration -- `mstransform(outputvis=...) -> outputvis`, the
+    shape `write_path` exists to disambiguate -- is exactly the shape whose
+    input meta the loader used to throw away, because the output side's meta
+    replaced the whole object. The marker then reached nothing, and
+    `clear_stale_outputs` read the cab as "the caller's data, leave it".
+
+    The output entry carries an `info` deliberately: a spec that declares
+    nothing but a dtype produces a *default* `ParamMeta`, which the loader
+    never stores, so it could not clobber anything and the bug would not
+    reproduce. Real cabs repeat the description on both sides -- which is
+    what made this fire on 14 of dosho's documents.
+    """
+    cab = loads(
+        """
+        cabs:
+          mstransform:
+            command: mstransform
+            inputs:
+              vis: {dtype: MS, required: true}
+              outputvis: {dtype: MS, required: true, write_path: true, info: Output MS path.}
+            outputs:
+              outputvis: {dtype: MS, info: Output MS path.}
+        """
+    )["mstransform"]
+    from shinobi.steps.schema import write_path_fields
+
+    assert write_path_fields(cab) == {"outputvis"}
+
+
+def test_an_output_side_implicit_still_wins_over_the_input_side():
+    """The other half of the merge: attribute-wise, so the output's own
+    declarations keep overriding. A whole-object merge got this right and
+    every loaded cab depends on it.
+    """
+    cab = loads(
+        """
+        cabs:
+          probe:
+            command: probe
+            inputs:
+              stem: {dtype: File, write_path: true, info: the input side}
+            outputs:
+              stem: {dtype: File, implicit: "{stem}-image.fits", info: the output side}
+        """
+    )["probe"]
+    meta = cab.field_meta["stem"]
+    assert meta.implicit == "{stem}-image.fits"
+    assert meta.info == "the output side"
+    assert meta.write_path is True
+
+
+def test_an_input_only_attribute_survives_an_output_that_is_silent_on_it():
+    """A dual-declared name whose output entry omits what the input said --
+    the common shape, since cab authors rarely repeat a flag name on both
+    sides -- keeps the input's value rather than resetting it to the default.
+    """
+    cab = loads(
+        """
+        cabs:
+          probe:
+            command: probe
+            inputs:
+              out_file: {dtype: File, nom_de_guerre: out, abbreviation: o}
+            outputs:
+              out_file: {dtype: File, info: the product}
+        """
+    )["probe"]
+    assert cab.field_meta["out_file"].nom_de_guerre == "out"
+    assert cab.field_meta["out_file"].abbreviation == "o"
+
+
 def test_a_spec_carrying_only_a_shinobi_key_is_a_leaf_not_a_section():
     """`_is_section` decides leaf-vs-section by whether a mapping has any known
     param-spec key. A new key that isn't registered makes a spec using only it
