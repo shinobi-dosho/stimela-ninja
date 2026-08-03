@@ -361,3 +361,24 @@ def test_pystep_write_paths_must_name_a_real_parameter():
         @shinobi.pystep(write_paths=["nope"])
         def step(vis: Path) -> _Out:
             return _Out(outputvis=vis)
+
+
+def test_a_keyword_pystep_does_not_know_is_not_swallowed():
+    """`**params` accepts any name, so a decorator keyword this version does
+    not have would land there as a per-call constant and the cab would quietly
+    declare nothing -- which is exactly what a dosho cab written against a
+    newer shinobi does when installed against an older one. Name it instead.
+    """
+    with pytest.raises(TypeError, match="neither a parameter of the function nor an option"):
+
+        @shinobi.pystep(write_pathz=["outputvis"])
+        def step(outputvis: Path) -> _Out:
+            return _Out(outputvis=outputvis)
+
+
+def test_a_per_call_constant_naming_a_real_parameter_still_works():
+    @shinobi.pystep(outputvis=Path("fixed.ms"))
+    def step(outputvis: Path) -> _Out:
+        return _Out(outputvis=outputvis)
+
+    assert step.params == {"outputvis": Path("fixed.ms")}
