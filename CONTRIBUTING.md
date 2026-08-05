@@ -167,6 +167,10 @@ group in `pyproject.toml` (Read the Docs installs from the former).
 Write clear, descriptive commit messages explaining *why* a change is made. No
 formal convention (Conventional Commits, sign-off/DCO, or CLA) is required.
 
+Provenance for an assistant-assisted commit goes in a commit trailer and never
+in the PR description — see
+[*Attribution: commit trailers yes, PR trailers no*](https://github.com/shinobi-dosho/stimela-ninja/blob/main/AGENTS.md#attribution-commit-trailers-yes-pr-trailers-no).
+
 ## Versioning and releases
 
 The project follows [Semantic Versioning](https://semver.org/). **Contributors
