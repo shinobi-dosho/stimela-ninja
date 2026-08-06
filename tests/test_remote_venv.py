@@ -4,6 +4,7 @@ import subprocess
 
 import pytest
 
+from shinobi.backends.venv import digest_of_dists
 from shinobi.offload.remote_venv import (
     MODE_UV_PIP_SYNC,
     MODE_UV_SYNC,
@@ -489,13 +490,46 @@ def test_provision_uses_pip_sync_for_a_requirements_txt():
 
 
 def test_provision_reports_the_venv_interpreter():
-    assert parse_provision_output("noise\nshinobi-venv-python:3.11.9\n") == "3.11.9"
+    assert parse_provision_output("noise\nshinobi-venv-python:3.11.9\n").venv_python == "3.11.9"
 
 
 def test_a_missing_interpreter_line_is_none_not_a_failure():
-    """One informational sentinel field. A host whose login shell ate the
-    line has still built a working environment."""
-    assert parse_provision_output("built it\n") is None
+    """Informational sentinel fields. A host whose login shell ate the
+    line has still built a working environment, and the alternative to None
+    is a fabricated value."""
+    report = parse_provision_output("built it\n")
+    assert report.venv_python is None
+    assert report.venv_digest is None
+
+
+def test_provision_collects_the_distribution_list_for_a_digest():
+    """§4.6: divergence is measured, not assumed."""
+    report = parse_provision_output('shinobi-dists:["click==8.1.7", "rich==13.7.0"]\n')
+    assert report.venv_digest == digest_of_dists(["click==8.1.7", "rich==13.7.0"])
+
+
+def test_the_remote_digest_is_computed_by_the_same_code_as_the_local_one():
+    """The two are only comparable if one function produces both -- so the
+    list travels and the hashing happens here, not on the remote."""
+    dists = ["a==1", "b==2"]
+    assert parse_provision_output(f"shinobi-dists:{json.dumps(dists)}\n").venv_digest == digest_of_dists(dists)
+
+
+def test_the_digest_does_not_depend_on_the_order_it_is_given():
+    assert digest_of_dists(["b==2", "a==1"]) == digest_of_dists(["a==1", "b==2"])
+
+
+@pytest.mark.parametrize("payload", ["not json", '{"a": 1}', "[1, 2]", ""])
+def test_an_unreadable_distribution_list_leaves_the_digest_null(payload):
+    """An honest null rather than a fabricated digest -- the same contract
+    `backends/venv.py` holds itself to."""
+    assert parse_provision_output(f"shinobi-dists:{payload}\n").venv_digest is None
+
+
+def test_provision_asks_the_new_venv_to_describe_itself():
+    script = provision_command("/p/.partial-abc", MODE_UV_SYNC)
+    assert "importlib.metadata" in script  # _FREEZE_CODE, not `pip freeze`
+    assert script.index("uv sync") < script.index("importlib.metadata")
 
 
 def test_publish_renames_rather_than_moving():

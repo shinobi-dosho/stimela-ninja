@@ -1,9 +1,9 @@
 # Provisioning the launcher environment for `ninja run --remote`
 
-**Status:** v3 — **steps 1-4 shipped; `--venv sync` provisions.** §8.1, which
-gated everything past step 1, is closed: option (a). What remains is the §4.6
-divergence digest (step 5) and the user docs (step 6, partially done —
-`docs/cli.rst` describes `sync`, `docs/offloading.rst` does not yet).
+**Status:** v3 — **steps 1-5 shipped; `--venv sync` provisions, and says how
+far the result diverged.** §8.1, which gated everything past step 1, is closed:
+option (a). All that remains is the `docs/offloading.rst` half of step 6 —
+`docs/cli.rst` already describes `sync`.
 **Context:** `ninja run TARGET --remote user@host:/path` (`shinobi.offload.ssh`)
 
 **Change log**
@@ -436,6 +436,25 @@ comparable local environment — which is often *why* someone is provisioning
 remotely — the comparison is simply skipped and the remote digest recorded
 alone.
 
+**"The local `venv_digest`" needed pinning down, and the obvious reading is
+useless.** The environment ninja is *running in* is not built from the recipe's
+lock; comparing against it would report a mismatch on every single provision
+and teach the operator to ignore the message — a warning that always fires is
+worse than no warning. The comparison is therefore against
+`<project_dir>/.venv`: the venv `uv sync` would build from **this** lock on
+**this** machine. That is the only local thing whose difference from the remote
+carries information.
+
+Two things then make a legitimate mismatch, and the note names both rather than
+guessing: the platforms genuinely differ, or the local `.venv` predates the
+lock. Neither is a reason to refuse a launch, and the note says as much.
+
+The hashing happens **locally, on a list that travelled**, not on the remote:
+`digest_of_dists` is the only function that turns a distribution list into a
+digest, so both sides are guaranteed comparable by construction rather than by
+two implementations agreeing. Verified end to end — a venv provisioned over the
+wire and the same venv hashed locally produce the same digest.
+
 ### 4.7 The flag surface
 
 `--add-venv/--no-add-venv` becomes a three-valued `--venv`:
@@ -637,8 +656,11 @@ backend documents itself as their *complement* (`backends/venv.py:5-8`).
    for people who have never heard of provisioning — every remote-caused
    failure there becomes a note and the legacy search proceeds. Invariant 7
    was already scoped to `sync`; this is what that scoping is *for*.
-5. **§4.6 digest**: split `venv_digest`, run `_FREEZE_CODE` over ssh, record and
-   compare.
+5. ~~**§4.6 digest**~~ **DONE.** `venv_digest` split into `digest_of_dists` +
+   `freeze_dists` + the cached local collector; `_FREEZE_CODE` runs over ssh
+   under the new venv's interpreter; the digest is recorded in the sentinel
+   and compared against `<project_dir>/.venv` (see §4.6 on why *that* venv and
+   not the one ninja is running in).
 6. **Docs**: `docs/cli.rst:93-104` and `docs/offloading.rst`; state §6.1
    plainly.
 

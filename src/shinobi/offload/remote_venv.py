@@ -61,6 +61,7 @@ interesting.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import re
@@ -409,8 +410,9 @@ def read_sentinel_command(path: str) -> str:
     return f"cat {shlex.quote(path)} 2>/dev/null || true"
 
 
-# Marks the one line of `provision_command`'s output that is data.
+# Marks the lines of `provision_command`'s output that are data.
 _MARK_VENV_PYTHON = "shinobi-venv-python:"
+_MARK_DISTS = "shinobi-dists:"
 
 
 def provision_command(staging: str, mode: str) -> str:
@@ -462,6 +464,13 @@ def provision_command(staging: str, mode: str) -> str:
         populate = f"uv pip sync --python {q_venv}/bin/python requirements.txt"
     else:
         populate = f"VIRTUAL_ENV={q_venv} uv sync --frozen --active --no-install-project"
+    # Imported rather than restated: the remote listing and the local one must
+    # come from identical code, or the digests they feed are not comparable --
+    # which is the entire point of §4.6. Imported lazily to keep this module
+    # importable without dragging in the backend registry and AppConfig.
+    from shinobi.backends.venv import _FREEZE_CODE
+
+    q_freeze = shlex.quote(_FREEZE_CODE)
     return "; ".join(
         (
             "set -e",
@@ -469,22 +478,63 @@ def provision_command(staging: str, mode: str) -> str:
             f"uv venv --relocatable {q_venv}",
             populate,
             f"printf '{_MARK_VENV_PYTHON}%s\\n' \"$({q_venv}/bin/python -c 'import platform; print(platform.python_version())')\"",
+            f"printf '{_MARK_DISTS}%s\\n' \"$({q_venv}/bin/python -c {q_freeze})\"",
+            # Neither `printf` aborts under `set -e` if its command
+            # substitution fails: the status that propagates is printf's own.
+            # That is the behaviour wanted -- both lines are informational,
+            # and a venv that was built is still built if it cannot describe
+            # itself.
         )
     )
 
 
-def parse_provision_output(stdout: str) -> str | None:
-    """The venv interpreter's `X.Y.Z`, or None if the marker never arrived.
+@dataclass(frozen=True)
+class ProvisionReport:
+    """What the remote said about the environment it just built.
 
-    None rather than an exception: this is one informational sentinel field,
-    and a host whose login shell ate the line has still built a working
-    environment.
+    Both fields are informational and both are allowed to be None. A host
+    whose login shell ate a line, or an interpreter that cannot introspect
+    itself, has still produced a working environment -- and the alternative
+    to None is a fabricated value, which `backends/venv.py` refuses on the
+    same grounds ("an honest null -- never a fabricated digest").
+
+    Attributes:
+        venv_python: The venv interpreter's `X.Y.Z`. Not the platform
+            triple's python: uv may have installed one that is not the
+            host's default.
+        venv_digest: `backends.venv.digest_of_dists` over the venv's own
+            distribution list. Bare hex, not `sha256:`-prefixed like the
+            sentinel's file digests, because its whole purpose is to compare
+            equal to a locally-computed `venv_digest`.
     """
+
+    venv_python: str | None = None
+    venv_digest: str | None = None
+
+
+def parse_provision_output(stdout: str) -> ProvisionReport:
+    """Read the marked lines `provision_command` emits after building.
+
+    The distribution list is hashed *here*, by the same function the local
+    collector uses, rather than hashed on the remote: two digests are only
+    comparable if one piece of code produces both.
+    """
+    from shinobi.backends.venv import digest_of_dists
+
+    report = ProvisionReport()
     for line in stdout.splitlines():
         line = line.strip()
         if line.startswith(_MARK_VENV_PYTHON):
-            return line[len(_MARK_VENV_PYTHON) :].strip() or None
-    return None
+            report = dataclasses.replace(report, venv_python=line[len(_MARK_VENV_PYTHON) :].strip() or None)
+        elif line.startswith(_MARK_DISTS):
+            payload = line[len(_MARK_DISTS) :].strip()
+            try:
+                dists = json.loads(payload)
+            except ValueError:
+                continue
+            if isinstance(dists, list) and all(isinstance(d, str) for d in dists):
+                report = dataclasses.replace(report, venv_digest=digest_of_dists(dists))
+    return report
 
 
 # What `publish_command` prints, and what each outcome authorises.

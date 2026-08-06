@@ -1,10 +1,12 @@
 from pathlib import Path
 
+import json
 import shlex
 import subprocess
 
 import pytest
 
+from shinobi.backends.venv import digest_of_dists
 from shinobi.exceptions import BackendError
 from shinobi.offload.remote_venv import (
     COLLIDED,
@@ -443,8 +445,9 @@ class _FakeRemote:
     which command produces which answer is exactly the contract under test.
     """
 
-    def __init__(self, *, uv="uv 0.11.21", sentinel="", publish=PUBLISHED, build_rc=0, sentinel_after_collision=None):
+    def __init__(self, *, uv="uv 0.11.21", sentinel="", publish=PUBLISHED, build_rc=0, sentinel_after_collision=None, dists=None):
         self.uv = uv
+        self.dists = dists
         self.sentinel = sentinel
         self.publish = publish
         self.build_rc = build_rc
@@ -462,7 +465,10 @@ class _FakeRemote:
                 return _FakeProc(returncode=0, stdout=self.sentinel_after_collision)
             return _FakeProc(returncode=0, stdout=self.sentinel)
         if "uv venv --relocatable" in command:
-            return _FakeProc(returncode=self.build_rc, stdout="shinobi-venv-python:3.11.9\n", stderr="build blew up")
+            stdout = "shinobi-venv-python:3.11.9\n"
+            if self.dists is not None:
+                stdout += f"shinobi-dists:{json.dumps(self.dists)}\n"
+            return _FakeProc(returncode=self.build_rc, stdout=stdout, stderr="build blew up")
         if "os.rename" in command:
             return _FakeProc(returncode=0, stdout=f"{self.publish}\n")
         return _FakeProc(returncode=0, stdout="")
@@ -705,3 +711,75 @@ def test_off_ignores_a_resolved_environment(monkeypatch):
     monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", fake_run)
     launch_remote(RemoteSpec("host", "/p"), "recipe.py:tool", [], venv="off", venv_path="/p/.shinobi/venvs/deadbeef")
     assert "bin/activate" not in captured["args"][-1]
+
+
+# -- the divergence digest (design 4.6) --
+
+
+def _local_venv(project_dir, dists):
+    """A venv-shaped directory whose `bin/python` reports `dists`.
+
+    A real one would take a `uv venv` per test; what `venv_digest` actually
+    needs is an interpreter that prints the freeze JSON, so that is what this
+    provides -- a shell script standing in for `bin/python`.
+    """
+    bindir = project_dir / ".venv" / "bin"
+    bindir.mkdir(parents=True)
+    python = bindir / "python"
+    python.write_text(f"#!/bin/sh\necho {shlex.quote(json.dumps(dists))}\n")
+    python.chmod(0o755)
+    return project_dir / ".venv"
+
+
+def test_the_provisioned_digest_lands_in_the_sentinel(fake_remote, lock_source):
+    """Recorded once at provisioning time rather than recomputed per launch
+    -- which is what makes the comparison free."""
+    remote = fake_remote(sentinel="", dists=["click==8.1.7"])
+    resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    published = [c for c in remote.commands if "os.rename" in c][0]
+    assert digest_of_dists(["click==8.1.7"]) in published
+
+
+def test_a_matching_local_venv_says_nothing(fake_remote, lock_source):
+    """Silence is the answer when there is nothing to report. A note on every
+    provision is a note nobody reads."""
+    _local_venv(lock_source.project_dir, ["click==8.1.7"])
+    fake_remote(sentinel="", dists=["click==8.1.7"])
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    assert not any("differs from" in note for note in resolved.notes)
+
+
+def test_a_diverging_local_venv_is_reported_with_both_digests(fake_remote, lock_source):
+    """Informational, never a check: the same version list can sit on
+    different compiled C-extensions, which is why a venv step is reported
+    *unpinned* in the run manifest."""
+    _local_venv(lock_source.project_dir, ["click==8.1.7"])
+    fake_remote(sentinel="", dists=["click==9.0.0"])
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    note = next(n for n in resolved.notes if "differs from" in n)
+    assert digest_of_dists(["click==9.0.0"])[:12] in note
+    assert digest_of_dists(["click==8.1.7"])[:12] in note
+
+
+def test_divergence_does_not_fail_the_launch(fake_remote, lock_source):
+    """A digest is not a pin, and a mismatch is expected across platforms."""
+    _local_venv(lock_source.project_dir, ["click==8.1.7"])
+    fake_remote(sentinel="", dists=["click==9.0.0"])
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    assert resolved.provisioned and resolved.path
+
+
+def test_no_local_venv_means_no_comparison(fake_remote, lock_source):
+    """Often the very reason someone is provisioning remotely: the laptop
+    cannot build the environment at all."""
+    fake_remote(sentinel="", dists=["click==8.1.7"])
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    assert not any("differs from" in note for note in resolved.notes)
+
+
+def test_a_remote_that_cannot_describe_itself_says_so(fake_remote, lock_source):
+    """An honest null. The environment is still published -- it was built."""
+    fake_remote(sentinel="", dists=None)
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    assert resolved.provisioned
+    assert any("did not report a distribution list" in note for note in resolved.notes)

@@ -126,6 +126,13 @@ survives a rollback. Nothing is ever garbage-collected: ``rm -rf`` under
 ``.shinobi/venvs/`` is an operator action, and the layout is what makes it safe
 to do by hand.
 
+A ``sync`` also records what it built -- a sha256 of the provisioned venv's
+``name==version`` list -- and compares it against ``<project>/.venv``, the venv
+``uv sync`` would build from the same lock locally. A difference is reported
+and nothing more: it is expected across platforms, it is also what a local
+``.venv`` that predates the lock looks like, and a version list is not an
+OS-level pin either way.
+
 Three things worth knowing before relying on ``sync``:
 
 - **It runs code.** ``uv sync`` executes the build backend of any source
