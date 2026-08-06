@@ -39,9 +39,17 @@ dev = [
 # shipped in 0.1.0b5 (dosho #42), so a plain group resolves cleanly now.
 examples = ["dosho"]
 
-# simms is still a manual install: it has no docker image, so it runs via
-# NativeBackend, and it is not on PyPI.
-#   uv pip install --no-deps simms @ git+https://github.com/wits-cfa/simms.git
+# simms needs no entry here. dosho's `skysim`/`telsim`/`primary_beam` cabs bind
+# `image=images.SIMMS` and run as pysteps inside that container, so the `examples`
+# group above already covers them. (This used to say simms was a manual install
+# with no image and no PyPI release; all three were true of the pre-3.0 binary --
+# dosho's `SIMMS_CLASSIC` -- and none are true of simms 3.x, which is on PyPI at
+# 3.0.2 and which dosho builds an image from.)
+#
+# `examples/simms_cli.py` is the exception, and deliberately so: it drives simms
+# through vendored cult-cargo-dialect YAML with no image, to exercise the native
+# backend. That one needs simms on PATH:
+#   uv pip install --no-deps simms
 
 # Documentation build (Sphinx + Furo + autodoc). `uv sync --group docs`.
 docs = [

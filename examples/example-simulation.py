@@ -46,9 +46,11 @@ Run it:
 
     ninja run examples/example-simulation.py:recipe --dryrun
 
-A real run needs `simms` installed (it has no docker image yet):
+A real run needs `simms` on PATH, because this recipe pins the two simms steps
+to the native backend (see the `model_copy` below -- dosho's own cabs bind
+`images.SIMMS` and would otherwise run containerised):
 
-    uv pip install --no-deps simms @ git+https://github.com/wits-cfa/simms.git
+    uv pip install --no-deps simms
     ninja run examples/example-simulation.py:recipe --ms sim.ms
 """
 
@@ -72,8 +74,13 @@ _INPUT_DIR = Path(__file__).parent / "input-dir"
 # the next step -- add a same-named-as-input `ms` passthrough output
 # locally, the same caller-side pattern used elsewhere for cabs with a
 # real output-schema gap (e.g. caracal2's wsclean `input_ms` echo).
-# Neither cab has a docker image yet either, so both run via
-# NativeBackend regardless of the caller's own default backend.
+#
+# The `backend: "native"` override is a leftover, not a requirement: it dates
+# from when simms had no image, and both cabs now bind `images.SIMMS` (dosho
+# builds it from `simms==3.0.2`). Dropping it would make this example uniformly
+# containerised, like its wsclean and cubical steps -- deliberately left for a
+# change that can pull the image and verify a real run, rather than folded into
+# a docs correction.
 _SIMMS_MS_OUTPUT = build_model("simms_Outputs", {"ms": ("MS", False, None)})
 telsim = telsim.model_copy(update={"outputs_model": _SIMMS_MS_OUTPUT, "backend": "native"})
 skysim = skysim.model_copy(update={"outputs_model": _SIMMS_MS_OUTPUT, "backend": "native"})
