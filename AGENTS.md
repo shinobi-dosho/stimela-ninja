@@ -2,6 +2,10 @@
 
 Spiritual successor to Stimela classic, reacting against Stimela 2.0's YAML-recipe complexity. Read this before adding anything to the recipe/orchestration layer -- it's the part most likely to regrow the exact bloat this project exists to avoid.
 
+Organisation-wide conventions live in
+[`shinobi-dosho/.github`](https://github.com/shinobi-dosho/.github/blob/main/AGENTS.md) -- this file states what is
+specific to `stimela-ninja` and wins where the two disagree.
+
 ## Core rule
 
 **Recipes are declared DAGs.** A `Recipe` is a data structure: a list of `StepRef`s with explicit wiring (`InputRef`/`OutputRef`) declaring data flow between steps. The graph is statically inspectable -- renderable and validatable before execution. `Recipe`/`Cab` both extend a `Scope` base (definition: schema, metadata, backend config); `StepRef` binds a Scope to an optional orchestration function plus wiring/per-step constants, and is what both `@shinobi.step` and `@recipe.step` return. `ExecContext` is the live execution state (`inputs`/`outputs`), created by dispatch and passed to an orchestration function as `ctx`. See `shinobi_recipe_v3.md` for the full design.
@@ -140,3 +144,41 @@ Ask whether Stimela classic or Stimela 2.0 already solved this, and which one so
 ## Reviewing changes: check the tree, not just the diff
 
 When reviewing a PR (or reasoning about any change), verify claims against the actual working tree, not the diff alone. A diff only shows what *changed* -- a pre-existing, unchanged file, symbol, or config target does not appear in it, so its absence from the diff is **not** evidence it doesn't exist. Before asserting that something is missing, dead, unused, or unreferenced, confirm against the repo: `git ls-files <path>`, `ls`, or `grep -r` over the checkout. Concretely: PR #1's automated review called `docs/conf.py`'s `exclude_patterns` entry for `docs/design_sandbox.md` "dead config, file doesn't exist" -- but the file is tracked and load-bearing (it stops Sphinx warning that the unlisted markdown isn't in a toctree); it just never showed up in the diff because the PR didn't touch it. Look at the tree.
+
+## Attribution: commit trailers yes, PR trailers no
+
+A commit made with an assistant's help says so in a trailer on the
+**commit message**. Use whatever trailer the agent emits by default --
+Claude Code, for instance, ends a commit with
+
+```
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
+An agent with no default of its own uses the same form, naming itself and
+the model behind it, with an address:
+
+```
+Co-authored-by: <AGENT> <MODEL> <EMAIL>
+```
+
+-- e.g. `Co-authored-by: Codex GPT-5 <noreply@openai.com>`. One line, last
+in the message, after any `Co-authored-by:` for real people. The address
+is not decoration: GitHub only renders a trailer as co-authorship when it
+carries an `<email>`, so without one the credit stays plain text in the
+message body. Credit is the point -- these tools do real work here, and
+the history should say so.
+
+**Pull request descriptions carry no trailer at all** -- no
+`Co-authored-by:`, no "Generated with", no tool badge. A PR body is
+review material: it exists to tell a reviewer what changed and why, and
+what to check. Provenance already lives on every commit the PR contains,
+where it is attached to the specific change rather than repeated once
+per PR, so a trailer in the description is duplication in the one place
+that has no room for it. Agents default to adding one; delete it.
+
+Neither form is a substitute for the message itself. A commit that
+explains a decision badly does not improve by naming the model that
+helped make it -- see the existing history for the standard: what
+changed, what it deviates from and why, and what a reviewer should not
+assume held still.
