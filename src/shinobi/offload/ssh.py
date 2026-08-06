@@ -348,20 +348,21 @@ class ResolvedVenv:
     notes: list[str] = field(default_factory=list)
 
 
-def _uv_missing_message(host: str) -> str:
+def _no_uv_message(host: str) -> str:
+    """Only reachable when uv is absent *and* cannot be bootstrapped."""
     return (
-        f"--venv sync needs uv on {host}'s PATH, and it is not there. Install it on the remote "
-        "(`curl -LsSf https://astral.sh/uv/install.sh | sh`) and try again. ninja will not run that "
-        "for you: it is a supply-chain step this project takes nowhere else, and it would be taken "
-        "silently inside a launch you are watching for pipeline failures."
+        f"--venv sync needs uv on {host}, and there is neither a uv on PATH nor a working "
+        "`python3 -m venv` to install one with. On Debian/Ubuntu the stdlib venv module ships "
+        "without its bundled wheels -- `apt install python3-venv` -- otherwise install uv itself "
+        "on the remote and try again."
     )
 
 
-def resolve_remote_venv(remote: RemoteSpec, mode: str, source: rv.LockSource | None) -> ResolvedVenv:
+def resolve_remote_venv(remote: RemoteSpec, mode: str, source: rv.EnvSource | None) -> ResolvedVenv:
     """Decide which environment a launch under `remote` should activate,
     provisioning one if `mode` is `sync` and none exists.
 
-    `source` is a `remote_venv.LockSource` or None. None is the ordinary
+    `source` is a `remote_venv.EnvSource` or None. None is the ordinary
     state -- most recipes are not in a repository with a lock -- and under
     `use` it simply means the legacy search runs unchanged, at no extra ssh
     cost. Under `sync` it is a refusal: there is nothing to provision *from*.
@@ -405,7 +406,7 @@ def resolve_remote_venv(remote: RemoteSpec, mode: str, source: rv.LockSource | N
         return ResolvedVenv(notes=[f"falling back to the legacy venv search: {exc}"])
 
 
-def _resolve(remote: RemoteSpec, mode: str, source: rv.LockSource) -> ResolvedVenv:
+def _resolve(remote: RemoteSpec, mode: str, source: rv.EnvSource) -> ResolvedVenv:
     probe_proc = _ssh(remote.host, rv.PROBE_COMMAND)
     if probe_proc.returncode != 0:
         raise BackendError(f"could not probe {remote.host}: {probe_proc.stderr.strip()}")
@@ -414,8 +415,8 @@ def _resolve(remote: RemoteSpec, mode: str, source: rv.LockSource) -> ResolvedVe
     except ValueError as exc:
         raise BackendError(f"could not read {remote.host}'s platform: {exc}") from None
 
-    if mode == rv.VENV_SYNC and probe.uv_version is None:
-        raise BackendError(_uv_missing_message(remote.host))
+    if mode == rv.VENV_SYNC and probe.uv_version is None and not probe.can_bootstrap_uv:
+        raise BackendError(_no_uv_message(remote.host))
 
     lock_bytes, pyproject_bytes = source.read()
     inputs = rv.EnvInputs(
@@ -444,7 +445,7 @@ def _resolve(remote: RemoteSpec, mode: str, source: rv.LockSource) -> ResolvedVe
         return ResolvedVenv(notes=[f"ignoring {final}: {detail}"])
 
     if mode == rv.VENV_USE:
-        return ResolvedVenv(notes=[f"no environment provisioned for this lock ({env_id}); use --venv sync to build one"])
+        return ResolvedVenv(notes=[f"nothing provisioned for {source.describe()} ({env_id}); use --venv sync to build it"])
 
     return _provision(remote, source, inputs, env_id, final, probe)
 
@@ -458,7 +459,7 @@ def _read_remote_sentinel(remote: RemoteSpec, final: str) -> rv.SentinelRead:
     return rv.read_sentinel(proc.stdout)
 
 
-def _provision(remote: RemoteSpec, source: rv.LockSource, inputs: rv.EnvInputs, env_id: str, final: str, probe: rv.RemoteProbe) -> ResolvedVenv:
+def _provision(remote: RemoteSpec, source: rv.EnvSource, inputs: rv.EnvInputs, env_id: str, final: str, probe: rv.RemoteProbe) -> ResolvedVenv:
     """Build the environment `inputs` describes, and publish it as `final`.
 
     The staging directory is removed on every exit path, including the ones
@@ -467,14 +468,32 @@ def _provision(remote: RemoteSpec, source: rv.LockSource, inputs: rv.EnvInputs, 
     about what it was going to be.
     """
     staging = rv.staging_dir(remote.path, uuid.uuid4().hex[:12])
-    notes = [f"provisioning {final} (uv {probe.uv_version})"]
+    notes = [f"provisioning {final} -- {source.describe()}"]
     try:
-        # Reuses the target-file sync path wholesale: it creates the
-        # destination, preserves relative layout, and has been the one rsync
-        # invocation in this module for long enough to be trusted.
-        sync_to_remote(source.project_dir, source.rel_paths(), RemoteSpec(host=remote.host, path=staging))
+        rel_paths = source.rel_paths()
+        if rel_paths:
+            # Reuses the target-file sync path wholesale: it creates the
+            # destination, preserves relative layout, and has been the one
+            # rsync invocation in this module for long enough to be trusted.
+            sync_to_remote(source.project_dir, rel_paths, RemoteSpec(host=remote.host, path=staging))
+        else:
+            # A specs-only provision copies nothing, so the staging directory
+            # still has to be made -- `sync_to_remote` is what would normally
+            # have done it.
+            mkdir = _ssh(remote.host, f"mkdir -p {shlex.quote(staging)}")
+            if mkdir.returncode != 0:
+                raise BackendError(f"could not create {staging} on {remote.host}: {mkdir.stderr.strip()}")
 
-        build = _ssh(remote.host, rv.provision_command(staging, source.mode))
+        uv, uv_version = "uv", probe.uv_version
+        if probe.uv_version is None:
+            notes.append(f"no uv on {remote.host}; installing one from the index for this provision")
+            boot = _ssh(remote.host, rv.bootstrap_uv_command(staging))
+            if boot.returncode != 0:
+                raise BackendError(f"could not bootstrap uv on {remote.host}:\n{boot.stderr.strip()}")
+            uv = rv.bootstrapped_uv(staging)
+            uv_version = rv.parse_uv_version(boot.stdout)
+
+        build = _ssh(remote.host, rv.provision_command(staging, source.mode, source.specs, uv))
         if build.returncode != 0:
             raise BackendError(f"provisioning {final} on {remote.host} failed:\n{build.stderr.strip()}")
 
@@ -492,7 +511,7 @@ def _provision(remote: RemoteSpec, source: rv.LockSource, inputs: rv.EnvInputs, 
             venv_digest=report.venv_digest,
             venv_python=report.venv_python,
             created=datetime.now(timezone.utc).isoformat(),
-            uv_version=probe.uv_version,
+            uv_version=uv_version,
         )
         publish = _ssh(remote.host, rv.publish_command(staging, final, sentinel.to_json()))
         if publish.returncode != 0:
@@ -506,7 +525,7 @@ def _provision(remote: RemoteSpec, source: rv.LockSource, inputs: rv.EnvInputs, 
         _ssh(remote.host, rv.cleanup_command(staging))
 
 
-def _divergence_notes(source: rv.LockSource, report: rv.ProvisionReport) -> list[str]:
+def _divergence_notes(source: rv.EnvSource, report: rv.ProvisionReport) -> list[str]:
     """Say whether the environment just built matches the local realisation
     of the same lock (§4.6).
 
@@ -534,6 +553,11 @@ def _divergence_notes(source: rv.LockSource, report: rv.ProvisionReport) -> list
 
     if report.venv_digest is None:
         return ["the remote did not report a distribution list, so no digest was recorded"]
+    if source.project_dir is None:
+        # Packages named on the command line have no project directory, so
+        # there is no local realisation of the same declaration to compare
+        # against. The remote digest is recorded alone.
+        return []
     local_venv = source.project_dir / ".venv"
     if not (local_venv / "bin" / "python").exists():
         return []

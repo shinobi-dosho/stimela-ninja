@@ -445,8 +445,21 @@ class _FakeRemote:
     which command produces which answer is exactly the contract under test.
     """
 
-    def __init__(self, *, uv="uv 0.11.21", sentinel="", publish=PUBLISHED, build_rc=0, sentinel_after_collision=None, dists=None):
+    def __init__(
+        self,
+        *,
+        uv="uv 0.11.21",
+        can_bootstrap=True,
+        bootstrap_uv="uv 0.12.2",
+        sentinel="",
+        publish=PUBLISHED,
+        build_rc=0,
+        sentinel_after_collision=None,
+        dists=None,
+    ):
         self.uv = uv
+        self.can_bootstrap = can_bootstrap
+        self.bootstrap_uv = bootstrap_uv
         self.dists = dists
         self.sentinel = sentinel
         self.publish = publish
@@ -458,13 +471,19 @@ class _FakeRemote:
     def __call__(self, host, command):
         self.commands.append(command)
         if "shinobi-platform" in command:
-            return _FakeProc(returncode=0, stdout=f"shinobi-platform:x86_64/glibc-2.39/3.11\nshinobi-uv:{self.uv}\n")
+            ensurepip = "yes" if self.can_bootstrap else "no"
+            return _FakeProc(
+                returncode=0,
+                stdout=f"shinobi-platform:x86_64/glibc-2.39/3.11\nshinobi-uv:{self.uv}\nshinobi-ensurepip:{ensurepip}\n",
+            )
+        if "python3 -m venv" in command:
+            return _FakeProc(returncode=0, stdout=f"shinobi-uv:{self.bootstrap_uv}\n")
         if command.startswith("cat "):
             self._sentinel_reads += 1
             if self._sentinel_reads > 1 and self.sentinel_after_collision is not None:
                 return _FakeProc(returncode=0, stdout=self.sentinel_after_collision)
             return _FakeProc(returncode=0, stdout=self.sentinel)
-        if "uv venv --relocatable" in command:
+        if "venv --relocatable" in command:
             stdout = "shinobi-venv-python:3.11.9\n"
             if self.dists is not None:
                 stdout += f"shinobi-dists:{json.dumps(self.dists)}\n"
@@ -544,15 +563,51 @@ def test_sync_without_a_lock_is_refused(fake_remote):
     assert remote.commands == []
 
 
-def test_sync_refuses_a_host_with_no_uv_and_says_what_to_do(fake_remote, lock_source):
-    """The design's open question 2, decided: refuse with instructions.
-    Piping an installer into a shell on the operator's account is a
-    supply-chain step this project takes nowhere else, and it would be
-    taken silently, inside a launch they are watching for other failures."""
-    remote = fake_remote(uv="")
-    with pytest.raises(BackendError, match="astral.sh/uv/install.sh"):
+def test_sync_bootstraps_uv_on_a_host_that_has_none(fake_remote, lock_source):
+    """uv ships manylinux wheels, so a host with `python3 -m venv` can
+    install one from the same index the packages come from -- no
+    `curl | sh`, and `--relocatable` survives, unlike a plain venv+pip."""
+    remote = fake_remote(uv="", can_bootstrap=True, sentinel="")
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    assert resolved.provisioned
+    assert remote.ran("python3 -m venv")
+    assert remote.ran("pip install --quiet uv")
+    # and the bootstrapped uv is the one that builds, not a bare `uv`
+    build = next(c for c in remote.commands if "venv --relocatable" in c)
+    assert ".uv-bootstrap/bin/uv" in build
+
+
+def test_the_bootstrap_venv_is_thrown_away_with_the_staging_dir(fake_remote, lock_source):
+    """A host is left exactly as it was found."""
+    remote = fake_remote(uv="", can_bootstrap=True, sentinel="")
+    resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    assert remote.ran(".uv-bootstrap")
+    assert any("rm -rf" in c and "/.partial-" in c for c in remote.commands)
+
+
+def test_the_bootstrapped_uv_version_is_what_gets_recorded(fake_remote, lock_source):
+    """Not the probe's answer -- there wasn't one -- and not nothing:
+    which uv built an environment is exactly what someone diagnosing a
+    divergent build needs to see."""
+    remote = fake_remote(uv="", can_bootstrap=True, sentinel="", bootstrap_uv="uv 0.12.2")
+    resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    published = next(c for c in remote.commands if "os.rename" in c)
+    assert "uv 0.12.2" in published
+
+
+def test_sync_refuses_when_uv_can_be_neither_found_nor_bootstrapped(fake_remote, lock_source):
+    """Debian and Ubuntu ship the stdlib venv module without ensurepip's
+    bundled wheels, so `python3 -m venv` exists and fails partway."""
+    remote = fake_remote(uv="", can_bootstrap=False)
+    with pytest.raises(BackendError, match="python3-venv"):
         resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
     assert not remote.ran("uv venv")
+
+
+def test_a_host_that_already_has_uv_is_not_bootstrapped(fake_remote, lock_source):
+    remote = fake_remote(sentinel="")
+    resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    assert not remote.ran("pip install --quiet uv")
 
 
 def test_use_adopts_a_matching_environment(fake_remote, lock_source):
