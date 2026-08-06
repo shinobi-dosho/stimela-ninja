@@ -173,7 +173,8 @@ def _run_remote(
     provenance: bool | None,
     sandbox: bool | None,
     remote: str,
-    add_venv: bool,
+    venv: str | None,
+    add_venv: bool | None,
     include_paths: tuple[str, ...],
 ) -> None:
     """`ninja run TARGET --remote user@host:/path`: sync TARGET's file plus
@@ -186,6 +187,21 @@ def _run_remote(
         raise click.ClickException("--remote and --dryrun are mutually exclusive")
     if cache_dir or no_cache:
         raise click.ClickException("--cache-dir/--no-cache apply to local runs only; configure caching via the remote host's own AppConfig")
+
+    # Resolved here rather than left to `launch_remote`, for two reasons: a
+    # pair of flags asking for different environments should be refused
+    # before anything is rsynced, and the deprecation belongs on stderr in
+    # click's voice rather than as a DeprecationWarning python hides by
+    # default -- an operator who never sees it never migrates.
+    from shinobi.offload.remote_venv import resolve_venv_mode
+
+    try:
+        venv_mode, deprecation = resolve_venv_mode(venv, add_venv)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    if deprecation:
+        click.echo(f"warning: {deprecation}", err=True)
+
     if ":" not in target:
         raise click.ClickException(f"target must be 'path:name', got {target!r}")
     location, attr = target.rsplit(":", 1)
@@ -233,7 +249,7 @@ def _run_remote(
     # taking a value can't swallow a trailing `--sandbox` if the flags never
     # trail it.
     run_argv = [*_forwarded_run_flags(quiet=quiet, provenance=provenance, sandbox=sandbox), *ctx.args]
-    handle = launch_remote(remote_spec, remote_target, run_argv, add_venv=add_venv)
+    handle = launch_remote(remote_spec, remote_target, run_argv, venv=venv_mode)
 
     handle_path = _handle_path(None, f"{pyfile.stem}.{attr}")
     handle_path.parent.mkdir(parents=True, exist_ok=True)
@@ -301,10 +317,22 @@ def _run_remote(
     help="Launch on a remote host instead of locally: 'user@host:/path'. Syncs the target file and its statically-discoverable cab deps, then runs detached -- see `ninja status`. --provenance/--sandbox/--quiet are forwarded to the remote run; --dryrun and --cache-dir/--no-cache are refused.",
 )
 @click.option(
+    "--venv",
+    "venv",
+    type=click.Choice(["off", "use"]),
+    default=None,
+    help="With --remote, what to do about the remote Python environment: 'use' (default) sources venv/bin/activate or, failing that, .venv/bin/activate under the remote path, warning on stderr if neither exists; 'off' sources nothing.",
+)
+@click.option(
+    # Kept for one release as the deprecated spelling of `--venv use/off`.
+    # `default=None`, not `True`: a boolean default is indistinguishable from
+    # a caller who typed `--add-venv`, and telling those apart is the only
+    # way to notice `--venv off --add-venv` asking for two environments.
     "--add-venv/--no-add-venv",
     "add_venv",
-    default=True,
-    help="With --remote, source venv/bin/activate or .venv/bin/activate under the remote path before running, if present.",
+    default=None,
+    hidden=True,
+    help="Deprecated alias for --venv use/--venv off.",
 )
 @click.option(
     "--include",
@@ -326,7 +354,8 @@ def run(
     provenance: bool | None,
     sandbox: bool | None,
     remote: str | None,
-    add_venv: bool,
+    venv: str | None,
+    add_venv: bool | None,
     include_paths: tuple[str, ...],
 ) -> None:
     """Run a Cab, Recipe, or @shinobi.step TARGET ('path/to/file.py:name'
@@ -350,6 +379,7 @@ def run(
             provenance=provenance,
             sandbox=sandbox,
             remote=remote,
+            venv=venv,
             add_venv=add_venv,
             include_paths=include_paths,
         )

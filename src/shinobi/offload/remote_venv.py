@@ -82,6 +82,13 @@ MODE_UV_SYNC = "uv-sync"
 MODE_UV_PIP_SYNC = "uv-pip-sync"
 MODES = (MODE_UV_SYNC, MODE_UV_PIP_SYNC)
 
+# What `--venv` asks for. `sync` -- provision the environment if its sentinel
+# is absent -- is design step 4 and is deliberately not a value yet: a flag
+# that accepts a word it cannot honour is worse than one that refuses it.
+VENV_OFF = "off"
+VENV_USE = "use"
+VENV_MODES = (VENV_OFF, VENV_USE)
+
 
 # ---------------------------------------------------------------------------
 # Platform identity
@@ -442,3 +449,41 @@ def platform_matches(sentinel: Sentinel, platform: PlatformTriple) -> bool:
 def sha256_hex(data: bytes) -> str:
     """`sha256:`-prefixed digest, the form the sentinel records."""
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
+# ---------------------------------------------------------------------------
+# `--venv` and the boolean pair it replaces
+# ---------------------------------------------------------------------------
+
+
+def resolve_venv_mode(venv: str | None, add_venv: bool | None) -> tuple[str, str | None]:
+    """Reconcile `--venv` with the deprecated `--add-venv/--no-add-venv`.
+
+    Both arguments are tri-state, and `None` means *not given* -- which is
+    the only way to tell "the caller asked for `use`" from "nobody asked for
+    anything", and therefore the only way to notice a caller asking for two
+    different things at once.
+
+    Returns the resolved mode plus a deprecation notice for the caller to
+    emit, or None. Returning the notice rather than warning here keeps this
+    pure: the CLI wants it on stderr in click's voice, a library caller
+    wants a `DeprecationWarning`, and a test wants neither.
+
+    Raises:
+        ValueError: If both flags are given and disagree, or if `venv` is
+            not one of `VENV_MODES`. Disagreement is refused rather than
+            resolved by precedence -- whichever way it went, half of the
+            people who wrote it would get the other environment, silently,
+            on a host they cannot see.
+    """
+    if venv is not None and venv not in VENV_MODES:
+        raise ValueError(f"--venv must be one of {VENV_MODES}, got {venv!r}")
+
+    if add_venv is None:
+        return (venv or VENV_USE), None
+
+    alias = VENV_USE if add_venv else VENV_OFF
+    legacy_flag = "--add-venv" if add_venv else "--no-add-venv"
+    if venv is not None and venv != alias:
+        raise ValueError(f"--venv {venv} and {legacy_flag} ask for different things; {legacy_flag} is the deprecated spelling of --venv {alias}")
+    return alias, f"{legacy_flag} is deprecated -- use --venv {alias}"

@@ -9,6 +9,8 @@ from shinobi.offload.remote_venv import (
     MODE_UV_SYNC,
     PLATFORM_PROBE,
     SCHEMA,
+    VENV_OFF,
+    VENV_USE,
     EnvInputs,
     PlatformTriple,
     Sentinel,
@@ -17,6 +19,7 @@ from shinobi.offload.remote_venv import (
     parse_platform_probe,
     platform_matches,
     read_sentinel,
+    resolve_venv_mode,
     sentinel_path,
     sha256_hex,
     venv_dir,
@@ -284,3 +287,46 @@ def test_platform_matches_only_the_host_it_was_built_on():
 
 def test_platform_matches_treats_an_unparseable_triple_as_a_mismatch():
     assert not platform_matches(_sentinel(platform_triple="whatever"), TRIPLE)
+
+
+# -- resolve_venv_mode --
+
+
+def test_nothing_asked_for_means_use():
+    assert resolve_venv_mode(None, None) == (VENV_USE, None)
+
+
+@pytest.mark.parametrize("mode", [VENV_OFF, VENV_USE])
+def test_venv_alone_is_taken_at_its_word(mode):
+    assert resolve_venv_mode(mode, None) == (mode, None)
+
+
+@pytest.mark.parametrize("add_venv,expected,flag", [(True, VENV_USE, "--add-venv"), (False, VENV_OFF, "--no-add-venv")])
+def test_the_deprecated_pair_maps_and_reports_itself(add_venv, expected, flag):
+    mode, notice = resolve_venv_mode(None, add_venv)
+    assert mode == expected
+    assert flag in notice
+    assert f"--venv {expected}" in notice
+
+
+@pytest.mark.parametrize("add_venv,agreeing", [(True, VENV_USE), (False, VENV_OFF)])
+def test_both_spellings_agreeing_is_not_an_error(add_venv, agreeing):
+    mode, notice = resolve_venv_mode(agreeing, add_venv)
+    assert mode == agreeing
+    assert notice  # still deprecated, still says so
+
+
+@pytest.mark.parametrize("venv,add_venv", [(VENV_OFF, True), (VENV_USE, False)])
+def test_the_two_spellings_disagreeing_is_refused(venv, add_venv):
+    """Not resolved by precedence. Either precedence rule silently gives
+    half the people who write it the environment they did not ask for."""
+    with pytest.raises(ValueError, match="different things"):
+        resolve_venv_mode(venv, add_venv)
+
+
+@pytest.mark.parametrize("bad", ["sync", "on", "", "USE"])
+def test_an_unknown_venv_mode_is_refused(bad):
+    """`sync` included deliberately: it is design step 4, and until it
+    provisions, accepting the word would mean doing something else."""
+    with pytest.raises(ValueError, match="--venv must be one of"):
+        resolve_venv_mode(bad, None)

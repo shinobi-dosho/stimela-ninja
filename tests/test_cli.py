@@ -290,12 +290,74 @@ def test_run_remote_forwards_nothing_extra_when_the_flags_are_unset(monkeypatch,
     assert "--quiet" not in remote_cmd
 
 
+def test_run_remote_activates_a_venv_by_default(monkeypatch, tmp_path):
+    """`use` is the default, so an invocation naming no venv flag at all
+    behaves exactly as `--add-venv` used to."""
+    _result, remote_cmd = _remote_launch_cmd(
+        monkeypatch,
+        tmp_path,
+        ["run", f"{FIXTURES_ABS}:greet", "--remote", "user@host:/path", "--text", "hi"],
+    )
+    assert "bin/activate" in remote_cmd
+
+
+def test_run_remote_venv_off_sources_nothing(monkeypatch, tmp_path):
+    _result, remote_cmd = _remote_launch_cmd(
+        monkeypatch,
+        tmp_path,
+        ["run", f"{FIXTURES_ABS}:greet", "--remote", "user@host:/path", "--venv", "off", "--text", "hi"],
+    )
+    assert "bin/activate" not in remote_cmd
+
+
+@pytest.mark.parametrize("legacy,expected", [("--add-venv", True), ("--no-add-venv", False)])
+def test_the_deprecated_pair_still_works_and_says_so(monkeypatch, tmp_path, legacy, expected):
+    """Kept for one release: caracal's own `--remote` wrapper passes it, and
+    anyone's shell history does too. It warns rather than failing."""
+    result, remote_cmd = _remote_launch_cmd(
+        monkeypatch,
+        tmp_path,
+        ["run", f"{FIXTURES_ABS}:greet", "--remote", "user@host:/path", legacy, "--text", "hi"],
+    )
+    assert result.exit_code == 0, result.output
+    assert ("bin/activate" in remote_cmd) is expected
+    assert f"{legacy} is deprecated" in result.output
+
+
+def test_venv_and_the_deprecated_pair_may_not_disagree(monkeypatch, tmp_path):
+    """Refused rather than resolved by precedence: whichever way it went,
+    half the people who wrote it would silently get the other environment,
+    on a host they cannot see."""
+    result, _remote_cmd = _remote_launch_cmd(
+        monkeypatch,
+        tmp_path,
+        ["run", f"{FIXTURES_ABS}:greet", "--remote", "user@host:/path", "--venv", "off", "--add-venv", "--text", "hi"],
+    )
+    assert result.exit_code != 0
+    assert "different things" in result.output
+
+
+def test_venv_rejects_a_mode_that_does_not_exist_yet(monkeypatch, tmp_path):
+    """`sync` is design step 4. Until it provisions, the flag refuses the
+    word rather than accepting it and doing something else."""
+    result, _remote_cmd = _remote_launch_cmd(
+        monkeypatch,
+        tmp_path,
+        ["run", f"{FIXTURES_ABS}:greet", "--remote", "user@host:/path", "--venv", "sync", "--text", "hi"],
+    )
+    assert result.exit_code != 0
+    assert "sync" in result.output
+
+
 def test_run_help_shows_remote_options():
     result = CliRunner().invoke(main, ["run", "--help"])
     assert result.exit_code == 0
     assert "--remote" in result.output
-    assert "--add-venv" in result.output
+    assert "--venv" in result.output
     assert "--include" in result.output
+    # The deprecated pair is still accepted, but it is not advertised --
+    # help is where someone learns the spelling to use next time.
+    assert "--add-venv" not in result.output
 
 
 # -- ninja --log-file/--log-dir/--log-level (main group) --
