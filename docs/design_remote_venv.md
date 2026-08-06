@@ -1,10 +1,49 @@
 # Provisioning the launcher environment for `ninja run --remote`
 
-**Status:** v2 — **proposed, nothing implemented.** §8.1 still gates §9 steps 2-5.
+**Status:** v3 — **step 1 shipped (#85); steps 2-5 un-gated and unimplemented.**
+§8.1, which gated everything past step 1, is closed: option (a).
 **Context:** `ninja run TARGET --remote user@host:/path` (`shinobi.offload.ssh`)
 
 **Change log**
 
+- **v2 → v3 (§8.1 answered against the tree).** v2 left the load-bearing
+  question — *what lock does a real recipe use?* — open, with the note
+  "*needs checking against the actual repo — nobody has*". Somebody has now.
+  1. **§9 step 1 shipped, five weeks before this revision was written.** PR #85
+     replaced the `&&`/`||` fragment with the `if/elif` chain, the not-found
+     warning and the four-shape test; it is `_venv_activation` at
+     `offload/ssh.py:327-354`, comment and no-subshell constraint intact. §1's
+     defects 1 and 2 are history. Defect 3 — no way to ask for the environment
+     to exist — is the whole of what remains.
+  2. **§8.1 closes as option (a).** `caracal-pipeline/caracal2` keeps a
+     committed `uv.lock` (1969 lines) that locks both git dependencies at
+     pinned commits: `dosho` at `07904a9` and `stimela-ninja` at `85fcf8a`,
+     both `source = { git = ... }`. So the recipe-side lock v2 hoped for is
+     not hypothetical — it already exists in the one downstream repo this
+     feature is for. The circularity that made it doubtful is also gone: dosho
+     dropped its `[tool.uv.sources]` redirect once `Scope.scratch` shipped in
+     0.1.0b5, which is why this repo's own `examples = ["dosho"]` group
+     resolves (`pyproject.toml:30-40`).
+  3. **Option (b) is rejected outright, not carried as a caveat.** v2 kept it
+     alive for simms, on the strength of a comment in this repo's own
+     `pyproject.toml` asserting simms "has no docker image, so it runs via
+     NativeBackend, and it is not on PyPI". Every clause of that is false for
+     simms 3.x: PyPI has 3.0.2, dosho builds a `SIMMS` image from
+     `simms==3.0.2` (`dosho/src/dosho/images.yaml:65-74`), and
+     `dosho/cabs/simms.py` binds all three sub-commands (`skysim`, `telsim`,
+     `primary_beam`) to `image=images.SIMMS`, running them as pysteps *inside*
+     that container. The claims belong to `SIMMS_CLASSIC`, the genuinely
+     different pre-3.0 binary. With no unlockable package left, `env_id` stays
+     a **complete** description of its inputs rather than a partial one, which
+     is worth more than the escape hatch was. Moved to §7.6; the stale comments
+     are corrected in the same change.
+  4. **The general form of the answer, which outlives the specific one.** A
+     lock has to describe the *launcher* environment only. Everything a recipe
+     **runs** is containerised — that is what the cab layer is for — so a
+     package needing a container is not a hole in the lock, it is the lock
+     correctly declining to describe something outside its scope. The question
+     to ask of a future unlockable dependency is not "does (b) come back?" but
+     "why is this not a cab?".
 - **v1 → v2 (review round 1).** Independent review attacked v1 against the tree
   and against a live `uv`. v1's central idea (content-addressing) survived; its
   *publisher*, two of its six invariants, and its hash inputs did not. In order
@@ -97,8 +136,15 @@ Two things this deliberately does **not** claim:
 
 ## 1. Problem
 
-`--add-venv` defaults to **on** and expands to a single shell fragment
-(`offload/ssh.py:347`):
+**Defects 1 and 2 below are fixed** — PR #85 shipped §4.4's `if/elif` chain as
+`_venv_activation` (`offload/ssh.py:327-354`). They are kept here as written
+because they are what §4.4's branch order and no-subshell constraint are a
+response to, and a reader who does not know why that fragment looks the way it
+does will eventually "simplify" it back. **Defect 3 is what remains, and is the
+whole of what §4 proposes.**
+
+As of the revision this section describes, `--add-venv` defaulted to **on** and
+expanded to a single shell fragment:
 
 ```
 test -f venv/bin/activate && source venv/bin/activate || test -f .venv/bin/activate && source .venv/bin/activate;
@@ -227,7 +273,8 @@ disk, never correctness, and lockfiles are machine-written.
 Written **last**, inside the directory, after provisioning succeeds:
 
 ```json
-{"env_id": "...", "lock_sha256": "...", "pyproject_sha256": "...",
+{"schema": 1,
+ "env_id": "...", "lock_sha256": "...", "pyproject_sha256": "...",
  "extras": [...], "python_request": "...", "mode": "uv-sync",
  "platform_triple": "x86_64/glibc-2.39/3.11.9",
  "venv_digest": "sha256:...", "created": "<iso8601>", "uv_version": "..."}
@@ -235,11 +282,13 @@ Written **last**, inside the directory, after provisioning succeeds:
 
 Every existence question is asked of this file, never of the directory:
 
-- **Activation** (§4.4) requires the sentinel to parse *and* its
-  `platform_triple` to match the current host. A directory with no sentinel is
-  treated as absent.
+- **Activation** (§4.4) requires the sentinel to parse, its `schema` to be one
+  this client knows, *and* its `platform_triple` to match the current host. A
+  directory with no sentinel is treated as absent.
 - **`sync`** provisions when the sentinel is missing, regardless of what else is
-  at that path.
+  at that path. A sentinel that parses but carries an unknown `schema` is
+  **not** missing — it is a newer client's environment, and `sync` refuses
+  rather than provisioning over it (§8.4, Invariant 8).
 
 This is what closes the `rename`-onto-empty hole: an empty or half-populated
 `<env_id>/` is unreadable to every consumer, so the exclusion no longer depends
@@ -270,8 +319,10 @@ silently drift to a version set the lock does not name. For `requirements.txt`
 (mode `uv-pip-sync`) the sequence is `uv venv --relocatable "$STAGING"` then
 `uv pip sync --python "$STAGING/bin/python" requirements.txt`.
 
-**Activation replaces the §1 fragment outright.** Step 1 of §9 ships the
-standalone form, before `env_id` exists:
+**Activation replaces the §1 fragment outright.** Step 1 of §9 shipped the
+standalone form, before `env_id` exists — this is now the tree's
+`_venv_activation` (`offload/ssh.py:349-354`), modulo the `; ` separators an
+`ssh` one-liner needs:
 
 ```sh
 if   [ -f venv/bin/activate ];  then . venv/bin/activate
@@ -428,45 +479,71 @@ backend documents itself as their *complement* (`backends/venv.py:5-8`).
    version, and `docs/cli.rst:103`'s own canonical example is
    `user@cluster:/scratch/run1`. A lock that silently does nothing on the target
    filesystem is worse than the sentinel, which needs no locking.
+6. **Post-sync unlocked installs, hashed into `env_id`.** v2's option (b) in
+   §8.1, kept alive solely because one package (simms) was believed unlockable.
+   It is not (§8.1), so this buys nothing and costs the property that makes
+   §4.2 worth having: `env_id` would name a *command text* whose effect is
+   unpinned, and Invariant 2 would then be guarding a description that is
+   complete about inputs but silent about half of what those inputs do. The
+   design is better off refusing to provision what it cannot name. If a future
+   dependency genuinely cannot be locked, the first question is why it is not a
+   cab — everything a recipe *runs* is containerised, and only the launcher
+   itself has to come out of a lock.
 
 ## 8. Open questions
 
-1. **What lock does a real recipe use? Still the question that decides whether
-   this is worth building.** `pyproject.toml:30-42` documents that dosho and
-   simms are installed manually, outside the lock — so a lock-driven
-   provisioner reproduces ninja and its six dependencies, not the environment a
-   caracal recipe needs. Review sharpened this usefully: the *cause* is a
-   circular self-dependency (dosho redirects `stimela-ninja` back into this repo
-   via `[tool.uv.sources]`, so locking it breaks `uv lock` for everyone), not a
-   general property of git-sourced packages. A downstream recipe repo has no
-   such circularity and could lock dosho and simms as ordinary git dependencies.
-   That makes option (a) — `--venv-lock` points at a **recipe-side** lock the
-   user maintains — considerably more viable than v1 assumed, though it still
-   means the feature only serves people who keep one. Options:
-   - **(a) recipe-side lock.** Preferred if caracal2 either has or would accept
-     a lock. *Needs checking against the actual repo — nobody has.*
-   - **(b) post-sync unlocked installs**, declared somewhere and run after
-     `uv sync`. Weakens `env_id` to a partial description — unless the command
-     text is itself hashed into `env_id`, which review suggested and which makes
-     the weakening honest and detectable rather than silent. Worth taking if (a)
-     is not available.
-   - **(c) neither** — the feature serves only lock-keeping users, and says so.
-2. **uv bootstrap.** If `uv` is absent remotely: install it (`curl … | sh`, a
-   supply-chain step this project would not otherwise take), fall back to
-   `python -m venv` + `pip install -r`, or refuse with instructions? *Leaning:
-   refuse with instructions in v1 of the implementation.*
-3. **GC.** `ninja remote gc user@host:/path`, an age policy, or nothing?
-   *Leaning: nothing, documented as a known cost (§6.3).*
-4. **Sentinel schema versioning.** A `schema` field costs one key now and avoids
-   an unreadable-sentinel migration later. *Leaning: include it.*
+1. **What lock does a real recipe use? — ANSWERED: option (a), a recipe-side
+   lock, which already exists.** This gated §9 steps 2-5; it no longer does.
+   `caracal-pipeline/caracal2` — the downstream repo this feature exists to
+   serve — keeps a committed `uv.lock` of 1969 lines that locks both git
+   dependencies at pinned commits (`dosho` at `07904a9`, `stimela-ninja` at
+   `85fcf8a`, each `source = { git = ... }`). Nothing about it is aspirational.
+   Three things v2 got wrong, in descending order of consequence:
+   - **The circularity is gone.** dosho dropped its `[tool.uv.sources]`
+     redirect of `stimela-ninja` once `Scope.scratch` shipped in 0.1.0b5
+     (dosho #42). That is precisely why this repo's own `examples = ["dosho"]`
+     dependency group resolves today (`pyproject.toml:30-40`), and it is why a
+     downstream lock covering dosho was never the problem v2 thought it might
+     still be.
+   - **simms is not an exception.** v2 preserved option (b) for it, on the
+     strength of this repo's own comment claiming simms has no image, runs
+     native, and is not on PyPI. PyPI serves simms 3.0.2; dosho builds a
+     `SIMMS` image from `simms==3.0.2` (`images.yaml:65-74`); and
+     `dosho/cabs/simms.py` binds `skysim`/`telsim`/`primary_beam` to
+     `image=images.SIMMS`, executing them as pysteps inside it. The comment
+     describes `SIMMS_CLASSIC`, a different tool.
+   - **The scope of a lock was drawn too wide.** A launcher lock never had to
+     describe what a recipe *runs*, only what runs `ninja`. Container images
+     cover the rest, and pin harder than a lock does. So (b) is rejected
+     (§7.6) and (c) does not arise.
+2. **uv bootstrap — DECIDED: refuse with instructions.** If `uv` is absent
+   remotely, `sync` fails naming the host and printing the one-line install
+   command, and does not run it. Piping a remote script into a shell on the
+   operator's account is a supply-chain step this project takes nowhere else,
+   and it would be taken silently, inside a launch the operator is watching for
+   *pipeline* failures. Falling back to `python -m venv` + `pip install -r` is
+   worse than refusing: it drops `--frozen`, so the environment it builds is
+   the one thing §4.4 exists to prevent — a re-resolved version set the lock
+   does not name, wearing an `env_id` that asserts otherwise.
+3. **GC — DECIDED: nothing, documented.** Every distinct input set leaves a
+   venv behind forever (§6.3). No `ninja remote gc`, no age policy: deleting
+   directories over ssh on the operator's behalf is the same class of decision
+   §4.5 already refuses to make, and the disk cost is bounded in practice by
+   how often a lock changes. `rm -rf` under `.shinobi/venvs/` is a documented
+   operator action, and the content-addressed layout is what makes it safe to
+   perform by hand — every directory names exactly what it is.
+4. **Sentinel schema versioning — DECIDED: include it.** `"schema": 1` as the
+   first key. One key now; an unreadable-sentinel migration otherwise. A
+   sentinel whose `schema` is unrecognised reads as *absent* under `use` (so an
+   old client degrades to the legacy paths rather than misreading a newer
+   sentinel's fields) and as a refusal under `sync` (Invariant 8 — never
+   provision over something a newer client owns).
 
 ## 9. Implementation order
 
-1. **Fix §1.2 standalone.** Replace the `&&`/`||` fragment with the §4.4
-   standalone `if/elif` chain, add the not-found warning, and add a test
-   asserting exactly one branch runs for each of the four on-disk shapes.
-   Independently valuable, no new surface, ships regardless of what §8.1
-   decides. **Not gated. Do this first, as its own PR.**
+1. ~~**Fix §1.2 standalone.**~~ **DONE — PR #85.** The `&&`/`||` fragment is
+   gone; `_venv_activation` (`offload/ssh.py:327-354`) is the §4.4 chain, with
+   the not-found warning and a test over all four on-disk shapes.
 2. **`env_id` + sentinel.** `_env_id()` over the §4.2 inputs, the platform
    probe, sentinel read/write, and unit tests over hash inputs — including that
    changing *each* input moves the id, and that an empty directory reads as
@@ -481,4 +558,8 @@ backend documents itself as their *complement* (`backends/venv.py:5-8`).
 6. **Docs**: `docs/cli.rst:93-104` and `docs/offloading.rst`; state §6.1
    plainly.
 
-Steps 2-5 are gated on §8.1. Step 1 is not, and should not wait for it.
+Nothing here is gated any more (§8.1). Steps 2 and 3 are behaviour-preserving
+and can land before anything provisions: step 2 adds a computation nothing
+calls yet, step 3 renames a flag onto a superset of its own semantics. Step 4
+is where the feature acquires the ability to fail, and is the one worth
+splitting further if it grows.

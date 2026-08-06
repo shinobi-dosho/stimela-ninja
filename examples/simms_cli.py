@@ -18,11 +18,12 @@ scabha-dialect YAML (`input-dir/simms-cabs.yaml`), whose `choices:` and
   `--ascii-sky/-as`, `--fits-sky-interp/-fsi`, `--polarisation/-pol`;
   `telsim`'s `--telescope/-tel`, `--nchan/-nc`).
 
-Both cabs run under the native backend (`simms` is a plain binary with no
-container image), so the commands below actually execute once `simms` is
-installed.
+Both cabs run under the native backend -- the vendored YAML names no image, and
+this example exists to exercise the YAML dialect and the native path, not
+dosho's containerised simms cabs -- so the commands below actually execute once
+`simms` is installed.
 
-    uv pip install --no-deps simms @ git+https://github.com/wits-cfa/simms.git
+    uv pip install --no-deps simms
 
 See the whole schema, choices and abbreviations included, with:
 
@@ -55,7 +56,9 @@ from shinobi.loaders.yaml_cab import load_file
 
 _CABS = load_file(Path(__file__).parent / "input-dir" / "simms-cabs.yaml")
 
-# simms is a plain binary (no container image in the cab), so pin both cabs
-# to the native backend the same way the recipe examples do.
+# The vendored YAML declares no image, so pin both cabs to the native backend
+# the same way the recipe examples do. (dosho's own simms cabs *do* bind an
+# image and run containerised -- this example is about the YAML dialect, and
+# reaches simms as a plain binary on purpose.)
 skysim = _CABS["skysim"].model_copy(update={"backend": "native"})
 telsim = _CABS["telsim"].model_copy(update={"backend": "native"})
