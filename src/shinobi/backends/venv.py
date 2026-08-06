@@ -100,17 +100,25 @@ def resolve_command(venv: Path, argv0: str) -> str:
     return str(candidate) if candidate.exists() else argv0
 
 
-@lru_cache(maxsize=None)
-def venv_digest(venv: Path) -> str | None:
-    """`sha256` of the venv's sorted `name==version` distribution list, or
-    `None` on any failure (an honest null -- never a fabricated digest).
+def digest_of_dists(dists: list[str]) -> str:
+    """`sha256` of a sorted `name==version` list -- the digest itself, with
+    no opinion about where the list came from.
 
-    Cached per resolved path: a venv does not change mid-run, mirroring the
-    container backend's `lru_cache` on image pinning. Under `max_workers > 1`
-    several threads may redundantly shell out on a first miss, but the result
-    is deterministic.
+    Split out from `venv_digest` so an interpreter this process cannot run
+    can still be digested by the same code: `offload.remote_venv` collects
+    the list from a venv on another host with `_FREEZE_CODE` over ssh, and
+    the two digests are only comparable if one function produces both.
+    Sorting here as well as in `_FREEZE_CODE` is deliberate belt-and-braces
+    and is idempotent -- a caller assembling a list some other way should
+    not be able to change the digest by presenting it in another order.
     """
-    python = venv / "bin" / "python"
+    return hashlib.sha256("\n".join(sorted(dists)).encode()).hexdigest()
+
+
+def freeze_dists(python: Path) -> list[str] | None:
+    """Run `_FREEZE_CODE` under a *local* interpreter, or None on any
+    failure. The remote equivalent lives in `offload.remote_venv`.
+    """
     try:
         proc = subprocess.run(
             [str(python), "-c", _FREEZE_CODE],
@@ -126,8 +134,21 @@ def venv_digest(venv: Path) -> str | None:
         dists = json.loads(proc.stdout)
     except json.JSONDecodeError:
         return None
-    blob = "\n".join(dists)
-    return hashlib.sha256(blob.encode()).hexdigest()
+    return dists if isinstance(dists, list) else None
+
+
+@lru_cache(maxsize=None)
+def venv_digest(venv: Path) -> str | None:
+    """`sha256` of the venv's sorted `name==version` distribution list, or
+    `None` on any failure (an honest null -- never a fabricated digest).
+
+    Cached per resolved path: a venv does not change mid-run, mirroring the
+    container backend's `lru_cache` on image pinning. Under `max_workers > 1`
+    several threads may redundantly shell out on a first miss, but the result
+    is deterministic.
+    """
+    dists = freeze_dists(venv / "bin" / "python")
+    return None if dists is None else digest_of_dists(dists)
 
 
 @register

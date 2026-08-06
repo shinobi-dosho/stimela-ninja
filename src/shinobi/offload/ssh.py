@@ -478,6 +478,8 @@ def _provision(remote: RemoteSpec, source: rv.LockSource, inputs: rv.EnvInputs, 
         if build.returncode != 0:
             raise BackendError(f"provisioning {final} on {remote.host} failed:\n{build.stderr.strip()}")
 
+        report = rv.parse_provision_output(build.stdout)
+        notes.extend(_divergence_notes(source, report))
         sentinel = rv.Sentinel(
             env_id=env_id,
             lock_sha256=rv.sha256_hex(inputs.lock),
@@ -487,7 +489,8 @@ def _provision(remote: RemoteSpec, source: rv.LockSource, inputs: rv.EnvInputs, 
             python_request=inputs.python_request,
             mode=inputs.mode,
             platform_triple=str(inputs.platform),
-            venv_python=rv.parse_provision_output(build.stdout),
+            venv_digest=report.venv_digest,
+            venv_python=report.venv_python,
             created=datetime.now(timezone.utc).isoformat(),
             uv_version=probe.uv_version,
         )
@@ -501,6 +504,48 @@ def _provision(remote: RemoteSpec, source: rv.LockSource, inputs: rv.EnvInputs, 
         return ResolvedVenv(path=final, provisioned=True, notes=notes)
     finally:
         _ssh(remote.host, rv.cleanup_command(staging))
+
+
+def _divergence_notes(source: rv.LockSource, report: rv.ProvisionReport) -> list[str]:
+    """Say whether the environment just built matches the local realisation
+    of the same lock (§4.6).
+
+    The comparison is against `<project_dir>/.venv` -- the venv `uv sync`
+    would build from *this* lock on *this* machine -- and not against
+    whatever venv ninja happens to be running in. Those are usually
+    different environments built from different locks, so comparing them
+    would report a mismatch on every single provision and teach the operator
+    to ignore the message.
+
+    Even so this is an observation, never a check. Two things make a
+    legitimate mismatch, and the note names both rather than picking one:
+    the platforms genuinely differ (which is the point -- the same version
+    list can sit on different compiled C-extensions, which is why a venv step
+    is reported *unpinned*), or the local `.venv` has simply not been
+    re-synced since the lock moved. Neither is a reason to refuse a launch.
+
+    Silence is the common case and is correct: no local `.venv`, or a remote
+    that could not describe itself, means there is nothing to compare, and
+    the remote digest is recorded in the sentinel alone. Where someone is
+    provisioning remotely precisely *because* their laptop cannot build the
+    environment, that is every time.
+    """
+    from shinobi.backends.venv import venv_digest
+
+    if report.venv_digest is None:
+        return ["the remote did not report a distribution list, so no digest was recorded"]
+    local_venv = source.project_dir / ".venv"
+    if not (local_venv / "bin" / "python").exists():
+        return []
+    local = venv_digest(local_venv)
+    if local is None or local == report.venv_digest:
+        return []
+    note = (
+        f"the provisioned environment differs from {local_venv} (remote {report.venv_digest[:12]}, "
+        f"local {local[:12]}) -- expected across platforms, and also what a local .venv that predates "
+        "the lock looks like. Informational: this is a version-parity digest, not a pin."
+    )
+    return [note]
 
 
 def _adopt_after_collision(remote: RemoteSpec, final: str, notes: list[str]) -> ResolvedVenv:
