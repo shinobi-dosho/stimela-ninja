@@ -19,8 +19,74 @@ running any Python. A recipe is offload-eligible only when:
 * only **paths** cross between steps (an output wired into a later input must be
   a filesystem path knowable at compile time, not a wrangler-derived value).
 
-Anything relying on live Python is rejected with an explanation -- run those
-recipes locally with ``ninja run`` instead.
+Anything relying on live Python is rejected with an explanation. That is not
+the end of the road for a cluster: see :ref:`offload-remote` below, which runs
+any recipe on a remote host and has none of these restrictions.
+
+.. _offload-remote:
+
+The other path: ``ninja run --remote``
+--------------------------------------
+
+``ninja compile`` is not the only way onto a cluster, and it is the more
+demanding one. ``ninja run TARGET --remote user@host:/path`` rsyncs the target
+and its cab dependencies to one host, starts ``ninja run`` there detached, and
+gives you a handle to poll -- no scheduler in between.
+
+Which to reach for:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 39 39
+
+   * -
+     - ``ninja compile --submit``
+     - ``ninja run --remote``
+   * - Runs on
+     - Many nodes, as a scheduler-managed DAG
+     - One host, start to finish
+   * - Recipe must be
+     - Purely declarative (see above)
+     - Anything ``ninja run`` can run
+   * - Steps are ordered by
+     - Slurm ``afterok`` dependencies
+     - ninja's own scheduler, on that host
+
+So a recipe with orchestration functions -- the kind offload rejects -- is
+still perfectly runnable on the cluster's big-memory node over ``--remote``.
+The cost is that one process babysits the whole pipeline there, which is
+precisely what ``compile`` exists to avoid for long multi-node runs.
+
+The environment on the far side
+-------------------------------
+
+Both paths need a Python environment on the remote host, and neither
+inherits yours. ``--remote`` can build one:
+
+.. code-block:: console
+
+    $ ninja run myrecipe.py:selfcal --remote user@cluster:/scratch/run1 \
+        --venv sync --venv-package 'caracal==2.0.1'
+
+``--venv sync`` provisions with ``uv``, installing uv itself first if the host
+has none. The environment is named by a hash of what was asked for plus the
+host's architecture, libc and Python, so it is built once and reused by every
+later launch, and two different hosts sharing one ``/scratch`` cannot activate
+each other's. See :ref:`the --venv options <cli-remote>` for the full flag set.
+
+Two things specific to clusters:
+
+* **Provision from a login node.** Compute nodes commonly have no route to
+  PyPI, and ``sync`` needs one. Run ``--venv sync`` once where there is egress;
+  every subsequent launch can use the default ``--venv use``, which needs no
+  network and never writes to the remote.
+* **Provisioning executes build backends** for any source distribution
+  involved, under your account. That is a real difference from a container
+  image, which executes nothing when it is pulled.
+
+``ninja compile`` has no equivalent: its jobs run whatever ``sbatch`` finds on
+the node, so a container runtime (``--container-runtime``) is the reproducible
+option there.
 
 .. _offload-mutation-ordering:
 
