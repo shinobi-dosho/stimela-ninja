@@ -3,8 +3,8 @@
 **Status:** v4 — **steps 1-5 shipped.** `--venv sync` provisions from a lock
 *or* from named packages, bootstrapping uv where there is none, and reports how
 far the result diverged. §8.1 and §8.2 are both settled, the latter opposite to
-the way v3 settled it. All that remains is the `docs/offloading.rst` half of
-step 6 — `docs/cli.rst` already describes `sync`.
+the way v3 settled it. **The implementation order in §9 is complete.** What is
+left is listed in §6 as known weaknesses, not as work in progress.
 **Context:** `ninja run TARGET --remote user@host:/path` (`shinobi.offload.ssh`)
 
 **Change log**
@@ -727,11 +727,19 @@ backend documents itself as their *complement* (`backends/venv.py:5-8`).
    under the new venv's interpreter; the digest is recorded in the sentinel
    and compared against `<project_dir>/.venv` (see §4.6 on why *that* venv and
    not the one ninja is running in).
-6. **Docs**: `docs/cli.rst:93-104` and `docs/offloading.rst`; state §6.1
-   plainly.
+6. ~~**Docs**~~ **DONE.** `docs/cli.rst` documents all three `--venv` modes,
+   the four-way precedence for what a `sync` installs, the uv bootstrap and
+   §6.1 (provisioning executes build backends) plainly.
+   `docs/offloading.rst` turned out to need more than a paragraph: it
+   described `ninja compile` and *never mentioned `--remote` at all*, so a
+   reader whose recipe was rejected for offload was told to "run it locally"
+   with no hint that the other path onto their cluster exists and has none of
+   those restrictions. It now contrasts the two and covers the environment
+   question where it actually bites -- provision from a login node, because
+   compute nodes have no route to the index.
 
-Nothing here is gated any more (§8.1). Steps 2 and 3 are behaviour-preserving
-and can land before anything provisions: step 2 adds a computation nothing
-calls yet, step 3 renames a flag onto a superset of its own semantics. Step 4
-is where the feature acquires the ability to fail, and is the one worth
-splitting further if it grows.
+All six steps have shipped. What the design deliberately left undone is in §6:
+no garbage collection (§6.3), no way to install the recipe's *own* project into
+a provisioned environment (§4.4), and no extras/groups/python-version selection
+on the CLI -- `env_id` hashes all three already, so adding flags later moves no
+existing environment's id.
