@@ -1,14 +1,19 @@
 """Naming and validating the launcher venv a `--remote` run activates.
 
-`shinobi.offload.ssh` launches `ninja run` on a remote host and, today,
-activates whatever `venv/` or `.venv/` it finds under `remote.path`
-(`ssh._venv_activation`). `docs/design_remote_venv.md` proposes letting it
-*provision* that environment instead. This module is the naming half of
-that: it computes the identity of a launcher environment from its inputs,
-and it reads back the one piece of evidence that such an environment was
-fully built. **Nothing here provisions anything, and nothing here talks to
-a remote host** -- every function is pure, and the ssh round-trips that
-feed them belong to the caller.
+`shinobi.offload.ssh` launches `ninja run` on a remote host, and `--venv
+sync` lets it *provision* the environment it launches into rather than
+hoping someone left one at `venv/` (see `docs/design_remote_venv.md`).
+This module is the half of that with no side effects: it names an
+environment from its inputs, reads back the one piece of evidence that such
+an environment was fully built, and builds -- as strings -- the commands
+that do the work. **Nothing here talks to a remote host.** The round-trips
+belong to `ssh.resolve_remote_venv`, which is where the ordering, the
+failure handling and the ssh live.
+
+That split is worth keeping. Every remote command in this feature is a
+shell string assembled from paths, and the interesting bugs in it are
+quoting, ordering and flags -- all of which can be asserted on a string,
+by a test that needs no host at all.
 
 Two ideas carry the whole design.
 
@@ -62,6 +67,7 @@ import re
 import shlex
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 # The sentinel schema this client writes and understands. Bump when a field
@@ -83,11 +89,11 @@ MODE_UV_PIP_SYNC = "uv-pip-sync"
 MODES = (MODE_UV_SYNC, MODE_UV_PIP_SYNC)
 
 # What `--venv` asks for. `sync` -- provision the environment if its sentinel
-# is absent -- is design step 4 and is deliberately not a value yet: a flag
-# that accepts a word it cannot honour is worse than one that refuses it.
+# is absent -- provisions it.
 VENV_OFF = "off"
 VENV_USE = "use"
-VENV_MODES = (VENV_OFF, VENV_USE)
+VENV_SYNC = "sync"
+VENV_MODES = (VENV_OFF, VENV_USE, VENV_SYNC)
 
 
 # ---------------------------------------------------------------------------
@@ -109,11 +115,21 @@ _PROBE_PY = "; ".join(
     )
 )
 
-# The remote command whose single line of stdout `parse_platform_probe`
-# reads. `python3` rather than `uv python find`: this has to work in `use`
-# mode on a host with no uv, and `env_id` embeds the result, so it cannot be
-# obtained by asking uv what it would build.
+# Every line the probe means to be read carries one of these. A remote login
+# shell prints banners, module-system notices and MOTDs, and those arrive
+# interleaved with -- not merely before -- a multi-command probe's own
+# output, so position is not something a parser can rely on.
+_MARK_PLATFORM = "shinobi-platform:"
+_MARK_UV = "shinobi-uv:"
+
+# The remote command `parse_probe` reads. `python3` rather than
+# `uv python find`: this has to work in `use` mode on a host with no uv, and
+# `env_id` embeds the result, so it cannot be obtained by asking uv what it
+# would build. The uv version rides along in the same round-trip -- `sync`
+# needs to know uv is there *before* anything is copied to the host, and it
+# is a sentinel field either way.
 PLATFORM_PROBE = f"python3 -c {shlex.quote(_PROBE_PY)}"
+PROBE_COMMAND = f"printf '{_MARK_PLATFORM}%s\\n' \"$({PLATFORM_PROBE})\"; printf '{_MARK_UV}%s\\n' \"$(uv --version 2>/dev/null || true)\""
 
 # One field of the triple. Anchored and conservative: the triple is
 # interpolated into a directory name via `env_id`'s hash, but it is also
@@ -163,21 +179,45 @@ class PlatformTriple:
         return cls(machine=parts[0], libc=parts[1], python=parts[2])
 
 
-def parse_platform_probe(stdout: str) -> PlatformTriple:
-    """Read `PLATFORM_PROBE`'s output.
+@dataclass(frozen=True)
+class RemoteProbe:
+    """What one round-trip establishes about the host before anything is
+    copied to it.
 
-    Takes the last non-empty line rather than the whole of stdout: the probe
-    runs under `bash -lc`, and a remote login shell that prints a banner or a
-    module-system notice would otherwise turn a working host into an
-    unparseable one.
+    Attributes:
+        platform: The triple that goes into `env_id`.
+        uv_version: `uv --version`'s output, or None where uv is not on the
+            remote PATH. None is not an error here -- `use` mode does not
+            need uv at all, and only `sync` turns it into a refusal.
+    """
+
+    platform: PlatformTriple
+    uv_version: str | None
+
+
+def parse_probe(stdout: str) -> RemoteProbe:
+    """Read `PROBE_COMMAND`'s output.
+
+    Scans for marked lines rather than reading by position. A remote login
+    shell's banners and module notices interleave with the probe's own
+    output, so "the last line" stops being a reliable address as soon as the
+    probe emits more than one thing.
 
     Raises:
-        ValueError: If no line parses as a triple.
+        ValueError: If no line carries the platform marker, or it does not
+            parse as a triple. A missing uv marker is not an error.
     """
-    lines = [line for line in stdout.splitlines() if line.strip()]
-    if not lines:
-        raise ValueError("platform probe produced no output")
-    return PlatformTriple.parse(lines[-1])
+    platform: PlatformTriple | None = None
+    uv_version: str | None = None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if line.startswith(_MARK_PLATFORM):
+            platform = PlatformTriple.parse(line[len(_MARK_PLATFORM) :])
+        elif line.startswith(_MARK_UV):
+            uv_version = line[len(_MARK_UV) :].strip() or None
+    if platform is None:
+        raise ValueError(f"probe produced no {_MARK_PLATFORM!r} line; got: {stdout.strip()!r}")
+    return RemoteProbe(platform=platform, uv_version=uv_version)
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +302,259 @@ def venv_dir(remote_path: str, env_id_: str) -> str:
 def sentinel_path(remote_path: str, env_id_: str) -> str:
     """The sentinel inside `venv_dir` -- the only thing worth testing for."""
     return f"{venv_dir(remote_path, env_id_)}/{SENTINEL_NAME}"
+
+
+def staging_dir(remote_path: str, token: str) -> str:
+    """Where an in-progress provision lives, before it earns its name.
+
+    The `.partial-` prefix is the convention the snapshot writer already uses
+    (`design_cache_tiers.md` §9), and the leading dot keeps it out of a glob
+    over finished environments.
+    """
+    return f"{remote_path}/{VENVS_SUBDIR}/.partial-{token}"
+
+
+# ---------------------------------------------------------------------------
+# Provisioning: the scripts, built here and run by `offload.ssh`
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LockSource:
+    """The local files a `sync` copies over and provisions from.
+
+    Attributes:
+        project_dir: What gets rsynced -- `uv sync` reads the lock *and* the
+            pyproject beside it, so the pair travels together.
+        lock: `uv.lock` or `requirements.txt`.
+        pyproject: `pyproject.toml`, or None under `MODE_UV_PIP_SYNC`.
+        mode: One of `MODES`, decided by which lock was found.
+    """
+
+    project_dir: Path
+    lock: Path
+    pyproject: Path | None
+    mode: str
+
+    def rel_paths(self) -> list[Path]:
+        """The pair, relative to `project_dir`, for `sync_to_remote`."""
+        paths = [self.lock] if self.pyproject is None else [self.lock, self.pyproject]
+        return [p.relative_to(self.project_dir) for p in paths]
+
+    def read(self) -> tuple[bytes, bytes]:
+        """`(lock bytes, pyproject bytes)`, the two hashed inputs.
+
+        An absent pyproject hashes as `b""` rather than being skipped, so
+        `uv-pip-sync` and a hypothetical `uv-sync` over an empty pyproject
+        stay distinguishable through the `mode` field either way.
+        """
+        return self.lock.read_bytes(), (self.pyproject.read_bytes() if self.pyproject else b"")
+
+
+def discover_lock(start: Path) -> LockSource | None:
+    """Find the lock governing `start`, walking up to the filesystem root.
+
+    Walks up rather than looking only beside the target because a recipe
+    lives in a repository, not in a directory of its own -- caracal2 keeps
+    its pipelines under `src/` and its `uv.lock` at the root.
+
+    A `uv.lock` **plus** the `pyproject.toml` beside it wins over a
+    `requirements.txt` at the same level: it is the stronger statement, and
+    `uv sync --frozen` over it cannot re-resolve. A `uv.lock` with no
+    `pyproject.toml` beside it is not a project `uv sync` can build, so it is
+    passed over rather than reported as something that will fail later.
+
+    Returns None if nothing is found, which is not an error -- it is the
+    normal state for `use` mode.
+    """
+    for directory in (start if start.is_dir() else start.parent, *(start if start.is_dir() else start.parent).parents):
+        lock, pyproject = directory / "uv.lock", directory / "pyproject.toml"
+        if lock.is_file() and pyproject.is_file():
+            return LockSource(project_dir=directory, lock=lock, pyproject=pyproject, mode=MODE_UV_SYNC)
+        requirements = directory / "requirements.txt"
+        if requirements.is_file():
+            return LockSource(project_dir=directory, lock=requirements, pyproject=None, mode=MODE_UV_PIP_SYNC)
+    return None
+
+
+def lock_source_for(path: Path) -> LockSource:
+    """The `LockSource` a user named explicitly with `--venv-lock`.
+
+    Raises:
+        ValueError: If the file is neither a `uv.lock` with a `pyproject.toml`
+            beside it nor a `requirements.txt`. Named explicitly, so an
+            unusable one is refused rather than silently walked past the way
+            `discover_lock` would.
+    """
+    path = path.resolve()
+    if not path.is_file():
+        raise ValueError(f"--venv-lock {path} does not exist")
+    if path.name == "uv.lock":
+        pyproject = path.parent / "pyproject.toml"
+        if not pyproject.is_file():
+            raise ValueError(f"--venv-lock {path} has no pyproject.toml beside it; `uv sync` needs both")
+        return LockSource(project_dir=path.parent, lock=path, pyproject=pyproject, mode=MODE_UV_SYNC)
+    if path.name == "requirements.txt":
+        return LockSource(project_dir=path.parent, lock=path, pyproject=None, mode=MODE_UV_PIP_SYNC)
+    raise ValueError(f"--venv-lock must name a uv.lock or a requirements.txt, got {path.name!r}")
+
+
+def read_sentinel_command(path: str) -> str:
+    """Read a sentinel, treating "not there" as empty rather than as failure.
+
+    `cat` of a missing file is a non-zero exit and a message on stderr, and
+    the overwhelmingly common case -- no environment provisioned yet -- is
+    not an error worth either.
+    """
+    return f"cat {shlex.quote(path)} 2>/dev/null || true"
+
+
+# Marks the one line of `provision_command`'s output that is data.
+_MARK_VENV_PYTHON = "shinobi-venv-python:"
+
+
+def provision_command(staging: str, mode: str) -> str:
+    """Build the venv inside `staging`, and report its interpreter version.
+
+    The two steps and their order are the load-bearing part, and the obvious
+    one-step alternative is broken in a way that only shows up after
+    publication. Verified on uv 0.11.21: letting `uv sync --frozen` create
+    its own venv produces no `relocatable` marker in `pyvenv.cfg` and a
+    console-script shim that hardcodes the absolute interpreter path -- even
+    under `UV_VENV_RELOCATABLE=1`, and `uv sync` has no `--relocatable` flag
+    at all. After the rename in `publish_command` such a script dies with
+    `exec: /.../.venv/bin/python: not found`. `ninja` *is* a console script,
+    so that is the launcher failing to launch. Creating the venv first with
+    `uv venv --relocatable` and populating it with `uv sync --active` keeps
+    the marker, emits a `dirname $0`-relative shim, and survives the rename.
+
+    `--frozen` is not optional either: it forbids re-resolution, so the
+    remote cannot drift to a version set the lock does not name.
+
+    **`--no-install-project` is not an optimisation, it is a correctness
+    fix**, and the bug it fixes is invisible until after publication. `uv
+    sync` installs the *project* as an **editable** install -- a `.pth` file
+    pointing at the directory it was run in. Here that directory is
+    `.partial-<token>`, which is removed the moment provisioning finishes, so
+    the published environment imports the project and gets
+    `ModuleNotFoundError`. Verified end to end: the console script survives
+    the rename (that is what `--relocatable` bought) and then dies importing
+    the package it exists to run. Two further reasons the project has no
+    business being installed here: its source is not among `env_id`'s inputs,
+    so installing it would make the environment depend on bytes its own name
+    does not cover; and nothing in this path needs it -- the launcher is
+    `ninja`, which arrives as a *dependency* of the recipe repository, and
+    the recipe file itself is rsynced separately and run by path.
+
+    The consequence, which belongs in the user docs: a repository whose own
+    console script is the launcher (caracal driving `caracal run`) does not
+    get that script from a `sync`. That wants a flag, not a silent
+    reintroduction of a path-dependent install.
+
+    Nothing here passes `--no-dev` or selects groups. What a `sync` builds is
+    deliberately what a plain `uv sync` builds in the recipe's own repository
+    -- the environment its maintainers run -- rather than a subset ninja has
+    decided is enough.
+    """
+    venv = f"{staging}/.venv"
+    q_staging, q_venv = shlex.quote(staging), shlex.quote(venv)
+    if mode == MODE_UV_PIP_SYNC:
+        populate = f"uv pip sync --python {q_venv}/bin/python requirements.txt"
+    else:
+        populate = f"VIRTUAL_ENV={q_venv} uv sync --frozen --active --no-install-project"
+    return "; ".join(
+        (
+            "set -e",
+            f"cd {q_staging}",
+            f"uv venv --relocatable {q_venv}",
+            populate,
+            f"printf '{_MARK_VENV_PYTHON}%s\\n' \"$({q_venv}/bin/python -c 'import platform; print(platform.python_version())')\"",
+        )
+    )
+
+
+def parse_provision_output(stdout: str) -> str | None:
+    """The venv interpreter's `X.Y.Z`, or None if the marker never arrived.
+
+    None rather than an exception: this is one informational sentinel field,
+    and a host whose login shell ate the line has still built a working
+    environment.
+    """
+    for line in stdout.splitlines():
+        line = line.strip()
+        if line.startswith(_MARK_VENV_PYTHON):
+            return line[len(_MARK_VENV_PYTHON) :].strip() or None
+    return None
+
+
+# What `publish_command` prints, and what each outcome authorises.
+PUBLISHED = "published"
+COLLIDED = "collided"
+
+_HEREDOC = "SHINOBI_SENTINEL_EOF"
+
+_PUBLISH_PY = "\n".join(
+    (
+        "import os, sys",
+        "try:",
+        "    os.rename(sys.argv[1], sys.argv[2])",
+        f"    print({PUBLISHED!r})",
+        "except OSError:",
+        f"    print({COLLIDED!r})",
+    )
+)
+
+
+def publish_command(staging: str, final: str, sentinel_json: str) -> str:
+    """Write the sentinel last, then rename the venv onto its real name.
+
+    Two things here are not interchangeable with the obvious shell.
+
+    **`os.rename`, not `mv`.** A plain `mv src dst` where `dst` is an
+    existing directory moves `src` *inside* it -- verified -- so a collision
+    would silently produce `<env_id>/.venv` and every later launch would find
+    no sentinel at `<env_id>`. `mv -T` has rename semantics but is GNU
+    coreutils only. `os.rename` is exactly rename(2), and python3 is already
+    required by the probe.
+
+    **A non-zero exit is not how a collision is reported.** rename(2) onto a
+    *non-empty* directory fails with ENOTEMPTY, which is the good case -- a
+    concurrent launch got there first with, by construction, an equivalent
+    environment. It is reported as `COLLIDED` on stdout so the caller can
+    re-read the sentinel and adopt it, rather than as a failure the launch
+    has to distinguish from a real one.
+
+    The sentinel goes in via a quoted heredoc, so nothing in the JSON is
+    expanded by the remote shell. Newline-separated rather than `; `-joined
+    for that reason alone: a heredoc's terminator has to end a line, and a
+    `; ` after it would be a stray leading semicolon on the next.
+    """
+    if _HEREDOC in sentinel_json:
+        raise ValueError(f"sentinel JSON contains the heredoc terminator {_HEREDOC!r}")
+    if not sentinel_json.endswith("\n"):
+        sentinel_json += "\n"
+    venv = f"{staging}/.venv"
+    return "\n".join(
+        (
+            "set -e",
+            f"mkdir -p {shlex.quote(str(PurePosixPath(final).parent))}",
+            f"cat > {shlex.quote(f'{venv}/{SENTINEL_NAME}')} <<'{_HEREDOC}'",
+            sentinel_json + _HEREDOC,
+            f"python3 -c {shlex.quote(_PUBLISH_PY)} {shlex.quote(venv)} {shlex.quote(final)}",
+        )
+    )
+
+
+def cleanup_command(staging: str) -> str:
+    """Remove a staging directory, on success or on any failure.
+
+    Scoped to a `.partial-<token>` path this process generated, and never to
+    anything under a final name -- Invariant 8 is that a pre-existing
+    directory at a final path is never deleted by this feature.
+    """
+    if "/.partial-" not in staging:
+        raise ValueError(f"refusing to remove {staging!r}: not a .partial- staging directory")
+    return f"rm -rf {shlex.quote(staging)}"
 
 
 # ---------------------------------------------------------------------------

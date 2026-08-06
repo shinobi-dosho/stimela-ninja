@@ -50,15 +50,18 @@ import re
 import shlex
 import subprocess
 import time
+import uuid
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from shinobi.exceptions import BackendError
-from shinobi.offload.remote_venv import VENV_USE, resolve_venv_mode
+from shinobi.offload import remote_venv as rv
+from shinobi.offload.remote_venv import VENV_OFF, resolve_venv_mode
 
 
 @dataclass
@@ -326,8 +329,214 @@ class RemoteHandle:
     exit_file: str
 
 
-def _venv_activation(remote_path: str) -> str:
+@dataclass
+class ResolvedVenv:
+    """What `resolve_remote_venv` decided, and what it wants said about it.
+
+    Attributes:
+        path: The provisioned environment to activate, or None to leave the
+            legacy `venv/`/`.venv/` search to do its job alone.
+        provisioned: True only when this call built it. False both for an
+            environment that was already there and for a fallback.
+        notes: Lines for the caller to put on stderr. Returned rather than
+            printed so this stays callable from something that is not a CLI,
+            and so tests can assert on the reasoning rather than on capture.
+    """
+
+    path: str | None = None
+    provisioned: bool = False
+    notes: list[str] = field(default_factory=list)
+
+
+def _uv_missing_message(host: str) -> str:
+    return (
+        f"--venv sync needs uv on {host}'s PATH, and it is not there. Install it on the remote "
+        "(`curl -LsSf https://astral.sh/uv/install.sh | sh`) and try again. ninja will not run that "
+        "for you: it is a supply-chain step this project takes nowhere else, and it would be taken "
+        "silently inside a launch you are watching for pipeline failures."
+    )
+
+
+def resolve_remote_venv(remote: RemoteSpec, mode: str, source: rv.LockSource | None) -> ResolvedVenv:
+    """Decide which environment a launch under `remote` should activate,
+    provisioning one if `mode` is `sync` and none exists.
+
+    `source` is a `remote_venv.LockSource` or None. None is the ordinary
+    state -- most recipes are not in a repository with a lock -- and under
+    `use` it simply means the legacy search runs unchanged, at no extra ssh
+    cost. Under `sync` it is a refusal: there is nothing to provision *from*.
+
+    The order of ssh round-trips is forced by `env_id` containing the remote
+    platform: the probe has to come first, because the sentinel's path is not
+    known until it has. §4.2 of the design says the probe happens "in the
+    same round-trip that tests the sentinel", which is not achievable -- the
+    address depends on the answer. Two round-trips for `use` with a lock,
+    none without one.
+
+    Raises:
+        BackendError: Under `sync`, for every way provisioning can fail to
+            produce an environment matching the requested inputs. Invariant 7:
+            a `sync` that cannot provision fails the launch rather than
+            quietly launching into something else.
+
+    `use` never raises. That is not politeness -- `use` is the *default*, and
+    a lock is discovered by walking up from the target, so almost every
+    `--remote` launch from inside any uv project now takes this path whether
+    or not its author has heard of provisioning. Acquiring a new way to fail
+    there would be a regression dressed as a feature, so every remote-caused
+    failure under `use` becomes a note and the legacy search runs as it
+    always did. Invariant 7 is scoped to `sync` for exactly this reason.
+    """
+    if mode == rv.VENV_OFF:
+        return ResolvedVenv()
+    if source is None:
+        if mode == rv.VENV_SYNC:
+            raise BackendError(
+                "--venv sync needs a lock to provision from, and none was found. Pass --venv-lock "
+                "path/to/uv.lock, or run from a repository with a uv.lock and pyproject.toml above the target."
+            )
+        return ResolvedVenv()
+
+    if mode == rv.VENV_SYNC:
+        return _resolve(remote, mode, source)
+    try:
+        return _resolve(remote, mode, source)
+    except (BackendError, ValueError) as exc:
+        return ResolvedVenv(notes=[f"falling back to the legacy venv search: {exc}"])
+
+
+def _resolve(remote: RemoteSpec, mode: str, source: rv.LockSource) -> ResolvedVenv:
+    probe_proc = _ssh(remote.host, rv.PROBE_COMMAND)
+    if probe_proc.returncode != 0:
+        raise BackendError(f"could not probe {remote.host}: {probe_proc.stderr.strip()}")
+    try:
+        probe = rv.parse_probe(probe_proc.stdout)
+    except ValueError as exc:
+        raise BackendError(f"could not read {remote.host}'s platform: {exc}") from None
+
+    if mode == rv.VENV_SYNC and probe.uv_version is None:
+        raise BackendError(_uv_missing_message(remote.host))
+
+    lock_bytes, pyproject_bytes = source.read()
+    inputs = rv.EnvInputs(
+        lock=lock_bytes,
+        pyproject=pyproject_bytes,
+        extras=(),
+        groups=(),
+        python_request="",
+        mode=source.mode,
+        platform=probe.platform,
+    )
+    env_id = rv.env_id(inputs)
+    final = rv.venv_dir(remote.path, env_id)
+
+    read = _read_remote_sentinel(remote, final)
+    if read.status is rv.SentinelStatus.PRESENT and rv.platform_matches(read.sentinel, probe.platform):
+        return ResolvedVenv(path=final, notes=[f"using the provisioned environment at {final}"])
+
+    # Anything at that path we did not write -- a newer client's sentinel, or
+    # one whose triple disagrees with the host that is about to run. Both mean
+    # "someone else owns this", and neither is something to build over.
+    if read.status is rv.SentinelStatus.FOREIGN or read.status is rv.SentinelStatus.PRESENT:
+        detail = read.detail or f"its platform_triple is {read.sentinel.platform_triple!r}, this host is {probe.platform}"
+        if mode == rv.VENV_SYNC:
+            raise BackendError(f"refusing to provision over {final}: {detail}. Remove it by hand if it is stale.")
+        return ResolvedVenv(notes=[f"ignoring {final}: {detail}"])
+
+    if mode == rv.VENV_USE:
+        return ResolvedVenv(notes=[f"no environment provisioned for this lock ({env_id}); use --venv sync to build one"])
+
+    return _provision(remote, source, inputs, env_id, final, probe)
+
+
+def _read_remote_sentinel(remote: RemoteSpec, final: str) -> rv.SentinelRead:
+    proc = _ssh(remote.host, rv.read_sentinel_command(f"{final}/{rv.SENTINEL_NAME}"))
+    # A non-zero exit here is the ssh transport failing, not a missing file --
+    # `read_sentinel_command` swallows that case deliberately.
+    if proc.returncode != 0:
+        raise BackendError(f"could not read {final}/{rv.SENTINEL_NAME} on {remote.host}: {proc.stderr.strip()}")
+    return rv.read_sentinel(proc.stdout)
+
+
+def _provision(remote: RemoteSpec, source: rv.LockSource, inputs: rv.EnvInputs, env_id: str, final: str, probe: rv.RemoteProbe) -> ResolvedVenv:
+    """Build the environment `inputs` describes, and publish it as `final`.
+
+    The staging directory is removed on every exit path, including the ones
+    that raise -- a failed provision that leaves half a venv behind is disk
+    nobody will ever identify, since a `.partial-<token>` name says nothing
+    about what it was going to be.
+    """
+    staging = rv.staging_dir(remote.path, uuid.uuid4().hex[:12])
+    notes = [f"provisioning {final} (uv {probe.uv_version})"]
+    try:
+        # Reuses the target-file sync path wholesale: it creates the
+        # destination, preserves relative layout, and has been the one rsync
+        # invocation in this module for long enough to be trusted.
+        sync_to_remote(source.project_dir, source.rel_paths(), RemoteSpec(host=remote.host, path=staging))
+
+        build = _ssh(remote.host, rv.provision_command(staging, source.mode))
+        if build.returncode != 0:
+            raise BackendError(f"provisioning {final} on {remote.host} failed:\n{build.stderr.strip()}")
+
+        sentinel = rv.Sentinel(
+            env_id=env_id,
+            lock_sha256=rv.sha256_hex(inputs.lock),
+            pyproject_sha256=rv.sha256_hex(inputs.pyproject),
+            extras=inputs.extras,
+            groups=inputs.groups,
+            python_request=inputs.python_request,
+            mode=inputs.mode,
+            platform_triple=str(inputs.platform),
+            venv_python=rv.parse_provision_output(build.stdout),
+            created=datetime.now(timezone.utc).isoformat(),
+            uv_version=probe.uv_version,
+        )
+        publish = _ssh(remote.host, rv.publish_command(staging, final, sentinel.to_json()))
+        if publish.returncode != 0:
+            raise BackendError(f"publishing {final} on {remote.host} failed:\n{publish.stderr.strip()}")
+
+        if rv.COLLIDED in publish.stdout:
+            return _adopt_after_collision(remote, final, notes)
+        notes.append(f"provisioned {final}")
+        return ResolvedVenv(path=final, provisioned=True, notes=notes)
+    finally:
+        _ssh(remote.host, rv.cleanup_command(staging))
+
+
+def _adopt_after_collision(remote: RemoteSpec, final: str, notes: list[str]) -> ResolvedVenv:
+    """Someone else got to `final` first, or something is sitting there.
+
+    A concurrent launch winning the rename is the good case and needs no
+    apology: its environment was built from the same inputs, which is what
+    `env_id` means. The other case -- a directory with no readable sentinel --
+    is a provision that died between `mkdir` and completion, and it is
+    refused rather than cleared: that path may equally be an environment
+    someone built by hand, and deleting it unasked is not this tool's
+    decision to make.
+    """
+    read = _read_remote_sentinel(remote, final)
+    if read.status is rv.SentinelStatus.PRESENT:
+        notes.append(f"another launch published {final} first; adopting it")
+        return ResolvedVenv(path=final, notes=notes)
+    raise BackendError(
+        f"{final} exists on {remote.host} but holds no usable sentinel ({read.detail}), so it cannot be "
+        "adopted and will not be overwritten -- a previous provision may have died part-way, or it may be "
+        "an environment built by hand. Remove it if it is stale, then re-run."
+    )
+
+
+def _venv_activation(remote_path: str, resolved: str | None = None) -> str:
     """The shell fragment that activates a venv under `remote_path`, if any.
+
+    `resolved` is a provisioned environment's absolute path (see
+    `resolve_remote_venv`). It becomes the *first* branch, ahead of the two
+    legacy ones, so a `sync` that just built an environment activates that
+    one and a `use` that found a matching sentinel prefers it to whatever
+    `venv/` someone left lying around. It is still a branch rather than an
+    unconditional `source`: between resolving it and running this, the only
+    thing that could have removed it is someone deleting it by hand, and the
+    honest response to that is the same not-found message every other shape
+    gets.
 
     An `if`/`elif` chain rather than `A && B || C && D`, which is what this
     used to be and which parses as `((A && B) || C) && D`. Two consequences,
@@ -348,11 +557,17 @@ def _venv_activation(remote_path: str) -> str:
     `ninja run` sees it. `if`/`then`/`fi` does not fork, so it satisfies that
     as readily as the chain it replaced.
     """
+    first = ""
+    tried = "venv/, .venv/"
+    if resolved:
+        activate = shlex.quote(f"{resolved}/bin/activate")
+        first = f"if [ -f {activate} ]; then . {activate}; el"
+        tried = f"{resolved}, {tried}"
     return (
-        "if [ -f venv/bin/activate ]; then . venv/bin/activate; "
+        f"{first}if [ -f venv/bin/activate ]; then . venv/bin/activate; "
         "elif [ -f .venv/bin/activate ]; then . .venv/bin/activate; "
         f"else echo 'ninja: no venv found under {remote_path} "
-        "(tried venv/, .venv/) -- running against the login shell PATH' >&2; fi; "
+        f"(tried {tried}) -- running against the login shell PATH' >&2; fi; "
     )
 
 
@@ -362,6 +577,7 @@ def launch_remote(
     argv: list[str],
     *,
     venv: str | None = None,
+    venv_path: str | None = None,
     add_venv: bool | None = None,
     launcher: list[str] | None = None,
     env: dict[str, str] | None = None,
@@ -378,8 +594,17 @@ def launch_remote(
     passes it (`caracal/remote.py`), so removing it here would break a
     downstream release rather than deprecate one. `resolve_venv_mode`
     reconciles the two and refuses a pair that disagrees; a
-    `DeprecationWarning` is raised when the old spelling is used. The third
-    value the design gives `--venv`, `sync`, does not exist yet.
+    `DeprecationWarning` is raised when the old spelling is used.
+
+    `venv_path` is a provisioned environment to prefer over the legacy
+    `venv/`/`.venv/` search -- `ResolvedVenv.path` from `resolve_remote_venv`,
+    which is where `--venv sync` does its work. This function deliberately
+    does not call that itself: it builds a command and runs it, whereas
+    provisioning copies files and creates directories, and a caller that
+    wants one without the other (caracal's wrapper, every test below) should
+    not have to opt out of side effects. `venv_path` with `venv="off"` is
+    accepted and ignored -- `off` means source nothing, and it means it
+    whatever else was passed.
 
     `launcher` is the argv prefix the target is handed to, defaulting to
     `["ninja", "run"]`. A downstream CLI that builds shinobi recipes of its
@@ -428,7 +653,7 @@ def launch_remote(
     log_path = f"{remote.path.rstrip('/')}/{log_file}"
     exit_path = f"{remote.path.rstrip('/')}/{exit_file}"
 
-    venv_snippet = _venv_activation(remote.path) if venv_mode == VENV_USE else ""
+    venv_snippet = "" if venv_mode == VENV_OFF else _venv_activation(remote.path, venv_path)
 
     env_snippet = ""
     for name, value in (env or {}).items():

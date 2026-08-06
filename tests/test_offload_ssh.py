@@ -6,9 +6,21 @@ import subprocess
 import pytest
 
 from shinobi.exceptions import BackendError
+from shinobi.offload.remote_venv import (
+    COLLIDED,
+    PUBLISHED,
+    EnvInputs,
+    PlatformTriple,
+    Sentinel,
+    env_id,
+    lock_source_for,
+    sha256_hex,
+    venv_dir,
+)
 from shinobi.offload.ssh import (
     _venv_activation,
     RemoteSpec,
+    resolve_remote_venv,
     find_cab_deps,
     launch_remote,
     parse_remote,
@@ -418,3 +430,278 @@ def test_the_activation_reaches_the_calling_shell(tmp_path):
         check=False,
     )
     assert out.stdout.strip() == "activated"
+
+
+# -- resolve_remote_venv --
+
+
+class _FakeRemote:
+    """A scripted stand-in for the remote host.
+
+    Keyed on what each command *is* rather than on call order: the number of
+    round-trips is an implementation detail this suite should not pin, but
+    which command produces which answer is exactly the contract under test.
+    """
+
+    def __init__(self, *, uv="uv 0.11.21", sentinel="", publish=PUBLISHED, build_rc=0, sentinel_after_collision=None):
+        self.uv = uv
+        self.sentinel = sentinel
+        self.publish = publish
+        self.build_rc = build_rc
+        self.sentinel_after_collision = sentinel_after_collision
+        self.commands: list[str] = []
+        self._sentinel_reads = 0
+
+    def __call__(self, host, command):
+        self.commands.append(command)
+        if "shinobi-platform" in command:
+            return _FakeProc(returncode=0, stdout=f"shinobi-platform:x86_64/glibc-2.39/3.11\nshinobi-uv:{self.uv}\n")
+        if command.startswith("cat "):
+            self._sentinel_reads += 1
+            if self._sentinel_reads > 1 and self.sentinel_after_collision is not None:
+                return _FakeProc(returncode=0, stdout=self.sentinel_after_collision)
+            return _FakeProc(returncode=0, stdout=self.sentinel)
+        if "uv venv --relocatable" in command:
+            return _FakeProc(returncode=self.build_rc, stdout="shinobi-venv-python:3.11.9\n", stderr="build blew up")
+        if "os.rename" in command:
+            return _FakeProc(returncode=0, stdout=f"{self.publish}\n")
+        return _FakeProc(returncode=0, stdout="")
+
+    def ran(self, needle):
+        return any(needle in c for c in self.commands)
+
+
+@pytest.fixture
+def fake_remote(monkeypatch):
+    def install(**kwargs):
+        remote = _FakeRemote(**kwargs)
+        monkeypatch.setattr("shinobi.offload.ssh._ssh", remote)
+        monkeypatch.setattr("shinobi.offload.ssh.sync_to_remote", lambda *a, **k: None)
+        return remote
+
+    return install
+
+
+@pytest.fixture
+def lock_source(tmp_path):
+    (tmp_path / "uv.lock").write_text("# lock\n")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    return lock_source_for(tmp_path / "uv.lock")
+
+
+def _matching_sentinel(remote_path, source):
+    """The sentinel a previous `sync` of `source` would have left behind."""
+    lock, pyproject = source.read()
+    inputs = EnvInputs(
+        lock=lock,
+        pyproject=pyproject,
+        extras=(),
+        groups=(),
+        python_request="",
+        mode=source.mode,
+        platform=PlatformTriple("x86_64", "glibc-2.39", "3.11"),
+    )
+    eid = env_id(inputs)
+    sentinel = Sentinel(
+        env_id=eid,
+        lock_sha256=sha256_hex(inputs.lock),
+        pyproject_sha256=sha256_hex(inputs.pyproject),
+        extras=(),
+        groups=(),
+        python_request="",
+        mode=inputs.mode,
+        platform_triple=str(inputs.platform),
+    )
+    return sentinel.to_json(), venv_dir(remote_path, eid)
+
+
+def test_off_resolves_to_nothing_without_touching_the_host(fake_remote, lock_source):
+    remote = fake_remote()
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "off", lock_source)
+    assert resolved.path is None
+    assert remote.commands == []
+
+
+def test_use_without_a_lock_costs_no_round_trips(fake_remote):
+    """Most recipes are not in a repository with a lock, and `use` is the
+    default -- so the common case must not have acquired an ssh call."""
+    remote = fake_remote()
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "use", None)
+    assert resolved.path is None
+    assert remote.commands == []
+
+
+def test_sync_without_a_lock_is_refused(fake_remote):
+    remote = fake_remote()
+    with pytest.raises(BackendError, match="needs a lock to provision from"):
+        resolve_remote_venv(RemoteSpec("host", "/p"), "sync", None)
+    assert remote.commands == []
+
+
+def test_sync_refuses_a_host_with_no_uv_and_says_what_to_do(fake_remote, lock_source):
+    """The design's open question 2, decided: refuse with instructions.
+    Piping an installer into a shell on the operator's account is a
+    supply-chain step this project takes nowhere else, and it would be
+    taken silently, inside a launch they are watching for other failures."""
+    remote = fake_remote(uv="")
+    with pytest.raises(BackendError, match="astral.sh/uv/install.sh"):
+        resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    assert not remote.ran("uv venv")
+
+
+def test_use_adopts_a_matching_environment(fake_remote, lock_source):
+    sentinel, expected = _matching_sentinel("/p", lock_source)
+    fake_remote(sentinel=sentinel)
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "use", lock_source)
+    assert resolved.path == expected
+    assert not resolved.provisioned
+
+
+def test_sync_does_not_rebuild_what_is_already_there(fake_remote, lock_source):
+    """Idempotence: the sentinel is present, so there is nothing to do. No
+    stamp file, no freshness comparison, nothing that can disagree."""
+    sentinel, expected = _matching_sentinel("/p", lock_source)
+    remote = fake_remote(sentinel=sentinel)
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    assert resolved.path == expected
+    assert not remote.ran("uv venv")
+
+
+def test_use_falls_back_when_nothing_is_provisioned(fake_remote, lock_source):
+    remote = fake_remote(sentinel="")
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "use", lock_source)
+    assert resolved.path is None
+    assert any("--venv sync" in note for note in resolved.notes)
+    assert not remote.ran("uv venv")
+
+
+def test_use_never_writes_to_the_remote(fake_remote, lock_source):
+    """Invariant 4. Only `sync` provisions."""
+    remote = fake_remote(sentinel="")
+    resolve_remote_venv(RemoteSpec("host", "/p"), "use", lock_source)
+    assert not any(w in c for c in remote.commands for w in ("uv venv", "uv sync", "os.rename", "rm -rf"))
+
+
+def test_use_degrades_rather_than_failing_when_the_host_misbehaves(fake_remote, lock_source, monkeypatch):
+    """`use` is the default and a lock is discovered by walking up, so this
+    path runs for people who have never heard of provisioning. Acquiring a
+    new way to fail there would be a regression dressed as a feature."""
+    fake_remote()
+    monkeypatch.setattr("shinobi.offload.ssh._ssh", lambda h, c: _FakeProc(returncode=0, stdout="not a probe"))
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "use", lock_source)
+    assert resolved.path is None
+    assert any("falling back" in note for note in resolved.notes)
+
+
+def test_sync_provisions_and_publishes(fake_remote, lock_source):
+    _sentinel_json, expected = _matching_sentinel("/p", lock_source)
+    remote = fake_remote(sentinel="")
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    assert resolved.path == expected
+    assert resolved.provisioned
+    assert remote.ran("uv venv --relocatable")
+    assert remote.ran("os.rename")
+
+
+def test_a_failed_build_fails_the_launch_and_cleans_up(fake_remote, lock_source):
+    """Invariant 7: a `sync` that cannot provision fails the launch rather
+    than quietly launching into something else."""
+    remote = fake_remote(sentinel="", build_rc=1)
+    with pytest.raises(BackendError, match="build blew up"):
+        resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    assert remote.ran("rm -rf")
+
+
+def test_the_staging_directory_is_removed_on_success_too(fake_remote, lock_source):
+    remote = fake_remote(sentinel="")
+    resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    assert remote.ran("rm -rf")
+    assert all("/.partial-" in c for c in remote.commands if "rm -rf" in c)
+
+
+def test_a_concurrent_launch_winning_the_rename_is_adopted(fake_remote, lock_source):
+    """The good case, and it needs no apology: whoever won built from the
+    same inputs, which is what env_id means."""
+    sentinel, expected = _matching_sentinel("/p", lock_source)
+    fake_remote(sentinel="", publish=COLLIDED, sentinel_after_collision=sentinel)
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    assert resolved.path == expected
+    assert any("adopting it" in note for note in resolved.notes)
+
+
+def test_a_collision_with_no_sentinel_is_refused_not_cleared(fake_remote, lock_source):
+    """That path may be an environment someone built by hand. Deleting it
+    unasked is not this tool's decision to make."""
+    remote = fake_remote(sentinel="", publish=COLLIDED, sentinel_after_collision="")
+    with pytest.raises(BackendError, match="will not be overwritten"):
+        resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    assert not any("rm -rf" in c and "/.partial-" not in c for c in remote.commands)
+
+
+def test_sync_refuses_to_provision_over_a_newer_clients_environment(fake_remote, lock_source):
+    """FOREIGN, not ABSENT. Merging the two would make `sync` overwrite an
+    environment a newer ninja owns."""
+    sentinel, _expected = _matching_sentinel("/p", lock_source)
+    remote = fake_remote(sentinel=sentinel.replace('"schema": 1', '"schema": 99'))
+    with pytest.raises(BackendError, match="refusing to provision over"):
+        resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
+    assert not remote.ran("uv venv")
+
+
+def test_use_ignores_a_newer_clients_environment_and_carries_on(fake_remote, lock_source):
+    sentinel, _expected = _matching_sentinel("/p", lock_source)
+    fake_remote(sentinel=sentinel.replace('"schema": 1', '"schema": 99'))
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "use", lock_source)
+    assert resolved.path is None
+    assert any("ignoring" in note for note in resolved.notes)
+
+
+def test_a_sentinel_for_another_platform_is_never_activated(fake_remote, lock_source):
+    """Invariant 3. At this path it also means something is wrong -- the
+    triple is *in* env_id, so a mismatch here is not our environment."""
+    sentinel, _expected = _matching_sentinel("/p", lock_source)
+    fake_remote(sentinel=sentinel.replace("x86_64/glibc-2.39/3.11", "aarch64/glibc-2.31/3.11"))
+    resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "use", lock_source)
+    assert resolved.path is None
+
+
+# -- the activation fragment, with a resolved environment --
+
+
+def test_a_resolved_environment_becomes_the_first_branch():
+    fragment = _venv_activation("/p", "/p/.shinobi/venvs/deadbeef")
+    assert fragment.index("deadbeef") < fragment.index("venv/bin/activate")
+    assert fragment.count("if [ ") == 3  # one `if`, two `elif` -- exactly one branch runs
+    # No subshell anywhere a `source` could land in: it has to change the
+    # PATH of the same shell that later runs `ninja run`. The only paren in
+    # the fragment is inside the single-quoted not-found message.
+    assert "(" not in fragment.split("else echo '")[0]
+
+
+def test_the_not_found_message_names_the_resolved_path_too():
+    assert "deadbeef" in _venv_activation("/p", "/p/.shinobi/venvs/deadbeef").split("no venv found")[1]
+
+
+def test_launch_remote_activates_a_resolved_environment(monkeypatch):
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        return _FakeProc(returncode=0, stdout="1\n")
+
+    monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", fake_run)
+    launch_remote(RemoteSpec("host", "/p"), "recipe.py:tool", [], venv="sync", venv_path="/p/.shinobi/venvs/deadbeef")
+    assert "/p/.shinobi/venvs/deadbeef/bin/activate" in captured["args"][-1]
+
+
+def test_off_ignores_a_resolved_environment(monkeypatch):
+    """`off` means source nothing, and it means it whatever else was passed."""
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        return _FakeProc(returncode=0, stdout="1\n")
+
+    monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", fake_run)
+    launch_remote(RemoteSpec("host", "/p"), "recipe.py:tool", [], venv="off", venv_path="/p/.shinobi/venvs/deadbeef")
+    assert "bin/activate" not in captured["args"][-1]
