@@ -1,9 +1,9 @@
 # Provisioning the launcher environment for `ninja run --remote`
 
-**Status:** v3 — **steps 1-3 shipped; steps 4-6 un-gated and unimplemented.**
-§8.1, which gated everything past step 1, is closed: option (a). What remains is
-the provisioner itself (step 4), the §4.6 digest (step 5) and user docs for
-`sync` (step 6).
+**Status:** v3 — **steps 1-4 shipped; `--venv sync` provisions.** §8.1, which
+gated everything past step 1, is closed: option (a). What remains is the §4.6
+divergence digest (step 5) and the user docs (step 6, partially done —
+`docs/cli.rst` describes `sync`, `docs/offloading.rst` does not yet).
 **Context:** `ninja run TARGET --remote user@host:/path` (`shinobi.offload.ssh`)
 
 **Change log**
@@ -344,6 +344,25 @@ silently drift to a version set the lock does not name. For `requirements.txt`
 (mode `uv-pip-sync`) the sequence is `uv venv --relocatable "$STAGING"` then
 `uv pip sync --python "$STAGING/bin/python" requirements.txt`.
 
+**A third flag the design missed, found by running this end to end:
+`--no-install-project`.** `uv sync` installs the *project* as an **editable**
+install — a `.pth` pointing at the directory it ran in, which here is
+`.partial-<token>`, which §4.5 deletes the moment provisioning finishes. The
+published environment then imports the project and gets `ModuleNotFoundError`.
+This is exactly the failure mode `--relocatable` was added to prevent, one
+layer further in: verified end to end, the console script survives the rename
+and *then* dies importing the package. Two further reasons the project has no
+business being installed: its source is not among §4.2's inputs, so installing
+it would make the environment depend on bytes `env_id` does not cover; and
+nothing needs it — the launcher is `ninja`, which arrives as a *dependency* of
+the recipe repository, and the recipe file itself is rsynced separately and run
+by path. It also means only two small files travel, not a repository.
+
+The consequence belongs in the user docs (§9 step 6): a repository whose *own*
+console script is the launcher — caracal driving `caracal run` — does not get
+that script from a `sync`. That wants a flag, not a silent reintroduction of a
+path-dependent install.
+
 **Activation replaces the §1 fragment outright.** Step 1 of §9 shipped the
 standalone form, before `env_id` exists — this is now the tree's
 `_venv_activation` (`offload/ssh.py:349-354`), modulo the `; ` separators an
@@ -375,6 +394,17 @@ equivalent. It does **not** fail onto an *empty* directory; that case is
 replaced silently. Verified both ways. This is why §4.3 exists: correctness
 rests on the sentinel, and `rename`'s behaviour is only an optimisation that
 usually avoids the redundant work.
+
+**`rename()` means `os.rename`, not `mv`, and the difference is not
+cosmetic.** A plain `mv src dst` where `dst` is an existing directory moves
+`src` *inside* it — verified — so a collision would silently produce
+`<env_id>/.venv` and every subsequent launch would find no sentinel at
+`<env_id>` and provision again, forever. `mv -T` has rename semantics but is
+GNU coreutils only. The implementation shells out to `python3 -c 'os.rename'`,
+which is exactly rename(2) and needs nothing the §4.2 probe does not already
+require. A collision is reported on *stdout*, not as a non-zero exit: it is the
+good case, and it should not have to be distinguished from a real failure by
+exit code.
 
 If `rename` fails, re-test the sentinel. Present → adopt it. Absent → a
 directory exists at the final path with no sentinel, i.e. a previous provision
@@ -598,9 +628,15 @@ backend documents itself as their *complement* (`backends/venv.py:5-8`).
 3. ~~**`--venv` flag**~~ **DONE.** `use`/`off` only, the deprecated aliases on
    both the CLI and `launch_remote` (§4.7). No provisioning;
    behaviour-preserving.
-4. **`sync` mode**: lock discovery, rsync of the lock/pyproject pair, the §4.4
-   two-step provisioner, §4.5 publication, failure surfacing. Test the
-   rename-collision paths (sentinel present → adopt; absent → refuse).
+4. ~~**`sync` mode**~~ **DONE.** `--venv sync` plus `--venv-lock`;
+   `discover_lock` walks up from the target; the §4.4 provisioner (now with
+   `--no-install-project`); §4.5 publication via `os.rename`; both
+   rename-collision paths. Two things the design did not say, both now in
+   §4.4/§4.5 above, and one it did not anticipate: **`use` cannot raise.** A
+   lock is discovered by walking up, so the default mode now runs this path
+   for people who have never heard of provisioning — every remote-caused
+   failure there becomes a note and the legacy search proceeds. Invariant 7
+   was already scoped to `sync`; this is what that scoping is *for*.
 5. **§4.6 digest**: split `venv_digest`, run `_FREEZE_CODE` over ssh, record and
    compare.
 6. **Docs**: `docs/cli.rst:93-104` and `docs/offloading.rst`; state §6.1

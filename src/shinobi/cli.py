@@ -174,6 +174,7 @@ def _run_remote(
     sandbox: bool | None,
     remote: str,
     venv: str | None,
+    venv_lock: str | None,
     add_venv: bool | None,
     include_paths: tuple[str, ...],
 ) -> None:
@@ -243,13 +244,36 @@ def _run_remote(
     rel_paths = [p.relative_to(base_dir) for p in all_paths]
     sync_to_remote(base_dir, rel_paths, remote_spec)
 
+    # After the target is synced, before it is launched. Provisioning can
+    # take minutes and can fail, and doing it here means a failure lands
+    # before a detached process exists to be confused about.
+    from shinobi.offload.remote_venv import discover_lock, lock_source_for
+    from shinobi.offload.ssh import resolve_remote_venv
+
+    try:
+        source = lock_source_for(Path(venv_lock)) if venv_lock else discover_lock(pyfile)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    if source is not None:
+        click.echo(f"venv: {source.mode} from {source.lock}", err=True)
+    try:
+        resolved = resolve_remote_venv(remote_spec, venv_mode, source)
+    except ShinobiError as exc:
+        # Invariant 7: a `sync` that cannot provision fails the launch. As a
+        # ClickException rather than a traceback -- every one of these is a
+        # condition on the remote host with something for the operator to do
+        # about it, not a bug in ninja.
+        raise click.ClickException(str(exc)) from None
+    for note in resolved.notes:
+        click.echo(f"venv: {note}", err=True)
+
     remote_target = f"{pyfile.relative_to(base_dir)}:{attr}"
     # `ninja run`'s own flags first, then `ctx.args` (the target's derived
     # parameters). Order is what keeps them separable: a target parameter
     # taking a value can't swallow a trailing `--sandbox` if the flags never
     # trail it.
     run_argv = [*_forwarded_run_flags(quiet=quiet, provenance=provenance, sandbox=sandbox), *ctx.args]
-    handle = launch_remote(remote_spec, remote_target, run_argv, venv=venv_mode)
+    handle = launch_remote(remote_spec, remote_target, run_argv, venv=venv_mode, venv_path=resolved.path)
 
     handle_path = _handle_path(None, f"{pyfile.stem}.{attr}")
     handle_path.parent.mkdir(parents=True, exist_ok=True)
@@ -319,9 +343,16 @@ def _run_remote(
 @click.option(
     "--venv",
     "venv",
-    type=click.Choice(["off", "use"]),
+    type=click.Choice(["off", "use", "sync"]),
     default=None,
-    help="With --remote, what to do about the remote Python environment: 'use' (default) sources venv/bin/activate or, failing that, .venv/bin/activate under the remote path, warning on stderr if neither exists; 'off' sources nothing.",
+    help="With --remote, what to do about the remote Python environment: 'use' (default) activates a provisioned environment matching the lock if there is one, else venv/bin/activate or .venv/bin/activate under the remote path, warning on stderr if there is nothing; 'sync' provisions that environment from the lock first, with uv; 'off' sources nothing.",
+)
+@click.option(
+    "--venv-lock",
+    "venv_lock",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="With --venv sync/use, the uv.lock (or requirements.txt) to provision the remote environment from. Defaults to the nearest one above the target file.",
 )
 @click.option(
     # Kept for one release as the deprecated spelling of `--venv use/off`.
@@ -355,6 +386,7 @@ def run(
     sandbox: bool | None,
     remote: str | None,
     venv: str | None,
+    venv_lock: str | None,
     add_venv: bool | None,
     include_paths: tuple[str, ...],
 ) -> None:
@@ -380,6 +412,7 @@ def run(
             sandbox=sandbox,
             remote=remote,
             venv=venv,
+            venv_lock=venv_lock,
             add_venv=add_venv,
             include_paths=include_paths,
         )
