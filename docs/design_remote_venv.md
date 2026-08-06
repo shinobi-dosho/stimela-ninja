@@ -246,12 +246,34 @@ env_id = sha256(
 )[:16]
 ```
 
-`platform_triple` is `<uname -m>/<libc id+version>/<python X.Y.Z>`, read off the
-remote in the same ssh round-trip that tests the sentinel. Folding it in is what
-makes Invariant 2 enforceable rather than aspirational: two hosts of different
-architecture sharing one `remote.path` compute *different* `env_id`s and cannot
-collide. It costs nothing — the round-trip is already being made — and it is the
-one input that cannot be known locally.
+`platform_triple` is `<machine>/<libc id-version>/<host python X.Y>`, read off
+the remote in the same ssh round-trip that tests the sentinel. Folding it in is
+what makes Invariant 2 enforceable rather than aspirational: two hosts of
+different architecture sharing one `remote.path` compute *different* `env_id`s
+and cannot collide. It costs nothing — the round-trip is already being made —
+and it is the one input that cannot be known locally.
+
+Two corrections that implementing step 2 forced, both narrowing what the triple
+claims:
+
+- **It describes the *host*, not the venv's interpreter, and is probed without
+  `uv`** (`PLATFORM_PROBE` is a `python3 -c` one-liner). Asking
+  `uv python find` which interpreter it would use would be more precise about
+  the venv and is nonetheless wrong twice over: `use` mode must validate a
+  sentinel on a host that may have no uv at all, and `env_id` *contains* the
+  triple, so a triple derived from what uv would build is circular. uv can also
+  download an interpreter that is not the host's, so a triple presented as the
+  venv's python would be wrong exactly when the difference mattered. The venv's
+  real `X.Y.Z` is recorded separately as the sentinel's informational
+  `venv_python`.
+- **`X.Y`, not `X.Y.Z`.** A patch release does not change ABI compatibility, and
+  including it would re-provision every environment on every distro point
+  update — a false re-provision on a schedule set by someone else's release
+  cadence.
+
+`libc` is `glibc-2.39` or the literal `unknown`: `platform.libc_ver()` returns
+empty strings on musl, and a musl host recorded as `glibc-` would be asserting a
+match it does not have.
 
 What this buys, and what it does not:
 
@@ -275,9 +297,10 @@ Written **last**, inside the directory, after provisioning succeeds:
 ```json
 {"schema": 1,
  "env_id": "...", "lock_sha256": "...", "pyproject_sha256": "...",
- "extras": [...], "python_request": "...", "mode": "uv-sync",
- "platform_triple": "x86_64/glibc-2.39/3.11.9",
- "venv_digest": "sha256:...", "created": "<iso8601>", "uv_version": "..."}
+ "extras": [...], "groups": [...], "python_request": "...", "mode": "uv-sync",
+ "platform_triple": "x86_64/glibc-2.39/3.11",
+ "venv_digest": "sha256:...", "venv_python": "3.11.9",
+ "created": "<iso8601>", "uv_version": "..."}
 ```
 
 Every existence question is asked of this file, never of the directory:
