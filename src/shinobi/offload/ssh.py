@@ -50,6 +50,7 @@ import re
 import shlex
 import subprocess
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,7 @@ from typing import Any
 import yaml
 
 from shinobi.exceptions import BackendError
+from shinobi.offload.remote_venv import VENV_USE, resolve_venv_mode
 
 
 @dataclass
@@ -335,7 +337,7 @@ def _venv_activation(remote_path: str) -> str:
     directory" into the log of a run that was fine. Exactly one branch runs
     here.
 
-    The `else` matters as much as the ordering. `--add-venv` defaults to on,
+    The `else` matters as much as the ordering. `--venv` defaults to `use`,
     so a remote with no venv at all used to source nothing and say nothing,
     leaving `ninja run` to resolve against whatever the login shell's PATH
     happened to hold -- a difference that shows up as a confusing failure much
@@ -359,7 +361,8 @@ def launch_remote(
     remote_target: str,
     argv: list[str],
     *,
-    add_venv: bool,
+    venv: str | None = None,
+    add_venv: bool | None = None,
     launcher: list[str] | None = None,
     env: dict[str, str] | None = None,
 ) -> RemoteHandle:
@@ -367,6 +370,16 @@ def launch_remote(
     `remote.host`, under `remote.path`. See the module docstring for the
     detach mechanism. Returns a `RemoteHandle` for later `status_ssh`
     polling.
+
+    `venv` is what to do about the remote Python environment:
+    `remote_venv.VENV_USE` (the default) activates one under `remote.path`,
+    `VENV_OFF` sources nothing. It replaces the boolean `add_venv`, which is
+    still accepted as a deprecated alias -- caracal's own `--remote` wrapper
+    passes it (`caracal/remote.py`), so removing it here would break a
+    downstream release rather than deprecate one. `resolve_venv_mode`
+    reconciles the two and refuses a pair that disagrees; a
+    `DeprecationWarning` is raised when the old spelling is used. The third
+    value the design gives `--venv`, `sync`, does not exist yet.
 
     `launcher` is the argv prefix the target is handed to, defaulting to
     `["ninja", "run"]`. A downstream CLI that builds shinobi recipes of its
@@ -395,6 +408,10 @@ def launch_remote(
     in an `export` and a malformed one would otherwise be a shell
     injection rather than an error.
     """
+    venv_mode, deprecation = resolve_venv_mode(venv, add_venv)
+    if deprecation:
+        warnings.warn(deprecation, DeprecationWarning, stacklevel=2)
+
     launcher = list(launcher) if launcher else ["ninja", "run"]
     if not launcher:
         raise ValueError("launcher must be a non-empty argv prefix")
@@ -411,7 +428,7 @@ def launch_remote(
     log_path = f"{remote.path.rstrip('/')}/{log_file}"
     exit_path = f"{remote.path.rstrip('/')}/{exit_file}"
 
-    venv_snippet = _venv_activation(remote.path) if add_venv else ""
+    venv_snippet = _venv_activation(remote.path) if venv_mode == VENV_USE else ""
 
     env_snippet = ""
     for name, value in (env or {}).items():

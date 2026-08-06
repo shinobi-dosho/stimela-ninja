@@ -136,7 +136,7 @@ def test_launch_remote_captures_pid_from_echoed_output(monkeypatch):
         return _FakeProc(returncode=0, stdout="12345\n")
 
     monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", fake_run)
-    handle = launch_remote(RemoteSpec("host", "/remote/path"), "recipe.py:tool", ["--text", "hi"], add_venv=True)
+    handle = launch_remote(RemoteSpec("host", "/remote/path"), "recipe.py:tool", ["--text", "hi"], venv="use")
 
     assert handle.pid == "12345"
     assert handle.host == "host"
@@ -150,6 +150,44 @@ def test_launch_remote_captures_pid_from_echoed_output(monkeypatch):
     assert ". venv/bin/activate" in remote_cmd
     assert "recipe.py:tool" in remote_cmd
     assert "/remote/path/ninja-run-" in remote_cmd  # log/exit paths are absolute, not cwd-relative
+
+
+def test_launch_remote_defaults_to_activating_a_venv(monkeypatch):
+    """`venv` is keyword-only with a default, where `add_venv` was required.
+    A caller that names neither gets `use`, which is what every existing
+    caller passing `add_venv=True` was getting."""
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        return _FakeProc(returncode=0, stdout="1\n")
+
+    monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", fake_run)
+    launch_remote(RemoteSpec("host", "/p"), "recipe.py:tool", [])
+    assert ". venv/bin/activate" in captured["args"][-1]
+
+
+@pytest.mark.parametrize("add_venv,activates", [(True, True), (False, False)])
+def test_launch_remote_still_accepts_the_deprecated_boolean(monkeypatch, add_venv, activates):
+    """caracal's own `--remote` wrapper passes `add_venv=` into this
+    function (`caracal/remote.py`), so dropping it here would break a
+    downstream release rather than deprecate one."""
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        return _FakeProc(returncode=0, stdout="1\n")
+
+    monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", fake_run)
+    with pytest.warns(DeprecationWarning, match="add-venv"):
+        launch_remote(RemoteSpec("host", "/p"), "recipe.py:tool", [], add_venv=add_venv)
+    assert (". venv/bin/activate" in captured["args"][-1]) is activates
+
+
+def test_launch_remote_refuses_two_venv_flags_that_disagree(monkeypatch):
+    monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", lambda *a, **k: _FakeProc(returncode=0, stdout="1\n"))
+    with pytest.raises(ValueError, match="different things"):
+        launch_remote(RemoteSpec("host", "/p"), "recipe.py:tool", [], venv="off", add_venv=True)
 
 
 def test_launch_remote_honours_a_custom_launcher(monkeypatch):
@@ -167,7 +205,7 @@ def test_launch_remote_honours_a_custom_launcher(monkeypatch):
         RemoteSpec("host", "/remote/path"),
         "line.yaml",
         ["--backend", "apptainer"],
-        add_venv=False,
+        venv="off",
         launcher=["caracal", "run"],
     )
 
@@ -187,7 +225,7 @@ def test_launch_remote_defaults_to_ninja_run(monkeypatch):
         return _FakeProc(returncode=0, stdout="1\n")
 
     monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", fake_run)
-    handle = launch_remote(RemoteSpec("host", "/p"), "recipe.py:tool", [], add_venv=False)
+    handle = launch_remote(RemoteSpec("host", "/p"), "recipe.py:tool", [], venv="off")
 
     assert "ninja run recipe.py:tool" in captured["args"][-1]
     assert handle.log_file.startswith("ninja-run-")
@@ -208,7 +246,7 @@ def test_launch_remote_exports_env_after_the_venv_activation(monkeypatch):
         RemoteSpec("host", "/remote/path"),
         "recipe.py:tool",
         [],
-        add_venv=True,
+        venv="use",
         env={"APPTAINER_CACHEDIR": "/home/u/.apptainer/cache"},
     )
 
@@ -230,7 +268,7 @@ def test_launch_remote_quotes_env_values(monkeypatch):
         RemoteSpec("host", "/remote/path"),
         "recipe.py:tool",
         [],
-        add_venv=False,
+        venv="off",
         env={"EVIL": "x; rm -rf /"},
     )
 
@@ -249,7 +287,7 @@ def test_launch_remote_refuses_a_malformed_env_name(monkeypatch, name):
         lambda args, **kwargs: _FakeProc(returncode=0, stdout="7\n"),
     )
     with pytest.raises(ValueError, match="not a valid environment variable name"):
-        launch_remote(RemoteSpec("host", "/p"), "r.py:t", [], add_venv=False, env={name: "x"})
+        launch_remote(RemoteSpec("host", "/p"), "r.py:t", [], venv="off", env={name: "x"})
 
 
 def test_launch_remote_raises_on_non_pid_output(monkeypatch):
@@ -258,7 +296,7 @@ def test_launch_remote_raises_on_non_pid_output(monkeypatch):
         lambda args, **kwargs: _FakeProc(returncode=0, stdout="not-a-pid\n"),
     )
     with pytest.raises(BackendError, match="unexpected launch output"):
-        launch_remote(RemoteSpec("host", "/remote/path"), "recipe.py:tool", [], add_venv=False)
+        launch_remote(RemoteSpec("host", "/remote/path"), "recipe.py:tool", [], venv="off")
 
 
 def test_status_ssh_sends_a_single_trailing_arg_and_uses_absolute_exit_path(monkeypatch):

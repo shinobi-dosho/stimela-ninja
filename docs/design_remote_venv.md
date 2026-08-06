@@ -1,7 +1,9 @@
 # Provisioning the launcher environment for `ninja run --remote`
 
-**Status:** v3 — **step 1 shipped (#85); steps 2-5 un-gated and unimplemented.**
-§8.1, which gated everything past step 1, is closed: option (a).
+**Status:** v3 — **steps 1-3 shipped; steps 4-6 un-gated and unimplemented.**
+§8.1, which gated everything past step 1, is closed: option (a). What remains is
+the provisioner itself (step 4), the §4.6 digest (step 5) and user docs for
+`sync` (step 6).
 **Context:** `ninja run TARGET --remote user@host:/path` (`shinobi.offload.ssh`)
 
 **Change log**
@@ -246,12 +248,34 @@ env_id = sha256(
 )[:16]
 ```
 
-`platform_triple` is `<uname -m>/<libc id+version>/<python X.Y.Z>`, read off the
-remote in the same ssh round-trip that tests the sentinel. Folding it in is what
-makes Invariant 2 enforceable rather than aspirational: two hosts of different
-architecture sharing one `remote.path` compute *different* `env_id`s and cannot
-collide. It costs nothing — the round-trip is already being made — and it is the
-one input that cannot be known locally.
+`platform_triple` is `<machine>/<libc id-version>/<host python X.Y>`, read off
+the remote in the same ssh round-trip that tests the sentinel. Folding it in is
+what makes Invariant 2 enforceable rather than aspirational: two hosts of
+different architecture sharing one `remote.path` compute *different* `env_id`s
+and cannot collide. It costs nothing — the round-trip is already being made —
+and it is the one input that cannot be known locally.
+
+Two corrections that implementing step 2 forced, both narrowing what the triple
+claims:
+
+- **It describes the *host*, not the venv's interpreter, and is probed without
+  `uv`** (`PLATFORM_PROBE` is a `python3 -c` one-liner). Asking
+  `uv python find` which interpreter it would use would be more precise about
+  the venv and is nonetheless wrong twice over: `use` mode must validate a
+  sentinel on a host that may have no uv at all, and `env_id` *contains* the
+  triple, so a triple derived from what uv would build is circular. uv can also
+  download an interpreter that is not the host's, so a triple presented as the
+  venv's python would be wrong exactly when the difference mattered. The venv's
+  real `X.Y.Z` is recorded separately as the sentinel's informational
+  `venv_python`.
+- **`X.Y`, not `X.Y.Z`.** A patch release does not change ABI compatibility, and
+  including it would re-provision every environment on every distro point
+  update — a false re-provision on a schedule set by someone else's release
+  cadence.
+
+`libc` is `glibc-2.39` or the literal `unknown`: `platform.libc_ver()` returns
+empty strings on musl, and a musl host recorded as `glibc-` would be asserting a
+match it does not have.
 
 What this buys, and what it does not:
 
@@ -275,9 +299,10 @@ Written **last**, inside the directory, after provisioning succeeds:
 ```json
 {"schema": 1,
  "env_id": "...", "lock_sha256": "...", "pyproject_sha256": "...",
- "extras": [...], "python_request": "...", "mode": "uv-sync",
- "platform_triple": "x86_64/glibc-2.39/3.11.9",
- "venv_digest": "sha256:...", "created": "<iso8601>", "uv_version": "..."}
+ "extras": [...], "groups": [...], "python_request": "...", "mode": "uv-sync",
+ "platform_triple": "x86_64/glibc-2.39/3.11",
+ "venv_digest": "sha256:...", "venv_python": "3.11.9",
+ "created": "<iso8601>", "uv_version": "..."}
 ```
 
 Every existence question is asked of this file, never of the directory:
@@ -395,9 +420,30 @@ alone.
 §1.1's silent no-op becomes a warning naming every path tried and §1.2's
 precedence bug is gone. `--add-venv`/`--no-add-venv` are kept as hidden aliases
 for `use`/`off` for one release, then dropped; the package is `0.1.0b4`, so this
-is cheap. Click has no native way to alias a boolean flag pair onto values of an
-unrelated choice option, so this needs a small callback or a custom
-`click.Option` — minor, but not free.
+is cheap.
+
+Implemented in step 3, with three notes the design did not anticipate:
+
+- **No custom `click.Option` or callback was needed.** Both options are simply
+  declared, each with `default=None`, and one pure function
+  (`remote_venv.resolve_venv_mode`) reconciles them. The tri-state default is
+  the whole trick and is load-bearing: a boolean default is indistinguishable
+  from someone who typed `--add-venv`, and telling those apart is the only way
+  to notice `--venv off --add-venv` asking for two different environments.
+- **Disagreement is refused, not resolved by precedence.** Either precedence
+  rule silently hands half the people who write it the environment they did not
+  ask for, on a host they cannot see.
+- **The deprecation reaches the library API too, because a downstream is on it.**
+  caracal's `--remote` wrapper calls `launch_remote(..., add_venv=)`
+  (`caracal/remote.py`), so the keyword is kept alongside `venv=` and raises a
+  `DeprecationWarning`. Removing it in step 3 would have broken a downstream
+  release rather than deprecated one. `resolve_venv_mode` returns the notice
+  rather than emitting it, so the CLI can put it on stderr in click's voice
+  while the library raises a warning — same rule, two audiences.
+
+`sync` is deliberately **not** an accepted value until step 4 ships the
+provisioner. A flag that accepts a word it cannot honour is worse than one that
+refuses it.
 
 ### 4.8 Out of scope by construction
 
@@ -544,12 +590,14 @@ backend documents itself as their *complement* (`backends/venv.py:5-8`).
 1. ~~**Fix §1.2 standalone.**~~ **DONE — PR #85.** The `&&`/`||` fragment is
    gone; `_venv_activation` (`offload/ssh.py:327-354`) is the §4.4 chain, with
    the not-found warning and a test over all four on-disk shapes.
-2. **`env_id` + sentinel.** `_env_id()` over the §4.2 inputs, the platform
-   probe, sentinel read/write, and unit tests over hash inputs — including that
-   changing *each* input moves the id, and that an empty directory reads as
-   absent.
-3. **`--venv` flag** with `use`/`off` only, plus the hidden aliases and the
-   Click callback (§4.7). Still no provisioning; behaviour-preserving.
+2. ~~**`env_id` + sentinel.**~~ **DONE.** `shinobi.offload.remote_venv`:
+   `env_id` over the §4.2 inputs, `PLATFORM_PROBE`/`parse_platform_probe`,
+   `read_sentinel`'s three outcomes, and unit tests over hash inputs —
+   including that changing *each* input moves the id, and that an absent
+   sentinel (an empty directory) reads as absent.
+3. ~~**`--venv` flag**~~ **DONE.** `use`/`off` only, the deprecated aliases on
+   both the CLI and `launch_remote` (§4.7). No provisioning;
+   behaviour-preserving.
 4. **`sync` mode**: lock discovery, rsync of the lock/pyproject pair, the §4.4
    two-step provisioner, §4.5 publication, failure surfacing. Test the
    rename-collision paths (sentinel present → adopt; absent → refuse).

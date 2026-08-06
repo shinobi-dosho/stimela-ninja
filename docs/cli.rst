@@ -93,10 +93,16 @@ See :doc:`concepts/provenance`.
 Add ``--remote user@host:/path`` to launch on a remote host instead of
 locally: the target file and its statically-discoverable cab deps are synced
 over, then the run happens detached -- check progress with ``ninja status``.
-``--add-venv/--no-add-venv`` (default: on) sources ``venv/bin/activate`` or,
-failing that, ``.venv/bin/activate`` under the remote path first. Exactly one
-is sourced, and if neither exists the run says so on stderr rather than
-carrying on silently against the login shell's ``PATH``.
+``--venv {use,off}`` (default: ``use``) says what to do about the remote
+Python environment. ``use`` sources ``venv/bin/activate`` or, failing that,
+``.venv/bin/activate`` under the remote path first; exactly one is sourced,
+and if neither exists the run says so on stderr rather than carrying on
+silently against the login shell's ``PATH``. ``off`` sources nothing.
+
+``--add-venv/--no-add-venv`` still work as deprecated spellings of ``--venv
+use`` and ``--venv off``, and warn. Passing both, saying different things, is
+refused rather than resolved by precedence. They will be removed in a later
+release.
 ``--include PATH`` (repeatable) syncs extra files/dirs alongside the target,
 for orchestration code the static cab-dep scan can't see:
 
