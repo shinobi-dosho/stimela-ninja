@@ -87,7 +87,13 @@ VENVS_SUBDIR = ".shinobi/venvs"
 # `uv sync` and `uv pip sync`.
 MODE_UV_SYNC = "uv-sync"
 MODE_UV_PIP_SYNC = "uv-pip-sync"
-MODES = (MODE_UV_SYNC, MODE_UV_PIP_SYNC)
+# Package specs named on the command line, for the user who has no repository
+# and no lock: `pip install caracal` locally, `--venv-package caracal==2.0.1`
+# remotely. A launcher environment is one or two released packages, because
+# everything a recipe *runs* is containerised -- so requiring a lockfile to
+# describe it served repositories under development and nobody else.
+MODE_UV_PIP_INSTALL = "uv-pip-install"
+MODES = (MODE_UV_SYNC, MODE_UV_PIP_SYNC, MODE_UV_PIP_INSTALL)
 
 # What `--venv` asks for. `sync` -- provision the environment if its sentinel
 # is absent -- provisions it.
@@ -122,15 +128,26 @@ _PROBE_PY = "; ".join(
 # output, so position is not something a parser can rely on.
 _MARK_PLATFORM = "shinobi-platform:"
 _MARK_UV = "shinobi-uv:"
+_MARK_ENSUREPIP = "shinobi-ensurepip:"
 
 # The remote command `parse_probe` reads. `python3` rather than
 # `uv python find`: this has to work in `use` mode on a host with no uv, and
 # `env_id` embeds the result, so it cannot be obtained by asking uv what it
-# would build. The uv version rides along in the same round-trip -- `sync`
-# needs to know uv is there *before* anything is copied to the host, and it
-# is a sentinel field either way.
+# would build. Two more facts ride along in the same round-trip, both needed
+# *before* anything is copied to the host: whether uv is already there, and
+# -- if it is not -- whether `python3 -m venv` can bootstrap one.
 PLATFORM_PROBE = f"python3 -c {shlex.quote(_PROBE_PY)}"
-PROBE_COMMAND = f"printf '{_MARK_PLATFORM}%s\\n' \"$({PLATFORM_PROBE})\"; printf '{_MARK_UV}%s\\n' \"$(uv --version 2>/dev/null || true)\""
+PROBE_COMMAND = "; ".join(
+    (
+        f"printf '{_MARK_PLATFORM}%s\\n' \"$({PLATFORM_PROBE})\"",
+        f"printf '{_MARK_UV}%s\\n' \"$(uv --version 2>/dev/null || true)\"",
+        # `venv` alone is not enough: Debian and Ubuntu ship the stdlib module
+        # while splitting `ensurepip`'s bundled wheels into a separate
+        # `python3-venv` package, so `python3 -m venv` exists and then fails
+        # partway with "ensurepip is not available". Import both.
+        f"printf '{_MARK_ENSUREPIP}%s\\n' \"$(python3 -c 'import venv, ensurepip' 2>/dev/null && echo yes || echo no)\"",
+    )
+)
 
 # One field of the triple. Anchored and conservative: the triple is
 # interpolated into a directory name via `env_id`'s hash, but it is also
@@ -188,12 +205,15 @@ class RemoteProbe:
     Attributes:
         platform: The triple that goes into `env_id`.
         uv_version: `uv --version`'s output, or None where uv is not on the
-            remote PATH. None is not an error here -- `use` mode does not
-            need uv at all, and only `sync` turns it into a refusal.
+            remote PATH. None is not an error -- `use` mode does not need uv
+            at all, and `sync` can bootstrap one (see `can_bootstrap_uv`).
+        can_bootstrap_uv: Whether `python3 -m venv` works here, which is all
+            it takes to install uv from the index as an ordinary wheel.
     """
 
     platform: PlatformTriple
     uv_version: str | None
+    can_bootstrap_uv: bool = False
 
 
 def parse_probe(stdout: str) -> RemoteProbe:
@@ -210,15 +230,18 @@ def parse_probe(stdout: str) -> RemoteProbe:
     """
     platform: PlatformTriple | None = None
     uv_version: str | None = None
+    can_bootstrap = False
     for line in stdout.splitlines():
         line = line.strip()
         if line.startswith(_MARK_PLATFORM):
             platform = PlatformTriple.parse(line[len(_MARK_PLATFORM) :])
         elif line.startswith(_MARK_UV):
             uv_version = line[len(_MARK_UV) :].strip() or None
+        elif line.startswith(_MARK_ENSUREPIP):
+            can_bootstrap = line[len(_MARK_ENSUREPIP) :].strip() == "yes"
     if platform is None:
         raise ValueError(f"probe produced no {_MARK_PLATFORM!r} line; got: {stdout.strip()!r}")
-    return RemoteProbe(platform=platform, uv_version=uv_version)
+    return RemoteProbe(platform=platform, uv_version=uv_version, can_bootstrap_uv=can_bootstrap)
 
 
 # ---------------------------------------------------------------------------
@@ -321,38 +344,116 @@ def staging_dir(remote_path: str, token: str) -> str:
 
 
 @dataclass(frozen=True)
-class LockSource:
-    """The local files a `sync` copies over and provisions from.
+class EnvSource:
+    """What a `sync` provisions *from*: a lock on disk, or package specs.
+
+    One type rather than two because everything downstream -- `env_id`, the
+    sentinel, publication -- cares about the same two things: some bytes that
+    declare what to install, and a `mode` saying how to read them.
 
     Attributes:
-        project_dir: What gets rsynced -- `uv sync` reads the lock *and* the
-            pyproject beside it, so the pair travels together.
-        lock: `uv.lock` or `requirements.txt`.
-        pyproject: `pyproject.toml`, or None under `MODE_UV_PIP_SYNC`.
-        mode: One of `MODES`, decided by which lock was found.
+        mode: One of `MODES`. It is what makes the declaration legible, and
+            it is in `env_id`, so the same bytes read two ways can never share
+            a directory.
+        project_dir: The directory rsynced to the remote, for file modes --
+            `uv sync` reads the lock *and* the pyproject beside it, so the
+            pair travels together. None for `MODE_UV_PIP_INSTALL`, which
+            copies nothing.
+        lock: `uv.lock` or `requirements.txt`; None for specs.
+        pyproject: `pyproject.toml`; None otherwise.
+        specs: Package requirements as typed (`caracal==2.0.1`), for
+            `MODE_UV_PIP_INSTALL`.
     """
 
-    project_dir: Path
-    lock: Path
-    pyproject: Path | None
     mode: str
+    project_dir: Path | None = None
+    lock: Path | None = None
+    pyproject: Path | None = None
+    specs: tuple[str, ...] = ()
 
     def rel_paths(self) -> list[Path]:
-        """The pair, relative to `project_dir`, for `sync_to_remote`."""
+        """What `sync_to_remote` should copy -- empty when nothing is on disk."""
+        if self.project_dir is None or self.lock is None:
+            return []
         paths = [self.lock] if self.pyproject is None else [self.lock, self.pyproject]
         return [p.relative_to(self.project_dir) for p in paths]
 
     def read(self) -> tuple[bytes, bytes]:
-        """`(lock bytes, pyproject bytes)`, the two hashed inputs.
+        """The two byte strings `env_id` hashes: `(declaration, pyproject)`.
+
+        For a lock that is its literal bytes. For specs it is the sorted,
+        newline-joined list -- sorted so that naming two packages in either
+        order is one environment, and hashed as text because the specs *are*
+        the declaration, exactly as a lock's bytes are.
 
         An absent pyproject hashes as `b""` rather than being skipped, so
-        `uv-pip-sync` and a hypothetical `uv-sync` over an empty pyproject
-        stay distinguishable through the `mode` field either way.
+        every mode contributes the same number of fields to `env_id` and the
+        `mode` field is what tells them apart.
         """
-        return self.lock.read_bytes(), (self.pyproject.read_bytes() if self.pyproject else b"")
+        if self.lock is not None:
+            return self.lock.read_bytes(), (self.pyproject.read_bytes() if self.pyproject else b"")
+        return "\n".join(sorted(self.specs)).encode(), b""
+
+    def describe(self) -> str:
+        """One line for the operator, naming what this will install."""
+        if self.lock is not None:
+            return f"{self.mode} from {self.lock}"
+        return f"{self.mode}: {' '.join(sorted(self.specs))}"
 
 
-def discover_lock(start: Path) -> LockSource | None:
+# `--venv-package` accepts what pip accepts, but `env_id` names the *spec*,
+# not what it resolves to -- so a spec without an exact pin describes an
+# environment that can differ between two provisions under one id. Allowed
+# (someone may genuinely want current), but said out loud. `===` is pip's
+# arbitrary-equality operator and pins just as hard as `==`.
+_PINNED_SPEC = re.compile(r"===?\s*[^,\s]+\s*\Z")
+
+
+def unpinned(specs: tuple[str, ...]) -> list[str]:
+    """The specs that do not pin an exact version.
+
+    A judgement about honesty, not about validity: `env_id` claims to name
+    every input to provisioning, and a range makes that claim partly false.
+    The caller warns; nothing here refuses.
+    """
+    return [spec for spec in specs if not _PINNED_SPEC.search(spec)]
+
+
+def package_source(specs: tuple[str, ...]) -> EnvSource:
+    """An `EnvSource` for packages named on the command line.
+
+    Raises:
+        ValueError: If `specs` is empty, or any is blank. A `sync` that would
+            install nothing is a mistake worth naming rather than an empty
+            environment worth building.
+    """
+    cleaned = tuple(s.strip() for s in specs)
+    if not cleaned or any(not s for s in cleaned):
+        raise ValueError("--venv-package needs a non-empty requirement, e.g. --venv-package 'caracal==2.0.1'")
+    return EnvSource(mode=MODE_UV_PIP_INSTALL, specs=cleaned)
+
+
+def launcher_source() -> EnvSource:
+    """The default when a `sync` is asked for and nothing was named.
+
+    `stimela-ninja` at exactly the version running here. In the
+    `ninja run --remote` case ninja *is* the launcher, so this is not a guess
+    -- it is the one package the remote demonstrably needs, at a version this
+    process can state precisely.
+
+    Note what it is not: an environment clone. It is one version number,
+    resolved fresh from the index by the remote's own uv, for the remote's own
+    platform. Nothing is read out of the local `site-packages`.
+
+    A caller whose launcher is something else -- caracal running `caracal run`
+    -- names its own package; ninja cannot know that from here.
+    """
+    from shinobi import __version__
+
+    return EnvSource(mode=MODE_UV_PIP_INSTALL, specs=(f"stimela-ninja=={__version__}",))
+
+
+def discover_lock(start: Path) -> EnvSource | None:
     """Find the lock governing `start`, walking up to the filesystem root.
 
     Walks up rather than looking only beside the target because a recipe
@@ -371,15 +472,15 @@ def discover_lock(start: Path) -> LockSource | None:
     for directory in (start if start.is_dir() else start.parent, *(start if start.is_dir() else start.parent).parents):
         lock, pyproject = directory / "uv.lock", directory / "pyproject.toml"
         if lock.is_file() and pyproject.is_file():
-            return LockSource(project_dir=directory, lock=lock, pyproject=pyproject, mode=MODE_UV_SYNC)
+            return EnvSource(mode=MODE_UV_SYNC, project_dir=directory, lock=lock, pyproject=pyproject)
         requirements = directory / "requirements.txt"
         if requirements.is_file():
-            return LockSource(project_dir=directory, lock=requirements, pyproject=None, mode=MODE_UV_PIP_SYNC)
+            return EnvSource(mode=MODE_UV_PIP_SYNC, project_dir=directory, lock=requirements)
     return None
 
 
-def lock_source_for(path: Path) -> LockSource:
-    """The `LockSource` a user named explicitly with `--venv-lock`.
+def lock_source_for(path: Path) -> EnvSource:
+    """The `EnvSource` a user named explicitly with `--venv-lock`.
 
     Raises:
         ValueError: If the file is neither a `uv.lock` with a `pyproject.toml`
@@ -394,9 +495,9 @@ def lock_source_for(path: Path) -> LockSource:
         pyproject = path.parent / "pyproject.toml"
         if not pyproject.is_file():
             raise ValueError(f"--venv-lock {path} has no pyproject.toml beside it; `uv sync` needs both")
-        return LockSource(project_dir=path.parent, lock=path, pyproject=pyproject, mode=MODE_UV_SYNC)
+        return EnvSource(mode=MODE_UV_SYNC, project_dir=path.parent, lock=path, pyproject=pyproject)
     if path.name == "requirements.txt":
-        return LockSource(project_dir=path.parent, lock=path, pyproject=None, mode=MODE_UV_PIP_SYNC)
+        return EnvSource(mode=MODE_UV_PIP_SYNC, project_dir=path.parent, lock=path)
     raise ValueError(f"--venv-lock must name a uv.lock or a requirements.txt, got {path.name!r}")
 
 
@@ -415,8 +516,66 @@ _MARK_VENV_PYTHON = "shinobi-venv-python:"
 _MARK_DISTS = "shinobi-dists:"
 
 
-def provision_command(staging: str, mode: str) -> str:
-    """Build the venv inside `staging`, and report its interpreter version.
+def bootstrap_uv_command(staging: str) -> str:
+    """Install uv on a host that has none, using only `python3 -m venv`.
+
+    Deliberately **not** `curl https://astral.sh/uv/install.sh | sh`. uv
+    publishes manylinux wheels for x86_64, aarch64, ppc64le, s390x, i686,
+    armv7l and riscv64 (plus musl variants), so it can be installed as an
+    ordinary package from the same index the environment's own packages come
+    from. Piping a remote script into a shell is a supply-chain step this
+    project takes nowhere else; `pip install uv` is one it is already taking
+    a dozen times in the next command.
+
+    The bootstrap venv lives inside the staging directory and is deleted with
+    it, so a host is left exactly as it was found. That costs one `pip
+    install uv` per provision, and only on hosts that had no uv to begin
+    with.
+
+    Verified end to end with no uv on PATH: `python3 -m venv` -> `pip install
+    uv` -> `uv venv --relocatable` still produces the relocatable marker, and
+    the published console script still runs after the rename. Nothing about
+    the publication guarantees is weakened by taking this route -- which is
+    what rules out the other obvious fallback, a plain `python3 -m venv` plus
+    `pip install`: that has no `--relocatable` at all, and its console-script
+    shebangs hardcode an absolute path that the rename invalidates.
+    """
+    boot = f"{staging}/.uv-bootstrap"
+    q_boot = shlex.quote(boot)
+    return "; ".join(
+        (
+            "set -e",
+            f"python3 -m venv {q_boot}",
+            f"{q_boot}/bin/pip install --quiet uv",
+            # Reported so the sentinel can record *which* uv built the
+            # environment. Whatever the index currently serves, which is not
+            # the version the probe would have found -- and that difference is
+            # exactly the kind of thing someone diagnosing a divergent build
+            # needs to be able to see.
+            f"printf '{_MARK_UV}%s\\n' \"$({q_boot}/bin/uv --version)\"",
+        )
+    )
+
+
+def bootstrapped_uv(staging: str) -> str:
+    """Where `bootstrap_uv_command` leaves the uv binary."""
+    return f"{staging}/.uv-bootstrap/bin/uv"
+
+
+def parse_uv_version(stdout: str) -> str | None:
+    """The uv version `bootstrap_uv_command` reported, if it said."""
+    for line in stdout.splitlines():
+        line = line.strip()
+        if line.startswith(_MARK_UV):
+            return line[len(_MARK_UV) :].strip() or None
+    return None
+
+
+def provision_command(staging: str, mode: str, specs: tuple[str, ...] = (), uv: str = "uv") -> str:
+    """Build the venv inside `staging`, and report what it contains.
+
+    `uv` is the uv to invoke: the host's own by default, or the path from
+    `bootstrapped_uv` when the host had none.
 
     The two steps and their order are the load-bearing part, and the obvious
     one-step alternative is broken in a way that only shows up after
@@ -457,13 +616,23 @@ def provision_command(staging: str, mode: str) -> str:
     deliberately what a plain `uv sync` builds in the recipe's own repository
     -- the environment its maintainers run -- rather than a subset ninja has
     decided is enough.
+
+    `MODE_UV_PIP_INSTALL` has no lock and needs none: the specs *are* the
+    declaration, they are in `env_id`, and `uv pip install caracal==2.0.1`
+    resolves the same way wherever it runs. Nothing is copied to the host for
+    this mode -- the requirements travel as argv.
     """
     venv = f"{staging}/.venv"
-    q_staging, q_venv = shlex.quote(staging), shlex.quote(venv)
-    if mode == MODE_UV_PIP_SYNC:
-        populate = f"uv pip sync --python {q_venv}/bin/python requirements.txt"
+    q_staging, q_venv, q_uv = shlex.quote(staging), shlex.quote(venv), shlex.quote(uv)
+    if mode == MODE_UV_PIP_INSTALL:
+        # Specs are `shlex.quote`d individually: they arrive from the command
+        # line, they can legitimately contain `>`/`<`/`;`/spaces (`'foo>=1,<2'`),
+        # and every one of those is shell syntax at the far end.
+        populate = f"{q_uv} pip install --python {q_venv}/bin/python {shlex.join(specs)}"
+    elif mode == MODE_UV_PIP_SYNC:
+        populate = f"{q_uv} pip sync --python {q_venv}/bin/python requirements.txt"
     else:
-        populate = f"VIRTUAL_ENV={q_venv} uv sync --frozen --active --no-install-project"
+        populate = f"VIRTUAL_ENV={q_venv} {q_uv} sync --frozen --active --no-install-project"
     # Imported rather than restated: the remote listing and the local one must
     # come from identical code, or the digests they feed are not comparable --
     # which is the entire point of §4.6. Imported lazily to keep this module
@@ -475,7 +644,7 @@ def provision_command(staging: str, mode: str) -> str:
         (
             "set -e",
             f"cd {q_staging}",
-            f"uv venv --relocatable {q_venv}",
+            f"{q_uv} venv --relocatable {q_venv}",
             populate,
             f"printf '{_MARK_VENV_PYTHON}%s\\n' \"$({q_venv}/bin/python -c 'import platform; print(platform.python_version())')\"",
             f"printf '{_MARK_DISTS}%s\\n' \"$({q_venv}/bin/python -c {q_freeze})\"",

@@ -96,52 +96,75 @@ over, then the run happens detached -- check progress with ``ninja status``.
 ``--venv {use,sync,off}`` (default: ``use``) says what to do about the remote
 Python environment.
 
-``use`` activates a provisioned environment matching the recipe's lock if
-there is one, then falls back to ``venv/bin/activate`` or ``.venv/bin/activate``
+``use`` activates a provisioned environment matching the recipe's declaration
+if there is one, then falls back to ``venv/bin/activate`` or ``.venv/bin/activate``
 under the remote path. Exactly one is sourced, and if there is nothing the run
 says so on stderr rather than carrying on silently against the login shell's
 ``PATH``. ``use`` never writes to the remote and never fails the launch: if the
 host cannot be probed, or holds an environment it does not recognise, it says
 so and carries on.
 
-``sync`` provisions that environment first, with ``uv``, from the nearest
-``uv.lock``/``pyproject.toml`` above the target file (or the one named by
-``--venv-lock``). It is skipped entirely when the environment already exists,
-so the second run costs one ssh round-trip. Unlike ``use``, a ``sync`` that
-cannot provision **fails the launch** rather than running against some other
-environment.
+``sync`` provisions that environment first, with ``uv``. It is skipped
+entirely when the environment already exists, so the second run costs one ssh
+round-trip. Unlike ``use``, a ``sync`` that cannot provision **fails the
+launch** rather than running against some other environment.
 
 ``off`` sources nothing.
+
+What ``sync`` installs is decided in this order:
+
+1. ``--venv-package SPEC`` (repeatable) -- packages named on the command line,
+   e.g. ``--venv-package 'caracal==2.0.1'``. No repository or lockfile needed;
+   this is the ordinary case.
+2. ``--venv-lock PATH`` -- a ``uv.lock`` (with its ``pyproject.toml``) or a
+   ``requirements.txt``. The two options are mutually exclusive: they are two
+   different declarations of one environment.
+3. The nearest ``uv.lock``/``pyproject.toml`` above the target file, if there
+   is one.
+4. Otherwise ``stimela-ninja`` at the version you are running -- which is the
+   launcher the remote needs for a ``ninja run``.
 
 .. code-block:: console
 
     $ ninja run myrecipe.py:selfcal --remote user@cluster:/scratch/run1 --venv sync
+    $ ninja run myrecipe.py:selfcal --remote user@cluster:/scratch/run1 --venv sync --venv-package 'caracal==2.0.1'
     $ ninja run myrecipe.py:selfcal --remote user@cluster:/scratch/run1 --venv sync --venv-lock ../uv.lock
 
+Pin exact versions. ``env_id`` names the *spec*, not what it resolves to, so
+``caracal>=2`` gives one directory that can hold different environments at
+different times. It is allowed, and it says so on stderr.
+
 Provisioned environments live under ``<remote path>/.shinobi/venvs/<id>``,
-where ``<id>`` is a hash of the lock, the pyproject, and the remote host's
-architecture, libc and Python version. Different locks and different hosts get
-different directories, so they coexist and an older revision's environment
-survives a rollback. Nothing is ever garbage-collected: ``rm -rf`` under
+where ``<id>`` is a hash of the declaration -- the lock, or the package specs --
+together with the remote host's architecture, libc and Python version.
+Different declarations and different hosts get different directories, so they
+coexist and an older revision's environment survives a rollback. Nothing is ever garbage-collected: ``rm -rf`` under
 ``.shinobi/venvs/`` is an operator action, and the layout is what makes it safe
 to do by hand.
 
 A ``sync`` also records what it built -- a sha256 of the provisioned venv's
-``name==version`` list -- and compares it against ``<project>/.venv``, the venv
-``uv sync`` would build from the same lock locally. A difference is reported
+``name==version`` list -- and, when it provisioned from a lock, compares it
+against ``<project>/.venv``, the venv ``uv sync`` would build from that lock
+locally. A difference is reported
 and nothing more: it is expected across platforms, it is also what a local
 ``.venv`` that predates the lock looks like, and a version list is not an
 OS-level pin either way.
 
-Three things worth knowing before relying on ``sync``:
+Four things worth knowing before relying on ``sync``:
 
-- **It runs code.** ``uv sync`` executes the build backend of any source
-  distribution in the lock, under your account on the remote host.
-- **It needs uv, and network access, on the host that provisions.** Compute
-  nodes frequently have neither. Provisioning once from a login node and using
-  ``--venv use`` thereafter is the practical pattern. If ``uv`` is missing,
-  ninja refuses and prints the install command rather than running it.
-- **The project itself is not installed**, only its locked dependencies. That
+- **It runs code.** Installing executes the build backend of any source
+  distribution involved, under your account on the remote host.
+- **It needs network access on the host that provisions.** Compute nodes
+  frequently have none. Provisioning once from a login node and using
+  ``--venv use`` thereafter is the practical pattern.
+- **It does not need uv there.** If ``uv`` is missing, ninja installs one from
+  the same index the packages come from (``python3 -m venv`` then ``pip install
+  uv``), inside the staging directory, and deletes it with the staging
+  directory -- never by piping an installer script into a shell. Only a host
+  with no working ``python3 -m venv`` at all is refused; on Debian and Ubuntu
+  that means ``apt install python3-venv``.
+- **From a lock, the project itself is not installed** -- only its locked
+  dependencies. That
   is what ``ninja`` needs, and it keeps the environment from depending on a
   source tree that is not part of its identity. A repository whose own console
   script is the launcher does not get that script from a ``sync``.

@@ -162,6 +162,40 @@ def _forwarded_run_flags(*, quiet: bool, provenance: bool | None, sandbox: bool 
     return flags
 
 
+def _venv_source(venv_lock: str | None, venv_packages: tuple[str, ...], pyfile: Path, *, provisioning: bool):
+    """Decide what a `--venv` should provision from, in precedence order.
+
+    Explicit beats discovered, and packages beat a lock only because both
+    cannot be given at once -- naming a lock *and* a package list is two
+    different declarations of one environment, which is refused rather than
+    merged.
+
+    The fallback differs by mode, and that asymmetry is the point:
+
+    - **`sync`** with nothing named and no lock nearby falls back to
+      `stimela-ninja==<this version>`. In `ninja run --remote` ninja *is* the
+      launcher, so this is the one package the remote demonstrably needs, and
+      the version is a fact this process knows rather than a guess. It is a
+      version number resolved fresh by the remote's uv, not a copy of
+      anything local.
+    - **`use`** falls back to nothing. It has no business inventing an
+      environment identity to go looking for; with no lock and no packages it
+      simply does the legacy `venv/`/`.venv/` search, at no ssh cost.
+    """
+    from shinobi.offload.remote_venv import discover_lock, launcher_source, lock_source_for, package_source
+
+    if venv_lock and venv_packages:
+        raise ValueError("--venv-lock and --venv-package are two different declarations of one environment; pass one")
+    if venv_packages:
+        return package_source(venv_packages)
+    if venv_lock:
+        return lock_source_for(Path(venv_lock))
+    discovered = discover_lock(pyfile)
+    if discovered is not None:
+        return discovered
+    return launcher_source() if provisioning else None
+
+
 def _run_remote(
     ctx: click.Context,
     target: str,
@@ -175,6 +209,7 @@ def _run_remote(
     remote: str,
     venv: str | None,
     venv_lock: str | None,
+    venv_packages: tuple[str, ...],
     add_venv: bool | None,
     include_paths: tuple[str, ...],
 ) -> None:
@@ -247,15 +282,25 @@ def _run_remote(
     # After the target is synced, before it is launched. Provisioning can
     # take minutes and can fail, and doing it here means a failure lands
     # before a detached process exists to be confused about.
-    from shinobi.offload.remote_venv import discover_lock, lock_source_for
+    from shinobi.offload.remote_venv import VENV_SYNC, unpinned
     from shinobi.offload.ssh import resolve_remote_venv
 
     try:
-        source = lock_source_for(Path(venv_lock)) if venv_lock else discover_lock(pyfile)
+        source = _venv_source(venv_lock, venv_packages, pyfile, provisioning=venv_mode == VENV_SYNC)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
     if source is not None:
-        click.echo(f"venv: {source.mode} from {source.lock}", err=True)
+        click.echo(f"venv: {source.describe()}", err=True)
+        loose = unpinned(source.specs)
+        if loose:
+            # `env_id` names the spec, not what it resolves to, so an
+            # unpinned one describes an environment that can differ between
+            # two provisions sharing a directory. Allowed -- someone may
+            # genuinely want current -- but not silently.
+            click.echo(
+                f"venv: {', '.join(loose)} names no exact version, so this environment's id describes what was asked for, not what was installed; pin with == for a stable id",
+                err=True,
+            )
     try:
         resolved = resolve_remote_venv(remote_spec, venv_mode, source)
     except ShinobiError as exc:
@@ -355,6 +400,13 @@ def _run_remote(
     help="With --venv sync/use, the uv.lock (or requirements.txt) to provision the remote environment from. Defaults to the nearest one above the target file.",
 )
 @click.option(
+    "--venv-package",
+    "venv_packages",
+    multiple=True,
+    default=(),
+    help="With --venv sync/use, a package to provision the remote environment with, e.g. 'caracal==2.0.1'. Repeatable. For the common case of no repository and no lockfile; defaults to the running stimela-ninja's own version. Mutually exclusive with --venv-lock.",
+)
+@click.option(
     # Kept for one release as the deprecated spelling of `--venv use/off`.
     # `default=None`, not `True`: a boolean default is indistinguishable from
     # a caller who typed `--add-venv`, and telling those apart is the only
@@ -387,6 +439,7 @@ def run(
     remote: str | None,
     venv: str | None,
     venv_lock: str | None,
+    venv_packages: tuple[str, ...],
     add_venv: bool | None,
     include_paths: tuple[str, ...],
 ) -> None:
@@ -413,6 +466,7 @@ def run(
             remote=remote,
             venv=venv,
             venv_lock=venv_lock,
+            venv_packages=venv_packages,
             add_venv=add_venv,
             include_paths=include_paths,
         )

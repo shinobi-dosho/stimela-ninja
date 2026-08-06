@@ -6,6 +6,7 @@ import pytest
 
 from shinobi.backends.venv import digest_of_dists
 from shinobi.offload.remote_venv import (
+    MODE_UV_PIP_INSTALL,
     MODE_UV_PIP_SYNC,
     MODE_UV_SYNC,
     PLATFORM_PROBE,
@@ -18,12 +19,17 @@ from shinobi.offload.remote_venv import (
     PlatformTriple,
     Sentinel,
     SentinelStatus,
+    bootstrap_uv_command,
+    bootstrapped_uv,
     cleanup_command,
     discover_lock,
     env_id,
+    launcher_source,
     lock_source_for,
+    package_source,
     parse_probe,
     parse_provision_output,
+    parse_uv_version,
     provision_command,
     publish_command,
     platform_matches,
@@ -32,6 +38,7 @@ from shinobi.offload.remote_venv import (
     sentinel_path,
     sha256_hex,
     staging_dir,
+    unpinned,
     venv_dir,
 )
 
@@ -569,3 +576,132 @@ def test_staging_is_hidden_and_marked_partial():
     """`.partial-` is the convention the snapshot writer already uses, and
     the leading dot keeps it out of a glob over finished environments."""
     assert "/.partial-abc123" in staging_dir("/scratch/run1", "abc123")
+
+
+# -- package specs, for the user with no repository and no lock --
+
+
+def test_packages_need_no_project_directory_and_copy_nothing():
+    """The declaration travels as argv. There is no repository to rsync,
+    which is the entire point -- a released package is not a checkout."""
+    source = package_source(("caracal==2.0.1",))
+    assert source.mode == MODE_UV_PIP_INSTALL
+    assert source.rel_paths() == []
+    assert source.project_dir is None
+
+
+def test_the_specs_are_what_env_id_hashes():
+    source = package_source(("caracal==2.0.1",))
+    declaration, pyproject = source.read()
+    assert declaration == b"caracal==2.0.1"
+    assert pyproject == b""
+
+
+def test_naming_two_packages_in_either_order_is_one_environment():
+    assert package_source(("a==1", "b==2")).read() == package_source(("b==2", "a==1")).read()
+
+
+def test_the_same_bytes_read_two_ways_cannot_share_a_directory(tmp_path):
+    """`mode` is in `env_id`, so a requirements.txt of `caracal==2.0.1` and
+    a `--venv-package caracal==2.0.1` name different environments -- as they
+    should, since `uv pip sync` uninstalls what a `uv pip install` leaves."""
+    (tmp_path / "requirements.txt").write_text("caracal==2.0.1")
+    as_file = discover_lock(tmp_path)
+    as_specs = package_source(("caracal==2.0.1",))
+    common = {"extras": (), "groups": (), "python_request": "", "platform": TRIPLE}
+    a = EnvInputs(lock=as_file.read()[0], pyproject=b"", mode=as_file.mode, **common)
+    b = EnvInputs(lock=as_specs.read()[0], pyproject=b"", mode=as_specs.mode, **common)
+    assert a.lock == b.lock  # same bytes...
+    assert env_id(a) != env_id(b)  # ...different environments
+
+
+@pytest.mark.parametrize("specs", [(), ("",), ("  ",), ("a==1", "")])
+def test_an_empty_package_list_is_refused(specs):
+    """A `sync` that would install nothing is a mistake worth naming, not
+    an empty environment worth building."""
+    with pytest.raises(ValueError, match="non-empty requirement"):
+        package_source(specs)
+
+
+def test_the_default_is_the_launcher_ninja_actually_is():
+    """Not a clone: one package, at a version this process can state as a
+    fact, resolved fresh from the index by the remote's own uv."""
+    from shinobi import __version__
+
+    source = launcher_source()
+    assert source.specs == (f"stimela-ninja=={__version__}",)
+    assert source.mode == MODE_UV_PIP_INSTALL
+
+
+@pytest.mark.parametrize("spec", ["caracal==2.0.1", "caracal===2.0.1rc1", "caracal == 2.0.1"])
+def test_a_pinned_spec_draws_no_comment(spec):
+    assert unpinned((spec,)) == []
+
+
+@pytest.mark.parametrize("spec", ["caracal", "caracal>=2", "caracal>=2,<3", "caracal~=2.0"])
+def test_an_unpinned_spec_is_reported(spec):
+    """`env_id` names the spec, not what it resolves to, so an unpinned one
+    describes an environment that can differ between two provisions sharing
+    one directory. Allowed -- someone may want current -- but said."""
+    assert unpinned((spec,)) == [spec]
+
+
+def test_provision_installs_the_named_packages():
+    script = provision_command("/p/.partial-abc", MODE_UV_PIP_INSTALL, ("caracal==2.0.1",))
+    assert "pip install" in script
+    assert "caracal==2.0.1" in script
+    assert "--frozen" not in script  # nothing to be frozen against
+
+
+def test_a_spec_full_of_shell_metacharacters_stays_one_argument():
+    """Specs arrive from the command line and legitimately contain `<`, `>`
+    and `;` -- every one of which is shell syntax at the far end."""
+    script = provision_command("/p/.partial-abc", MODE_UV_PIP_INSTALL, ("foo>=1,<2; rm -rf /",))
+    assert "'foo>=1,<2; rm -rf /'" in script
+
+
+def test_provision_uses_the_uv_it_is_given():
+    """A bootstrapped uv is at a path, not on PATH."""
+    script = provision_command("/p/.partial-abc", MODE_UV_SYNC, uv="/p/.partial-abc/.uv-bootstrap/bin/uv")
+    assert "/p/.partial-abc/.uv-bootstrap/bin/uv" in script
+    assert not script.startswith("uv ")
+
+
+# -- bootstrapping uv --
+
+
+def test_bootstrap_uses_the_index_not_a_shell_pipe():
+    """uv publishes manylinux wheels, so it installs like any other package
+    from the index the environment's own packages come from. Piping a remote
+    script into a shell is a supply-chain step taken nowhere else here."""
+    script = bootstrap_uv_command("/p/.shinobi/venvs/.partial-abc")
+    assert "python3 -m venv" in script
+    assert "pip install --quiet uv" in script
+    assert "curl" not in script and "|" not in script
+
+
+def test_the_bootstrap_lives_inside_the_staging_directory():
+    """So `cleanup_command` removes it and the host is left as found."""
+    staging = staging_dir("/scratch/run1", "abc123")
+    assert bootstrapped_uv(staging).startswith(staging + "/")
+    assert "rm -rf" in cleanup_command(staging)
+
+
+def test_the_bootstrap_reports_which_uv_it_installed():
+    assert parse_uv_version("shinobi-uv:uv 0.12.2 (x86_64)\n") == "uv 0.12.2 (x86_64)"
+    assert parse_uv_version("nothing useful\n") is None
+
+
+def test_the_probe_asks_whether_a_bootstrap_is_possible():
+    """`venv` alone is not enough to ask for: Debian and Ubuntu ship the
+    stdlib module while splitting ensurepip's wheels into python3-venv, so
+    `python3 -m venv` exists and then fails partway."""
+    assert "import venv, ensurepip" in PROBE_COMMAND
+    assert parse_probe("shinobi-platform:x86_64/glibc-2.39/3.11\nshinobi-ensurepip:yes\n").can_bootstrap_uv
+    assert not parse_probe("shinobi-platform:x86_64/glibc-2.39/3.11\nshinobi-ensurepip:no\n").can_bootstrap_uv
+
+
+def test_the_probe_reports_this_host_can_bootstrap():
+    """Run for real -- this machine has a working `python3 -m venv`."""
+    proc = subprocess.run(["bash", "-lc", PROBE_COMMAND], capture_output=True, text=True)
+    assert parse_probe(proc.stdout).can_bootstrap_uv

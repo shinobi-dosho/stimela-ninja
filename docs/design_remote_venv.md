@@ -1,12 +1,47 @@
 # Provisioning the launcher environment for `ninja run --remote`
 
-**Status:** v3 — **steps 1-5 shipped; `--venv sync` provisions, and says how
-far the result diverged.** §8.1, which gated everything past step 1, is closed:
-option (a). All that remains is the `docs/offloading.rst` half of step 6 —
-`docs/cli.rst` already describes `sync`.
+**Status:** v4 — **steps 1-5 shipped.** `--venv sync` provisions from a lock
+*or* from named packages, bootstrapping uv where there is none, and reports how
+far the result diverged. §8.1 and §8.2 are both settled, the latter opposite to
+the way v3 settled it. All that remains is the `docs/offloading.rst` half of
+step 6 — `docs/cli.rst` already describes `sync`.
 **Context:** `ninja run TARGET --remote user@host:/path` (`shinobi.offload.ssh`)
 
 **Change log**
+
+- **v3 → v4 (the lock was the wrong requirement).** v3 closed §8.1 by pointing
+  at caracal2's committed `uv.lock` and concluding that a recipe repository
+  keeps one. That lock pins `stimela-ninja` and `dosho` to `origin/main`
+  commits — it describes a project under development, not what a user
+  installs. The real user `pip install`s a released package and has no
+  repository at all, so requiring a lockfile served the development setup and
+  nobody else. Three changes, and one deliberate non-change:
+  1. **A third mode, `uv-pip-install`.** `--venv-package caracal==2.0.1`
+     declares the environment as package specs. `env_id` needs no new shape —
+     it already hashes `mode`, and the sorted spec list takes the lock's place
+     as the declaration. Nothing is rsynced; the requirements travel as argv.
+     With nothing named and no lock nearby, `sync` defaults to
+     `stimela-ninja==<the running version>`: in `ninja run --remote` ninja
+     *is* the launcher, so that is a fact rather than a guess.
+  2. **§8.2 reversed: uv is bootstrapped, not demanded.** v3 refused to
+     install uv, reasoning that `curl … | sh` is a supply-chain step this
+     project takes nowhere else. That reasoning was sound and the conclusion
+     did not follow from it: uv publishes manylinux wheels (x86_64, aarch64,
+     ppc64le, s390x, i686, armv7l, riscv64, plus musl), so `python3 -m venv`
+     plus `pip install uv` gets one from *the same index the environment's own
+     packages come from*. Verified end to end with no uv on PATH, including
+     that `--relocatable` still works afterwards — which is what rules out the
+     other fallback, a plain `venv`+`pip` provision, whose console-script
+     shebangs the §4.5 rename would invalidate. A refusal remains for hosts
+     with no working `python3 -m venv` at all (Debian and Ubuntu split
+     `ensurepip` out), so this is never worse than v3.
+  3. **§8.1's answer is narrowed, not replaced.** A recipe-side lock is still
+     the strongest declaration and still the right thing to use when one
+     exists; it is simply no longer the *only* way in.
+  Unchanged: **option (b) is still rejected** (§7.6), and this is not it. (b)
+  was a `uv sync` *followed by* unlocked installs, which leaves `env_id`
+  describing half of what was done. Package specs are the whole declaration
+  and are hashed in full.
 
 - **v2 → v3 (§8.1 answered against the tree).** v2 left the load-bearing
   question — *what lock does a real recipe use?* — open, with the note
@@ -587,8 +622,24 @@ backend documents itself as their *complement* (`backends/venv.py:5-8`).
 
 ## 8. Open questions
 
-1. **What lock does a real recipe use? — ANSWERED: option (a), a recipe-side
-   lock, which already exists.** This gated §9 steps 2-5; it no longer does.
+1. **What lock does a real recipe use? — ANSWERED, then narrowed (v4). A
+   recipe-side lock where one exists; named packages where none does.**
+
+   **The v4 correction first, because it is the one that matters.** The
+   evidence below is real but it was read too broadly. caracal2's lock pins
+   `stimela-ninja` and `dosho` to `origin/main` *commits* — that is a project
+   under active development pointing at its own unreleased dependencies, not
+   a picture of what a user runs. A user `pip install`s a released package
+   and has no repository at all, so a design that required a lockfile served
+   the development setup and nobody else. `--venv-package` (mode
+   `uv-pip-install`) is the way in for them, and the default when a `sync` is
+   asked for with nothing named is `stimela-ninja==<the running version>`.
+   The question this section asks turns out to have been slightly wrong:
+   not *what lock does a recipe use* but **what declares the launcher
+   environment** — and a lock is only one of the answers.
+
+   The rest of this entry stands, as the reason the lock path exists at all
+   and is still preferred when a lock is present.
    `caracal-pipeline/caracal2` — the downstream repo this feature exists to
    serve — keeps a committed `uv.lock` of 1969 lines that locks both git
    dependencies at pinned commits (`dosho` at `07904a9`, `stimela-ninja` at
@@ -611,15 +662,30 @@ backend documents itself as their *complement* (`backends/venv.py:5-8`).
      describe what a recipe *runs*, only what runs `ninja`. Container images
      cover the rest, and pin harder than a lock does. So (b) is rejected
      (§7.6) and (c) does not arise.
-2. **uv bootstrap — DECIDED: refuse with instructions.** If `uv` is absent
-   remotely, `sync` fails naming the host and printing the one-line install
-   command, and does not run it. Piping a remote script into a shell on the
-   operator's account is a supply-chain step this project takes nowhere else,
-   and it would be taken silently, inside a launch the operator is watching for
-   *pipeline* failures. Falling back to `python -m venv` + `pip install -r` is
-   worse than refusing: it drops `--frozen`, so the environment it builds is
-   the one thing §4.4 exists to prevent — a re-resolved version set the lock
-   does not name, wearing an `env_id` that asserts otherwise.
+2. **uv bootstrap — DECIDED (v4, reversing v3): install it from the index.**
+   v3 refused, on the grounds that `curl … | sh` is a supply-chain step this
+   project takes nowhere else. The premise was right and the conclusion was
+   not: uv publishes manylinux wheels for every architecture a cluster is
+   likely to have, so `python3 -m venv` + `pip install uv` obtains one from
+   *the same index* the environment's own packages come from. If that index is
+   not trusted, nothing else here works either. The bootstrap venv lives inside
+   the staging directory and is deleted with it, so a host is left as it was
+   found, and it only happens on hosts that had no uv.
+
+   The other fallback — provisioning with `python -m venv` + `pip` directly —
+   stays rejected, now for a sharper reason than v3's. Against a lock, v3's
+   objection holds: no `--frozen`, so the remote re-resolves. Against *package
+   specs* that objection evaporates, since `pip install caracal==2.0.1`
+   resolves like anything else. What kills it either way is §4.5: `python -m
+   venv` has no `--relocatable`, and pip's console-script shebangs hardcode an
+   absolute interpreter path that the rename invalidates. Bootstrapping uv
+   keeps atomic publication; provisioning with pip would trade it away.
+
+   A refusal survives for the one case neither route covers: no uv, and no
+   working `python3 -m venv` either. Debian and Ubuntu ship the stdlib module
+   while splitting `ensurepip`'s bundled wheels into `python3-venv`, so the
+   probe imports **both** rather than trusting that the module's presence means
+   it works.
 3. **GC — DECIDED: nothing, documented.** Every distinct input set leaves a
    venv behind forever (§6.3). No `ninja remote gc`, no age policy: deleting
    directories over ssh on the operator's behalf is the same class of decision
