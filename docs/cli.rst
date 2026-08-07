@@ -94,7 +94,8 @@ See :doc:`concepts/provenance`.
 
 Add ``--remote user@host:/path`` to launch on a remote host instead of
 locally: the target file and its statically-discoverable cab deps are synced
-over, then the run happens detached -- check progress with ``ninja status``.
+over, then the run happens detached -- track it with ``ninja runs`` and
+``ninja logs`` (below), or check one handle with ``ninja status``.
 ``--venv {use,sync,off}`` (default: ``use``) says what to do about the remote
 Python environment.
 
@@ -313,6 +314,76 @@ fresh (no persistent process):
 .. code-block:: console
 
     $ ninja status /scratch/.shinobi/pipe/handle.json
+
+.. _cli-runs:
+
+``ninja runs`` -- list every detached run
+------------------------------------------
+
+The plural form of ``ninja status``. Every launch writes its handle to
+``.shinobi/<name>/handle.json``; this reads all of them and asks each engine
+what became of its run:
+
+.. code-block:: console
+
+    $ ninja runs
+
+    NAME              HOST      STATE           ELAPSED
+    myrecipe.selfcal  cluster   RUNNING        00:14:32
+    myrecipe.flag     cluster   FINISHED (0)   00:02:11
+    large.image       bignode   FINISHED (137) 01:44:05
+
+    3 launches, 1 running
+
+``ELAPSED`` measures a running job to now and a finished one to when it
+finished, so the number for a completed run stops growing.
+
+Nothing is cached and nothing runs in the background: the states are
+reconstructed on every invocation, one ssh round trip per launch, issued
+concurrently. A listing from a laptop that has been asleep for two days is as
+accurate as one issued a second after launch. A host that cannot be reached
+becomes an ``UNKNOWN`` row carrying the reason rather than emptying the table.
+
+``--no-probe`` lists the handles without contacting anything, for when there
+is no route to the cluster. ``--json`` emits the same listing as structured
+records, including the ``detail`` behind an ``UNKNOWN`` and the per-job Slurm
+states behind an aggregated row. ``--workdir`` looks somewhere other than the
+current directory.
+
+.. _cli-logs:
+
+``ninja logs`` -- read a detached run's output
+-----------------------------------------------
+
+Replaces the ``ssh <host> tail -f <path>`` line a ``--remote`` launch used to
+print. It takes a name from ``ninja runs`` (or a handle path, so the two
+commands accept each other's output), and it knows which host and which file:
+
+.. code-block:: console
+
+    $ ninja logs myrecipe.selfcal --follow
+
+    myrecipe.selfcal · cluster   RUNNING   elapsed 00:14:32
+    /scratch/run1/ninja-run-1754500000.log
+    ────────────────────────────────────────────────────────
+    [wsclean]  Iteration 4200, peak 0.031 Jy
+    [cubical]  WARNING: 3 solutions flagged
+
+``--follow`` stops when the run does, and prints its final state. That is not
+what ``tail -f`` gives you: a finished run's log does not close, it simply
+goes quiet, which is indistinguishable from a slow step -- so ``--follow``
+polls the run's completion separately and ends the stream itself.
+``--follow`` on a run that has *already* finished prints its tail and returns
+rather than waiting on a file nobody will write to again. ``Ctrl-C`` detaches;
+the remote run keeps going.
+
+``-n/--lines`` (default 40) sets how much existing log to show before
+following, so joining a run in progress gives you context rather than an
+empty screen.
+
+Slurm-submitted workflows have no single log to follow -- their output is
+per-job, wherever the batch script put it -- so ``ninja logs`` reports that
+rather than guessing. ``ninja runs`` still tracks them.
 
 ``ninja version`` -- print the version
 --------------------------------------
