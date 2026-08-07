@@ -189,7 +189,7 @@ class VenvBackend(Backend):
             return get_backend("native").run(cab, argv, inputs, label=label, stream=stream, pin=pin, cwd=cwd)
 
         run_argv = [resolve_command(venv, argv[0]), *argv[1:]] if argv else argv
-        run = run_streaming(run_argv, label=label or cab.name, stream=stream, cwd=cwd, env=venv_env(venv))
+        run = run_streaming(run_argv, label=label or cab.name, stream=stream, cwd=cwd, env=venv_env(venv), keep_matching=tuple(cab.wranglers))
         run.venv = str(venv)
         if pin:
             run.venv_digest = venv_digest(venv)

@@ -39,4 +39,6 @@ class NativeBackend(Backend):
         Returns:
             The completed `BackendRun` (never raises on non-zero exit).
         """
-        return run_streaming(argv, label=label or cab.name, stream=stream, cwd=cwd)
+        # `keep_matching`: the cab's own wrangler patterns, so capping the
+        # capture cannot cost an output value -- see `_stream.LineBuffer`.
+        return run_streaming(argv, label=label or cab.name, stream=stream, cwd=cwd, keep_matching=tuple(cab.wranglers))

@@ -1010,7 +1010,7 @@ class ContainerBackend(Backend):
             The completed `BackendRun` (never raises on non-zero exit).
         """
         full_argv, image_digest = self._wrap(cab, argv, inputs, pin=pin, cwd=cwd)
-        run = run_streaming(full_argv, label=label or cab.name, stream=stream)
+        run = run_streaming(full_argv, label=label or cab.name, stream=stream, keep_matching=tuple(cab.wranglers))
         run.image_digest = image_digest
         run.containerized = True
         if not run.success:

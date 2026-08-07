@@ -83,6 +83,18 @@ class BackendRun:
     # are informational provenance (see ``backends.venv``).
     venv: str | None = None
     venv_digest: str | None = None
+    # How many lines of each stream were elided to keep the capture bounded
+    # (``backends._stream.LineBuffer``). Zero for any run short enough to be
+    # held whole, which is nearly all of them. Non-zero is not an error: the
+    # dropped region is marked in the text with an elision marker, and was
+    # echoed live if the run streamed.
+    stdout_dropped: int = 0
+    stderr_dropped: int = 0
+    # True only when a line matching one of the cab's own wrangler patterns
+    # was dropped anyway -- the buffer retains matches wherever they occur,
+    # so this means the retained-match ceiling was hit too. Unlike the counts
+    # above, this one can mean a *missing output value*, and dispatch says so.
+    wrangler_lines_dropped: bool = False
 
     @property
     def success(self) -> bool:

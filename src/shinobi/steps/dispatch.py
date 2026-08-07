@@ -33,7 +33,7 @@ from shinobi.exceptions import CabRunError, ParameterError, ShinobiError, StepEr
 from shinobi.graph import build_graph
 from shinobi.policies import build_argv
 from shinobi.resources import Budget, Resources
-from shinobi.results import StepResult, explain_returncode
+from shinobi.results import BackendRun, StepResult, explain_returncode
 from shinobi.sandbox import (
     absolutize_path_inputs,
     clear_stale_outputs,
@@ -689,6 +689,33 @@ def _resolve_implicit_template(cab: Cab, field: str, template: str, prepared: di
         raise ParameterError(f"cab {cab.name!r} output {field!r} implicit template {template!r} references unknown input {exc}") from exc
 
 
+def _report_elision(run: BackendRun, label: str, *, wrangled: bool) -> None:
+    """Say so when a step's captured output was capped.
+
+    Two different events, deliberately at two different levels. Ordinary
+    elision is a *note*: the run is fine, the dropped lines are progress
+    chatter, and the text says where they were -- logging it at WARNING
+    would train operators to ignore the word on a chatty pipeline. A
+    dropped *wrangler-matching* line is a warning, because the buffer
+    retains matches wherever they occur, so reaching this means the
+    retained-match ceiling was hit and an output value may be missing.
+    """
+    dropped = run.stdout_dropped + run.stderr_dropped
+    if not dropped:
+        return
+    logger.info(
+        "step %s: %s line%s of captured output elided (log.capture_head_lines/capture_tail_lines); the live stream and any run log are unaffected",
+        label,
+        dropped,
+        "s" if dropped != 1 else "",
+    )
+    if run.wrangler_lines_dropped and wrangled:
+        warnings.warn(
+            f"step '{label}': output was capped past the point where its wranglers could all be applied, so a declared output may be unset or stale; raise log.capture_head_lines/capture_tail_lines to re-run with the full capture",
+            stacklevel=2,
+        )
+
+
 def _run_cab(
     cab: Cab,
     prepared: dict[str, Any],
@@ -735,6 +762,7 @@ def _run_cab(
         pin=pin,
         cwd=str(sandbox_dir) if sandbox_dir is not None else None,
     )
+    _report_elision(run, label or cab.name, wrangled=bool(cab.wranglers))
     lines = run.stdout.splitlines() + run.stderr.splitlines()
     wrangled = apply_wranglers(cab.wranglers, lines)
     outputs = _fill_outputs(cab, prepared, run, wrangled)
