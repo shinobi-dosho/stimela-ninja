@@ -6,6 +6,8 @@ import json
 import os
 import shutil
 import sys
+import threading
+import time
 from pathlib import Path
 
 import click
@@ -325,9 +327,11 @@ def _run_remote(
     handle_path = _handle_path(None, f"{pyfile.stem}.{attr}")
     handle_path.parent.mkdir(parents=True, exist_ok=True)
     handle_path.write_text(json.dumps({"engine": "ssh", **handle.__dict__}, indent=2))
+    name = handle_path.parent.name
     click.echo(f"launched on {remote_spec.host} (detached, pid={handle.pid})")
     click.echo(f"  handle: {handle_path}")
-    click.echo(f"  log: ssh {remote_spec.host} tail -f {remote_spec.path}/{handle.log_file}")
+    click.echo(f"  watch:  ninja logs {name} --follow")
+    click.echo("  list:   ninja runs")
 
 
 @main.command(
@@ -942,13 +946,203 @@ def show_status(handle_file: str) -> None:
     except (OSError, json.JSONDecodeError) as exc:
         raise click.ClickException(f"cannot read handle {handle_file!r}: {exc}") from None
     engine = data.get("engine")
-    if engine == "slurm":
-        for name, state in status_slurm(data["jobs"]).items():
-            click.echo(f"{name}: {state}")
-    elif engine == "ssh":
-        click.echo(status_ssh(data))
-    else:
-        raise click.ClickException(f"unknown engine in handle: {engine!r}")
+    # An unreachable host is a condition on the operator's network, not a
+    # bug in ninja, and a traceback is the wrong way to say so.
+    try:
+        if engine == "slurm":
+            for name, state in status_slurm(data["jobs"]).items():
+                click.echo(f"{name}: {state}")
+        elif engine == "ssh":
+            click.echo(status_ssh(data))
+        else:
+            raise click.ClickException(f"unknown engine in handle: {engine!r}")
+    except ShinobiError as exc:
+        raise click.ClickException(str(exc)) from None
+
+
+def _elapsed(launch, state=None) -> str:
+    """How long the run took, as `HH:MM:SS`, or `-` when the launch time
+    is unknown.
+
+    A running job is measured to now; a finished one to when it finished,
+    where the probe could establish that. Measuring a finished run to now
+    would make the number grow every time the table is redrawn, reporting
+    how long ago you launched it rather than how long it took.
+    """
+    since = launch.launched_at
+    if not since:
+        return "-"
+    until = state.finished_at if state is not None and state.finished_at else None
+    if until is None and state is not None and not state.running:
+        # Finished, but the host could not say when. Better an honest
+        # ceiling than a number that quietly keeps counting.
+        return "-"
+    seconds = int(max(0.0, (until if until is not None else time.time()) - since))
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def _state_style(state) -> tuple[str, str]:
+    """(text, rich style) for a `RunState`. Colour carries the same
+    information as the word, never replaces it -- these tables get piped
+    into files and read over terminals that render no colour at all.
+    """
+    from shinobi.offload.tracking import FINISHED, RUNNING
+
+    if state is None:
+        return "?", "dim"
+    if state.state == RUNNING:
+        return "RUNNING", "cyan"
+    if state.state == FINISHED:
+        return ("FINISHED (0)", "green") if state.exit_code == 0 else (f"FINISHED ({state.exit_code})", "red")
+    return "UNKNOWN", "yellow"
+
+
+@main.command("runs")
+@click.option("--workdir", "workdir", default=None, help="Directory to look for launch dirs under (default: cwd).")
+@click.option("--json", "as_json", is_flag=True, help="Emit the listing as JSON instead of a table.")
+@click.option("--no-probe", is_flag=True, help="List handles without querying their engines (no ssh round trips).")
+def show_runs(workdir: str | None, as_json: bool, no_probe: bool) -> None:
+    """List the offloaded runs this workspace has launched, with live state.
+
+    Reads every `.shinobi/*/handle.json` -- the same handles
+    `ninja status` takes one at a time and `ninja clean --launches`
+    removes -- and asks each engine what became of its run. Nothing is
+    cached: a listing is as current as the moment you ask for it.
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    from shinobi.offload.tracking import discover, probe_all
+
+    launches = discover(workdir)
+    if not launches:
+        base = Path(workdir or os.getcwd())
+        click.echo(f"no launches under {base / '.shinobi'}/*/handle.json")
+        return
+    if not no_probe:
+        probe_all(launches)
+
+    if as_json:
+        click.echo(
+            json.dumps(
+                [
+                    {
+                        "name": launch.name,
+                        "engine": launch.engine,
+                        "host": launch.host,
+                        "handle": str(launch.handle_path),
+                        "launched_at": launch.launched_at,
+                        "state": launch.state.state if launch.state else None,
+                        "exit_code": launch.state.exit_code if launch.state else None,
+                        "detail": launch.state.detail if launch.state else "",
+                    }
+                    for launch in launches
+                ],
+                indent=2,
+            )
+        )
+        return
+
+    console = Console()
+    table = Table(box=None, pad_edge=False, header_style="bold")
+    table.add_column("NAME", overflow="fold")
+    table.add_column("HOST")
+    table.add_column("STATE")
+    table.add_column("ELAPSED", justify="right")
+    for launch in launches:
+        text, style = _state_style(launch.state)
+        table.add_row(launch.name, launch.host, f"[{style}]{text}[/{style}]", _elapsed(launch, launch.state))
+    console.print(table)
+    running = sum(1 for launch in launches if launch.state and launch.state.running)
+    console.print(f"\n[dim]{len(launches)} launch{'es' if len(launches) != 1 else ''}, {running} running[/dim]")
+
+
+@main.command("logs")
+@click.argument("run")
+@click.option("-f", "--follow", is_flag=True, help="Keep streaming until the run finishes.")
+@click.option("-n", "--lines", default=40, show_default=True, help="How many lines of existing log to show first.")
+@click.option("--workdir", "workdir", default=None, help="Directory to look for launch dirs under (default: cwd).")
+def show_logs(run: str, follow: bool, lines: int, workdir: str | None) -> None:
+    """Show an offloaded run's log. RUN is a name from `ninja runs`, or a
+    path to a handle file.
+
+    Replaces the `ssh <host> tail -f <path>` line a `--remote` launch
+    prints: same mechanism, but it knows which host and which file, it
+    shows what the run's state is while you watch, and with `--follow` it
+    stops when the run does instead of waiting on a log nobody will write
+    to again.
+    """
+    from rich.console import Console
+
+    from shinobi.offload.tracking import find, follow as follow_log, probe
+
+    console = Console()
+    try:
+        launch = find(run, workdir)
+    except LookupError:
+        raise click.ClickException(f"no launch named {run!r}; `ninja runs` lists what this workspace has launched") from None
+    except (OSError, json.JSONDecodeError) as exc:
+        raise click.ClickException(f"cannot read handle {run!r}: {exc}") from None
+
+    try:
+        state = probe(launch)
+    except ShinobiError as exc:
+        raise click.ClickException(str(exc)) from None
+
+    text, style = _state_style(state)
+    console.print(f"[bold]{launch.name}[/bold] [dim]·[/dim] {launch.host}   [{style}]{text}[/{style}]   [dim]elapsed {_elapsed(launch, state)}[/dim]")
+    if launch.log_path:
+        console.print(f"[dim]{launch.log_path}[/dim]")
+    console.rule(style="dim")
+
+    # Following a run that has already finished would block on a `tail -F`
+    # of a file nothing will append to again. Print its tail and stop.
+    waiting = follow and state.running
+    if follow and not state.running:
+        console.print("[dim]run has already finished; showing the tail of its log[/dim]")
+
+    stop = threading.Event()
+
+    def _watch() -> None:
+        """Poll for completion so the follower can stop on its own. `tail
+        -F` never will: a finished run's log just goes quiet, which is
+        indistinguishable from a slow step.
+        """
+        while not stop.wait(5.0):
+            try:
+                if not probe(launch).running:
+                    stop.set()
+                    return
+            except ShinobiError:
+                continue
+
+    watcher = threading.Thread(target=_watch, daemon=True) if waiting else None
+    if watcher:
+        watcher.start()
+
+    # `stop` goes *into* the follower rather than being polled between
+    # lines out here: once the run ends the log goes quiet, so there is no
+    # next line to check a flag after, and the read would block forever.
+    stream = follow_log(launch, lines=lines, wait=waiting, stop=stop)
+    try:
+        for line in stream:
+            console.print(line, highlight=False, markup=False)
+    except KeyboardInterrupt:
+        console.print("\n[dim]detached; the run keeps going[/dim]")
+        return
+    except ShinobiError as exc:
+        raise click.ClickException(str(exc)) from None
+    finally:
+        stop.set()
+        stream.close()
+
+    if waiting:
+        final = probe(launch)
+        text, style = _state_style(final)
+        console.rule(style="dim")
+        console.print(f"[{style}]{text}[/{style}] [dim]after {_elapsed(launch, final)}[/dim]")
 
 
 @main.command("download")

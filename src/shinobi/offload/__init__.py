@@ -24,6 +24,15 @@ from shinobi.offload.slurm import (
     status_slurm,
     submit_slurm,
 )
+from shinobi.offload.tracking import (
+    Launch,
+    RunState,
+    discover,
+    find,
+    follow,
+    probe,
+    probe_all,
+)
 from shinobi.offload.ssh import (
     RemoteHandle,
     RemoteSpec,
@@ -35,15 +44,22 @@ from shinobi.offload.ssh import (
 )
 
 __all__ = [
+    "Launch",
     "OffloadCompileError",
     "RemoteHandle",
     "RemoteSpec",
+    "RunState",
     "SlurmJob",
     "SlurmWorkflow",
     "compile_slurm",
+    "discover",
+    "find",
     "find_cab_deps",
+    "follow",
     "launch_remote",
     "parse_remote",
+    "probe",
+    "probe_all",
     "status_slurm",
     "status_ssh",
     "submit_slurm",

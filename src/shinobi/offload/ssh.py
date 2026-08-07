@@ -320,6 +320,7 @@ class RemoteHandle:
         log_file: Remote path to the combined stdout/stderr log.
         exit_file: Remote path to the file the process writes its exit
             code to on completion.
+        launched_at: Unix time the launch was issued.
     """
 
     host: str
@@ -327,6 +328,11 @@ class RemoteHandle:
     pid: str
     log_file: str
     exit_file: str
+    # Unix time of the launch, recorded so `ninja runs` can show how long
+    # a run has been going without inferring it from a filename or from
+    # the handle file's mtime (both of which it still falls back to, for
+    # handles written before this field existed).
+    launched_at: int = 0
 
 
 @dataclass
@@ -741,26 +747,26 @@ def launch_remote(
     if not pid.isdigit():
         raise BackendError(f"unexpected launch output from {remote.host}: {proc.stdout!r} {proc.stderr!r}")
 
-    return RemoteHandle(host=remote.host, path=remote.path, pid=pid, log_file=log_file, exit_file=exit_file)
+    return RemoteHandle(host=remote.host, path=remote.path, pid=pid, log_file=log_file, exit_file=exit_file, launched_at=ts)
 
 
 def status_ssh(handle: dict[str, Any]) -> str:
     """Report a detached `--remote` run's progress, reconstructed fresh
     from `handle` (host/path/pid/log_file/exit_file) with a single ssh
     round-trip -- no persistent process, same contract as `status_slurm`.
-    """
-    host, path, pid = handle["host"], handle["path"], handle["pid"]
-    log_file, exit_file = handle["log_file"], handle["exit_file"]
-    exit_path = f"{path.rstrip('/')}/{exit_file}"
-    check = f"if [ -f {shlex.quote(exit_path)} ]; then cat {shlex.quote(exit_path)}; else kill -0 {shlex.quote(pid)} 2>/dev/null && echo RUNNING || echo UNKNOWN; fi"
-    proc = _ssh(host, check)
-    if proc.returncode != 0:
-        raise BackendError(f"could not query status on {host}: {proc.stderr.strip()}")
-    result = proc.stdout.strip()
 
-    if result == "RUNNING":
+    The probe itself lives in `offload.tracking`, which needs the state as
+    a value rather than a sentence (`ninja runs` aligns a column on it,
+    `ninja logs --follow` waits for it to stop being RUNNING). This stays
+    the one-line rendering it has always been, pointing at the log where
+    there is something to go and read.
+    """
+    from shinobi.offload.tracking import probe_ssh
+
+    path, log_file = handle["path"], handle["log_file"]
+    state = probe_ssh(handle)
+    if state.state == "RUNNING":
         return "RUNNING"
-    if result.isdigit():
-        code = int(result)
-        return "FINISHED (success)" if code == 0 else f"FINISHED (exit {code}) -- see {path}/{log_file}"
+    if state.state == "FINISHED":
+        return "FINISHED (success)" if state.exit_code == 0 else f"FINISHED (exit {state.exit_code}) -- see {path}/{log_file}"
     return f"UNKNOWN -- see {path}/{log_file}"
