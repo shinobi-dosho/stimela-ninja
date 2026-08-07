@@ -90,6 +90,8 @@ See :doc:`concepts/provenance`.
 
     $ ninja run myrecipe.py:selfcal --ms data.ms --provenance
 
+.. _cli-remote:
+
 Add ``--remote user@host:/path`` to launch on a remote host instead of
 locally: the target file and its statically-discoverable cab deps are synced
 over, then the run happens detached -- check progress with ``ninja status``.
