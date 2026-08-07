@@ -131,6 +131,25 @@ class LogConfig(BaseModel):
     # (native/container backends only -- see shinobi.backends._stream).
     # Default on: `ninja run --quiet` opts out for one invocation.
     stream: bool = True
+    # How many lines of a cab's stdout/stderr to hold in memory, from the
+    # start and from the end of each stream; the middle is elided with a
+    # marker (see shinobi.backends._stream.LineBuffer). Raise these to keep
+    # more of a chatty tool's output in the StepResult; 0 for either end
+    # drops that end entirely. Lines matching the cab's own wranglers are
+    # retained regardless, so capping does not cost output values.
+    capture_head_lines: int = 5_000
+    capture_tail_lines: int = 5_000
+
+    @field_validator("capture_head_lines", "capture_tail_lines")
+    @classmethod
+    def _non_negative(cls, value: int) -> int:
+        """A negative cap is meaningless and would silently behave as 0
+        (`max(0, ...)` in the buffer), so it is rejected at config load
+        where the offending YAML/env key can still be named.
+        """
+        if value < 0:
+            raise ValueError(f"line capture limits cannot be negative, got {value}")
+        return value
 
     @field_validator("level")
     @classmethod

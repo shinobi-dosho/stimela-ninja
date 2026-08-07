@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -189,9 +190,10 @@ def test_run_streaming_tears_down_on_interrupt(monkeypatch):
     def _interrupt(self, *a, **k):
         raise KeyboardInterrupt
 
-    # order matters: patch the real class's `communicate` before the name
-    # `subprocess.Popen` stops pointing at that class.
-    monkeypatch.setattr(real_popen, "communicate", _interrupt)
+    # The wait being interrupted is the join on the reader threads -- for
+    # `stream=False` as much as `stream=True`, since capping what is held in
+    # memory took the non-streaming path off `communicate()` too.
+    monkeypatch.setattr(threading.Thread, "join", _interrupt)
     monkeypatch.setattr(subprocess, "Popen", _spy)
 
     with pytest.raises(KeyboardInterrupt):
@@ -204,12 +206,11 @@ def test_run_streaming_tears_down_on_interrupt(monkeypatch):
 def test_run_streaming_raises_teardown_incomplete_when_it_cannot_stop_the_child(monkeypatch):
     """The signal that must reach `steps.pyfunc`: do not delete the workspace,
     something is still using it."""
-    real_popen = subprocess.Popen
 
     def _interrupt(self, *a, **k):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(real_popen, "communicate", _interrupt)
+    monkeypatch.setattr(threading.Thread, "join", _interrupt)
     monkeypatch.setattr(_stream, "_teardown", lambda child: False)
 
     with pytest.raises(_stream.TeardownIncomplete) as caught:

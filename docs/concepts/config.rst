@@ -35,6 +35,8 @@ Settings
       file: null                  # run-log filename (null = file logging off)
       level: INFO                # log level
       stream: true                # live-echo running cabs' stdout/stderr
+      capture_head_lines: 5000    # lines kept from the start of each stream
+      capture_tail_lines: 5000    # lines kept from the end of each stream
     cache:
       enabled: false              # step-level result caching, off by default
       dir: ".shinobi/cache"       # cache directory
@@ -125,10 +127,27 @@ pystep, recipe, and each recipe sub-step under its dotted label (e.g.
 lifecycle records (``starting`` / ``finished`` / ``failed`` / ``cache hit``)
 and the step's captured stdout/stderr at ``INFO``, failures and exceptions at
 ``ERROR``, and the resolved backend plus full argv at ``DEBUG``. Output is
-logged from the captured text after each step completes, so the log is
-complete even for non-streaming backends and unaffected by ``--quiet``. All
-three settings are overridable per-invocation with the global
-``ninja --log-file/--log-dir/--log-level`` options.
+logged from the captured text after each step completes, so the log covers
+non-streaming backends too and is unaffected by ``--quiet`` -- within the
+capture limits below. All three settings are overridable per-invocation with
+the global ``ninja --log-file/--log-dir/--log-level`` options.
+
+``log.capture_head_lines`` / ``log.capture_tail_lines`` (default ``5000``
+each) bound how much of a cab's stdout and stderr is held in memory. Radio
+tools are not shy: a single wsclean or CASA step can emit hundreds of MB of
+progress chatter, and every line of it would otherwise be retained for the
+whole run -- once in the ``BackendRun``, again in the ``StepResult``, and
+again in the recipe-level aggregate. Beyond the limits the *middle* of each
+stream is replaced by a single ``... [shinobi] N lines elided ...`` marker,
+keeping both ends: the banner, the resolved parameters and the early failures
+at the top, the result, the summary and the traceback at the bottom.
+
+Two things are deliberately exempt. Live echo (``log.stream``) is never
+capped -- it is a side channel, not a buffer, so a chatty tool still scrolls
+past in full. And **lines matching the cab's own wranglers are retained
+wherever they occur**, so capping costs readability but not output values;
+if even those overflow, the step warns rather than silently returning an
+unset output. Set either limit to ``0`` to drop that end entirely.
 
 Programmatic runs never write a log file (shinobi's modules only emit
 through the ``shinobi.*`` logger hierarchy); attach your own handler to

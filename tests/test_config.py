@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from shinobi.config import AppConfig
 
 
@@ -55,3 +58,27 @@ def test_explicit_override_wins_over_everything(tmp_path, monkeypatch):
     monkeypatch.setenv("SHINOBI_BACKEND__DEFAULT", "podman")
     cfg = AppConfig.load(config_file=config_file, backend={"default": "apptainer"})
     assert cfg.backend.default == "apptainer"
+
+
+def test_capture_limits_default_to_a_bounded_capture(tmp_path):
+    cfg = AppConfig.load(config_file=tmp_path / "missing.yml")
+    assert cfg.log.capture_head_lines == 5_000
+    assert cfg.log.capture_tail_lines == 5_000
+
+
+def test_capture_limits_are_configurable(tmp_path):
+    config_file = tmp_path / "config.yml"
+    config_file.write_text("log:\n  capture_head_lines: 10\n  capture_tail_lines: 20\n")
+    cfg = AppConfig.load(config_file=config_file)
+    assert cfg.log.capture_head_lines == 10
+    assert cfg.log.capture_tail_lines == 20
+
+
+def test_negative_capture_limit_is_rejected_at_load(tmp_path):
+    """Rejected here rather than clamped in the buffer, so the message can
+    still name the key the operator got wrong.
+    """
+    config_file = tmp_path / "config.yml"
+    config_file.write_text("log:\n  capture_head_lines: -1\n")
+    with pytest.raises(ValidationError):
+        AppConfig.load(config_file=config_file)
