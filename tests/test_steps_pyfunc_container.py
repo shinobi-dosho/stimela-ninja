@@ -217,6 +217,23 @@ def test_pystep_container_apptainer_argv():
     assert "docker://casa:latest" in argv
 
 
+def test_pystep_container_singularity_argv():
+    # The bug this closes: `singularity` wasn't a container runtime, so the
+    # adapter fell through and ran an imaged pystep in-process on the host --
+    # a CASA cab reporting `No module named 'casatasks'` instead of running.
+    ref = pystep(image="casa:latest", backend="singularity")(container_func)
+
+    fake = _fake_container_run({"result": "test.ms:100"})
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake) as mock_run:
+        result = ref(ms="test.ms")
+
+    argv = mock_run.call_args[0][0]
+    assert argv[0] == "singularity"
+    assert argv[1] == "exec"
+    assert "docker://casa:latest" in argv
+    assert result.backend == "singularity"
+
+
 def test_pystep_container_parses_outputs_file():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 

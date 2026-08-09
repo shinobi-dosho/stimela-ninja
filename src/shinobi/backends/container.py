@@ -63,7 +63,14 @@ from shinobi.steps.schema import Cab, Scope, declared_output_dirs, path_fields, 
 logger = logging.getLogger(__name__)
 
 _DOCKER_LIKE = {"docker", "podman"}
-_APPTAINER_LIKE = {"apptainer"}
+# `singularity` is the same CLI: apptainer is the renamed project and ships a
+# `singularity` compat symlink, and SingularityCE speaks the subset used here
+# (`exec`, `--bind`, `--pwd`, `docker://`) identically. It is a separate
+# registry entry rather than an alias mapped onto `apptainer` because the name
+# is also the *binary* invoked (`build_container_argv` puts `runtime` at
+# argv[0]) -- on a site that installs only `singularity`, resolving the name to
+# `apptainer` would produce a command that isn't there.
+_APPTAINER_LIKE = {"apptainer", "singularity"}
 
 # The cgroup v2 controller each emitted limit needs. `--cpus` is worthless
 # without `cpu`, `--memory` without `memory`; nothing else is emitted.
@@ -689,7 +696,7 @@ def _rootless(runtime: str) -> bool:
     limits are applied by a root daemon in its own cgroup tree, so what this
     session was delegated says nothing about whether they will work.
     """
-    if runtime == "apptainer":
+    if runtime in _APPTAINER_LIKE:
         return True
     if runtime == "podman":
         return os.geteuid() != 0
@@ -1066,3 +1073,26 @@ class ApptainerBackend(ContainerBackend):
             run_as_host_user: Ignored for apptainer (always runs as host user).
         """
         super().__init__("apptainer", workdir, run_as_host_user)
+
+
+@register
+class SingularityBackend(ContainerBackend):
+    """Container backend that shells out to `singularity`.
+
+    Apptainer under its former name -- same CLI, same flags, same
+    `docker://` handling (see `_APPTAINER_LIKE`). Registered separately so
+    the name people actually have on their HPC site is the name they can
+    pass, and so `singularity` is the binary invoked on sites where that is
+    the only one installed.
+    """
+
+    name = "singularity"
+
+    def __init__(self, workdir: str | None = None, run_as_host_user: bool | None = None):
+        """Initialize a Singularity-backed container backend.
+
+        Args:
+            workdir: Working directory to bind-mount and run inside.
+            run_as_host_user: Ignored for singularity (always runs as host user).
+        """
+        super().__init__("singularity", workdir, run_as_host_user)

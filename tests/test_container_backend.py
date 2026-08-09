@@ -3,7 +3,7 @@ import os
 import pytest
 
 from shinobi.backends import container
-from shinobi.backends.container import ApptainerBackend, DockerBackend
+from shinobi.backends.container import ApptainerBackend, DockerBackend, SingularityBackend
 from shinobi.exceptions import BackendError
 from shinobi.loaders import build_model
 from shinobi.resources import Resources
@@ -189,6 +189,25 @@ def test_apptainer_uses_bind_and_exec():
     assert argv[pwd_index + 1] == "/work"
     # apptainer needs an explicit source scheme for a registry ref
     assert argv[pwd_index + 2] == "docker://tool:latest"
+
+
+def test_singularity_is_apptainer_under_its_former_name():
+    # Same argv shape, but `singularity` at argv[0] -- the name is the binary,
+    # which is the point of registering it rather than aliasing it onto
+    # apptainer (an HPC site may have only the one).
+    cab = make_cab({"restored_image": ("File", False, None)})
+    inputs = {"restored_image": "/data/img.fits"}
+    sing, _ = SingularityBackend(workdir="/work")._wrap(cab, ["tool", "--restored-image", "/data/img.fits"], inputs)
+    appt, _ = ApptainerBackend(workdir="/work")._wrap(cab, ["tool", "--restored-image", "/data/img.fits"], inputs)
+    assert sing[0] == "singularity"
+    assert sing[1:] == appt[1:]
+
+
+def test_singularity_is_a_recognised_container_runtime():
+    # The pystep adapter gates containerisation on this set; a name missing
+    # from it silently runs an imaged @pystep in-process on the host.
+    assert "singularity" in container.CONTAINER_RUNTIMES
+    assert container._rootless("singularity") is True
 
 
 # ---- read-only bind mounts (writable: false) --------------------------------
