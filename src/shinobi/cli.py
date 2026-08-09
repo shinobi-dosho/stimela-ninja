@@ -11,6 +11,7 @@ from pathlib import Path
 import click
 
 import shinobi
+from shinobi.backends import registered_backend_names
 from shinobi.clickutil import build_options, unflatten_kwargs
 from shinobi.config import AppConfig
 from shinobi.dag import graph_nodes, render_dag
@@ -47,6 +48,19 @@ def main(
     """ninja -- the shinobi (Stimela 3.0) CLI."""
     overrides: dict = {}
     if backend:
+        # Checked here, at the door, because an unrecognised name does not
+        # reliably fail later. A cab reaches `get_backend` and raises, but a
+        # `@pystep` never does: its adapter matches the resolved name against
+        # `CONTAINER_RUNTIMES` (and `"venv"`) and *falls through to running
+        # the function in-process* on anything else. So `--backend
+        # singularity` on a CASA pystep didn't say "no such backend" -- it
+        # ran the containerised step on the host and surfaced as
+        # `ModuleNotFoundError: No module named 'casatasks'`, which points
+        # at everything except the actual mistake. A typo in the one place
+        # the user typed it should be answered where they typed it.
+        known = registered_backend_names()
+        if backend not in known:
+            raise click.BadParameter(f"unknown backend {backend!r} (available: {', '.join(known)})", param_hint="'--backend'")
         overrides["backend"] = {"default": backend}
     log_overrides = {key: value for key, value in (("file", log_file), ("dir", log_dir), ("level", log_level)) if value is not None}
     if log_overrides:
