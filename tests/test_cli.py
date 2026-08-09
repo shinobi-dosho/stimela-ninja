@@ -403,6 +403,36 @@ def test_log_level_rejects_unknown_name():
     assert "CHATTY" in result.output
 
 
+# -- ninja --backend (main group) --
+
+
+def test_backend_rejects_unknown_name_naming_the_alternatives():
+    result = CliRunner().invoke(main, ["--backend", "quagga", "version"])
+    assert result.exit_code != 0
+    assert "unknown backend 'quagga'" in result.output
+    # the list is the whole point -- a rejection that doesn't say what *is*
+    # valid just moves the guessing one step later
+    assert "native" in result.output and "apptainer" in result.output
+
+
+def test_backend_rejects_unknown_name_before_anything_is_dispatched():
+    # The regression this guards: `--backend <typo>` on an imaged @pystep fell
+    # through the adapter's CONTAINER_RUNTIMES check and ran the function on
+    # the host -- failing, if at all, on a missing in-container import rather
+    # than on the bad name. Proof we never reach dispatch: the target here
+    # doesn't exist either, and the backend is still what gets reported.
+    result = CliRunner().invoke(main, ["--backend", "singularityy", "run", "no.such.module:nope"])
+    assert result.exit_code != 0
+    assert "unknown backend 'singularityy'" in result.output
+    assert "no.such.module" not in result.output
+
+
+@pytest.mark.parametrize("name", ["native", "docker", "apptainer", "venv", "slurm"])
+def test_backend_accepts_every_registered_name(name):
+    result = CliRunner().invoke(main, ["--backend", name, "version"])
+    assert result.exit_code == 0, result.output
+
+
 # -- run-log file (ninja --log-file ... run ...) --
 
 

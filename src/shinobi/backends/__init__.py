@@ -97,8 +97,25 @@ def get_backend(name: str, **opts) -> Backend:
     try:
         backend_cls = _REGISTRY[name]
     except KeyError:
-        raise ValueError(f"unknown backend '{name}' (available: {sorted(_REGISTRY)})") from None
+        raise ValueError(f"unknown backend '{name}' (available: {', '.join(registered_backend_names())})") from None
     return backend_cls(**opts)
+
+
+def registered_backend_names() -> list[str]:
+    """Every name a backend is registered under, sorted.
+
+    The authoritative answer to "is this a real backend?", for callers that
+    need to *check* a name rather than instantiate it -- the CLI validating
+    `--backend` before a run starts (`shinobi.cli`). Not every consumer of a
+    backend name reaches `get_backend`: the pystep adapter matches the
+    resolved name against `CONTAINER_RUNTIMES` and otherwise runs the
+    function in-process, so a typo there would go unnoticed rather than
+    raise.
+
+    Returns:
+        The registry keys, sorted.
+    """
+    return sorted(_REGISTRY)
 
 
 def registered_backend_classes() -> list[type[Backend]]:

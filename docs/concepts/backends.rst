@@ -38,7 +38,7 @@ Available backends
     a venv cab prints the plain (un-rewritten) argv; the venv resolution happens
     only at run time.
 
-``docker`` / ``podman`` / ``apptainer``
+``docker`` / ``podman`` / ``apptainer`` / ``singularity``
     Runs the cab's ``image`` in a container. Bind mounts are derived from the
     cab's own schema -- every ``File``/``MS``-dtype parameter contributes its
     parent directory as a mount, so inputs and outputs are visible inside the
@@ -62,6 +62,10 @@ Available backends
     host user (not root) by default, so bind-mounted outputs come out
     host-owned -- see ``backend.run_as_host_user`` in :doc:`config`.
     ``apptainer`` already runs as the host user, so this is a no-op there.
+    ``singularity`` is the same backend under the project's former name: it
+    behaves exactly as ``apptainer`` but invokes the ``singularity`` binary,
+    which is the only one present on some HPC sites. Pick whichever your
+    cluster actually installs.
     With :doc:`provenance` enabled, the image is digest-pinned before running
     (``repo@sha256:...``); by default it runs by its original tag.
 
@@ -94,6 +98,14 @@ A backend can be selected in several places, in increasing order of specificity:
     def image(ctx):
         return ctx.run()
 
+``ninja --backend`` is checked against the list above before anything runs, so
+a name that isn't a backend is rejected on the spot and told what the
+alternatives are. This matters more than it looks: a ``@pystep`` with an
+``image`` containerises only when the resolved backend *is* a container
+runtime, and otherwise runs the function in the calling process -- so an
+unrecognised name used to run a containerised step on the host and fail on
+whatever the image was supposed to provide.
+
 Getting a backend directly
 --------------------------
 
@@ -123,7 +135,7 @@ between a soft scheduling hint and a real limit:
      - Emits ``--cpus`` / ``--memory``. Enforced by the container runtime: a
        runaway is killed inside its own cgroup rather than eating memory its
        siblings are using.
-   * - ``apptainer``
+   * - ``apptainer`` / ``singularity``
      - Emits ``--cpus`` / ``--memory``, same spelling and same effect
        (verified: ``--memory 256M`` really does produce a cgroup scope with
        ``memory.max=268435456``). Needs cgroup delegation -- cgroups v2 under

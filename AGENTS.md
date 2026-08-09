@@ -120,7 +120,10 @@ src/shinobi/
     __init__.py          # Backend ABC + class registry (register/get_backend)
     native.py            # subprocess
     venv.py              # subprocess in an existing virtualenv (native + activated env); always unpinned
-    container.py         # docker/podman/apptainer, bind_dir_modes over path_fields() + declared_output_dirs
+    container.py         # docker/podman/apptainer (+`singularity`, the same CLI under its
+                         # former name -- registered separately because the backend name is
+                         # also the binary invoked), bind_dir_modes over path_fields() +
+                         # declared_output_dirs
     slurm.py             # sbatch/sacct, not live-verified (no cluster in dev env)
     kubernetes.py        # kubectl, live-verified against a real kind cluster
     recording.py         # RecordingBackend -- test double, records calls
