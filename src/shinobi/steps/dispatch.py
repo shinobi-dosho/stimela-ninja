@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field, ValidationError, create_model
-from shinobi.backends._stream import display_label
+from shinobi.backends._stream import display_label, terminate_all
 from shinobi.cache import as_provenance_key, combine_keys, compute_cache_key, get_cache_manifest, invalidate_path_hashes, set_content_sample
 from shinobi.snapshots import SnapshotGuard, announce_run, eligible_fields, get_journal, new_run_id, reconcile
 from shinobi.config import AppConfig
@@ -596,7 +596,11 @@ def _dispatch(
                 result = ctx.run()
             elif not isinstance(result, StepResult):
                 raise TypeError(f"step function {getattr(func, '__name__', func)!r} must return StepResult or None, got {type(result).__name__}")
-    except Exception:
+    except BaseException:
+        # BaseException, not Exception: an interrupt is now an orderly unwind
+        # (the child is stopped first), so the step's workspace needs the same
+        # rollback any other failure gets. Catching only Exception left an
+        # interrupted step relying on the marker-plus-reconcile path alone.
         logger.exception("step %s: raised", cache_path)
         if guard is not None:
             # The workspace goes back to exactly what it was before this step
@@ -1107,6 +1111,24 @@ def _run_recipe(
         held.clear()
         budget.abandon()
 
+    def _teardown_on_interrupt(exc_type, exc, tb) -> bool:
+        """On Ctrl-C, stop the work before anyone waits for it to finish.
+
+        An interrupt is delivered to the *main* thread only. Every worker is
+        parked inside its own `run_streaming`, blocked on a child that knows
+        nothing about it -- so the pool's `__exit__`, which joins those
+        threads, would wait on containers nobody has told to stop. That is
+        not a leak that shows up later: it hangs ninja at the exact moment
+        the user asked it to stop, with the whole run still burning CPU.
+
+        Registered *after* the pool so it runs *before* `pool.__exit__` in
+        the unwind (callbacks are LIFO), which is the whole point -- killing
+        the children is what lets the join it precedes actually complete.
+        """
+        if exc_type is not None and issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
+            terminate_all(reason=f"recipe '{recipe.name}' interrupted")
+        return False  # never suppress; this is a hook, not a handler
+
     # `ExitStack`, not a plain `with`: callbacks run in reverse order of
     # registration, so `_return_reservations` (registered first) runs *after*
     # the pool's `__exit__` has joined every in-flight future -- reservations
@@ -1114,6 +1136,7 @@ def _run_recipe(
     with ExitStack() as stack:
         stack.callback(_return_reservations)
         pool = stack.enter_context(ThreadPoolExecutor(max_workers=max_workers))
+        stack.push(_teardown_on_interrupt)
 
         def _release_dependents(i: int) -> None:
             for dependent in graph.dependents[i]:

@@ -60,6 +60,7 @@ Boundaries of the mechanism, by design:
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import tempfile
 import warnings
@@ -293,10 +294,156 @@ def clear_stale_outputs(scope: Scope, run_inputs: dict[str, Any], workspace: Pat
                 stacklevel=3,
             )
             continue
+        writers, readers = live_holders(resolved)
+        if writers:
+            # Refuse rather than warn-and-skip. Skipping would hand the tool
+            # a destination that already exists, which is the failure this
+            # function was written to prevent -- and the *reason* it exists
+            # here is not "stale product in the way" but "something is still
+            # writing this", which no amount of retrying fixes and which the
+            # user has to see to act on.
+            raise StepError(
+                f"'{scope.name}' would clear the stale {source} at {dst} before re-running, but "
+                f"{'a process is' if len(writers) == 1 else 'processes are'} still writing to it: {', '.join(writers)}. "
+                f"Deleting a path something is still writing does not stop the writer -- it keeps going into "
+                f"files that no longer have names, and the product it leaves is silently incomplete. This is "
+                f"usually a run that was interrupted without its container being stopped. Stop the process(es) "
+                f"above, then re-run. (Set execution.clear_stale_outputs=false to skip this replacement "
+                f"entirely, at the cost of the tool seeing the previous run's product.)"
+            )
+        if readers:
+            # Not fatal: a reader keeps the old inode and is unaffected by the
+            # unlink. Said out loud anyway, because "my viewer went blank" is
+            # otherwise a mystery.
+            logger.warning(
+                "step %s: clearing %s at %s while %s reading it -- their view will not update",
+                scope.name,
+                source,
+                dst,
+                "a process is" if len(readers) == 1 else "processes are",
+            )
         logger.info("step %s: clearing stale %s at %s before re-running", scope.name, source, dst)
         _remove(dst)
         removed.append(dst)
     return removed
+
+
+def _describe(pid: int) -> str:
+    """`<pid> (<command>)`, for naming a process in an error a human has to
+    act on. Falls back to the bare pid if the process is already gone."""
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace").strip()
+    except OSError:
+        cmdline = ""
+    return f"{pid} ({cmdline[:120]})" if cmdline else str(pid)
+
+
+def _opened_for_writing(fd_link: Path) -> bool:
+    """Was this descriptor opened for writing?
+
+    `/proc/<pid>/fd/<n>` is just a symlink and carries no access mode; the
+    matching `fdinfo` entry carries the open flags, whose low two bits are
+    `O_RDONLY`/`O_WRONLY`/`O_RDWR`. Unreadable fdinfo counts as writing --
+    when we cannot tell, the cautious answer is the one that refuses to
+    delete.
+    """
+    try:
+        for line in Path(str(fd_link).replace("/fd/", "/fdinfo/")).read_text().splitlines():
+            if line.startswith("flags:"):
+                return (int(line.split()[1], 8) & os.O_ACCMODE) in (os.O_WRONLY, os.O_RDWR)
+    except (OSError, ValueError, IndexError):
+        return True
+    return True
+
+
+def live_holders(path: Path) -> tuple[list[str], list[str]]:
+    """Who has `path`, or something under it, open right now -- split into
+    writers and readers.
+
+    The guard against a deletion nobody meant to make. Its motivating case
+    is real and cost 13 GB: a container orphaned by an earlier interrupt kept
+    writing an MS, the next run cleared that "stale" output from under it,
+    and the writer carried on into unlinked files -- 13 GB on disk that
+    collapsed to 102 MB the moment its file descriptors closed. Nothing about
+    that is visible from the path alone; the only evidence is that somebody
+    still has it open.
+
+    Writers and readers are separated because only one of them is a problem.
+    Deleting under a *reader* is harmless -- it keeps reading the old inode,
+    which is ordinary POSIX and was the behaviour before this guard existed --
+    and treating the two alike would fail a run because somebody had a
+    `casaviewer` on the previous image, a `tail -f` on a log, or a shell
+    sitting in the output directory. A `cwd` match counts as reading for the
+    same reason: being in a directory is not writing to it.
+
+    Known blind spots, all of which mean this returns *fewer* holders than
+    exist rather than more:
+
+    * Only this machine. A step still running on a cluster node through the
+      slurm or kubernetes backends holds paths on shared storage that no
+      local `/proc` will ever show.
+    * Only processes we can read. A rootful docker container's payload runs
+      as root by default (`backend.run_as_host_user` controls the `--user`
+      flag), and root's `/proc/<pid>/fd` is unreadable to us -- so the
+      leaked-docker-container case this guard reads as its motivating story
+      is exactly the one it can miss.
+    * Only descriptors. casacore memory-maps table files, and a mapping whose
+      fd has been closed lives in `/proc/<pid>/maps`, not `fd`.
+
+    Linux-only: `/proc` is how you ask this question, and where it does not
+    exist (macOS) both lists come back empty -- "nothing known to be using
+    it", the pre-guard behaviour.
+
+    Args:
+        path: A resolved path (file or directory) about to be deleted.
+
+    Returns:
+        `(writers, readers)`, each `"<pid> (<command>)"`, deduplicated by pid.
+        A pid appears in `writers` if *any* of its matching descriptors is
+        writable.
+    """
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return [], []
+    target = str(path)
+    prefix = target + os.sep
+    me = os.getpid()
+    writers: list[str] = []
+    readers: list[str] = []
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == me:
+            continue
+        matched = writing = False
+        try:
+            fds = list((entry / "fd").iterdir())
+        except OSError:
+            fds = []  # unreadable (another user) or exited between listing and now
+        for link in fds:
+            try:
+                dest = os.readlink(link)
+            except OSError:
+                continue
+            # NFS silly-renames a deleted-but-open file to `.nfsXXXX` in its
+            # own directory, and Linux appends " (deleted)" to the link; both
+            # still name a live writer inside the tree, which is precisely
+            # the state the motivating case was found in.
+            if dest == target or dest.startswith(prefix):
+                matched = True
+                if _opened_for_writing(link):
+                    writing = True
+                    break
+        if not matched:
+            try:
+                dest = os.readlink(entry / "cwd")
+            except OSError:
+                continue
+            matched = dest == target or dest.startswith(prefix)
+        if matched:
+            (writers if writing else readers).append(_describe(pid))
+    return writers, readers
 
 
 def _relativize(value: Any, workspace: Path) -> Any:

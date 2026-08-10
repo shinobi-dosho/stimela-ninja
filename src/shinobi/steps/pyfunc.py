@@ -59,8 +59,10 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import os
 import pickle
+import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -68,7 +70,7 @@ from typing import TYPE_CHECKING, Any, Callable, Sequence, get_type_hints
 
 from pydantic import BaseModel, create_model
 
-from shinobi.backends._stream import display_label, run_streaming
+from shinobi.backends._stream import TeardownIncomplete, display_label, run_streaming
 from shinobi.config import AppConfig
 from shinobi.exceptions import CabRunError
 from shinobi.results import StepResult, explain_returncode
@@ -86,6 +88,8 @@ from shinobi.steps.schema import ParamMeta, Scope, StepRef
 
 if TYPE_CHECKING:
     from shinobi.steps.dispatch import ExecContext
+
+logger = logging.getLogger(__name__)
 
 _UNSUPPORTED_KINDS = (
     inspect.Parameter.VAR_POSITIONAL,
@@ -303,6 +307,9 @@ class _Launch:
     env: dict[str, str] | None
     cwd: str | None
     provenance: dict[str, Any] = field(default_factory=dict)
+    # Runtime-specific teardown for a container ninja's signals cannot reach
+    # (docker/podman); None everywhere else. See `_stream.run_streaming`.
+    stop: Callable[[], None] | None = None
 
 
 class _ContainerLauncher:
@@ -317,8 +324,9 @@ class _ContainerLauncher:
         self.ctx = ctx
 
     def build(self, runner_path: Path, workdir: str, extra_dirs: list[str], run_prepared: dict[str, Any]) -> _Launch:
-        from shinobi.backends.container import build_container_argv
+        from shinobi.backends.container import build_container_argv, container_stopper, new_container_name
 
+        container_name = new_container_name()
         full_argv, image_digest = build_container_argv(
             self.backend_name,
             self.ctx.scope,
@@ -328,12 +336,16 @@ class _ContainerLauncher:
             extra_dirs=extra_dirs,
             run_as_host_user=AppConfig.load().backend.run_as_host_user,
             pin=self.ctx._pin,
+            container_name=container_name,
         )
         return _Launch(
             argv=full_argv,
             env=None,
             cwd=None,  # docker gets its workdir via --workdir, runs in host cwd
             provenance={"image": self.ctx.scope.image, "image_digest": image_digest, "containerized": True},
+            # Ignored for the apptainer-likes (they need no handle); the
+            # difference is decided inside `container_stopper`, not here.
+            stop=container_stopper(self.backend_name, container_name),
         )
 
     def failure_hint(self, stderr: str) -> str | None:
@@ -427,7 +439,18 @@ def _run_pystep_subprocess(
     if ctx._clear_outputs:
         clear_stale_outputs(scope, run_prepared, Path(workspace), sandboxed=sandbox_dir is not None)
 
-    with tempfile.TemporaryDirectory(prefix="shinobi_pystep_") as tmpdir:
+    # Not `with TemporaryDirectory(...)`: on an interrupt whose child could
+    # not be confirmed stopped, this directory must **stay**. It holds the
+    # runner and the pickled inputs, and it is bind-mounted into the
+    # container -- deleting it under a process still using it does not stop
+    # that process, it just makes what it produces incomplete, which is the
+    # exact failure this whole path exists to prevent (a real interrupted run
+    # lost a 13 GB measurement set that way). `TeardownIncomplete` is the one
+    # exception that skips the cleanup; everything else, including an ordinary
+    # KeyboardInterrupt that *did* stop the child, cleans up as before.
+    tmpdir = tempfile.mkdtemp(prefix="shinobi_pystep_")
+    keep_tmpdir = False
+    try:
         io_dir = Path(tmpdir) / "io"
         io_dir.mkdir()
 
@@ -459,7 +482,9 @@ def _run_pystep_subprocess(
 
         launch = launcher.build(runner_path, workdir, extra_dirs, run_prepared)
 
-        run = run_streaming(launch.argv, label=display_label(ctx._cache_path) if ctx._cache_path else scope.name, stream=ctx._stream, cwd=launch.cwd, env=launch.env)
+        run = run_streaming(
+            launch.argv, label=display_label(ctx._cache_path) if ctx._cache_path else scope.name, stream=ctx._stream, cwd=launch.cwd, env=launch.env, stop=launch.stop
+        )
 
         if run.returncode != 0:
             stderr_tail = (run.stderr or "").strip()
@@ -511,6 +536,17 @@ def _run_pystep_subprocess(
             resources=scope.resources,
             **launch.provenance,
         )
+    except TeardownIncomplete:
+        keep_tmpdir = True
+        logger.error(
+            "pystep '%s': keeping %s -- the process using it could not be stopped, so removing it would only hide a writer that is still running.",
+            scope.name,
+            tmpdir,
+        )
+        raise
+    finally:
+        if not keep_tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def _make_adapter(func: Callable, outputs_model: type[BaseModel], is_empty: bool, wants_ctx: bool) -> Callable[[ExecContext], StepResult]:

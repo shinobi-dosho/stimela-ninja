@@ -12,6 +12,7 @@ import click
 
 import shinobi
 from shinobi.backends import registered_backend_names
+from shinobi.backends._stream import TeardownIncomplete, install_signal_handlers, terminate_all
 from shinobi.clickutil import build_options, unflatten_kwargs
 from shinobi.config import AppConfig
 from shinobi.dag import graph_nodes, render_dag
@@ -68,6 +69,10 @@ def main(
     ctx.obj = AppConfig.load(config_file=config_file, **overrides)
     setup_file_logging(ctx.obj.log)
     ctx.meta["backend_override"] = backend
+    # The CLI owns the process, so it is the CLI's job to make every way a run
+    # ends -- not just Ctrl-C -- stop the work as well. Deliberately not done
+    # on import: a library caller embedding shinobi keeps its own handlers.
+    install_signal_handlers()
 
 
 @main.command()
@@ -537,6 +542,22 @@ def run(
             )
         except (ShinobiError, RecipeGraphError) as exc:
             raise click.ClickException(str(exc)) from None
+        except TeardownIncomplete as exc:
+            # Distinct from an ordinary interrupt, and must stay distinct: it
+            # means something is *still running*. Exit 1, not 130 -- this is a
+            # failure the user has to act on, not a clean cancellation.
+            raise click.ClickException(str(exc)) from None
+        except KeyboardInterrupt:
+            # By here the step's own process tree is already down: whichever
+            # of `run_streaming` or the recipe scheduler was holding the
+            # interrupt tore it down on the way out. This call is the
+            # backstop for a Ctrl-C that landed anywhere else in dispatch
+            # (resolving wiring, hashing inputs) with a child still live --
+            # it costs nothing when there is none. What the user gets is a
+            # single honest line instead of a traceback through click.
+            terminate_all(reason="interrupted")
+            click.echo(f"'{scope.name}' interrupted", err=True)
+            ctx.exit(130)  # the conventional shell code for death by SIGINT
         # When streaming happened, every line already printed live as it
         # ran -- dumping the same captured text again here would just
         # repeat it. Only fall back to the old one-shot dump when

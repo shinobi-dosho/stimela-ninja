@@ -106,6 +106,70 @@ runtime, and otherwise runs the function in the calling process -- so an
 unrecognised name used to run a containerised step on the host and fail on
 whatever the image was supposed to provide.
 
+Interrupting a run
+------------------
+
+Ctrl-C stops the work, not just the client -- for every backend that runs the
+work *here* (``native``, ``venv``, and the four container runtimes). Each
+step's process gets its own session, so the interrupt goes to ninja alone,
+and ninja then tears the step down deliberately: SIGTERM, a grace period,
+SIGKILL, and it does not return until the process and its process group are
+confirmed gone. ``SIGTERM`` and ``SIGHUP`` do the same thing as Ctrl-C, which
+matters because giving the child its own session is exactly what stopped a
+dropped ssh connection from reaching it by accident. During a parallel recipe
+the same teardown reaches *every* in-flight step -- an interrupt is delivered
+only to the main thread, while the workers sit blocked on children that would
+otherwise never hear about it.
+
+``slurm`` and ``kubernetes`` are the exception, and are **not** covered: they
+hand work to a scheduler and poll it, so what would need stopping is a job on
+a cluster rather than a child of this process. Interrupting a run that has
+submitted one leaves the job running, exactly as it did before any of this
+existed; cancel it with ``scancel`` or ``kubectl delete job`` yourself.
+
+Docker and podman need more than signals, and this is worth knowing if you
+ever inspect a run by hand: their containers are **not** descendants of the
+client. containerd-shim or conmon owns them, so killing the client (or its
+whole process group) leaves the container running. ninja therefore names
+every container it starts ``shinobi-<random>`` and stops it with
+``<engine> rm -f``. A container left over from something that bypassed this
+is findable and removable directly::
+
+    docker rm -f $(docker ps -qf name=shinobi-)
+
+The ordering matters more than it sounds. A step's workspace -- the sandbox,
+and the temporary directory holding a ``@pystep``'s runner and its I/O -- is
+cleaned up as the run unwinds, and deleting those while the tool still has
+them open does not stop the tool. It keeps writing into files that no longer
+have names, and the product it leaves behind is silently incomplete: on one
+real interrupted run, a 13 GB measurement set collapsed to 102 MB the moment
+the orphaned writer's file descriptors closed. Teardown finishing *before*
+cleanup starts is what prevents that.
+
+The same reasoning guards the other direction. Before clearing a stale output
+so a tool can rewrite it (see ``execution.clear_stale_outputs`` in
+:doc:`config`), ninja checks whether any live process is still **writing**
+that path, and refuses with the offending pids rather than deleting it. That
+is the case a leaked container from an *earlier* run produces, where teardown
+never got the chance to run at all. Readers are only warned about, not
+refused: deleting a path out from under a reader is ordinary POSIX -- it
+keeps the old inode -- and failing a run because a viewer or a ``tail -f``
+had the previous product open would be its own bug.
+
+Know what that check cannot see, because all three make it report *fewer*
+holders than exist: it reads ``/proc``, so it is local-only and blind to a
+job still running on a cluster node; it cannot read another user's
+processes, which includes a rootful docker container's payload under the
+default ``backend.run_as_host_user`` settings; and it looks at file
+descriptors, not memory mappings, so a casacore table mapped and then closed
+does not appear. It is a safety net, not a guarantee.
+
+If a process cannot be killed -- almost always one blocked in uninterruptible
+I/O, or a container runtime that will not release it -- ninja says so, names
+the pid, and leaves that step's workspace in place rather than cleaning up
+around something still running. The run fails rather than reporting a clean
+cancellation, because something is still going.
+
 Getting a backend directly
 --------------------------
 

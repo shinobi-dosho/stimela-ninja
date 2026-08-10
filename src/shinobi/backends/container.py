@@ -47,12 +47,13 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from shinobi.backends import Backend, register
-from shinobi.backends._stream import run_streaming
+from shinobi.backends._stream import RuntimeStop, run_streaming
 from shinobi.config import AppConfig
 from shinobi.exceptions import BackendError
 from shinobi.loaders._modelgen import is_file_dtype
@@ -847,6 +848,72 @@ def cgroup_failure_hint(stderr: str, runtime: str) -> str | None:
     return None
 
 
+def new_container_name() -> str:
+    """A unique `--name` for one container run.
+
+    Prefixed so a leaked container is identifiable as ours in `docker ps`
+    (and removable with one `docker rm -f $(docker ps -qf name=shinobi-)`),
+    and random rather than derived from the step, because two runs of the
+    same step -- a retry, or the same recipe in two shells -- must not
+    collide on a name the runtime treats as exclusive.
+    """
+    return f"shinobi-{uuid.uuid4().hex[:16]}"
+
+
+def container_stopper(runtime: str, container_name: str | None) -> RuntimeStop | None:
+    """How to stop a named container and how to check it stopped, or `None`
+    when the runtime needs neither.
+
+    Only docker and podman do, and the reason is structural rather than a
+    matter of degree: their containers are **not descendants of the client**.
+    containerd-shim (root-owned, in its own session) or conmon supervises the
+    payload, so nothing ninja can signal -- the client, its process group,
+    its session -- reaches it. Verified: SIGKILL to the client and `killpg`
+    on its group both leave the container up. `rm -f` is the whole mechanism.
+
+    The `running` half is not symmetry for its own sake. `rm -f` on a
+    container the daemon has not created *yet* exits 0, and an interrupt can
+    easily land in that window -- between the client being spawned and the
+    container existing. A teardown that trusted the exit code would report
+    success, the daemon would go on to start the container, and `--rm` being
+    daemon-side means killing the client leaves it running. Observed, with a
+    cold daemon, as a real leaked container.
+
+    apptainer and singularity keep the runtime parent and payload inside our
+    process group, where signalling the group does tear the container down,
+    so they get `None` and `_stream._teardown` handles them by signal alone.
+    """
+    if runtime not in _DOCKER_LIKE or not container_name:
+        return None
+
+    def _stop() -> None:
+        # Short timeout: this runs on the interrupt path, and a wedged daemon
+        # must not turn "stop my run" into a second thing that hangs. `rm -f`
+        # is idempotent -- a container that already exited is simply gone.
+        subprocess.run([runtime, "rm", "-f", container_name], capture_output=True, timeout=30, check=False)
+
+    def _running() -> bool:
+        # Anchored filter: `name=` is a substring match, and an unanchored one
+        # would let an unrelated container keep us waiting forever.
+        proc = subprocess.run(
+            [runtime, "ps", "--quiet", "--filter", f"name=^{container_name}$"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if proc.returncode != 0:
+            # Cannot ask (daemon down, socket gone). Report "not running"
+            # rather than blocking teardown forever on a question nobody can
+            # answer -- a daemon we cannot reach is also one we cannot leak
+            # a container through under our own name.
+            logger.warning("teardown: could not query %s for container %s: %s", runtime, container_name, proc.stderr.strip())
+            return False
+        return bool(proc.stdout.strip())
+
+    return RuntimeStop(stop=_stop, running=_running)
+
+
 def build_container_argv(
     runtime: str,
     scope: Scope,
@@ -858,6 +925,7 @@ def build_container_argv(
     run_as_host_user: bool = False,
     pin: bool = False,
     runs_here: bool = True,
+    container_name: str | None = None,
 ) -> tuple[list[str], str | None]:
     """Wrap argv in a container-runtime invocation. Shared with the Slurm
     backend, which runs cabs under apptainer the same way a plain
@@ -896,6 +964,13 @@ def build_container_argv(
     `runs_here` is False when the argv is being *compiled* for another host
     (a Slurm job script), which is what stops this host's cgroup delegation
     deciding what a compute node can enforce -- see `_resource_flags`.
+
+    `container_name` names the container (`--name`) under docker/podman, so
+    that it can be stopped by name later -- see `container_stopper` for why
+    those two runtimes need a handle at all. Ignored for apptainer-likes,
+    which have no such flag and no such problem, and left unset by the
+    offload compiler: a job script that runs on another host, possibly more
+    than once, must not carry a name minted for one local run.
     """
     image = scope.image
     if not image:
@@ -936,7 +1011,8 @@ def build_container_argv(
             # doesn't apply.
             user_flags = [] if _rootless(runtime) else ["--user", f"{os.getuid()}:{os.getgid()}"]
             user_flags += ["-e", f"HOME={workdir}"]
-        return [runtime, "run", "--rm", *user_flags, *limit_flags, *mounts, "-w", workdir, run_ref, *argv], digest
+        name_flags = ["--name", container_name] if container_name else []
+        return [runtime, "run", "--rm", *name_flags, *user_flags, *limit_flags, *mounts, "-w", workdir, run_ref, *argv], digest
 
     # apptainer
     binds = [flag for d, w in dir_modes for flag in ("--bind", f"{d}:{d}" if w else f"{d}:{d}:ro")]
@@ -979,6 +1055,7 @@ class ContainerBackend(Backend):
         *,
         pin: bool = False,
         cwd: str | None = None,
+        container_name: str | None = None,
     ) -> tuple[list[str], str | None]:
         return build_container_argv(
             self.runtime,
@@ -988,6 +1065,7 @@ class ContainerBackend(Backend):
             cwd or self.workdir,
             run_as_host_user=self.run_as_host_user,
             pin=pin,
+            container_name=container_name,
         )
 
     def run(
@@ -1016,8 +1094,9 @@ class ContainerBackend(Backend):
         Returns:
             The completed `BackendRun` (never raises on non-zero exit).
         """
-        full_argv, image_digest = self._wrap(cab, argv, inputs, pin=pin, cwd=cwd)
-        run = run_streaming(full_argv, label=label or cab.name, stream=stream)
+        container_name = new_container_name() if self.runtime in _DOCKER_LIKE else None
+        full_argv, image_digest = self._wrap(cab, argv, inputs, pin=pin, cwd=cwd, container_name=container_name)
+        run = run_streaming(full_argv, label=label or cab.name, stream=stream, stop=container_stopper(self.runtime, container_name))
         run.image_digest = image_digest
         run.containerized = True
         if not run.success:
