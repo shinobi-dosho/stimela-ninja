@@ -16,6 +16,7 @@ from shinobi.backends._stream import TeardownIncomplete, install_signal_handlers
 from shinobi.clickutil import build_options, unflatten_kwargs
 from shinobi.config import AppConfig
 from shinobi.dag import graph_nodes, render_dag
+from shinobi.backends._stream import set_capture_limits
 from shinobi.logsetup import setup_file_logging
 from shinobi.exceptions import ShinobiError
 from shinobi.graph import RecipeGraphError, RecipeNotOffloadableError
@@ -68,6 +69,7 @@ def main(
         overrides["log"] = log_overrides
     ctx.obj = AppConfig.load(config_file=config_file, **overrides)
     setup_file_logging(ctx.obj.log)
+    set_capture_limits(ctx.obj.log.capture_head_lines, ctx.obj.log.capture_tail_lines)
     ctx.meta["backend_override"] = backend
     # The CLI owns the process, so it is the CLI's job to make every way a run
     # ends -- not just Ctrl-C -- stop the work as well. Deliberately not done

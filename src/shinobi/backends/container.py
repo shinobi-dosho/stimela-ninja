@@ -1096,7 +1096,13 @@ class ContainerBackend(Backend):
         """
         container_name = new_container_name() if self.runtime in _DOCKER_LIKE else None
         full_argv, image_digest = self._wrap(cab, argv, inputs, pin=pin, cwd=cwd, container_name=container_name)
-        run = run_streaming(full_argv, label=label or cab.name, stream=stream, stop=container_stopper(self.runtime, container_name))
+        run = run_streaming(
+            full_argv,
+            label=label or cab.name,
+            stream=stream,
+            stop=container_stopper(self.runtime, container_name),
+            keep_matching=tuple(cab.wranglers),
+        )
         run.image_digest = image_digest
         run.containerized = True
         if not run.success:
