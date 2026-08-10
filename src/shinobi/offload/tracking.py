@@ -105,10 +105,14 @@ class Launch:
 
     @property
     def host(self) -> str:
-        """Where the run went. Slurm handles name no host -- the scheduler
-        chose the nodes -- so they report the engine instead.
+        """Where the run went. A slurm handle names no host -- the scheduler
+        chose the nodes -- so it reports its engine instead, and so does any
+        other engine that turns out not to have one. Naming *slurm*
+        specifically (as this first did) would have printed `(slurm)` in the
+        host column of the first non-ssh engine to arrive, which is a wrong
+        answer rather than a missing one.
         """
-        return self.handle.get("host") or "(slurm)"
+        return self.handle.get("host") or f"({self.engine})"
 
     @property
     def log_path(self) -> str | None:
@@ -319,7 +323,15 @@ def follow(launch: Launch, *, lines: int = 40, wait: bool = True, stop: threadin
     # `_ssh` itself because that one blocks on `subprocess.run`, and the
     # whole point here is to read the pipe while it fills.
     argv = ["ssh", "--", host, f"bash -lc {shlex.quote(remote_cmd)}"]
-    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # stderr is folded into stdout, not given a pipe of its own. Nothing here
+    # ever reads a second pipe -- the loop below is parked in `stdout.readline`
+    # for the life of the follow -- so a separate stderr pipe is one that only
+    # ever fills: ~64K of ssh warnings, a chatty `/etc/profile` under `bash
+    # -lc`, or a remote `tail` complaining, and the child blocks on the write
+    # with the follower waiting on a stdout line that can no longer come.
+    # Folding it in also puts ssh's own failure text where the operator is
+    # already looking, instead of discarding it into a pipe nobody drains.
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
     def _end() -> None:
         if proc.poll() is None:

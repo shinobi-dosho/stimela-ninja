@@ -10,6 +10,8 @@ substituting the subprocess layer rather than by needing a cluster.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import threading
 import time
 
@@ -267,6 +269,15 @@ def test_launch_host_falls_back_for_slurm(tmp_path):
     assert launch.log_path is None
 
 
+def test_a_hostless_engine_names_itself_not_slurm(tmp_path):
+    """The fallback reports *this* launch's engine. Hardcoding `(slurm)` --
+    true of the only hostless engine that exists today -- makes the host
+    column state something false about the next one to arrive.
+    """
+    launch = Launch(name="x", handle_path=tmp_path / "h.json", engine="kubernetes", handle={"engine": "kubernetes"})
+    assert launch.host == "(kubernetes)"
+
+
 def test_launch_log_path_joins_the_remote_dir_and_filename(tmp_path):
     launch = Launch(name="x", handle_path=tmp_path / "h.json", engine="ssh", handle=_SSH_HANDLE)
     assert launch.log_path == "/remote/path/l.log"
@@ -373,6 +384,33 @@ def test_follow_terminates_the_child_even_when_it_ends_normally(monkeypatch, tmp
     monkeypatch.setattr(tracking.subprocess, "Popen", lambda *a, **k: proc)
     list(tracking.follow(_ssh_launch(tmp_path), wait=False))
     assert proc.returncode == -15
+
+
+def test_a_child_that_floods_stderr_does_not_wedge_the_follow(monkeypatch, tmp_path):
+    """Against a *real* child, because the bug is in the pipes and a fake
+    that returns lines from a list cannot have it. Given a pipe of its own
+    that nobody drains, ~64K of ssh warnings (or a chatty `/etc/profile`
+    under `bash -lc`) blocks the child mid-write, and the follower waits
+    forever on a stdout line that will never come.
+
+    Run on a thread with a deadline so a regression fails the test instead
+    of hanging the suite -- the failure mode being guarded against is
+    precisely "never returns".
+    """
+    flood = "import sys\nsys.stderr.write('x' * 200_000 + '\\n')\nsys.stderr.flush()\nprint('log line', flush=True)\n"
+    # Bound before the patch: `tracking.subprocess` *is* the subprocess
+    # module, so a replacement that reached for `subprocess.Popen` by name
+    # would find itself.
+    real_popen = subprocess.Popen
+    monkeypatch.setattr(tracking.subprocess, "Popen", lambda argv, **kwargs: real_popen([sys.executable, "-c", flood], **kwargs))
+
+    lines: list[str] = []
+    reader = threading.Thread(target=lambda: lines.extend(tracking.follow(_ssh_launch(tmp_path), wait=False)), daemon=True)
+    reader.start()
+    reader.join(timeout=30)
+
+    assert not reader.is_alive(), "the follower never returned -- stderr filled its pipe and blocked the child"
+    assert any("log line" in line for line in lines), "the line written after the flood never arrived"
 
 
 def test_follow_refuses_an_engine_with_no_single_log(tmp_path):
