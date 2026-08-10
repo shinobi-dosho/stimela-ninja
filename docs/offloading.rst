@@ -256,6 +256,11 @@ persistent process to keep alive:
 
     $ ninja status /scratch/.shinobi/pipe/handle.json
 
+``ninja runs`` does the same for *every* launch this workspace has made, in
+one table, and ``ninja logs <name> --follow`` streams a ``--remote`` run's
+output until it finishes. Both reconstruct state the same way and keep
+nothing running locally. See :ref:`cli-runs` and :ref:`cli-logs`.
+
 Once a run is done, remove its handle file and Slurm job logs with
 ``ninja clean --launches --workdir <workdir>`` (or run it from ``<workdir>``;
 see :ref:`ninja-clean`) -- unlike run manifests and the step cache, this is
