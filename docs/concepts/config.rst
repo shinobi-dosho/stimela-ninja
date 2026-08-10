@@ -147,7 +147,10 @@ capped -- it is a side channel, not a buffer, so a chatty tool still scrolls
 past in full. And **lines matching the cab's own wranglers are retained
 wherever they occur**, so capping costs readability but not output values;
 if even those overflow, the step warns rather than silently returning an
-unset output. Set either limit to ``0`` to drop that end entirely.
+unset output. Set either limit to ``0`` to drop that end entirely -- the
+wrangler exemption survives even setting *both* to ``0``, since asking to
+hold no context is not asking to lose results. That retention has its own
+ceiling, generous and independent of these two.
 
 Programmatic runs never write a log file (shinobi's modules only emit
 through the ``shinobi.*`` logger hierarchy); attach your own handler to

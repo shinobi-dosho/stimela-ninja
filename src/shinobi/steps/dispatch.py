@@ -699,7 +699,10 @@ def _report_elision(run: BackendRun, label: str, *, wrangled: bool) -> None:
     Two different events, deliberately at two different levels. Ordinary
     elision is a *note*: the run is fine, the dropped lines are progress
     chatter, and the text says where they were -- logging it at WARNING
-    would train operators to ignore the word on a chatty pipeline. A
+    would train operators to ignore the word on a chatty pipeline. It does
+    not claim the run log escaped: that log is written from this same
+    captured text (see `_dispatch`), so it carries the elision marker too,
+    and only the live echo saw every line. A
     dropped *wrangler-matching* line is a warning, because the buffer
     retains matches wherever they occur, so reaching this means the
     retained-match ceiling was hit and an output value may be missing.
@@ -708,7 +711,7 @@ def _report_elision(run: BackendRun, label: str, *, wrangled: bool) -> None:
     if not dropped:
         return
     logger.info(
-        "step %s: %s line%s of captured output elided (log.capture_head_lines/capture_tail_lines); the live stream and any run log are unaffected",
+        "step %s: %s line%s of captured output elided (log.capture_head_lines/capture_tail_lines); the live stream was not capped, but the run log is written from this same captured text and carries the elision",
         label,
         dropped,
         "s" if dropped != 1 else "",

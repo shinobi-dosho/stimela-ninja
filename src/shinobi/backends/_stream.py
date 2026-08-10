@@ -71,6 +71,15 @@ KILL_GRACE_SECONDS = 5.0
 DEFAULT_HEAD_LINES = 5_000
 DEFAULT_TAIL_LINES = 5_000
 
+# The ceiling on retained *wrangler-matching* lines, deliberately independent
+# of the two above. Derived from them (as this first was) it collapses to zero
+# exactly when an operator sets both ends to 0 -- a configuration the docs
+# bless as "hold nothing" -- and the lines that carry a step's output values
+# would go with the chatter. Head and tail bound how much *context* is kept;
+# this bounds how much *result* is, which is a different question and deserves
+# its own answer.
+DEFAULT_KEEP_MATCHED_LINES = 5_000
+
 # The limits in force for this process, seeded from the defaults and
 # replaced once per CLI invocation by `set_capture_limits`. Module state
 # rather than a `run_streaming` argument because the alternative is
@@ -425,10 +434,12 @@ class LineBuffer:
     regex, and dispatch applies them to the text this buffer returns -- so a
     dropped line that a wrangler would have matched silently costs an
     output value. Lines matching any `keep_matching` pattern are therefore
-    retained wherever they occur, in position. Backends pass their cab's
-    wrangler patterns; a tool whose wranglers match nearly every line
-    degrades to `keep_max` retained matches and elides beyond that, which
-    is reported like any other drop.
+    retained wherever they occur, in position -- including when `head_max`
+    and `tail_max` are both 0, since "hold no context" is not a request to
+    lose output values. Backends pass their cab's wrangler patterns; a tool
+    whose wranglers match nearly every line degrades to `keep_max` retained
+    matches (`DEFAULT_KEEP_MATCHED_LINES` unless the caller says otherwise)
+    and elides beyond that, which is reported like any other drop.
 
     Not thread-safe: one buffer belongs to one pump thread.
     """
@@ -453,7 +464,7 @@ class LineBuffer:
                 self._keep.append(re.compile(pattern))
             except re.error:
                 continue
-        self._keep_max = self._head_max + self._tail_max if keep_max is None else max(0, keep_max)
+        self._keep_max = DEFAULT_KEEP_MATCHED_LINES if keep_max is None else max(0, keep_max)
 
         self._head: list[tuple[int, str]] = []
         self._tail: deque[tuple[int, str]] = deque(maxlen=self._tail_max) if self._tail_max else deque(maxlen=1)

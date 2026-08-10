@@ -175,6 +175,22 @@ def test_zero_limits_elide_everything_but_still_say_so():
     assert buf.dropped == 4
 
 
+def test_zero_limits_still_keep_wrangler_matching_lines():
+    """Both ends at 0 says "hold no context"; it does not say "lose the
+    output values". Deriving the retained-match ceiling from head + tail (as
+    this first did) collapsed it to zero in exactly this configuration, so
+    the one class of line capping must never cost went with the chatter.
+    """
+    buf = LineBuffer(head_max=0, tail_max=0, keep_matching=(r"^RESULT: ",))
+    buf.append("chatter\n")
+    buf.append("RESULT: flux=3.2\n")
+    buf.append("more chatter\n")
+    text = buf.text()
+    assert "RESULT: flux=3.2\n" in text
+    assert "chatter" not in text
+    assert not buf.matches_dropped
+
+
 def test_empty_stream_is_empty_not_a_marker():
     assert LineBuffer(head_max=0, tail_max=0).text() == ""
 
