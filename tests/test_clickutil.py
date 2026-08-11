@@ -292,3 +292,11 @@ def test_a_scalar_or_list_union_is_a_scalar_option():
     assert options["order"].default == "KGB"
     # a plain list field is unaffected
     assert options["columns"].multiple is True
+
+
+def test_a_union_of_different_scalar_types_is_a_string_option():
+    # `int | str` is one field admitting "8" (a count) or "inf" -- an INT
+    # option would reject the schema's own default
+    assert click_type(int | str | None, False) is click.STRING
+    # a single scalar arm still maps to its own click type
+    assert click_type(int | None, False) is click.INT

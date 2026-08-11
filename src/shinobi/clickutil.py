@@ -147,9 +147,17 @@ def click_type(annotation, is_path: bool):
     choices = _literal_choices(annotation)
     if choices is not None:
         return click.Choice([str(c) for c in choices])
-    for leaf in _unwrap_annotation(annotation):
-        if leaf in (int, float, bool, str):
-            return {int: click.INT, float: click.FLOAT, bool: click.BOOL, str: click.STRING}[leaf]
+    scalars = [leaf for leaf in _unwrap_annotation(annotation) if leaf in (int, float, bool, str)]
+    # A union of *different* scalar types is a string option. Taking the
+    # first arm instead would reject every value the others admit -- an
+    # `int | str` interval ("8" timeslots or "inf") became an INT option
+    # that refused 'inf', which is the schema's own default. click has no
+    # union type, and the model still validates and coerces whatever
+    # arrives, so the widest arm is the right one to accept at the CLI.
+    if len(set(scalars)) > 1:
+        return click.STRING
+    if scalars:
+        return {int: click.INT, float: click.FLOAT, bool: click.BOOL, str: click.STRING}[scalars[0]]
     return click.STRING
 
 
