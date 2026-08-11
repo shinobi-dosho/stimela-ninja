@@ -356,3 +356,28 @@ def test_each_sub_schema_resolves_use_directives(tmp_path):
     path.write_text("libs:\n  solve:\n    order: {dtype: str, default: KGB}\nname: calibrate\ninputs:\n  chains:\n    _each:\n      solve:\n        _use: libs.solve\n")
     model = load_worker_schema(path).inputs_model
     assert model(chains={"primary": {}}).chains["primary"].solve.order == "KGB"
+
+
+def test_each_group_with_a_leaf_sub_schema_names_the_real_mistake(tmp_path):
+    # `_each: {dtype: str}` used to fail one frame deeper, complaining about a
+    # param called 'dtype' in the *entry* model -- true, but not the mistake
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("name: bad\ninputs:\n  chains:\n    _each:\n      dtype: str\n")
+    with pytest.raises(ConfigLoadError, match="must be a group of parameters"):
+        load_worker_schema(bad)
+
+
+@pytest.mark.parametrize("key, value", [("required", "true"), ("choices", "[a, b]"), ("writable", "false"), ("implicit", "'{current.x}'")])
+def test_each_group_rejects_leaf_keys_that_would_be_inert(tmp_path, key, value):
+    # a mapping group is always optional and has no dtype, so `required: true`
+    # (etc.) would be silently ignored -- reject it the way `dtype` is
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(f"name: bad\ninputs:\n  chains:\n    {key}: {value}\n    _each:\n      order: {{dtype: str}}\n")
+    with pytest.raises(ConfigLoadError, match="cannot also declare"):
+        load_worker_schema(bad)
+
+
+def test_each_group_still_accepts_info_and_default(tmp_path):
+    model = _each_model(tmp_path)
+    assert model.model_fields["chains"].description == "Named calibration chains."
+    assert list(model().chains) == ["primary", "secondary"]

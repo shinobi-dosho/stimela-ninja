@@ -237,3 +237,40 @@ def test_mapping_of_submodels_yields_no_option():
     flat = [name for name, _path, _field in iter_leaf_fields(_WithChains)]
     assert flat == ["refant"]
     assert [opt.name for opt in build_options(_WithChains)] == ["refant"]
+
+
+def test_loader_built_each_group_with_key_pattern_yields_no_option(tmp_path):
+    # end-to-end over a real loaded schema, not a hand-written model: with
+    # `_key_pattern` the annotation is `Annotated[dict[str, Sub], ...]`, so
+    # this pins the skip against however pydantic treats Annotated metadata
+    from shinobi.loaders.worker_schema import load_worker_schema
+
+    path = tmp_path / "each.yaml"
+    path.write_text(
+        "name: calibrate\n"
+        "inputs:\n"
+        "  refant:\n"
+        "    dtype: str\n"
+        "    default: m000\n"
+        "  chains:\n"
+        "    _key_pattern: '^[A-Za-z][A-Za-z0-9_]*$'\n"
+        "    _each:\n"
+        "      order:\n"
+        "        dtype: str\n"
+        "        default: KGB\n"
+    )
+    model = load_worker_schema(path).inputs_model
+    assert [opt.name for opt in build_options(model)] == ["refant"]
+
+
+def test_annotated_mapping_is_recognised_directly():
+    # pydantic currently moves `Annotated` metadata off `FieldInfo.annotation`,
+    # so the loader-built case above exercises the plain form; this covers the
+    # unwrap that keeps the skip working if that ever changes
+    from typing import Annotated
+
+    from pydantic import BeforeValidator
+
+    from shinobi.clickutil import _is_model_mapping
+
+    assert _is_model_mapping(Annotated[dict[str, _Chain], BeforeValidator(lambda v: v)])

@@ -211,6 +211,9 @@ _LEAF_KEYS = COMMON_LEAF_KEYS
 _EACH_KEY = "_each"
 _KEY_PATTERN_KEY = "_key_pattern"
 
+#: The only leaf-descriptor keys allowed beside `_each` -- see `_mapping_field`.
+_EACH_COMPANION_KEYS = {"info", "default"}
+
 
 def _build_group(model_name: str, spec: dict[str, Any]) -> type[BaseModel]:
     """A key is a **leaf** parameter if its value dict has any recognised
@@ -267,12 +270,30 @@ def _mapping_field(model_name: str, value: dict[str, Any]) -> tuple[Any, Any]:
     schema default is a `ConfigLoadError` rather than a surprise at the
     first instantiation; the factory then rebuilds it per instance, which
     is what keeps two configs from sharing one mutable set of sub-models.
+
+    Only `info` and `default` may sit beside `_each`. Every other
+    leaf-descriptor key describes something a mapping group does not have:
+    it has no `dtype` of its own, and it is always optional (an absent
+    mapping is an empty one), so a `required: true` here would be silently
+    inert -- which is exactly the failure this dialect keeps rejecting
+    loudly elsewhere.
     """
     each = value[_EACH_KEY]
     if not isinstance(each, dict):
         raise ConfigLoadError(f"'_each' in '{model_name}' must be a mapping (the sub-schema every entry follows), got {each!r}")
-    if "dtype" in value:
-        raise ConfigLoadError(f"'{model_name}' declares both '_each' and 'dtype' -- a mapping group has no dtype of its own")
+    if _LEAF_KEYS & each.keys():
+        raise ConfigLoadError(
+            f"'_each' in '{model_name}' must be a group of parameters (the sub-schema every entry follows), "
+            f"but it declares leaf keys {sorted(_LEAF_KEYS & each.keys())} -- an entry is a group, so write "
+            "'_each: {<param>: {dtype: ...}}', not '_each: {dtype: ...}'"
+        )
+    unsupported = (_LEAF_KEYS - _EACH_COMPANION_KEYS) & value.keys()
+    if unsupported:
+        raise ConfigLoadError(
+            f"'{model_name}' is a '_each' mapping group, so it cannot also declare {sorted(unsupported)} -- "
+            "a mapping group has no dtype of its own and is always optional (an absent mapping is empty); "
+            "per-entry settings belong inside '_each'"
+        )
 
     sub_model = _build_group(f"{model_name}_entry", each)
     annotation: Any = dict[str, sub_model]

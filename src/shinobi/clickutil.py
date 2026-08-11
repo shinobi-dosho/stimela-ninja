@@ -32,7 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from gettext import gettext
 from pathlib import Path
-from typing import Any, Literal, Union, get_args, get_origin
+from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 import click
 from pydantic import BaseModel
@@ -66,8 +66,15 @@ def _is_model_mapping(annotation) -> bool:
     there is no fixed set of names to build options from, and treating it
     as a leaf would emit a `--<name> TEXT` option that cannot accept what
     the field holds. `iter_leaf_fields` skips it instead.
+
+    `Annotated` is unwrapped explicitly: a `_key_pattern` group's annotation
+    is `Annotated[dict[str, Sub], BeforeValidator(...)]`, and while pydantic
+    currently strips that metadata off `FieldInfo.annotation`, nothing here
+    should depend on it continuing to.
     """
     for arg in _unwrap_annotation(annotation):
+        if get_origin(arg) is Annotated:
+            arg = get_args(arg)[0]
         if get_origin(arg) is dict and any(isinstance(a, type) and issubclass(a, BaseModel) for a in get_args(arg)):
             return True
     return False
