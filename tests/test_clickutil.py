@@ -274,3 +274,21 @@ def test_annotated_mapping_is_recognised_directly():
     from shinobi.clickutil import _is_model_mapping
 
     assert _is_model_mapping(Annotated[dict[str, _Chain], BeforeValidator(lambda v: v)])
+
+
+class _ScalarOrList(BaseModel):
+    # a schema field taking "one value" or "one per cycle" -- caracal2's
+    # `solve.order`, which is a chain string or a list of them
+    order: str | list[str] | None = "KGB"
+    columns: list[str] | None = None
+
+
+def test_a_scalar_or_list_union_is_a_scalar_option():
+    # `multiple=True` here would make click demand an iterable default and
+    # reject the scalar the schema declares, so the field could not be set
+    # from the CLI at all
+    options = {opt.name: opt for opt in build_options(_ScalarOrList)}
+    assert options["order"].multiple is False
+    assert options["order"].default == "KGB"
+    # a plain list field is unaffected
+    assert options["columns"].multiple is True

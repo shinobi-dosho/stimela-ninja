@@ -49,12 +49,19 @@ def is_list(annotation) -> bool:
         annotation: A type annotation, possibly wrapped in `Optional`/`Union`.
 
     Returns:
-        True if the annotation (or any of its `Union` arms) is `list` or
-        `tuple`.
+        True if the annotation is `list`/`tuple`, or if *every* non-`None`
+        arm of a `Union` is. A union that admits both a scalar and a list
+        (`str | list[str]` -- a schema field taking either "one value" or
+        "one per cycle") is **not** a list option: `multiple=True` would
+        make click demand an iterable default and reject the scalar one the
+        schema declares, so the field would be unusable from the CLI
+        entirely. The scalar arm is the one a flag can express; the list
+        form stays available in the config file.
     """
     origin = get_origin(annotation)
     if origin is Union or origin is types.UnionType:
-        return any(is_list(arg) for arg in get_args(annotation))
+        arms = [arg for arg in get_args(annotation) if arg is not type(None)]
+        return bool(arms) and all(is_list(arg) for arg in arms)
     return origin in (list, tuple)
 
 
