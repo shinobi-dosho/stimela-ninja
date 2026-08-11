@@ -219,3 +219,21 @@ def test_unflatten_kwargs_keeps_populated_multiple_values():
     inputs = _TupleInputs(**nested)
     assert inputs.channel_range == (10, 20)
     assert inputs.weight == ("briggs", 0.5)
+
+
+class _Chain(BaseModel):
+    order: str = "KGB"
+
+
+class _WithChains(BaseModel):
+    refant: str = "m000"
+    chains: dict[str, _Chain] = Field(default_factory=dict)
+
+
+def test_mapping_of_submodels_yields_no_option():
+    # a `_each` group's keys come from the config, so there is no fixed set of
+    # names to build flags from -- it must be skipped, not emitted as a
+    # `--chains TEXT` option that could never carry what the field holds
+    flat = [name for name, _path, _field in iter_leaf_fields(_WithChains)]
+    assert flat == ["refant"]
+    assert [opt.name for opt in build_options(_WithChains)] == ["refant"]

@@ -58,6 +58,21 @@ def is_list(annotation) -> bool:
     return origin in (list, tuple)
 
 
+def _is_model_mapping(annotation) -> bool:
+    """Whether an annotation is a mapping *to* sub-models -- what
+    `worker_schema`'s `_each` groups produce (`dict[str, SubModel]`).
+
+    Such a field has no flag form at all: its keys come from the config, so
+    there is no fixed set of names to build options from, and treating it
+    as a leaf would emit a `--<name> TEXT` option that cannot accept what
+    the field holds. `iter_leaf_fields` skips it instead.
+    """
+    for arg in _unwrap_annotation(annotation):
+        if get_origin(arg) is dict and any(isinstance(a, type) and issubclass(a, BaseModel) for a in get_args(arg)):
+            return True
+    return False
+
+
 def _submodel(annotation) -> type[BaseModel] | None:
     """The `BaseModel` subclass an annotation names -- itself, or (for
     symmetry with leaf fields, though `worker_schema` never wraps a group
@@ -158,9 +173,15 @@ def iter_leaf_fields(model: type[BaseModel], *, _prefix: str = "", _path: tuple[
     `"obsinfo_plotelev_enable"`, path `("obsinfo", "plotelev", "enable")`.
     A model with no nested `BaseModel` fields (every cult-cargo cab's
     `inputs_model`) yields exactly what a flat single-level walk would.
+
+    Mapping-to-sub-model fields (`worker_schema`'s `_each` groups) are
+    skipped -- see `_is_model_mapping`. They are configurable from the
+    config file only, never from a flag.
     """
     result: list[tuple[str, tuple[str, ...], FieldInfo]] = []
     for name, field in model.model_fields.items():
+        if _is_model_mapping(field.annotation):
+            continue
         sub = _submodel(field.annotation)
         if sub is not None:
             result.extend(iter_leaf_fields(sub, _prefix=f"{_prefix}{name}_", _path=(*_path, name)))

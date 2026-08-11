@@ -38,6 +38,16 @@ Dialect, as actually used by caracal2 (see its `caracal/schemas/`):
   more dotted lookups (against the fully `_include`-resolved document)
   into the dict it appears in, with that dict's own sibling keys winning
   -- same convention as `loaders.yaml_cab`, extended to accept a list.
+* `_each: {<sub-schema>}` -- a group whose *keys are supplied by the
+  config*, each value validated against one declared sub-schema, giving
+  `dict[str, <SubModel>]`. Every other group declares its keys in the
+  schema; this is for the case where the names are the user's own data
+  (caracal2's calibration chains: `chains: {primary: ..., secondary: ...,
+  <whatever the user calls the next one>: ...}`). `_key_pattern` (a regex,
+  optional) constrains those names -- schemas whose keys become step names
+  or output-path components want `'^[A-Za-z][A-Za-z0-9_]*$'`. A `default:`
+  alongside `_each` is a mapping of pre-declared entries, validated at load
+  time and rebuilt per instance.
 
 `writable` (seen in caracal2's `caracal_base.yaml`) is carried onto the
 generated field's `json_schema_extra`: a `writable: false` directory input is
@@ -52,10 +62,10 @@ import functools
 import re
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import yaml
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter, ValidationError, create_model
 
 from shinobi.exceptions import ConfigLoadError
 from shinobi.loaders._modelgen import (
@@ -196,6 +206,11 @@ def _load_include(entry: str, base_dir: Path, package_roots: dict[str, Path], co
 
 _LEAF_KEYS = COMMON_LEAF_KEYS
 
+#: Marks a group whose keys come from the config rather than the schema --
+#: see `_mapping_field` and the module docstring's dialect list.
+_EACH_KEY = "_each"
+_KEY_PATTERN_KEY = "_key_pattern"
+
 
 def _build_group(model_name: str, spec: dict[str, Any]) -> type[BaseModel]:
     """A key is a **leaf** parameter if its value dict has any recognised
@@ -203,6 +218,10 @@ def _build_group(model_name: str, spec: dict[str, Any]) -> type[BaseModel]:
     with only `info`/`required` and no `dtype` still means "a `str`", same
     as `dtype` simply being omitted). Anything else -- including an empty
     dict -- is a **group**: recurse and embed as a nested submodel.
+
+    A group carrying `_each` is the third case, and is tested for **first**:
+    it normally also carries `info`/`default`, which are `_LEAF_KEYS` and
+    would otherwise classify it as a leaf.
     """
     if not isinstance(spec, dict):
         raise ConfigLoadError(f"expected a mapping for '{model_name}', got {spec!r}")
@@ -214,7 +233,9 @@ def _build_group(model_name: str, spec: dict[str, Any]) -> type[BaseModel]:
             raise ConfigLoadError(f"expected a param/group mapping for '{key}' in '{model_name}', got {value!r}")
         value = value or {}
         field = sanitize_unique(key, seen)
-        if _LEAF_KEYS & value.keys():
+        if _EACH_KEY in value:
+            definitions[field] = _mapping_field(f"{model_name}_{field}", value)
+        elif _LEAF_KEYS & value.keys():
             definitions[field] = _leaf_field(value)
         else:
             sub_model = _build_group(f"{model_name}_{field}", value)
@@ -228,6 +249,68 @@ def _build_group(model_name: str, spec: dict[str, Any]) -> type[BaseModel]:
             else:
                 definitions[field] = (sub_model, Field(default_factory=sub_model))
     return create_model(model_name, **definitions)
+
+
+def _mapping_field(model_name: str, value: dict[str, Any]) -> tuple[Any, Any]:
+    """`(annotation, Field)` for a `_each` group: `dict[str, <SubModel>]`,
+    where `SubModel` is built from the `_each` sub-schema and the keys come
+    from the config.
+
+    `_key_pattern` (a regex) constrains those keys, checked *before*
+    validation so the error names the offending key rather than pydantic's
+    positional path. It is opt-in because a mapping's keys are only
+    sometimes identifiers -- but a schema whose keys end up as step names or
+    path components should always set it, since the alternative is a name
+    that breaks a run somewhere far from the config that supplied it.
+
+    A `default:` mapping is validated **here**, at load time, so a broken
+    schema default is a `ConfigLoadError` rather than a surprise at the
+    first instantiation; the factory then rebuilds it per instance, which
+    is what keeps two configs from sharing one mutable set of sub-models.
+    """
+    each = value[_EACH_KEY]
+    if not isinstance(each, dict):
+        raise ConfigLoadError(f"'_each' in '{model_name}' must be a mapping (the sub-schema every entry follows), got {each!r}")
+    if "dtype" in value:
+        raise ConfigLoadError(f"'{model_name}' declares both '_each' and 'dtype' -- a mapping group has no dtype of its own")
+
+    sub_model = _build_group(f"{model_name}_entry", each)
+    annotation: Any = dict[str, sub_model]
+
+    pattern = value.get(_KEY_PATTERN_KEY)
+    if pattern is not None:
+        try:
+            compiled = re.compile(str(pattern))
+        except re.error as exc:
+            raise ConfigLoadError(f"'{_KEY_PATTERN_KEY}' in '{model_name}' is not a valid regex: {exc}") from exc
+
+        def _check_keys(raw: Any, _compiled: re.Pattern = compiled, _name: str = model_name) -> Any:
+            """Reject entry names that don't match the schema's `_key_pattern`."""
+            if isinstance(raw, dict):
+                for key in raw:
+                    if not _compiled.fullmatch(str(key)):
+                        raise ValueError(f"'{_name}' entry name {key!r} does not match {_compiled.pattern!r}")
+            return raw
+
+        annotation = Annotated[annotation, BeforeValidator(_check_keys)]
+
+    adapter = TypeAdapter(annotation)
+    raw_default = value.get("default")
+    if raw_default is None:
+        factory: Any = dict
+    else:
+        if not isinstance(raw_default, dict):
+            raise ConfigLoadError(f"'default' for the '_each' group '{model_name}' must be a mapping of entries, got {raw_default!r}")
+        try:
+            adapter.validate_python(raw_default)
+        except ValidationError as exc:
+            raise ConfigLoadError(f"default entries for '{model_name}' do not match its '_each' sub-schema: {exc}") from exc
+
+        def factory(_raw: dict = raw_default, _adapter: TypeAdapter = adapter) -> Any:
+            """Rebuild the schema's default entries as fresh sub-model instances."""
+            return _adapter.validate_python(_raw)
+
+    return (annotation, Field(default_factory=factory, description=value.get("info")))
 
 
 def _leaf_field(value: dict[str, Any]) -> tuple[Any, Any]:
