@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import get_args
 
 import pytest
+from pydantic import ValidationError
 
 from shinobi.exceptions import ConfigLoadError
 from shinobi.loaders.worker_schema import load_worker_schema
@@ -228,3 +229,165 @@ def test_non_mapping_include_target_raises_config_load_error(tmp_path):
     main.write_text("libs:\n  _include: sub.yaml\nname: thing\ninputs: {}\n")
     with pytest.raises(ConfigLoadError, match="must be a mapping"):
         load_worker_schema(main)
+
+
+# ---- `_each`: a group whose keys come from the config --------------------
+
+_EACH_SCHEMA = """
+name: calibrate
+inputs:
+  refant:
+    dtype: str
+    default: m000
+  chains:
+    info: Named calibration chains.
+    _key_pattern: '^[A-Za-z][A-Za-z0-9_]*$'
+    _each:
+      field:
+        dtype: str
+        default: target
+      order:
+        dtype: str
+        default: KGB
+      solve:
+        engine:
+          dtype: str
+          choices: [casa, quartical]
+          default: casa
+    default:
+      primary:
+        field: fcal
+        order: KGB
+      secondary:
+        field: gcal
+        order: KGAF
+        solve:
+          engine: quartical
+"""
+
+
+def _each_model(tmp_path, text=_EACH_SCHEMA):
+    path = tmp_path / "each.yaml"
+    path.write_text(text)
+    return load_worker_schema(path).inputs_model
+
+
+def test_each_group_builds_a_mapping_of_submodels(tmp_path):
+    model = _each_model(tmp_path)
+    config = model(chains={"tertiary": {"field": "gcal", "order": "G"}})
+    # keys are the config's, values validated against the one sub-schema
+    assert set(config.chains) == {"tertiary"}
+    assert config.chains["tertiary"].order == "G"
+    # sub-schema defaults still apply to an entry that omits them
+    assert config.chains["tertiary"].solve.engine == "casa"
+
+
+def test_each_group_default_entries_load_and_are_not_shared(tmp_path):
+    model = _each_model(tmp_path)
+    first, second = model(), model()
+    assert list(first.chains) == ["primary", "secondary"]
+    assert first.chains["secondary"].solve.engine == "quartical"
+    # the default is rebuilt per instance -- mutating one config's entry must
+    # not reach into another's (a plain `default=` mapping would share them)
+    first.chains["primary"].order = "KG"
+    assert second.chains["primary"].order == "KGB"
+
+
+def test_each_group_validates_entries_against_the_sub_schema(tmp_path):
+    model = _each_model(tmp_path)
+    with pytest.raises(ValidationError):
+        model(chains={"primary": {"solve": {"engine": "nonesuch"}}})
+
+
+def test_each_group_rejects_a_key_that_does_not_match_key_pattern(tmp_path):
+    model = _each_model(tmp_path)
+    with pytest.raises(ValidationError, match="does not match"):
+        model(chains={"not an identifier": {"order": "G"}})
+
+
+def test_each_group_without_key_pattern_accepts_any_key(tmp_path):
+    model = _each_model(tmp_path, _EACH_SCHEMA.replace("    _key_pattern: '^[A-Za-z][A-Za-z0-9_]*$'\n", ""))
+    assert set(model(chains={"not an identifier": {}}).chains) == {"not an identifier"}
+
+
+def test_each_wins_over_the_leaf_test_despite_info_and_default(tmp_path):
+    # `info`/`default` are leaf-descriptor keys; a `_each` group carrying them
+    # must still be a group, or it silently becomes a `str` field
+    model = _each_model(tmp_path)
+    assert model.model_fields["chains"].annotation is not str
+
+
+def test_each_group_with_a_broken_default_raises_at_load(tmp_path):
+    bad = _EACH_SCHEMA.replace("          engine: quartical", "          engine: nonesuch")
+    with pytest.raises(ConfigLoadError, match="do not match"):
+        _each_model(tmp_path, bad)
+
+
+def test_each_group_with_a_non_mapping_each_raises(tmp_path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("name: bad\ninputs:\n  chains:\n    _each: [a, b]\n")
+    with pytest.raises(ConfigLoadError, match="must be a mapping"):
+        load_worker_schema(bad)
+
+
+def test_each_group_with_a_non_mapping_default_raises(tmp_path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("name: bad\ninputs:\n  chains:\n    _each:\n      order: {dtype: str}\n    default: [a, b]\n")
+    with pytest.raises(ConfigLoadError, match="must be a mapping of entries"):
+        load_worker_schema(bad)
+
+
+def test_each_group_with_dtype_raises(tmp_path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("name: bad\ninputs:\n  chains:\n    dtype: str\n    _each:\n      order: {dtype: str}\n")
+    with pytest.raises(ConfigLoadError, match="no dtype of its own"):
+        load_worker_schema(bad)
+
+
+def test_each_group_with_a_bad_key_pattern_raises(tmp_path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("name: bad\ninputs:\n  chains:\n    _key_pattern: '['\n    _each:\n      order: {dtype: str}\n")
+    with pytest.raises(ConfigLoadError, match="not a valid regex"):
+        load_worker_schema(bad)
+
+
+def test_each_sub_schema_resolves_use_directives(tmp_path):
+    path = tmp_path / "each_use.yaml"
+    path.write_text("libs:\n  solve:\n    order: {dtype: str, default: KGB}\nname: calibrate\ninputs:\n  chains:\n    _each:\n      solve:\n        _use: libs.solve\n")
+    model = load_worker_schema(path).inputs_model
+    assert model(chains={"primary": {}}).chains["primary"].solve.order == "KGB"
+
+
+def test_each_group_with_a_leaf_sub_schema_names_the_real_mistake(tmp_path):
+    # `_each: {dtype: str}` used to fail one frame deeper, complaining about a
+    # param called 'dtype' in the *entry* model -- true, but not the mistake
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("name: bad\ninputs:\n  chains:\n    _each:\n      dtype: str\n")
+    with pytest.raises(ConfigLoadError, match="must be a group of parameters"):
+        load_worker_schema(bad)
+
+
+@pytest.mark.parametrize("key, value", [("required", "true"), ("choices", "[a, b]"), ("writable", "false"), ("implicit", "'{current.x}'")])
+def test_each_group_rejects_leaf_keys_that_would_be_inert(tmp_path, key, value):
+    # a mapping group is always optional and has no dtype, so `required: true`
+    # (etc.) would be silently ignored -- reject it the way `dtype` is
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(f"name: bad\ninputs:\n  chains:\n    {key}: {value}\n    _each:\n      order: {{dtype: str}}\n")
+    with pytest.raises(ConfigLoadError, match="may only carry"):
+        load_worker_schema(bad)
+
+
+def test_each_group_rejects_an_unrecognised_key(tmp_path):
+    # a misspelt modifier (`_key_patthern` for `_key_pattern`) must not be
+    # silently dropped -- that would quietly switch off the key validation
+    # the schema asked for
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("name: bad\ninputs:\n  chains:\n    _key_patthern: '^[A-Z]+$'\n    _each:\n      order: {dtype: str}\n")
+    with pytest.raises(ConfigLoadError, match="_key_patthern"):
+        load_worker_schema(bad)
+
+
+def test_each_group_still_accepts_info_and_default(tmp_path):
+    model = _each_model(tmp_path)
+    assert model.model_fields["chains"].description == "Named calibration chains."
+    assert list(model().chains) == ["primary", "secondary"]

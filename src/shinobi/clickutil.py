@@ -32,7 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from gettext import gettext
 from pathlib import Path
-from typing import Any, Literal, Union, get_args, get_origin
+from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 import click
 from pydantic import BaseModel
@@ -49,13 +49,47 @@ def is_list(annotation) -> bool:
         annotation: A type annotation, possibly wrapped in `Optional`/`Union`.
 
     Returns:
-        True if the annotation (or any of its `Union` arms) is `list` or
-        `tuple`.
+        True if the annotation is `list`/`tuple`, or if *every* non-`None`
+        arm of a `Union` is. A union that admits both a scalar and a list
+        (`str | list[str]` -- a schema field taking either "one value" or
+        "one per cycle") is **not** a list option: `multiple=True` would
+        make click demand an iterable default and reject the scalar one the
+        schema declares, so the field would be unusable from the CLI
+        entirely. The scalar arm is the one a flag can express; the list
+        form stays available in the config file.
     """
     origin = get_origin(annotation)
     if origin is Union or origin is types.UnionType:
-        return any(is_list(arg) for arg in get_args(annotation))
+        arms = [arg for arg in get_args(annotation) if arg is not type(None)]
+        return bool(arms) and all(is_list(arg) for arg in arms)
     return origin in (list, tuple)
+
+
+def _is_model_mapping(annotation) -> bool:
+    """Whether an annotation is a mapping *to* sub-models -- what
+    `worker_schema`'s `_each` groups produce (`dict[str, SubModel]`).
+
+    Such a field has no flag form at all: its keys come from the config, so
+    there is no fixed set of names to build options from, and treating it
+    as a leaf would emit a `--<name> TEXT` option that cannot accept what
+    the field holds. `iter_leaf_fields` skips it instead.
+
+    `Annotated` is unwrapped explicitly: a `_key_pattern` group's annotation
+    is `Annotated[dict[str, Sub], BeforeValidator(...)]`, and while pydantic
+    currently strips that metadata off `FieldInfo.annotation`, nothing here
+    should depend on it continuing to. Stripping it re-flattens what it
+    wrapped -- `_unwrap_annotation` stops at an outer `Annotated` (its
+    origin is not a union), so `Annotated[dict[str, Sub] | None, ...]`
+    would otherwise arrive as a single leaf that is not a `dict`.
+    """
+    pending = _unwrap_annotation(annotation)
+    while pending:
+        arg = pending.pop()
+        if get_origin(arg) is Annotated:
+            pending.extend(_unwrap_annotation(get_args(arg)[0]))
+        elif get_origin(arg) is dict and any(isinstance(a, type) and issubclass(a, BaseModel) for a in get_args(arg)):
+            return True
+    return False
 
 
 def _submodel(annotation) -> type[BaseModel] | None:
@@ -118,9 +152,17 @@ def click_type(annotation, is_path: bool):
     choices = _literal_choices(annotation)
     if choices is not None:
         return click.Choice([str(c) for c in choices])
-    for leaf in _unwrap_annotation(annotation):
-        if leaf in (int, float, bool, str):
-            return {int: click.INT, float: click.FLOAT, bool: click.BOOL, str: click.STRING}[leaf]
+    scalars = [leaf for leaf in _unwrap_annotation(annotation) if leaf in (int, float, bool, str)]
+    # A union of *different* scalar types is a string option. Taking the
+    # first arm instead would reject every value the others admit -- an
+    # `int | str` interval ("8" timeslots or "inf") became an INT option
+    # that refused 'inf', which is the schema's own default. click has no
+    # union type, and the model still validates and coerces whatever
+    # arrives, so the widest arm is the right one to accept at the CLI.
+    if len(set(scalars)) > 1:
+        return click.STRING
+    if scalars:
+        return {int: click.INT, float: click.FLOAT, bool: click.BOOL, str: click.STRING}[scalars[0]]
     return click.STRING
 
 
@@ -158,9 +200,15 @@ def iter_leaf_fields(model: type[BaseModel], *, _prefix: str = "", _path: tuple[
     `"obsinfo_plotelev_enable"`, path `("obsinfo", "plotelev", "enable")`.
     A model with no nested `BaseModel` fields (every cult-cargo cab's
     `inputs_model`) yields exactly what a flat single-level walk would.
+
+    Mapping-to-sub-model fields (`worker_schema`'s `_each` groups) are
+    skipped -- see `_is_model_mapping`. They are configurable from the
+    config file only, never from a flag.
     """
     result: list[tuple[str, tuple[str, ...], FieldInfo]] = []
     for name, field in model.model_fields.items():
+        if _is_model_mapping(field.annotation):
+            continue
         sub = _submodel(field.annotation)
         if sub is not None:
             result.extend(iter_leaf_fields(sub, _prefix=f"{_prefix}{name}_", _path=(*_path, name)))
