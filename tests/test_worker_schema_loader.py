@@ -373,7 +373,17 @@ def test_each_group_rejects_leaf_keys_that_would_be_inert(tmp_path, key, value):
     # (etc.) would be silently ignored -- reject it the way `dtype` is
     bad = tmp_path / "bad.yaml"
     bad.write_text(f"name: bad\ninputs:\n  chains:\n    {key}: {value}\n    _each:\n      order: {{dtype: str}}\n")
-    with pytest.raises(ConfigLoadError, match="cannot also declare"):
+    with pytest.raises(ConfigLoadError, match="may only carry"):
+        load_worker_schema(bad)
+
+
+def test_each_group_rejects_an_unrecognised_key(tmp_path):
+    # a misspelt modifier (`_key_patthern` for `_key_pattern`) must not be
+    # silently dropped -- that would quietly switch off the key validation
+    # the schema asked for
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("name: bad\ninputs:\n  chains:\n    _key_patthern: '^[A-Z]+$'\n    _each:\n      order: {dtype: str}\n")
+    with pytest.raises(ConfigLoadError, match="_key_patthern"):
         load_worker_schema(bad)
 
 

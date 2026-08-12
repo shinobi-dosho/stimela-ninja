@@ -276,6 +276,20 @@ def test_annotated_mapping_is_recognised_directly():
     assert _is_model_mapping(Annotated[dict[str, _Chain], BeforeValidator(lambda v: v)])
 
 
+def test_annotated_optional_mapping_is_recognised_directly():
+    # stripping `Annotated` must re-flatten what it wrapped: an
+    # `Annotated[dict[str, Sub] | None, ...]` still names a mapping, and
+    # treating it as a leaf would emit a CLI option that can't carry the field
+    from typing import Annotated, Optional
+
+    from pydantic import BeforeValidator
+
+    from shinobi.clickutil import _is_model_mapping
+
+    assert _is_model_mapping(Annotated[dict[str, _Chain] | None, BeforeValidator(lambda v: v)])
+    assert _is_model_mapping(Optional[Annotated[dict[str, _Chain], BeforeValidator(lambda v: v)]])
+
+
 class _ScalarOrList(BaseModel):
     # a schema field taking "one value" or "one per cycle" -- caracal2's
     # `solve.order`, which is a chain string or a list of them

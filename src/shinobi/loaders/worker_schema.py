@@ -47,7 +47,9 @@ Dialect, as actually used by caracal2 (see its `caracal/schemas/`):
   optional) constrains those names -- schemas whose keys become step names
   or output-path components want `'^[A-Za-z][A-Za-z0-9_]*$'`. A `default:`
   alongside `_each` is a mapping of pre-declared entries, validated at load
-  time and rebuilt per instance.
+  time and rebuilt per instance. `_key_pattern`, `info` and `default` are
+  the only keys an `_each` group may carry -- anything else raises (a
+  misspelt `_key_pattern` must not silently switch off the validation).
 
 `writable` (seen in caracal2's `caracal_base.yaml`) is carried onto the
 generated field's `json_schema_extra`: a `writable: false` directory input is
@@ -211,8 +213,9 @@ _LEAF_KEYS = COMMON_LEAF_KEYS
 _EACH_KEY = "_each"
 _KEY_PATTERN_KEY = "_key_pattern"
 
-#: The only leaf-descriptor keys allowed beside `_each` -- see `_mapping_field`.
-_EACH_COMPANION_KEYS = {"info", "default"}
+#: The only keys an `_each` group may carry -- see `_mapping_field` for why a
+#: fifth one is an error, not a no-op.
+_EACH_ALLOWED_KEYS = {_EACH_KEY, _KEY_PATTERN_KEY, "info", "default"}
 
 
 def _build_group(model_name: str, spec: dict[str, Any]) -> type[BaseModel]:
@@ -271,12 +274,14 @@ def _mapping_field(model_name: str, value: dict[str, Any]) -> tuple[Any, Any]:
     first instantiation; the factory then rebuilds it per instance, which
     is what keeps two configs from sharing one mutable set of sub-models.
 
-    Only `info` and `default` may sit beside `_each`. Every other
-    leaf-descriptor key describes something a mapping group does not have:
-    it has no `dtype` of its own, and it is always optional (an absent
-    mapping is an empty one), so a `required: true` here would be silently
-    inert -- which is exactly the failure this dialect keeps rejecting
-    loudly elsewhere.
+    Only `_key_pattern`, `info` and `default` may sit beside `_each` --
+    anything else is rejected outright. A recognised leaf-descriptor key
+    describes something a mapping group does not have: it has no `dtype`
+    of its own, and it is always optional (an absent mapping is an empty
+    one), so a `required: true` here would be silently inert. An
+    *unrecognised* key is worse: a typo like `_key_patthern` would be
+    dropped without a word, quietly switching off the key validation the
+    schema asked for.
     """
     each = value[_EACH_KEY]
     if not isinstance(each, dict):
@@ -287,12 +292,13 @@ def _mapping_field(model_name: str, value: dict[str, Any]) -> tuple[Any, Any]:
             f"but it declares leaf keys {sorted(_LEAF_KEYS & each.keys())} -- an entry is a group, so write "
             "'_each: {<param>: {dtype: ...}}', not '_each: {dtype: ...}'"
         )
-    unsupported = (_LEAF_KEYS - _EACH_COMPANION_KEYS) & value.keys()
+    unsupported = value.keys() - _EACH_ALLOWED_KEYS
     if unsupported:
         raise ConfigLoadError(
-            f"'{model_name}' is a '_each' mapping group, so it cannot also declare {sorted(unsupported)} -- "
-            "a mapping group has no dtype of its own and is always optional (an absent mapping is empty); "
-            "per-entry settings belong inside '_each'"
+            f"'{model_name}' is a '_each' mapping group, which may only carry {sorted(_EACH_ALLOWED_KEYS)} -- "
+            f"got {sorted(unsupported)}. A mapping group has no dtype of its own and is always optional "
+            "(an absent mapping is empty), so leaf settings belong inside '_each', and an unrecognised key "
+            "is a typo that would otherwise be silently dropped"
         )
 
     sub_model = _build_group(f"{model_name}_entry", each)

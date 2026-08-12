@@ -77,12 +77,17 @@ def _is_model_mapping(annotation) -> bool:
     `Annotated` is unwrapped explicitly: a `_key_pattern` group's annotation
     is `Annotated[dict[str, Sub], BeforeValidator(...)]`, and while pydantic
     currently strips that metadata off `FieldInfo.annotation`, nothing here
-    should depend on it continuing to.
+    should depend on it continuing to. Stripping it re-flattens what it
+    wrapped -- `_unwrap_annotation` stops at an outer `Annotated` (its
+    origin is not a union), so `Annotated[dict[str, Sub] | None, ...]`
+    would otherwise arrive as a single leaf that is not a `dict`.
     """
-    for arg in _unwrap_annotation(annotation):
+    pending = _unwrap_annotation(annotation)
+    while pending:
+        arg = pending.pop()
         if get_origin(arg) is Annotated:
-            arg = get_args(arg)[0]
-        if get_origin(arg) is dict and any(isinstance(a, type) and issubclass(a, BaseModel) for a in get_args(arg)):
+            pending.extend(_unwrap_annotation(get_args(arg)[0]))
+        elif get_origin(arg) is dict and any(isinstance(a, type) and issubclass(a, BaseModel) for a in get_args(arg)):
             return True
     return False
 
