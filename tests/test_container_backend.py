@@ -324,6 +324,25 @@ def test_a_product_that_is_a_read_only_input_is_refused():
     assert "'vis'" in str(exc.value) and "/data/obs.ms" in str(exc.value)
 
 
+def test_a_relative_product_that_is_a_read_only_input_is_refused_too():
+    """The same contradiction spelled relative to the workdir. Input values are
+    anchored there before classification, so the products compared against them
+    must be -- skipping a relative one (as the *directory* loop does, for the
+    unrelated reason that it is already inside the mounted workdir) let the
+    identical cab through and mounted '/work/obs.ms' `:ro` inside its own
+    read-write workdir.
+    """
+    cab = Cab(
+        name="flagdata",
+        command="flagdata",
+        image="casa:latest",
+        inputs_model=create_model("In", vis=(Optional[Path], Field(None, json_schema_extra={"writable": False}))),
+        outputs_model=build_model("Out", {"vis": ("MS", False, None)}),
+    )
+    with pytest.raises(BackendError, match="/work/obs.ms"):
+        bind_dir_modes(cab, {"vis": "obs.ms"}, "/work")
+
+
 def test_a_product_beside_a_read_only_input_is_still_fine():
     """The neighbouring shape the nesting rule exists for: same directory,
     different paths. `casa.split` is the real one -- input `ms` marked

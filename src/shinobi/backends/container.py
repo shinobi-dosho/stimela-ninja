@@ -617,8 +617,15 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
     # unchecked it mounted the product `:ro` inside its own read-write parent,
     # so the refusal landed as a permission error from the tool at run time.
     for outpath, source in declared_output_paths(scope, inputs):
+        # Anchored at the workdir when relative, exactly as an input value is
+        # above -- it is the same contradiction whether the cab spells the path
+        # absolutely or relative to where the step runs, and the read-only
+        # paths it is compared against were anchored the same way. (The
+        # directory loop below *skips* its relative entries instead, for an
+        # unrelated reason: those are already inside the always-mounted
+        # workdir, so there is no mount to derive from them.)
         if not outpath.is_absolute():
-            continue
+            outpath = Path(workdir) / outpath
         conflict = next((p for paths in readonly_paths.values() for p in paths if paths_overlap(outpath, Path(p))), None)
         if conflict is not None:
             field = readonly_owner[conflict]
