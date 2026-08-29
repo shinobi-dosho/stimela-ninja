@@ -171,6 +171,26 @@ class Policies(BaseModel):
     `explicit_false`), and this applies uniformly to declared fields and
     `ParamPattern`-matched dynamic ones (e.g. CubiCal's own
     per-Jones-term `g-solvable`).
+
+    `true_token`/`false_token` are what those two tokens actually say.
+    Lowercase `"true"`/`"false"` (the default) is what CubiCal's parser
+    reads, but it is not universal: DDFacet and killMS share a parset
+    reader (`DDFacet.Parset.ReadCFG`) that parses `"0"`/`"1"` as ints and
+    `"True"`/`"False"` as bools, and leaves an unrecognised `"false"` as a
+    *string* -- which, being non-empty, is truthy. `--Mask-Auto false`
+    there switches the mask **on**. So the pair of tokens is a cab-level
+    policy of its own (`policies: {explicit_true: true, explicit_false:
+    true, true_token: '1', false_token: '0'}` for those two), alongside
+    the `explicit_*` switches rather than instead of them: `explicit_*`
+    decides *whether* a value token is emitted, these decide what it
+    reads.
+
+    They spell a boolean in *every* value position, not only after a flag:
+    a `key_value` cab's single `name=value` token, a positional, an
+    element of a joined or bracketed list, one occurrence of a repeated
+    flag. Python's own `str(True)` is `"True"`, so a path that missed this
+    emitted a spelling no policy ever asked for
+    (`policies._scalar_token` is the one place that decides).
     """
 
     prefix: str = "--"
@@ -181,6 +201,8 @@ class Policies(BaseModel):
     repeat: str | None = None
     explicit_true: bool = False
     explicit_false: bool = False
+    true_token: str = "true"
+    false_token: str = "false"
 
     def arg_name(self, name: str) -> str:
         """Build the CLI flag name for a parameter name.
