@@ -57,7 +57,10 @@ Available backends
     ``:ro`` at its own path inside it, so the write lands but that input stays
     untouchable. A cab that declares something writable *inside* a
     ``writable: false`` input is refused instead -- no arrangement of mounts
-    satisfies both.
+    satisfies both. Any input can say the word: a declared field marks itself
+    with ``writable: false`` in the schema, and a pattern-matched
+    (dynamically-named) input -- which has no declared field at all -- marks
+    the attr it matches, the same place that attr's ``dtype`` lives.
     For ``docker``/``podman``, the container runs as the invoking
     host user (not root) by default, so bind-mounted outputs come out
     host-owned -- see ``backend.run_as_host_user`` in :doc:`config`.

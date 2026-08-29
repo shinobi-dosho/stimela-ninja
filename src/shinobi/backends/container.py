@@ -22,8 +22,9 @@ with the container. ``scratch`` covers the same need for a write target that
 is not a product (a cache tree, a logfile): mounted identically, never
 harvested.
 
-A directory contributed *only* by input fields marked ``writable: false`` in
-the schema (``readonly_path_fields``) is bind-mounted read-only (``:ro``); any
+A directory contributed *only* by inputs marked ``writable: false`` in the
+schema (``readonly_path_fields``, or a ``ParamPattern`` attr's own
+``ParamMeta.writable``) is bind-mounted read-only (``:ro``); any
 writable contributor makes the shared mount read-write. Wherever that collides
 with something that must be able to write -- a declared write target, or simply
 another input -- both hold by nesting: the directory goes read-write and each
@@ -59,7 +60,7 @@ from shinobi.exceptions import BackendError
 from shinobi.loaders._modelgen import is_file_dtype
 from shinobi.resources import delegated_controllers
 from shinobi.results import BackendRun
-from shinobi.steps.schema import Cab, Scope, declared_output_dirs, path_fields, readonly_path_fields
+from shinobi.steps.schema import Cab, Scope, declared_output_dirs, declared_output_paths, path_fields, paths_overlap, readonly_path_fields
 
 logger = logging.getLogger(__name__)
 
@@ -504,10 +505,11 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
 
     A directory is read-only (`writable=False`) only when *every* input that
     contributed it is a path field explicitly marked `writable: false` in its
-    schema (`readonly_path_fields`). Any writable contributor -- including the
-    default for an unmarked field, or a Python-typed pystep input, or a
-    dynamically-named `ParamPattern` cab input (which carries no `writable`
-    metadata) -- makes the shared *directory* read-write, so an in-place MS in a
+    schema (`readonly_path_fields`), or a dynamically-named `ParamPattern`
+    input whose attr's `ParamMeta.writable` says so (`readonly_path_fields`
+    cannot see that one -- it has no declared model field to inspect). Any
+    writable contributor -- including the default for an unmarked field, or a
+    Python-typed pystep input -- makes the shared *directory* read-write, so an in-place MS in a
     writable `msdir` stays writable even when a read-only input resolves to the
     same parent. The read-only input is not collateral of that, though: it is
     re-asserted `:ro` at its own path, nested inside (see below). Only a
@@ -566,7 +568,7 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
     readonly_owner: dict[str, str] = {}  # read-only input path -> the field that declared it
     writable_owner: dict[str, str] = {}  # writable mount dir -> an input field that made it writable
     declared = path_fields(scope.inputs_model)
-    readonly = readonly_path_fields(scope.inputs_model)
+    readonly = readonly_path_fields(scope.inputs_model, scope.field_meta)
     # Only Cabs carry dynamically-named `ParamPattern` inputs; bare Scopes
     # (e.g. from `@shinobi.pystep`) are fully typed, so every input is
     # already in `declared`.
@@ -579,7 +581,10 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
             meta = match_pattern(name)
             if meta is None or meta.dtype is None or not is_file_dtype(meta.dtype):
                 continue
-            writable = True  # dynamic inputs carry no writable metadata
+            # A dynamically-named input has no model field, so its marker
+            # lives on the pattern attr's own `ParamMeta.writable`; unmarked
+            # (None) reads as writable, same as a declared field's default.
+            writable = meta.writable is not False
         else:
             writable = name not in readonly
         if value is None:
@@ -601,6 +606,29 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
                 modes[parent] = modes[parent] or writable  # writable wins
 
     scope_name = getattr(scope, "name", "<scope>")
+
+    # The same contradiction as the directory check below, one level down and
+    # invisible to it: `declared_output_dirs` reports a product's *parent*, so
+    # an output and a `writable: false` input naming the same file compare as
+    # neighbours in one directory, not as one inside the other. That is the
+    # dual-declared echo shape -- `vis` on both `inputs:` and `outputs:` -- and
+    # it is the most natural way to write this contradiction: "the tool must
+    # not modify this" and "the tool produces this" about one path. Left
+    # unchecked it mounted the product `:ro` inside its own read-write parent,
+    # so the refusal landed as a permission error from the tool at run time.
+    for outpath, source in declared_output_paths(scope, inputs):
+        if not outpath.is_absolute():
+            continue
+        conflict = next((p for paths in readonly_paths.values() for p in paths if paths_overlap(outpath, Path(p))), None)
+        if conflict is not None:
+            field = readonly_owner[conflict]
+            same = "is" if str(outpath) == conflict else "is inside"
+            raise BackendError(
+                f"{scope_name}: declared {source} writes to '{outpath}', which {same} input '{field}' ('{conflict}') "
+                f"-- marked `writable: false`. Nothing can honour both: the cab declares that path a product it "
+                f"writes and an input it must not touch. Drop `writable: false` from '{field}' if the tool really "
+                f"does write there, or drop the output declaration if it does not."
+            )
 
     for outdir, source in declared_output_dirs(scope, inputs):
         # Relative outputs land under the (always-mounted) workdir, and are

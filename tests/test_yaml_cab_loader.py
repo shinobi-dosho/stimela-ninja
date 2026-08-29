@@ -666,6 +666,102 @@ def test_write_path_survives_a_same_named_output():
     assert write_path_fields(cab) == {"outputvis"}
 
 
+def test_writable_false_on_a_declared_input_reaches_readonly_path_fields():
+    """`writable` was listed in `_LEAF_SPEC_KEYS` -- accepted as a valid leaf
+    key -- and then never read, which is the bad half of the two options: a cab
+    author wrote `writable: false`, got no error, and shipped a read-write
+    mount believing otherwise. `worker_schema` carried it all along; this
+    dialect now carries it the same way, onto the field's `json_schema_extra`,
+    which is where `readonly_path_fields` looks.
+    """
+    from shinobi.steps.schema import readonly_path_fields
+
+    cab = loads(
+        """
+        cabs:
+          toy:
+            command: toy
+            image: busybox
+            inputs:
+              model_image: {dtype: File, writable: false}
+              out_ms: {dtype: MS}
+        """
+    )["toy"]
+    assert path_fields(cab.inputs_model) == {"model_image", "out_ms"}
+    assert readonly_path_fields(cab.inputs_model) == {"model_image"}
+
+
+def test_an_unmarked_or_explicitly_writable_input_is_not_read_only():
+    """Tri-state: absent is not the same as `writable: true`, and neither is
+    read-only. Only an explicit `false` earns the `:ro` mount.
+    """
+    from shinobi.steps.schema import readonly_path_fields
+
+    cab = loads(
+        """
+        cabs:
+          toy:
+            command: toy
+            inputs:
+              plain: {dtype: File}
+              explicit: {dtype: File, writable: true}
+        """
+    )["toy"]
+    assert readonly_path_fields(cab.inputs_model) == set()
+    assert cab.field_meta["explicit"].writable is True
+    assert "plain" not in cab.field_meta
+
+
+def test_output_side_writable_cannot_decide_a_same_named_input_s_mount():
+    """Output metas merge *over* input ones (so an output's `implicit` wins),
+    and `readonly_path_fields` reads `field_meta`. Anything `writable` left on
+    the output half of a dual-declared name therefore reaches the mount
+    decision for the *input* -- which never asked for it, and which is the only
+    side the key describes. So the output side drops it, and what stays on
+    `field_meta` is only what the input declared.
+
+    Real cult-cargo does write this (casa's `flagman.save` marks its
+    `flagversions-table` output `writable: true`), so it is dropped rather
+    than refused. See `test_writable_false_on_an_output_is_refused` for the
+    direction that is a contradiction rather than a no-op.
+    """
+    from shinobi.steps.schema import readonly_path_fields
+
+    cab = loads(
+        """
+        cabs:
+          t:
+            command: t
+            inputs:
+              vis: {dtype: MS, info: the input side}
+            outputs:
+              vis: {dtype: MS, writable: true, info: the output side}
+        """
+    )["t"]
+    assert cab.field_meta["vis"].writable is None
+    assert readonly_path_fields(cab.inputs_model, cab.field_meta) == set()
+    assert cab.field_meta["vis"].info == "the output side"  # the merge itself still works
+
+
+def test_writable_false_on_an_output_is_refused():
+    """The other direction is a contradiction, not a no-op: a product the tool
+    may not write. Refused rather than quietly ignored -- ignoring it is the
+    accept-and-drop failure this key already had on the input side.
+    """
+    with pytest.raises(CabLoadError, match="output.*'vis'.*writable"):
+        loads(
+            """
+            cabs:
+              t:
+                command: t
+                inputs:
+                  vis: {dtype: MS}
+                outputs:
+                  vis: {dtype: MS, writable: false}
+            """
+        )
+
+
 def test_an_output_side_implicit_still_wins_over_the_input_side():
     """The other half of the merge: attribute-wise, so the output's own
     declarations keep overriding. A whole-object merge got this right and
@@ -820,7 +916,7 @@ cabs:
           - attrs:
               solvable: {}
               time-int: {dtype: int}
-              load-from: {dtype: File, info: gain table}
+              load-from: {dtype: File, info: gain table, writable: false}
     output_patterns:
       - separator: "."
         segments:
@@ -863,6 +959,16 @@ def test_the_attrs_segment_need_not_be_last():
     """
     cab = loads(_PATTERN_DOC)["probe"]
     assert cab.match_output_pattern("dirty.per-band") is not None
+
+
+def test_matched_attrs_carry_their_writable_marker():
+    """A dynamically-named input has no model field for `readonly_path_fields`
+    to inspect either, so `writable: false` rides the attr's `ParamMeta` the
+    same way its `dtype` does -- `bind_dir_modes` reads it from there.
+    """
+    cab = loads(_PATTERN_DOC)["probe"]
+    assert cab.match_pattern("g1-load-from").writable is False
+    assert cab.match_pattern("g1-time-int").writable is None  # unmarked, read as writable
 
 
 def test_patterns_are_optional():
