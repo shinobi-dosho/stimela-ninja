@@ -383,3 +383,129 @@ def test_loading_real_cubical_policies_dict_preserves_explicit_true_and_false():
     policies = Policies(**{"prefix": "--", "explicit_true": True, "explicit_false": False})
     assert policies.explicit_true is True
     assert policies.explicit_false is False
+
+
+# -- true_token / false_token (real DDFacet/killMS shape: policies:
+# {explicit_true: true, explicit_false: true, true_token: '1',
+# false_token: '0'}) --
+
+
+def make_ddfacet_like_cab() -> Cab:
+    return Cab(
+        name="ddfacet",
+        command="DDF.py",
+        inputs_model=build_model("In", {"Predict_Overwrite": ("bool", False, True), "Mask_Auto": ("bool", False, False)}, allow_extra=True),
+        outputs_model=build_model("Out", {}),
+        policies=Policies(prefix="--", explicit_true=True, explicit_false=True, true_token="1", false_token="0"),
+        field_meta={"Predict_Overwrite": ParamMeta(nom_de_guerre="Predict-Overwrite"), "Mask_Auto": ParamMeta(nom_de_guerre="Mask-Auto")},
+        input_patterns=[
+            ParamPattern(
+                separator="-",
+                segments=[ParamSegment(regex=r".+?"), ParamSegment(attrs={"Solvable": ParamMeta()})],
+            )
+        ],
+    )
+
+
+def test_bool_tokens_default_to_lowercase_true_false():
+    """The pair is a policy, not a change of the old behaviour: a cab that
+    says nothing about tokens keeps emitting cubical's `true`/`false`.
+    """
+    assert (Policies().true_token, Policies().false_token) == ("true", "false")
+
+
+def test_true_token_replaces_the_hardcoded_true():
+    """DDFacet's parset reader parses "1" as an int, but leaves an
+    unrecognised "true"/"false" as a *string* -- non-empty, so truthy either
+    way, and `--Mask-Auto false` switches the mask on.
+    """
+    argv = build_argv(make_ddfacet_like_cab(), {"Predict_Overwrite": True})
+    assert argv[argv.index("--Predict-Overwrite") + 1] == "1"
+
+
+def test_false_token_replaces_the_hardcoded_false():
+    argv = build_argv(make_ddfacet_like_cab(), {"Mask_Auto": False})
+    assert argv[argv.index("--Mask-Auto") + 1] == "0"
+    assert "false" not in argv
+
+
+def test_default_true_bool_never_renders_as_a_bare_flag_under_the_ddfacet_policy():
+    """The other half of the bug: a bare `--Predict-Overwrite` makes
+    DDFacet's optparse eat the *next* option as this flag's value, so
+    everything after it is misparsed -- and dosho's ddfacet document has 13
+    bool inputs defaulting to true, so a plain dispatch built a malformed
+    command line before the caller set anything.
+    """
+    argv = build_argv(make_ddfacet_like_cab(), {"Predict_Overwrite": True, "Mask_Auto": True})
+    for i, token in enumerate(argv):
+        if token.startswith("--"):
+            assert i + 1 < len(argv) and not argv[i + 1].startswith("--"), f"{token} is a bare flag"
+
+
+def test_bool_tokens_apply_to_pattern_matched_dynamic_fields_too():
+    argv = build_argv(make_ddfacet_like_cab(), {"g-Solvable": False})
+    assert argv[argv.index("--g-Solvable") + 1] == "0"
+
+
+def test_bool_tokens_spell_the_value_in_a_key_value_cab_too():
+    cab = Cab(
+        name="t",
+        command="t",
+        inputs_model=build_model("In", {"flag": ("bool", False, None)}),
+        outputs_model=build_model("Out", {}),
+        policies=Policies(prefix="", key_value=True, true_token="True", false_token="False"),
+    )
+    assert build_argv(cab, {"flag": True}) == ["t", "flag=True"]
+    assert build_argv(cab, {"flag": False}) == ["t", "flag=False"]
+
+
+def test_loading_a_real_policies_dict_preserves_the_bool_tokens():
+    """Same failure mode as `explicit_*` before it: a `policies:` key the
+    model has no field for is dropped by pydantic's extra="ignore", so the
+    cab loads looking fine and builds the wrong argv.
+    """
+    policies = Policies(**{"prefix": "--", "explicit_true": True, "explicit_false": True, "true_token": "1", "false_token": "0"})
+    assert (policies.true_token, policies.false_token) == ("1", "0")
+
+
+# -- a boolean is spelled the cab's way in *every* value position ------------
+#
+# `str(True)` is `"True"`. Every rendering path that reached for it emitted a
+# spelling no policy asked for -- not the tool's, and not even this module's
+# own lowercase convention for the two places a scalar bool was handled.
+
+
+def make_bool_cab(fields, policies, **kwargs) -> Cab:
+    return Cab(name="t", command="t", inputs_model=build_model("In", fields), outputs_model=build_model("Out", {}), policies=policies, **kwargs)
+
+
+_TOKENS = Policies(prefix="--", explicit_true=True, explicit_false=True, true_token="1", false_token="0")
+
+
+def test_positional_bool_uses_the_tokens_not_python_str():
+    cab = make_bool_cab({"overwrite": ("bool", False, None)}, _TOKENS, field_meta={"overwrite": ParamMeta(positional=True)})
+    assert build_argv(cab, {"overwrite": True}) == ["t", "1"]
+
+
+def test_repeat_as_tokens_bool_list_uses_the_tokens():
+    cab = make_bool_cab({"flags": ("list:bool", False, None)}, _TOKENS, field_meta={"flags": ParamMeta(repeat_as_tokens=True)})
+    assert build_argv(cab, {"flags": [True, False]}) == ["t", "--flags", "1", "0"]
+
+
+def test_joined_bool_list_uses_the_tokens():
+    cab = make_bool_cab({"flags": ("list:bool", False, None)}, _TOKENS)
+    assert build_argv(cab, {"flags": [True, False]}) == ["t", "--flags", "1,0"]
+
+
+def test_repeat_list_bool_uses_the_tokens():
+    cab = make_bool_cab({"flags": ("list:bool", False, None)}, Policies(prefix="--", repeat_list=True, true_token="1", false_token="0"))
+    assert build_argv(cab, {"flags": [True, False]}) == ["t", "--flags", "1", "--flags", "0"]
+
+
+def test_bracketed_bool_list_in_a_key_value_cab_agrees_with_its_own_scalars():
+    """QuartiCal's shape (`key_value` + `repeat: "[]"`). Its scalar bools have
+    always rendered lowercase; the list elements beside them rendered
+    `[True,False]`, which is the same cab disagreeing with itself.
+    """
+    cab = make_bool_cab({"flags": ("list:bool", False, None), "one": ("bool", False, None)}, Policies(prefix="", key_value=True, repeat="[]"))
+    assert build_argv(cab, {"flags": [True, False], "one": True}) == ["t", "flags=[true,false]", "one=true"]

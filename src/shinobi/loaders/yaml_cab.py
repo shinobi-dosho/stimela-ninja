@@ -352,14 +352,27 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
 
     in_fields, field_meta, input_mutability = _collect(spec.get("inputs") or {})
     out_fields, out_meta, _out_mutability = _collect(spec.get("outputs") or {})
+    out_meta = _drop_output_writable(name, out_meta)
 
     in_choices = {field: meta.choices for field, meta in field_meta.items() if meta.choices}
     out_choices = {field: meta.choices for field, meta in out_meta.items() if meta.choices}
 
-    # `abbreviation` is a CLI-only alias -- carried onto the field's
-    # json_schema_extra so `clickutil.build_options` can emit a `-<abbrev>`
-    # short flag. Only meaningful on inputs (outputs aren't CLI options).
-    in_extras = {field: {"abbreviation": meta.abbreviation} for field, meta in field_meta.items() if meta.abbreviation}
+    # Field hints that ride `json_schema_extra` rather than the annotation,
+    # because their consumer reads the *model*, not `field_meta`:
+    # `abbreviation` is a CLI-only alias, so `clickutil.build_options` can emit
+    # a `-<abbrev>` short flag; `writable` is the read-only-mount marker
+    # `steps.schema.readonly_path_fields` looks for (which is how a cab's
+    # `writable: false` reaches `bind_dir_modes` at all). Both only meaningful
+    # on inputs -- outputs are neither CLI options nor bind-mounted read-only.
+    in_extras: dict[str, dict[str, Any]] = {}
+    for field, meta in field_meta.items():
+        extra: dict[str, Any] = {}
+        if meta.abbreviation:
+            extra["abbreviation"] = meta.abbreviation
+        if meta.writable is not None:
+            extra["writable"] = meta.writable
+        if extra:
+            in_extras[field] = extra
 
     input_patterns = _param_patterns(spec.get("input_patterns"), cab=name, key="input_patterns")
     return Cab(
@@ -464,6 +477,44 @@ def _param_patterns(raw: Any, *, cab: str, key: str) -> list[ParamPattern]:
 _DEFAULT_PARAM_META = ParamMeta()
 
 
+def _drop_output_writable(cab: str, out_meta: dict[str, ParamMeta]) -> dict[str, ParamMeta]:
+    """Take `writable` off the *output* side of a cab's metas.
+
+    `writable` describes an input the tool must not modify. It says nothing
+    about an output -- a declared product is written by definition. Real
+    cult-cargo documents still put `writable: true` on one (casa's
+    `flagman.save` marks its `flagversions-table` output, caracal2's
+    `caracal_base.yaml` its `output` directory), so the key is accepted there
+    and dropped rather than refused.
+
+    Dropping it is not cosmetic. Output metas merge *over* input ones
+    (`merge_field_meta`, so an output's `implicit` wins), and
+    `readonly_path_fields` reads `field_meta` -- so a `writable` left on the
+    output side of a dual-declared name (`vis` on both, the echo idiom) would
+    decide the mount mode of the *input* that never asked for it: a cab saying
+    nothing about its input would get it mounted `:ro`, or one that marked its
+    input read-only would have that silently overridden.
+
+    `writable: false` on an output is refused instead of dropped: it declares
+    a product the tool may not write, which nothing can honour, and no real
+    document writes it.
+    """
+    contradictions = sorted(field for field, meta in out_meta.items() if meta.writable is False)
+    if contradictions:
+        raise CabLoadError(
+            f"cab '{cab}': output(s) {', '.join(repr(f) for f in contradictions)} are marked `writable: false`. "
+            f"An output is a product the tool writes -- marking it unwritable is a contradiction, and shinobi "
+            f"will not quietly ignore it. Drop the key, or move it to the same-named *input* if what you meant "
+            f"is that the tool must not modify the file it was given."
+        )
+    stripped = {field: (meta.model_copy(update={"writable": None}) if meta.writable is not None else meta) for field, meta in out_meta.items()}
+    # An output spec whose only content was `writable` is left saying nothing,
+    # and `_collect` never stores a meta that says nothing -- so neither does
+    # this, or the cab would carry a default `ParamMeta` its Python-authored
+    # equivalent does not have.
+    return {field: meta for field, meta in stripped.items() if meta != _DEFAULT_PARAM_META}
+
+
 def _param_meta(value: dict[str, Any], *, nom_de_guerre: str | None = None, with_dtype: bool = False) -> ParamMeta:
     """Build a `ParamMeta` from a param-spec mapping.
 
@@ -493,6 +544,11 @@ def _param_meta(value: dict[str, Any], *, nom_de_guerre: str | None = None, with
         dtype=value.get("dtype") if with_dtype else None,
         write_path=bool(value.get("write_path", False)),
         abbreviation=value.get("abbreviation"),
+        # Tri-state: absent stays unmarked rather than collapsing to `true`,
+        # so what the cab actually said survives the load -- `worker_schema`
+        # carries either explicit value the same way. Both read as writable;
+        # only an explicit `false` earns a `:ro` mount.
+        writable=None if value.get("writable") is None else bool(value["writable"]),
     )
 
 

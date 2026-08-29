@@ -21,14 +21,28 @@ from shinobi.steps.schema import Cab
 EXECUTABLE_FLAVOURS = {"binary"}
 
 
+def _scalar_token(value: Any, policies) -> str:
+    """One scalar's argv spelling: a bool is the cab's `true_token`/
+    `false_token`, anything else is `str()`.
+
+    Every path that turns a value into a token goes through here, so a cab's
+    boolean policy holds wherever the value sits -- a list element, a
+    positional, one occurrence of a repeated flag -- and not only where a
+    scalar bool happened to be handled. Python's own `str(True)` is
+    `"True"`, which is neither the tool's spelling nor this module's
+    previous lowercase convention.
+    """
+    if isinstance(value, bool):
+        return policies.true_token if value else policies.false_token
+    return str(value)
+
+
 def _format_value(value: Any, policies) -> str:
     if isinstance(value, (list, tuple)):
         if policies.repeat == "[]":
-            return "[" + ",".join(str(v) for v in value) + "]"
-        return policies.list_sep.join(str(v) for v in value)
-    if isinstance(value, bool) and policies.key_value:
-        return "true" if value else "false"
-    return str(value)
+            return "[" + ",".join(_scalar_token(v, policies) for v in value) + "]"
+        return policies.list_sep.join(_scalar_token(v, policies) for v in value)
+    return _scalar_token(value, policies)
 
 
 def _emit_arg(argv: list[str], policies, arg_name: str, value: Any) -> None:
@@ -39,19 +53,23 @@ def _emit_arg(argv: list[str], policies, arg_name: str, value: Any) -> None:
         return
 
     if isinstance(value, bool):
+        # `explicit_*` decides whether a value token follows the flag at all;
+        # `true_token`/`false_token` decide what it says -- "true"/"false" for
+        # CubiCal, "0"/"1" for DDFacet/killMS, whose parser reads an
+        # unrecognised "false" as a (truthy) string. See `Policies`.
         if value:
             argv.append(arg_name)
             if policies.explicit_true:
-                argv.append("true")
+                argv.append(policies.true_token)
         elif policies.explicit_false:
             argv.append(arg_name)
-            argv.append("false")
+            argv.append(policies.false_token)
         return
 
     if isinstance(value, (list, tuple)) and policies.repeat_list:
         for item in value:
             argv.append(arg_name)
-            argv.append(str(item))
+            argv.append(_scalar_token(item, policies))
         return
 
     argv.append(arg_name)
@@ -97,7 +115,7 @@ def build_argv(cab: Cab, resolved: dict[str, Any]) -> list[str]:
         if meta is not None and (meta.positional or meta.positional_head):
             positionals = positionals_head if meta.positional_head else positionals_tail
             if repeat_as_tokens:
-                positionals.extend(str(item) for item in value)
+                positionals.extend(_scalar_token(item, policies) for item in value)
             else:
                 positionals.append(_format_value(value, policies))
             continue
@@ -106,7 +124,7 @@ def build_argv(cab: Cab, resolved: dict[str, Any]) -> list[str]:
             # e.g. wsclean's "-size 4096 4096"/"-weight briggs 0", not
             # "-size 4096,4096" (one token, which the tool can't parse).
             flags.append(policies.arg_name(cab.param_name(name)))
-            flags.extend(str(item) for item in value)
+            flags.extend(_scalar_token(item, policies) for item in value)
             continue
         _emit_arg(flags, policies, policies.arg_name(cab.param_name(name)), value)
 

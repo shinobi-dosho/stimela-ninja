@@ -304,6 +304,138 @@ def test_bind_dir_modes_classifies_read_only_and_workdir():
     assert modes == {"/work": True, "/rawdata": False, "/msdir": True}
 
 
+def test_a_product_that_is_a_read_only_input_is_refused():
+    """The dual-declared echo shape -- one name on `inputs:` and `outputs:` --
+    marked `writable: false`. `declared_output_dirs` reports the product's
+    *parent*, so the directory-level check sees an output and an input side by
+    side in one directory rather than one inside the other, and let it through:
+    the product was mounted `:ro` inside its own read-write parent, and the
+    refusal arrived as a permission error from the tool at run time instead.
+    """
+    cab = Cab(
+        name="flagdata",
+        command="flagdata",
+        image="casa:latest",
+        inputs_model=create_model("In", vis=(Optional[Path], Field(None, json_schema_extra={"writable": False}))),
+        outputs_model=build_model("Out", {"vis": ("MS", False, None)}),
+    )
+    with pytest.raises(BackendError) as exc:
+        bind_dir_modes(cab, {"vis": "/data/obs.ms"}, "/work")
+    assert "'vis'" in str(exc.value) and "/data/obs.ms" in str(exc.value)
+
+
+def test_a_relative_product_that_is_a_read_only_input_is_refused_too():
+    """The same contradiction spelled relative to the workdir. Input values are
+    anchored there before classification, so the products compared against them
+    must be -- skipping a relative one (as the *directory* loop does, for the
+    unrelated reason that it is already inside the mounted workdir) let the
+    identical cab through and mounted '/work/obs.ms' `:ro` inside its own
+    read-write workdir.
+    """
+    cab = Cab(
+        name="flagdata",
+        command="flagdata",
+        image="casa:latest",
+        inputs_model=create_model("In", vis=(Optional[Path], Field(None, json_schema_extra={"writable": False}))),
+        outputs_model=build_model("Out", {"vis": ("MS", False, None)}),
+    )
+    with pytest.raises(BackendError, match="/work/obs.ms"):
+        bind_dir_modes(cab, {"vis": "obs.ms"}, "/work")
+
+
+def test_a_product_beside_a_read_only_input_is_still_fine():
+    """The neighbouring shape the nesting rule exists for: same directory,
+    different paths. `casa.split` is the real one -- input `ms` marked
+    `writable: false`, output `output-ms` alongside it.
+    """
+    cab = Cab(
+        name="split",
+        command="split",
+        image="casa:latest",
+        inputs_model=create_model("In", ms=(Optional[Path], Field(None, json_schema_extra={"writable": False}))),
+        outputs_model=build_model("Out", {"output_ms": ("MS", False, None)}),
+        field_meta={"output_ms": ParamMeta(implicit="/data/split.ms")},
+    )
+    mounts = bind_dir_modes(cab, {"ms": "/data/obs.ms"}, "/work")
+    assert dict(mounts)["/data"] is True  # the product makes the shared directory writable
+    assert ("/data/obs.ms", False) in mounts  # and the input is re-asserted :ro inside it
+
+
+def test_declared_field_marked_read_only_in_python_is_honoured_too():
+    # A Python-authored cab says it on `ParamMeta`, not on the model's
+    # json_schema_extra -- both spellings mean the same thing, so both are read
+    # (`readonly_path_fields(model, field_meta)`). Reading only the model would
+    # accept-and-drop the Python one, which is the failure this marker exists
+    # to prevent.
+    cab = Cab(
+        name="tool",
+        command="tool",
+        image="tool:latest",
+        inputs_model=build_model("In", {"raw_ms": ("MS", False, None)}),
+        outputs_model=OUT,
+        field_meta={"raw_ms": ParamMeta(writable=False)},
+    )
+    assert dict(bind_dir_modes(cab, {"raw_ms": "/rawdata/obs.ms"}, "/work")) == {"/work": True, "/rawdata": False}
+
+
+# -- read-only pattern-matched (dynamically-named) inputs ----------------------
+#
+# QuartiCal's `<term>.load_from` names a previous run's gain store: an input the
+# step reads and must not write back into. It has no declared model field for
+# `readonly_path_fields` to inspect, so the marker lives on the pattern attr's
+# own `ParamMeta` -- which is also where its `dtype` lives, for the same reason.
+
+
+def make_gain_pattern_cab(writable=None) -> Cab:
+    return Cab(
+        name="quartical",
+        command="goquartical",
+        image="tool:latest",
+        inputs_model=build_model("In", {}, allow_extra=True),
+        outputs_model=OUT,
+        input_patterns=[
+            ParamPattern(
+                separator=".",
+                segments=[ParamSegment(regex=r".+?"), ParamSegment(attrs={"load_from": ParamMeta(dtype="Directory", writable=writable)})],
+            )
+        ],
+    )
+
+
+def test_pattern_matched_input_marked_read_only_mounts_its_directory_read_only():
+    cab = make_gain_pattern_cab(writable=False)
+    assert dict(bind_dir_modes(cab, {"G.load_from": "/gains/prev.qc"}, "/work")) == {"/work": True, "/gains": False}
+
+
+def test_unmarked_pattern_matched_input_still_mounts_read_write():
+    # The default is unchanged: a pattern attr that says nothing is writable,
+    # exactly as every dynamic input was before the marker existed.
+    cab = make_gain_pattern_cab()
+    assert dict(bind_dir_modes(cab, {"G.load_from": "/gains/prev.qc"}, "/work")) == {"/work": True, "/gains": True}
+
+
+def test_read_only_pattern_input_is_reasserted_inside_a_writable_shared_directory():
+    # Same nesting rule declared fields get: the gain store's directory is made
+    # read-write by the sibling the step really does write, and the read-only
+    # input is re-asserted `:ro` at its own path inside it.
+    cab = make_gain_pattern_cab(writable=False)
+    argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["goquartical"], {"G.load_from": "/gains/prev.qc", "K.load_from": "/gains/next.qc"})
+    mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    assert "/gains:/gains:ro" in mounts
+    assert "/gains/prev.qc:/gains/prev.qc:ro" not in mounts  # whole parent is already :ro
+
+
+def test_writable_target_inside_a_read_only_pattern_input_is_refused(tmp_path):
+    # A dynamic input carries the same contradiction a declared one does, and
+    # earns the same refusal rather than a silently read-write mount.
+    store = tmp_path / "gains"
+    (store / "prev.qc" / "sub").mkdir(parents=True)
+    cab = make_gain_pattern_cab(writable=False)
+    with pytest.raises(BackendError) as exc:
+        bind_dir_modes(cab, {"G.load_from": str(store / "prev.qc")}, str(store / "prev.qc" / "sub"))
+    assert "'G.load_from'" in str(exc.value)
+
+
 # -- declared output directories ----------------------------------------------
 #
 # A tool's output stem is conventionally a *string*-typed input (wsclean's

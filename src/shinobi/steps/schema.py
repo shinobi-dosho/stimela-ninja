@@ -103,6 +103,21 @@ class ParamMeta(BaseModel):
     `sandbox.absolutize_path_inputs` exactly as before, which is what a
     complete destination path (as opposed to a stem) wants.
 
+    `writable`: this path-typed input is one the tool must not modify
+    (`writable: false`, cult-cargo/scabha's own key). The container
+    backends bind-mount the directories a read-only input contributes
+    `:ro`, and re-assert the input itself `:ro` at its own path when
+    something writable shares that directory (`backends.container.bind_dir_modes`).
+    `None` -- the default, and every Python-typed pystep input -- means
+    unmarked, which is read as writable. Carried onto a declared field's
+    `json_schema_extra` by the loaders (`readonly_path_fields` reads it
+    from there, the same channel `abbreviation` rides); kept here as well
+    because a `ParamPattern` attr has no declared model field for
+    `readonly_path_fields` to inspect, and a dynamically-named input is
+    exactly the case that wants the marker -- QuartiCal's
+    `<term>.load_from` names a previous run's gain store, which the step
+    reads and must not write back into.
+
     `choices`: the field's allowed values (cult-cargo/classic's `choices`
     key). A loader that sets this also narrows the field's real annotation
     on `inputs_model`/`outputs_model` to `typing.Literal[*choices]` (see
@@ -140,6 +155,7 @@ class ParamMeta(BaseModel):
     choices: list[Any] | None = None
     abbreviation: str | None = None
     write_path: bool = False
+    writable: bool | None = None
 
 
 class Policies(BaseModel):
@@ -171,6 +187,26 @@ class Policies(BaseModel):
     `explicit_false`), and this applies uniformly to declared fields and
     `ParamPattern`-matched dynamic ones (e.g. CubiCal's own
     per-Jones-term `g-solvable`).
+
+    `true_token`/`false_token` are what those two tokens actually say.
+    Lowercase `"true"`/`"false"` (the default) is what CubiCal's parser
+    reads, but it is not universal: DDFacet and killMS share a parset
+    reader (`DDFacet.Parset.ReadCFG`) that parses `"0"`/`"1"` as ints and
+    `"True"`/`"False"` as bools, and leaves an unrecognised `"false"` as a
+    *string* -- which, being non-empty, is truthy. `--Mask-Auto false`
+    there switches the mask **on**. So the pair of tokens is a cab-level
+    policy of its own (`policies: {explicit_true: true, explicit_false:
+    true, true_token: '1', false_token: '0'}` for those two), alongside
+    the `explicit_*` switches rather than instead of them: `explicit_*`
+    decides *whether* a value token is emitted, these decide what it
+    reads.
+
+    They spell a boolean in *every* value position, not only after a flag:
+    a `key_value` cab's single `name=value` token, a positional, an
+    element of a joined or bracketed list, one occurrence of a repeated
+    flag. Python's own `str(True)` is `"True"`, so a path that missed this
+    emitted a spelling no policy ever asked for
+    (`policies._scalar_token` is the one place that decides).
     """
 
     prefix: str = "--"
@@ -181,6 +217,8 @@ class Policies(BaseModel):
     repeat: str | None = None
     explicit_true: bool = False
     explicit_false: bool = False
+    true_token: str = "true"
+    false_token: str = "false"
 
     def arg_name(self, name: str) -> str:
         """Build the CLI flag name for a parameter name.
@@ -316,18 +354,31 @@ def path_fields(model: type[BaseModel]) -> set[str]:
     return result
 
 
-def readonly_path_fields(model: type[BaseModel]) -> set[str]:
+def readonly_path_fields(model: type[BaseModel], field_meta: dict[str, "ParamMeta"] | None = None) -> set[str]:
     """Names of the `path_fields` explicitly marked ``writable: false`` in
-    their schema (carried onto the field's ``json_schema_extra`` by
-    ``loaders.worker_schema``). The container backend bind-mounts the
-    directories these contribute read-only (``backends.container.bind_dir_modes``).
-    A path field with no ``writable`` marker (the default, including every
-    Python-typed pystep input) is treated as writable.
+    their schema. The container backend bind-mounts the directories these
+    contribute read-only (``backends.container.bind_dir_modes``). A path field
+    with no ``writable`` marker (the default, including every Python-typed
+    pystep input) is treated as writable.
+
+    Two spellings of the same marker, because a field has two places to carry
+    one and a cab author should not have to know which: the loaders
+    (``yaml_cab``, ``worker_schema``) put it on the field's
+    ``json_schema_extra``, and a Python-authored cab sets
+    ``ParamMeta.writable`` in `field_meta`. Either says read-only; pass
+    `field_meta` (a `Scope` always has one) so both are seen. Reading only the
+    model would accept-and-drop the Python spelling, which is the failure this
+    marker exists to prevent.
+
+    Declared fields only. A `ParamPattern`-matched input has no model field at
+    all, so it declares the marker on its attr's `ParamMeta.writable`, which
+    `bind_dir_modes` reads directly.
     """
+    field_meta = field_meta or {}
     result: set[str] = set()
     for name in path_fields(model):
         extra = model.model_fields[name].json_schema_extra
-        if isinstance(extra, dict) and extra.get("writable") is False:
+        if (isinstance(extra, dict) and extra.get("writable") is False) or (name in field_meta and field_meta[name].writable is False):
             result.add(name)
     return result
 
