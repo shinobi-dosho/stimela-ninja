@@ -62,8 +62,8 @@ implicit wrapping of a bare scalar into an invented field name.
    module globals, so any ``BaseModel`` used in the signature or return type
    must be defined at module level, not nested inside another function.
 
-Container-only imports: ``ctx.import_func()``
-----------------------------------------------
+Container-only imports: ``ctx.import_func()`` / ``ctx.import_module()``
+-----------------------------------------------------------------------
 
 A pystep declared with ``image=`` runs *inside* that container when a container
 backend is resolved; the module defining it, however, is imported on the
@@ -119,28 +119,48 @@ The signature is ``ctx.import_func(func, module=None)``:
 
 * With ``module``, it imports that module and returns the named attribute --
   ``importlib.import_module(module)`` followed by ``getattr(module, func)``.
+  ``module`` is the **full dotted path**, however deep, so
+  ``ctx.import_func("getheader", "astropy.io.fits")`` is the right spelling for
+  an attribute of a submodule. Splitting the path at the package boundary --
+  ``ctx.import_func("fits", "astropy.io")`` -- asks for the ``fits`` *module*
+  as though it were an attribute of ``astropy.io``, and fails, because
+  importing a package does not bind its submodules onto it.
 * Without ``module``, it looks ``func`` up in :mod:`builtins`, so
   ``ctx.import_func("print")`` and ``ctx.import_func("len")`` work.
 
-.. important::
-
-   ``import_func`` returns an **attribute of** a module, never a module. There
-   is no one-argument form for pulling in a package: ``ctx.import_func("numpy")``
-   does not import numpy, it looks for ``numpy`` in ``builtins`` and raises
-   ``AttributeError: module 'builtins' has no attribute 'numpy'``. Name the
-   attribute you actually want -- ``ctx.import_func("array", "numpy")``,
-   ``ctx.import_func("getheader", "astropy.io.fits")`` -- or bind the module
-   through one of its own attributes if you need several.
-
 The name is historical: the returned object need not be a function. Classes
 (``table`` above), and any other module attribute, resolve the same way.
+
+When the body wants the **module object itself** rather than one of its
+attributes, use :meth:`ExecContext.import_module
+<shinobi.ExecContext.import_module>`, which is plain
+``importlib.import_module`` deferred to execution time in exactly the same way:
+
+.. code-block:: python
+
+    @pystep(image="quay.io/stimela/casa:latest")
+    def clip(ctx, ms: Path) -> ClipOutputs:
+        np = ctx.import_module("numpy")
+        fits = ctx.import_module("astropy.io.fits")
+        ...
+
+.. important::
+
+   ``import_func`` returns an **attribute of** a module, never a module, and
+   its one-argument form is a :mod:`builtins` lookup, not an import:
+   ``ctx.import_func("numpy")`` raises ``AttributeError: module 'builtins' has
+   no attribute 'numpy'``. Reach for ``ctx.import_module("numpy")`` there. The
+   two methods are kept separate so each has one return type, rather than
+   having ``import_func`` return a callable or a module depending on what the
+   name happens to be.
 
 .. note::
 
    Inside the container the runner stubs out ``shinobi``, ``pydantic`` and the
    step's own top-level package, so those never load there. Only stdlib and
-   whatever the body pulls in through ``import_func`` are real -- one more
-   reason tool imports belong in the body rather than at module scope.
+   whatever the body pulls in through ``import_func``/``import_module`` are
+   real -- one more reason tool imports belong in the body rather than at
+   module scope.
 
 Which to use
 ------------

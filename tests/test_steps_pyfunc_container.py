@@ -465,6 +465,25 @@ def test_exec_context_import_func_module():
     assert path_class("/tmp") == Path("/tmp")
 
 
+def test_exec_context_import_module():
+    import os.path
+
+    from shinobi.steps.dispatch import ExecContext
+    from shinobi.steps.schema import Scope
+    from pydantic import BaseModel
+
+    class DummyModel(BaseModel):
+        pass
+
+    scope = Scope(name="test", inputs_model=DummyModel, outputs_model=DummyModel)
+    ctx = ExecContext(scope, {})
+
+    assert ctx.import_module("json") is json
+    # A submodule -- the case `import_func` cannot express, since importing a
+    # package does not bind its submodules onto it.
+    assert ctx.import_module("os.path") is os.path
+
+
 # --- ctx injection (leading `ctx` parameter) -------------------------------
 
 
@@ -500,9 +519,10 @@ def test_pystep_ctx_shim_in_container_runner():
 
     runner = captured_runner["content"]
     assert "class _Ctx" in runner
-    # The shim body is lifted from the real ExecContext.import_func, so the
+    # The shim bodies are lifted from the real ExecContext methods, so the
     # two cannot drift.
     assert "def import_func" in runner
+    assert "def import_module" in runner
     assert "ctx_func(ctx, **inputs)" in runner
 
 

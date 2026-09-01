@@ -22,6 +22,7 @@ import warnings
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field, ValidationError, create_model
@@ -288,16 +289,39 @@ class ExecContext:
         """Import and return a callable by name.
 
         If `module` is None, looks up `func` in builtins (e.g. ``print``,
-        ``len``). Otherwise imports `module` and returns `getattr(module, func)`.
+        ``len``). Otherwise imports `module` -- which may be a dotted path of
+        any depth (``"astropy.io.fits"``) -- and returns
+        `getattr(module, func)`.
 
         Useful for pysteps that invoke container-only functions (e.g. CASA
         tasks) without triggering linter warnings about missing imports on
         the host.
+
+        This always returns an *attribute of* a module, never a module: name
+        the full dotted path in `module` and the attribute in `func`. Use
+        `import_module` when the step wants the module object itself.
         """
         if module is None:
             return getattr(builtins, func)
         mod = importlib.import_module(module)
         return getattr(mod, func)
+
+    def import_module(self, module: str) -> ModuleType:
+        """Import and return a module by its full dotted path.
+
+        The companion to `import_func` for the case where a pystep wants the
+        module itself rather than one of its attributes -- ``np =
+        ctx.import_module("numpy")``, ``fits =
+        ctx.import_module("astropy.io.fits")``. `import_func` cannot express
+        this: its one-argument form is a builtins lookup, and its two-argument
+        form ends in a `getattr`, which does not reach a submodule
+        (`import_module` does not bind one onto its parent package).
+
+        Kept as a separate name rather than folded into `import_func`'s
+        one-argument form so the return type stays predictable per method
+        instead of varying with whatever the name happens to resolve to.
+        """
+        return importlib.import_module(module)
 
     def run(self, *, backend: str | None = None, **overrides: Any) -> StepResult:
         """Run the underlying Cab or Recipe with optional input overrides.
