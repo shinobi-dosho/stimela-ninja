@@ -1,11 +1,17 @@
 """Tests for `@shinobi.pystep` (src/shinobi/steps/pyfunc.py)."""
 
+from typing import Annotated
+
+import click
 import pytest
-from pydantic import BaseModel
+from click.testing import CliRunner
+from pydantic import BaseModel, Field
 
 from shinobi.backends.recording import RecordingBackend
+from shinobi.clickutil import build_options
 from shinobi.steps import InputRef, Recipe, StepRef, pystep, register_step_backend
 from shinobi.steps.dispatch import _dispatch
+from shinobi.steps.schema import ParamMeta
 from .fixtures.sample_steps import use_value_cab
 
 # Module-level models -- required for typing.get_type_hints to resolve them.
@@ -19,6 +25,14 @@ def add_offset(ms: str, offset: float = 0.0) -> OffsetOutputs:
     return OffsetOutputs(shifted=f"{ms}+{offset}")
 
 
+def choose_mode(mode: Annotated[str, ParamMeta(choices=["analytic", "subsample", "none"])] = "analytic") -> OffsetOutputs:
+    return OffsetOutputs(shifted=mode)
+
+
+def choose_mode_from_field(mode: str = Field("analytic", json_schema_extra={"param_meta": ParamMeta(choices=["analytic", "subsample", "none"])})) -> OffsetOutputs:
+    return OffsetOutputs(shifted=mode)
+
+
 def test_inputs_model_derived_from_signature_required_and_optional():
     ref = pystep()(add_offset)
     fields = ref.step.inputs_model.model_fields
@@ -26,6 +40,37 @@ def test_inputs_model_derived_from_signature_required_and_optional():
     assert fields["ms"].is_required()
     assert not fields["offset"].is_required()
     assert fields["offset"].default == 0.0
+
+
+def test_annotated_param_meta_choices_validate_and_build_click_choice():
+    ref = pystep()(choose_mode)
+    field = ref.step.inputs_model.model_fields["mode"]
+
+    assert ref.step.field_meta["mode"].choices == ["analytic", "subsample", "none"]
+    assert field.json_schema_extra["param_meta"].choices == ["analytic", "subsample", "none"]
+    assert list(build_options(ref.step.inputs_model)[0].type.choices) == ["analytic", "subsample", "none"]
+
+    @click.command()
+    def command(**kwargs):
+        click.echo(kwargs["mode"])
+
+    command.params.append(build_options(ref.step.inputs_model)[0])
+    runner = CliRunner()
+    assert runner.invoke(command, ["--mode", "none"]).output.strip() == "none"
+    assert runner.invoke(command, ["--mode", "invalid"]).exit_code != 0
+
+    assert ref(mode="subsample").outputs.shifted == "subsample"
+    with pytest.raises(ValueError, match="Input should be 'analytic', 'subsample' or 'none'"):
+        ref.step.inputs_model(mode="invalid")
+
+
+def test_field_param_meta_choices_validate_and_build_click_choice():
+    ref = pystep()(choose_mode_from_field)
+    option = build_options(ref.step.inputs_model)[0]
+
+    assert list(option.type.choices) == ["analytic", "subsample", "none"]
+    with pytest.raises(ValueError, match="Input should be 'analytic', 'subsample' or 'none'"):
+        ref.step.inputs_model(mode="invalid")
 
 
 def test_happy_path_standalone_call():

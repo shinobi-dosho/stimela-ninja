@@ -39,7 +39,7 @@ from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
-from shinobi.steps.schema import _unwrap_annotation
+from shinobi.steps.schema import ParamMeta, _unwrap_annotation
 
 
 def is_list(annotation) -> bool:
@@ -130,26 +130,29 @@ def _literal_choices(annotation) -> tuple[Any, ...] | None:
     return None
 
 
-def click_type(annotation, is_path: bool):
+def click_type(annotation, is_path: bool, choices: tuple[Any, ...] | None = None):
     """Pick the `click` parameter type for a field's annotation.
 
     Args:
         annotation: The field's type annotation.
         is_path: Whether the annotation is path-like (as determined by
             `_is_path_annotation`); takes priority over the leaf type.
+        choices: Explicit choices carried by `ParamMeta`; when present, these
+            take precedence over choices inferred from a `Literal` annotation.
 
     Returns:
-        A `click.Path()` if `is_path`; a `click.Choice` if the annotation
-        is a `typing.Literal` (a cab's `choices:` -- so an out-of-set value
-        is rejected by click itself, with the allowed values listed in
-        `--help` and the error); otherwise the `click` type matching the
-        annotation's leaf type (`click.STRING` as fallback). Choice values
-        are stringified: every real cab `choices:` list is strings, and the
-        model's own `Literal` still validates the coerced value.
+        A `click.Path()` if `is_path`; a `click.Choice` if explicit `choices`
+        are supplied or the annotation is a `typing.Literal` (a cab's
+        `choices:` -- so an out-of-set value is rejected by click itself,
+        with the allowed values listed in `--help` and the error); otherwise
+        the `click` type matching the annotation's leaf type (`click.STRING`
+        as fallback). Choice values are stringified: every real cab `choices:`
+        list is strings, and the model's own `Literal` still validates the
+        coerced value.
     """
     if is_path:
         return click.Path()
-    choices = _literal_choices(annotation)
+    choices = choices or _literal_choices(annotation)
     if choices is not None:
         return click.Choice([str(c) for c in choices])
     scalars = [leaf for leaf in _unwrap_annotation(annotation) if leaf in (int, float, bool, str)]
@@ -227,11 +230,12 @@ def build_options(model: type[BaseModel]) -> list[click.Option]:
     Returns:
         A list of `click.Option` instances, one per leaf field. Boolean
         fields become `--flag/--no-flag` options; list/tuple fields become
-        `multiple=True` options; a field carrying an `abbreviation` on its
-        `json_schema_extra` (a cab's `abbreviation:` key, threaded by the
-        loaders) also gets a `-<abbrev>` short alias. click always derives
-        the callback kwarg name from the long flag, so the short alias
-        never affects the round-trip to `flat_name`.
+        `multiple=True` options; `ParamMeta.choices` on a field's
+        `json_schema_extra` becomes a `click.Choice`; and a field carrying an
+        `abbreviation` on that same extra (a cab's `abbreviation:` key,
+        threaded by the loaders) also gets a `-<abbrev>` short alias. click
+        always derives the callback kwarg name from the long flag, so the
+        short alias never affects the round-trip to `flat_name`.
     """
     options = []
     for flat_name, _path, field in iter_leaf_fields(model):
@@ -246,12 +250,41 @@ def build_options(model: type[BaseModel]) -> list[click.Option]:
         else:
             if default is not None:
                 kwargs["default"] = default
-            kwargs["type"] = click_type(field.annotation, _is_path_annotation(field.annotation))
+            kwargs["type"] = click_type(
+                field.annotation,
+                _is_path_annotation(field.annotation),
+                _field_choices(field),
+            )
             if field_is_list:
                 kwargs["multiple"] = True
             flag = option_flag(flat_name)
         options.append(click.Option([flag, *_abbreviation_opts(field)], **kwargs))
     return options
+
+
+def _field_choices(field: FieldInfo) -> tuple[Any, ...] | None:
+    """Read choices declared in a field's ``ParamMeta`` metadata.
+
+    Python-authored models carry this metadata in ``json_schema_extra`` so it
+    survives the generated model boundary. Accept both a live ``ParamMeta``
+    instance and its dict form, since the latter is what a serialized schema
+    may provide. A direct ``choices`` extra is accepted as a small convenience
+    for callers that do not need the rest of ``ParamMeta``.
+    """
+    extra = field.json_schema_extra
+    if not isinstance(extra, dict):
+        return None
+
+    metadata = extra.get("param_meta")
+    if isinstance(metadata, ParamMeta):
+        choices = metadata.choices
+    elif isinstance(metadata, dict):
+        choices = metadata.get("choices")
+    else:
+        choices = extra.get("choices")
+    if not choices:
+        return None
+    return tuple(choices)
 
 
 def _abbreviation_opts(field: FieldInfo) -> list[str]:

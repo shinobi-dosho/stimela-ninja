@@ -66,11 +66,13 @@ import os
 import pickle
 import shutil
 import tempfile
+import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Sequence, get_type_hints
+from typing import TYPE_CHECKING, Annotated, Any, Callable, Literal, Sequence, Union, get_args, get_origin, get_type_hints
 
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, Field, create_model
+from pydantic.fields import FieldInfo
 
 from shinobi.backends._stream import TeardownIncomplete, display_label, run_streaming
 from shinobi.config import AppConfig
@@ -104,22 +106,85 @@ def _pascal(func_name: str) -> str:
     return "".join(word.capitalize() for word in func_name.split("_") if word)
 
 
-def _inputs_model_from_signature(func: Callable) -> tuple[type[BaseModel], bool]:
+def _param_meta_from_extra(extra: Any) -> ParamMeta | None:
+    if not isinstance(extra, dict):
+        return None
+    value = extra.get("param_meta")
+    if isinstance(value, ParamMeta):
+        return value
+    if isinstance(value, dict):
+        return ParamMeta.model_validate(value)
+    if extra.get("choices"):
+        return ParamMeta(choices=extra["choices"])
+    return None
+
+
+def _param_meta_from_annotation(annotation: Any) -> tuple[Any, ParamMeta | None]:
+    """Remove ``ParamMeta`` from an ``Annotated`` type.
+
+    ``ParamMeta`` is a Pydantic model, not Pydantic's own validation metadata,
+    so passing it through to ``create_model`` makes Pydantic validate a string
+    as a ``ParamMeta`` instance. The metadata is therefore extracted before
+    model creation and choices are applied as a real ``Literal`` constraint.
+    Other ``Annotated`` metadata is retained.
+    """
+    metadata: list[Any] = []
+    while get_origin(annotation) is Annotated:
+        args = get_args(annotation)
+        annotation = args[0]
+        metadata.extend(args[1:])
+
+    param_meta = next((value for value in metadata if isinstance(value, ParamMeta)), None)
+    remaining = [value for value in metadata if not isinstance(value, ParamMeta)]
+    if remaining:
+        annotation = Annotated[annotation, *remaining]
+    return annotation, param_meta
+
+
+def _narrow_choices(annotation: Any, choices: list[Any] | None) -> Any:
+    """Apply choices while preserving an optional arm of the annotation."""
+    if not choices:
+        return annotation
+    if get_origin(annotation) is Annotated:
+        args = get_args(annotation)
+        return Annotated[_narrow_choices(args[0], choices), *args[1:]]
+    origin = get_origin(annotation)
+    if origin is Union or origin is types.UnionType:
+        args = get_args(annotation)
+        if type(None) in args:
+            return Literal[tuple(choices)] | None
+    return Literal[tuple(choices)]
+
+
+def _field_default_with_meta(default: Any, meta: ParamMeta | None) -> Any:
+    """Carry extracted metadata on the generated field for model consumers."""
+    if meta is None:
+        return default
+    if isinstance(default, FieldInfo):
+        extra = dict(default.json_schema_extra or {})
+        extra["param_meta"] = meta
+        default.json_schema_extra = extra
+        return default
+    return Field(default, json_schema_extra={"param_meta": meta})
+
+
+def _inputs_model_from_signature(func: Callable) -> tuple[type[BaseModel], bool, dict[str, ParamMeta]]:
     """Derive the inputs model from `func`'s signature.
 
-    Returns `(inputs_model, wants_ctx)`. If the first parameter is named
-    `ctx` it is treated as the execution-context injection point (matching
-    `@shinobi.step`'s convention) rather than an input field: it is skipped
-    when building the model and needs no type hint. The adapter then calls
-    `func(ctx, **inputs)`.
+    Returns `(inputs_model, wants_ctx, field_meta)`. If the first parameter is
+    named `ctx` it is treated as the execution-context injection point
+    (matching `@shinobi.step`'s convention) rather than an input field: it is
+    skipped when building the model and needs no type hint. The adapter then
+    calls `func(ctx, **inputs)`.
     """
     sig = inspect.signature(func)
     params = list(sig.parameters.items())
     wants_ctx = bool(params) and params[0][0] == "ctx"
     if wants_ctx:
         params = params[1:]
-    hints = get_type_hints(func)
+    hints = get_type_hints(func, include_extras=True)
     fields: dict[str, tuple[Any, Any]] = {}
+    field_meta: dict[str, ParamMeta] = {}
     for pname, param in params:
         if param.kind in _UNSUPPORTED_KINDS:
             raise TypeError(
@@ -127,9 +192,16 @@ def _inputs_model_from_signature(func: Callable) -> tuple[type[BaseModel], bool]
             )
         if pname not in hints:
             raise TypeError(f"pystep {func.__name__!r}: parameter {pname!r} has no type hint -- every parameter needs one so its inputs_model can be derived from the signature")
+        annotation, annotation_meta = _param_meta_from_annotation(hints[pname])
+        default_meta = _param_meta_from_extra(param.default.json_schema_extra) if isinstance(param.default, FieldInfo) else None
+        meta = annotation_meta or default_meta
+        annotation = _narrow_choices(annotation, meta.choices if meta else None)
         required = param.default is inspect.Parameter.empty
-        fields[pname] = (hints[pname], ... if required else param.default)
-    return create_model(f"{_pascal(func.__name__)}Inputs", **fields), wants_ctx
+        default = ... if required else param.default
+        fields[pname] = (annotation, _field_default_with_meta(default, meta))
+        if meta is not None:
+            field_meta[pname] = meta
+    return create_model(f"{_pascal(func.__name__)}Inputs", **fields), wants_ctx, field_meta
 
 
 def _outputs_model_from_return(func: Callable) -> tuple[type[BaseModel], bool]:
@@ -672,7 +744,7 @@ def pystep(
         Returns:
             A `StepRef` wrapping `func` behind a generated adapter.
         """
-        inputs_model, wants_ctx = _inputs_model_from_signature(func)
+        inputs_model, wants_ctx, input_meta = _inputs_model_from_signature(func)
         outputs_model, is_empty = _outputs_model_from_return(func)
         unknown = sorted(set(write_paths or ()) - set(inputs_model.model_fields))
         if unknown:
@@ -699,6 +771,10 @@ def pystep(
         # this standard `__wrapped__` pointer to see past the adapter.
         adapter.__wrapped__ = func
         step_name = name or func.__name__
+        field_meta = dict(input_meta)
+        for field_name in write_paths or ():
+            meta = field_meta.get(field_name)
+            field_meta[field_name] = meta.model_copy(update={"write_path": True}) if meta else ParamMeta(write_path=True)
         scope = Scope(
             name=step_name,
             info=info if info is not None else inspect.getdoc(func),
@@ -709,7 +785,7 @@ def pystep(
             backend=backend,
             sandbox=sandbox,
             harvest=harvest or [],
-            field_meta={name: ParamMeta(write_path=True) for name in write_paths or ()},
+            field_meta=field_meta,
         )
         return StepRef(name=step_name, step=scope, func=adapter, params=params)
 
