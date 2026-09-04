@@ -1,6 +1,7 @@
 """Tests for `@shinobi.pystep` (src/shinobi/steps/pyfunc.py)."""
 
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Literal, Optional
 
 import click
 import pytest
@@ -201,3 +202,128 @@ def test_pystep_wires_into_a_recipe_feeding_a_cab():
     cab, argv, inputs = recorder.calls[0]
     assert cab.name == "use_value"
     assert inputs["path"] == "in.ms+0.0"
+
+
+# -- ParamMeta declarations that must not silently change a field's shape --
+
+
+def nested_in_optional(x: Optional[Annotated[str, ParamMeta(choices=["a", "b"])]] = None) -> OffsetOutputs:
+    return OffsetOutputs(shifted=str(x))
+
+
+def nested_in_list(cols: list[Annotated[str, ParamMeta(choices=["I", "Q"])]] = ["I"]) -> OffsetOutputs:
+    return OffsetOutputs(shifted=",".join(cols))
+
+
+def optional_choices(x: Annotated[str | None, ParamMeta(choices=["a", "b"])] = None) -> OffsetOutputs:
+    return OffsetOutputs(shifted=str(x))
+
+
+def list_choices(cols: Annotated[list[str], ParamMeta(choices=["I", "Q"])] = ["I"]) -> OffsetOutputs:
+    return OffsetOutputs(shifted=",".join(cols))
+
+
+def path_choices(out: Annotated[Path, ParamMeta(choices=["/a", "/b"])] = Path("/a")) -> OffsetOutputs:
+    return OffsetOutputs(shifted=str(out))
+
+
+def int_choices(n: Annotated[int, ParamMeta(choices=[1, 2])] = 1) -> OffsetOutputs:
+    return OffsetOutputs(shifted=str(n))
+
+
+def documented_choice(mode: Annotated[str, ParamMeta(choices=["a", "b"], abbreviation="m", info="pick one")] = "a") -> OffsetOutputs:
+    return OffsetOutputs(shifted=mode)
+
+
+def written_and_chosen(out: str = "x", keep: Annotated[str, ParamMeta(choices=["a", "b"])] = "a") -> OffsetOutputs:
+    return OffsetOutputs(shifted=out)
+
+
+SHARED_MODE_FIELD = Field("a", json_schema_extra={"choices": ["a", "b"]})
+
+
+def borrows_shared_field(mode: str = SHARED_MODE_FIELD) -> OffsetOutputs:
+    return OffsetOutputs(shifted=mode)
+
+
+def annotates_shared_field(mode: Annotated[str, ParamMeta(choices=["x", "y"])] = SHARED_MODE_FIELD) -> OffsetOutputs:
+    return OffsetOutputs(shifted=mode)
+
+
+@pytest.mark.parametrize("func", [nested_in_optional, nested_in_list])
+def test_param_meta_below_the_top_level_is_rejected(func):
+    # `get_type_hints(..., include_extras=True)` keeps every Annotated layer,
+    # but only the outermost one can be lifted off before `create_model` -- a
+    # deeper ParamMeta would otherwise reach pydantic, which would then
+    # validate the parameter's value as a ParamMeta instance.
+    with pytest.raises(TypeError, match="nests ParamMeta inside its annotation"):
+        pystep()(func)
+
+
+def test_optional_choices_keep_their_none_arm():
+    model = pystep()(optional_choices).step.inputs_model
+    assert model(x="a").x == "a"
+    assert model(x=None).x is None
+    with pytest.raises(ValueError, match="Input should be 'a' or 'b'"):
+        model(x="zzz")
+
+
+def test_list_choices_narrow_the_element_not_the_container():
+    model = pystep()(list_choices).step.inputs_model
+    assert model(cols=["I", "Q"]).cols == ["I", "Q"]
+    with pytest.raises(ValueError, match="Input should be 'I' or 'Q'"):
+        model(cols=["Z"])
+
+    # the field is still a list, so click still renders a repeatable option
+    option = build_options(model)[0]
+    assert option.multiple is True
+
+    @click.command()
+    def command(**kwargs):
+        click.echo(",".join(kwargs["cols"]))
+
+    command.params.append(option)
+    assert CliRunner().invoke(command, ["--cols", "I", "--cols", "Q"]).output.strip() == "I,Q"
+
+
+def test_choices_on_a_non_scalar_leaf_are_refused():
+    # Narrowing a Path away to a Literal would leave `path_fields` unable to
+    # see that the field is a path at all -- no `click.Path`, no bind-mount.
+    with pytest.raises(TypeError, match="choices narrow a str/int/float/bool leaf"):
+        pystep()(path_choices)
+
+
+def test_non_string_choices_round_trip_through_click():
+    model = pystep()(int_choices).step.inputs_model
+
+    @click.command()
+    def command(**kwargs):
+        click.echo(repr(model(**kwargs).n))
+
+    command.params.append(build_options(model)[0])
+    runner = CliRunner()
+    assert runner.invoke(command, ["--n", "2"]).output.strip() == "2"
+    assert runner.invoke(command, []).output.strip() == "1"
+    assert runner.invoke(command, ["--n", "9"]).exit_code != 0
+
+
+def test_shared_field_spec_is_not_mutated_by_a_neighbouring_pystep():
+    # One module-level `Field(...)` is the default of two functions: the
+    # first one's annotation metadata must not be written into the shared
+    # object and so picked up by the second.
+    pystep()(annotates_shared_field)
+    field = pystep()(borrows_shared_field).step.inputs_model.model_fields["mode"]
+    assert field.annotation == Literal["a", "b"]
+
+
+def test_param_meta_abbreviation_and_info_reach_the_cli():
+    option = build_options(pystep()(documented_choice).step.inputs_model)[0]
+    assert option.opts == ["--mode", "-m"]
+    assert option.help == "pick one"
+
+
+def test_write_paths_agree_between_scope_and_model_metadata():
+    ref = pystep(write_paths=["out"])(written_and_chosen)
+    assert ref.step.field_meta["out"].write_path is True
+    assert ref.step.inputs_model.model_fields["out"].json_schema_extra["param_meta"].write_path is True
+    assert ref.step.field_meta["keep"].write_path is False

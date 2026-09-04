@@ -12,6 +12,7 @@ from shinobi.clickutil import (
     option_flag,
     unflatten_kwargs,
 )
+from shinobi.steps.schema import ParamMeta
 
 
 class _Plotelev(BaseModel):
@@ -314,3 +315,39 @@ def test_a_union_of_different_scalar_types_is_a_string_option():
     assert click_type(int | str | None, False) is click.STRING
     # a single scalar arm still maps to its own click type
     assert click_type(int | None, False) is click.INT
+
+
+class _ParamMetaInputs(BaseModel):
+    """A Python-authored model: its per-field keys arrive nested under
+    `param_meta` rather than flat on `json_schema_extra`, the way a cab's do.
+    """
+
+    mode: Literal["sim", "add"] = Field(
+        default="sim",
+        json_schema_extra={"param_meta": ParamMeta(choices=["sim", "add"], abbreviation="m")},
+    )
+    threads: Literal[1, 2] = Field(default=1, json_schema_extra={"param_meta": {"choices": [1, 2]}})
+
+
+def test_build_options_reads_abbreviation_out_of_param_meta():
+    # The same key means the same thing whether a cab wrote it flat or a
+    # pystep carried it inside its ParamMeta.
+    by_name = {option.name: option for option in build_options(_ParamMetaInputs)}
+    assert by_name["mode"].opts == ["--mode", "-m"]
+
+
+def test_choice_hands_back_the_declared_value_not_its_text():
+    # The field's own annotation is `Literal[1, 2]`, so a click.Choice that
+    # returned the matched *string* would make the model reject a value it
+    # declares legal.
+    option = {o.name: o for o in build_options(_ParamMetaInputs)}["threads"]
+
+    @click.command()
+    def command(**kwargs):
+        click.echo(repr(_ParamMetaInputs(**kwargs).threads))
+
+    command.params.append(option)
+    runner = CliRunner()
+    assert runner.invoke(command, ["--threads", "2"]).output.strip() == "2"
+    assert runner.invoke(command, []).output.strip() == "1"
+    assert runner.invoke(command, ["--threads", "3"]).exit_code != 0

@@ -32,7 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from gettext import gettext
 from pathlib import Path
-from typing import Annotated, Any, Literal, Union, get_args, get_origin
+from typing import Annotated, Any, Literal, Sequence, Union, get_args, get_origin
 
 import click
 from pydantic import BaseModel
@@ -130,6 +130,28 @@ def _literal_choices(annotation) -> tuple[Any, ...] | None:
     return None
 
 
+class _TypedChoice(click.Choice):
+    """A `click.Choice` that matches on a choice's string form but returns
+    the value as declared.
+
+    Choices reach click as text either way, so the set click matches against
+    has to be strings. Returning that string is what breaks a non-string
+    choice: the field's own annotation is `Literal[1, 2]` (see
+    `loaders._modelgen.narrow_choices`), and pydantic rejects `"2"` for it,
+    so `--n 2` would fail validation for a value the schema declares legal.
+    Mapping the matched text back to the declared value keeps the CLI and
+    the model agreeing on the type. Defaults are converted too, hence the
+    `str()` on the way in.
+    """
+
+    def __init__(self, choices: Sequence[Any]):
+        self._declared = {str(choice): choice for choice in choices}
+        super().__init__(list(self._declared))
+
+    def convert(self, value, param, ctx):
+        return self._declared[super().convert(str(value), param, ctx)]
+
+
 def click_type(annotation, is_path: bool, choices: tuple[Any, ...] | None = None):
     """Pick the `click` parameter type for a field's annotation.
 
@@ -146,15 +168,15 @@ def click_type(annotation, is_path: bool, choices: tuple[Any, ...] | None = None
         `choices:` -- so an out-of-set value is rejected by click itself,
         with the allowed values listed in `--help` and the error); otherwise
         the `click` type matching the annotation's leaf type (`click.STRING`
-        as fallback). Choice values are stringified: every real cab `choices:`
-        list is strings, and the model's own `Literal` still validates the
-        coerced value.
+        as fallback). Choices are matched on the command line by their
+        string form but handed back as the values that were declared (see
+        `_TypedChoice`).
     """
     if is_path:
         return click.Path()
     choices = choices or _literal_choices(annotation)
     if choices is not None:
-        return click.Choice([str(c) for c in choices])
+        return _TypedChoice(choices)
     scalars = [leaf for leaf in _unwrap_annotation(annotation) if leaf in (int, float, bool, str)]
     # A union of *different* scalar types is a string option. Taking the
     # first arm instead would reject every value the others admit -- an
@@ -230,12 +252,13 @@ def build_options(model: type[BaseModel]) -> list[click.Option]:
     Returns:
         A list of `click.Option` instances, one per leaf field. Boolean
         fields become `--flag/--no-flag` options; list/tuple fields become
-        `multiple=True` options; `ParamMeta.choices` on a field's
-        `json_schema_extra` becomes a `click.Choice`; and a field carrying an
-        `abbreviation` on that same extra (a cab's `abbreviation:` key,
-        threaded by the loaders) also gets a `-<abbrev>` short alias. click
-        always derives the callback kwarg name from the long flag, so the
-        short alias never affects the round-trip to `flat_name`.
+        `multiple=True` options; a field's declared `choices` become a
+        `click.Choice`; and a field declaring an `abbreviation` (a cab's
+        `abbreviation:` key, or a pystep's `ParamMeta.abbreviation`) also
+        gets a `-<abbrev>` short alias. Both keys are read through
+        `_field_meta`, so the YAML and Python spellings are equivalent.
+        click always derives the callback kwarg name from the long flag, so
+        the short alias never affects the round-trip to `flat_name`.
     """
     options = []
     for flat_name, _path, field in iter_leaf_fields(model):
@@ -262,42 +285,47 @@ def build_options(model: type[BaseModel]) -> list[click.Option]:
     return options
 
 
-def _field_choices(field: FieldInfo) -> tuple[Any, ...] | None:
-    """Read choices declared in a field's ``ParamMeta`` metadata.
+def _field_meta(field: FieldInfo, key: str) -> Any:
+    """Read one CLI-facing key off a field's metadata.
 
-    Python-authored models carry this metadata in ``json_schema_extra`` so it
-    survives the generated model boundary. Accept both a live ``ParamMeta``
-    instance and its dict form, since the latter is what a serialized schema
-    may provide. A direct ``choices`` extra is accepted as a small convenience
-    for callers that do not need the rest of ``ParamMeta``.
+    Two spellings reach here and both have to work. The loaders write a cab's
+    keys flat onto `json_schema_extra` (`{"abbreviation": "j"}`), while a
+    Python-authored model carries a whole `ParamMeta` under a `param_meta`
+    key so the object survives the generated-model boundary -- as a live
+    instance, or as its dict form once a schema has been serialized. Reading
+    every key through here is what keeps the two declarations equivalent: a
+    pystep's `ParamMeta(abbreviation=...)` has to mean what the same key
+    means in a YAML cab, not be silently dropped.
     """
     extra = field.json_schema_extra
     if not isinstance(extra, dict):
         return None
-
     metadata = extra.get("param_meta")
     if isinstance(metadata, ParamMeta):
-        choices = metadata.choices
+        value = getattr(metadata, key, None)
     elif isinstance(metadata, dict):
-        choices = metadata.get("choices")
+        value = metadata.get(key)
     else:
-        choices = extra.get("choices")
-    if not choices:
-        return None
-    return tuple(choices)
+        value = None
+    return value or extra.get(key)
+
+
+def _field_choices(field: FieldInfo) -> tuple[Any, ...] | None:
+    """The choices a field declares (see `_field_meta`), or `None`."""
+    choices = _field_meta(field, "choices")
+    return tuple(choices) if choices else None
 
 
 def _abbreviation_opts(field: FieldInfo) -> list[str]:
-    """`["-<abbrev>"]` if `field` carries an `abbreviation` on its
-    `json_schema_extra` (a cab's `abbreviation:` key), else `[]`. A
-    secondary short-option alias for the field's long flag; multi-character
+    """`["-<abbrev>"]` if `field` declares an `abbreviation` (a cab's
+    `abbreviation:` key or a pystep's `ParamMeta.abbreviation` -- see
+    `_field_meta`), else `[]`. A secondary short-option alias for the
+    field's long flag; multi-character
     single-dash names (`-as`, `-sublist`) are fine -- click matches the
     whole token, only rejecting glued forms like `-asVALUE`.
     """
-    extra = field.json_schema_extra
-    if isinstance(extra, dict) and extra.get("abbreviation"):
-        return [f"-{extra['abbreviation']}"]
-    return []
+    abbreviation = _field_meta(field, "abbreviation")
+    return [f"-{abbreviation}"] if abbreviation else []
 
 
 def unflatten_kwargs(model: type[BaseModel], flat_kwargs: dict[str, Any]) -> dict[str, Any]:
