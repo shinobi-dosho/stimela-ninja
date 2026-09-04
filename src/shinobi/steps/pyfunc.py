@@ -59,6 +59,7 @@ mutability override yet; add one if a real need surfaces.
 
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 import logging
@@ -77,6 +78,7 @@ from pydantic.fields import FieldInfo
 from shinobi.backends._stream import TeardownIncomplete, display_label, run_streaming
 from shinobi.config import AppConfig
 from shinobi.exceptions import CabRunError
+from shinobi.loaders._modelgen import narrow_choices
 from shinobi.results import StepResult, explain_returncode
 from shinobi.sandbox import (
     absolutize_path_inputs,
@@ -127,6 +129,10 @@ def _param_meta_from_annotation(annotation: Any) -> tuple[Any, ParamMeta | None]
     as a ``ParamMeta`` instance. The metadata is therefore extracted before
     model creation and choices are applied as a real ``Literal`` constraint.
     Other ``Annotated`` metadata is retained.
+
+    Only the outermost ``Annotated`` layers are stripped; see
+    ``_nested_param_meta`` for why anything deeper is reported rather than
+    unwrapped.
     """
     metadata: list[Any] = []
     while get_origin(annotation) is Annotated:
@@ -141,34 +147,109 @@ def _param_meta_from_annotation(annotation: Any) -> tuple[Any, ParamMeta | None]
     return annotation, param_meta
 
 
+def _nested_param_meta(annotation: Any) -> bool:
+    """Whether `annotation` still carries a `ParamMeta` below its top level.
+
+    `get_type_hints(..., include_extras=True)` keeps every `Annotated`
+    layer, but the outermost one is the only place this module can lift
+    metadata *off* the annotation: a `ParamMeta` inside
+    `Optional[Annotated[str, ParamMeta(...)]]` or
+    `list[Annotated[str, ParamMeta(...)]]` would otherwise survive into
+    `create_model`, and pydantic would then validate the parameter's value
+    as a `ParamMeta` instance. Rebuilding an arbitrary generic without that
+    member is not worth the fragility when
+    `Annotated[str | None, ParamMeta(...)]` says the same thing, so this
+    reports the case and the caller names it at decoration time.
+    """
+    pending = [annotation]
+    while pending:
+        current = pending.pop()
+        if get_origin(current) is Annotated:
+            args = get_args(current)
+            if any(isinstance(value, ParamMeta) for value in args[1:]):
+                return True
+            pending.append(args[0])
+            continue
+        pending.extend(get_args(current))
+    return False
+
+
+class _UnsupportedChoices(Exception):
+    """`_narrow_choices` was handed an annotation no `Literal` can narrow."""
+
+
+_CHOICE_SCALARS = (str, int, float, bool)
+_CHOICE_SEQUENCES = (list, set, frozenset)
+
+
 def _narrow_choices(annotation: Any, choices: list[Any] | None) -> Any:
-    """Apply choices while preserving an optional arm of the annotation."""
+    """Apply `choices` to the annotation's scalar leaf, leaving the shape
+    around that leaf intact.
+
+    `Annotated[list[str], ParamMeta(choices=[...])]` means "every element is
+    one of these", so the narrowing has to land on the *element* type:
+    replacing the whole annotation with `Literal[...]` would reject the list
+    at validation and also lose the `multiple=True` that
+    `clickutil.build_options` derives from `is_list`. The same holds for the
+    `| None` arm of an optional field. Building the `Literal` itself is
+    delegated to `loaders._modelgen.narrow_choices` -- shinobi's one
+    enum-like schema mechanism -- so the two callers cannot drift.
+
+    Raises:
+        _UnsupportedChoices: the leaf is not a scalar a `Literal` can stand
+            in for. A `Path` is the case that matters: narrowing it away
+            would leave `path_fields` (and so the backends' bind-mounting
+            and `click.Path`) unable to see that the field is a path at all,
+            which is a silent change of behaviour rather than a constraint.
+    """
     if not choices:
         return annotation
-    if get_origin(annotation) is Annotated:
-        args = get_args(annotation)
-        return Annotated[_narrow_choices(args[0], choices), *args[1:]]
     origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin is Annotated:
+        return Annotated[_narrow_choices(args[0], choices), *args[1:]]
     if origin is Union or origin is types.UnionType:
-        args = get_args(annotation)
-        if type(None) in args:
-            return Literal[tuple(choices)] | None
-    return Literal[tuple(choices)]
+        arms = [arg for arg in args if arg is not type(None)]
+        if len(arms) == 1:
+            return _narrow_choices(arms[0], choices) | None
+        raise _UnsupportedChoices
+    if origin in _CHOICE_SEQUENCES and len(args) == 1:
+        return origin[_narrow_choices(args[0], choices)]
+    if origin is tuple and len(args) == 2 and args[1] is Ellipsis:
+        return tuple[_narrow_choices(args[0], choices), ...]
+    if origin is Literal or annotation in _CHOICE_SCALARS:
+        return narrow_choices(annotation, choices)
+    raise _UnsupportedChoices
 
 
 def _field_default_with_meta(default: Any, meta: ParamMeta | None) -> Any:
-    """Carry extracted metadata on the generated field for model consumers."""
+    """Carry extracted metadata on the generated field for model consumers.
+
+    `ParamMeta.info` is copied onto the field's `description`, which is the
+    channel every consumer already reads (`clickutil.build_options` turns it
+    into the option's `--help` text), so the same declaration documents a
+    pystep's parameter and a cab's.
+
+    A `FieldInfo` default is *copied* before the extra is attached: it lives
+    in the decorated function's `__defaults__` and a module-level
+    `Field(...)` spec may be shared by several functions, so writing into it
+    would leak this parameter's metadata onto theirs (and permanently alter
+    the function's own signature default).
+    """
     if meta is None:
         return default
     if isinstance(default, FieldInfo):
+        default = copy.copy(default)
         extra = dict(default.json_schema_extra or {})
         extra["param_meta"] = meta
         default.json_schema_extra = extra
+        if meta.info and not default.description:
+            default.description = meta.info
         return default
-    return Field(default, json_schema_extra={"param_meta": meta})
+    return Field(default, description=meta.info, json_schema_extra={"param_meta": meta})
 
 
-def _inputs_model_from_signature(func: Callable) -> tuple[type[BaseModel], bool, dict[str, ParamMeta]]:
+def _inputs_model_from_signature(func: Callable, write_paths: Sequence[str] = ()) -> tuple[type[BaseModel], bool, dict[str, ParamMeta]]:
     """Derive the inputs model from `func`'s signature.
 
     Returns `(inputs_model, wants_ctx, field_meta)`. If the first parameter is
@@ -176,7 +257,15 @@ def _inputs_model_from_signature(func: Callable) -> tuple[type[BaseModel], bool,
     (matching `@shinobi.step`'s convention) rather than an input field: it is
     skipped when building the model and needs no type hint. The adapter then
     calls `func(ctx, **inputs)`.
+
+    `write_paths` (the decorator's own argument) is folded into each named
+    parameter's `ParamMeta` *here*, before the model is built, so the copy
+    embedded in a field's `json_schema_extra` and the one in
+    `Scope.field_meta` are the same object rather than two spellings that
+    can disagree. Names it holds that are not parameters are left for the
+    caller to report against the finished model.
     """
+    write_path_names = set(write_paths)
     sig = inspect.signature(func)
     params = list(sig.parameters.items())
     wants_ctx = bool(params) and params[0][0] == "ctx"
@@ -193,9 +282,25 @@ def _inputs_model_from_signature(func: Callable) -> tuple[type[BaseModel], bool,
         if pname not in hints:
             raise TypeError(f"pystep {func.__name__!r}: parameter {pname!r} has no type hint -- every parameter needs one so its inputs_model can be derived from the signature")
         annotation, annotation_meta = _param_meta_from_annotation(hints[pname])
+        if _nested_param_meta(annotation):
+            raise TypeError(
+                f"pystep {func.__name__!r}: parameter {pname!r} nests ParamMeta inside its annotation "
+                f"({hints[pname]!r}) -- ParamMeta has to annotate the parameter's whole type "
+                f"(Annotated[str | None, ParamMeta(...)], Annotated[list[str], ParamMeta(...)]), since anything "
+                f"deeper cannot be lifted off before the model is built"
+            )
         default_meta = _param_meta_from_extra(param.default.json_schema_extra) if isinstance(param.default, FieldInfo) else None
         meta = annotation_meta or default_meta
-        annotation = _narrow_choices(annotation, meta.choices if meta else None)
+        if pname in write_path_names:
+            meta = (meta or ParamMeta()).model_copy(update={"write_path": True})
+        try:
+            annotation = _narrow_choices(annotation, meta.choices if meta else None)
+        except _UnsupportedChoices:
+            raise TypeError(
+                f"pystep {func.__name__!r}: parameter {pname!r} declares ParamMeta choices on {hints[pname]!r} -- "
+                f"choices narrow a str/int/float/bool leaf, optionally inside Optional[...] or a "
+                f"list/set/tuple[...] around it, so that the field keeps the shape it declares"
+            ) from None
         required = param.default is inspect.Parameter.empty
         default = ... if required else param.default
         fields[pname] = (annotation, _field_default_with_meta(default, meta))
@@ -744,7 +849,7 @@ def pystep(
         Returns:
             A `StepRef` wrapping `func` behind a generated adapter.
         """
-        inputs_model, wants_ctx, input_meta = _inputs_model_from_signature(func)
+        inputs_model, wants_ctx, input_meta = _inputs_model_from_signature(func, write_paths or ())
         outputs_model, is_empty = _outputs_model_from_return(func)
         unknown = sorted(set(write_paths or ()) - set(inputs_model.model_fields))
         if unknown:
@@ -771,10 +876,6 @@ def pystep(
         # this standard `__wrapped__` pointer to see past the adapter.
         adapter.__wrapped__ = func
         step_name = name or func.__name__
-        field_meta = dict(input_meta)
-        for field_name in write_paths or ():
-            meta = field_meta.get(field_name)
-            field_meta[field_name] = meta.model_copy(update={"write_path": True}) if meta else ParamMeta(write_path=True)
         scope = Scope(
             name=step_name,
             info=info if info is not None else inspect.getdoc(func),
@@ -785,7 +886,7 @@ def pystep(
             backend=backend,
             sandbox=sandbox,
             harvest=harvest or [],
-            field_meta=field_meta,
+            field_meta=dict(input_meta),
         )
         return StepRef(name=step_name, step=scope, func=adapter, params=params)
 
