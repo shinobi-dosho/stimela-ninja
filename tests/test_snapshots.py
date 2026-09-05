@@ -1068,3 +1068,131 @@ def test_an_unwired_sibling_mutator_is_rolled_away_on_the_very_first_run(tmp_pat
     assert calls["image"] == 1
     assert calls["flag_saw_model"] == ["empty"], "flag was handed a pre-imaging MS"
     assert (ms / "MODEL").read_text() == "empty", "known limitation: the sibling's rewrite is rolled away at once"
+
+
+# --- a scattered producer feeding a mutating consumer ---------------------
+
+
+def test_each_scattered_targets_chain_names_its_own_state(tmp_path):
+    """The multi-pointing shape: a scattered `transform` recipe splits one MS
+    per target, and a scattered `prep` recipe rewrites each in place.
+
+    A gathered `StepResult` hands one provenance key to *every* slice of the
+    consumer -- they share a single `sub_input_keys` -- so that key cannot be
+    allowed to name a Tier 1 state. `state_name(key, field)` would then be the
+    same for all of them, and `Journal.snapshot_dir` is a flat namespace whose
+    `_take` early-returns on an existing name: one target's tree gets
+    snapshotted under a name every other target's chain records as consumed,
+    and `_restore` checks only that the name exists, never that it belongs to
+    this chain. The second target then has the first's data restored over it.
+
+    So the gathered key carries no `producer_field` and `eligible_fields`
+    declines the field loudly, exactly as it does for a scattered mutation.
+    Each target then runs against live disk and keeps its own data. Naming
+    these states per slice is the deferred work; naming them all the same is
+    not the intermediate step.
+    """
+
+    class SplitInputs(BaseModel):
+        spw: str = "*"
+        field: str = "t0"
+
+    @shinobi.pystep()
+    def split(ctx, spw: str = "*", field: str = "t0") -> MsOut:
+        out = tmp_path / f"{field}.ms"
+        _write(out, f"vis[{field}|{spw}]")
+        return MsOut(ms=out)
+
+    @shinobi.pystep()
+    def flag(ctx, ms: Path) -> MsOut:
+        _write(ms, _read(ms) + "|flag")
+        return MsOut(ms=ms)
+
+    transform = Recipe(
+        name="transform",
+        inputs_model=SplitInputs,
+        outputs_model=MsOut,
+        steps=[split.model_copy(update={"wiring": {"spw": InputRef(field="spw"), "field": InputRef(field="field")}})],
+        output_wiring={"ms": OutputRef(step="split", field="ms")},
+    )
+    prep = Recipe(
+        name="prep",
+        inputs_model=MsOut,
+        outputs_model=MsOut,
+        steps=[flag.model_copy(update={"wiring": {"ms": InputRef(field="ms")}})],
+        output_wiring={"ms": OutputRef(step="flag", field="ms")},
+    )
+    pipeline = (
+        Recipe(name="pipe", inputs_model=SpwInputs, outputs_model=SpwInputs)
+        .add_step("transform", transform, spw=InputRef(field="spw"), field=["t0", "t1"], scatter=["field"])
+        .add_step("prep", prep, ms=OutputRef(step="transform", field="ms"), scatter=["ms"])
+    )
+
+    cache_dir = tmp_path / "cache"
+    pipeline(spw="*", cache=True, cache_dir=str(cache_dir))
+    for name in ("t0", "t1"):
+        assert _read(tmp_path / f"{name}.ms") == f"vis[{name}|*]|flag"
+
+    # No chain may record a state that belongs to a different target -- the
+    # corruption this guards is one target's snapshot restored over another.
+    for name in ("t0", "t1"):
+        chain = _chain_of(cache_dir, tmp_path / f"{name}.ms")
+        if chain is None:
+            continue
+        generations = {generation.name for generation in chain.generations}
+        assert set(chain.consumed.values()) <= generations, f"{name}'s chain consumed another target's state"
+
+    pipeline(spw="*:880~1658MHz", cache=True, cache_dir=str(cache_dir))
+    for name in ("t0", "t1"):
+        assert _read(tmp_path / f"{name}.ms") == f"vis[{name}|*:880~1658MHz]|flag"
+
+
+def test_a_gathered_key_declines_tier_1_loudly(tmp_path, caplog):
+    """The decline above is a warning, not a silence: Tier 1 never drops
+    protection without saying so."""
+    import logging
+
+    class SplitInputs(BaseModel):
+        spw: str = "*"
+        field: str = "t0"
+
+    @shinobi.pystep()
+    def split(ctx, spw: str = "*", field: str = "t0") -> MsOut:
+        out = tmp_path / f"{field}.ms"
+        _write(out, f"vis[{field}|{spw}]")
+        return MsOut(ms=out)
+
+    @shinobi.pystep()
+    def flag(ctx, ms: Path) -> MsOut:
+        _write(ms, _read(ms) + "|flag")
+        return MsOut(ms=ms)
+
+    transform = Recipe(
+        name="transform",
+        inputs_model=SplitInputs,
+        outputs_model=MsOut,
+        steps=[split.model_copy(update={"wiring": {"spw": InputRef(field="spw"), "field": InputRef(field="field")}})],
+        output_wiring={"ms": OutputRef(step="split", field="ms")},
+    )
+    prep = Recipe(
+        name="prep",
+        inputs_model=MsOut,
+        outputs_model=MsOut,
+        steps=[flag.model_copy(update={"wiring": {"ms": InputRef(field="ms")}})],
+        output_wiring={"ms": OutputRef(step="flag", field="ms")},
+    )
+    pipeline = (
+        Recipe(name="pipe", inputs_model=SpwInputs, outputs_model=SpwInputs)
+        .add_step("transform", transform, spw=InputRef(field="spw"), field=["t0", "t1"], scatter=["field"])
+        .add_step("prep", prep, ms=OutputRef(step="transform", field="ms"), scatter=["ms"])
+    )
+
+    # Declines are warned once per process, so a sibling test reaching the
+    # same step path would otherwise swallow this one.
+    from shinobi.steps.dispatch import _snapshot_warned
+
+    _snapshot_warned.clear()
+    with caplog.at_level(logging.WARNING):
+        pipeline(spw="*", cache=True, cache_dir=str(tmp_path / "cache"))
+
+    assert "names no one state" in caplog.text

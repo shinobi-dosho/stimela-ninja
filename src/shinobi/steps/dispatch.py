@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 from shinobi.backends._stream import display_label, terminate_all
-from shinobi.cache import as_provenance_key, combine_keys, compute_cache_key, get_cache_manifest, invalidate_path_hashes, set_content_sample
+from shinobi.cache import ProvenanceKey, as_provenance_key, combine_keys, compute_cache_key, get_cache_manifest, invalidate_path_hashes, set_content_sample
 from shinobi.snapshots import SnapshotGuard, announce_run, eligible_fields, get_journal, new_run_id, reconcile
 from shinobi.config import AppConfig
 from shinobi.exceptions import CabRunError, ParameterError, ShinobiError, StepError
@@ -1043,9 +1043,32 @@ def _aggregate_scatter_results(
     # entirely (`compute_cache_key`). The consumer of a scattered recipe
     # therefore cache-hit forever, however the producer changed, and an
     # in-place mutation it was supposed to apply was silently never applied.
-    output_keys = {
-        field: key for field in scope.outputs_model.model_fields if (key := as_provenance_key(combine_keys([s.provenance_key(field) for s in slices]), field)) is not None
-    }
+    # **Deliberately `producer_field=None`.** A `ProvenanceKey`'s field names
+    # a state for Tier 1 (`state_name(key, field)`), and this key names no
+    # state: it is a synthetic hash standing for N slices, handed *identically*
+    # to every slice of a downstream scattered consumer (they share one
+    # `sub_input_keys`). Stamping a field on it would make every slice compute
+    # the same `state_name`, and `Journal.snapshot_dir` is a flat namespace
+    # whose `_take` early-returns on an existing name -- so one slice's tree
+    # would be snapshotted under a name every *other* slice's chain then
+    # records as consumed, and `_restore` checks only that the name exists,
+    # never that it belongs to this chain. Two targets, one state: the second
+    # gets the first's data put back over it.
+    #
+    # With no field, `_required_state`'s `producer_field is not None` guard
+    # falls through to the chain's own `consumed`/`head`, which is per path and
+    # therefore per target. `eligible_fields`/`_single_key` still see a key, so
+    # nothing is spuriously excluded, and the key still hashes into
+    # `__upstream__` as its string -- the cache fix is untouched.
+    #
+    # This closes the same hole for a scattered *leaf*, which had it already:
+    # `_resolve_input_keys` wrapped its plain `cache_key` with the consuming
+    # field's name.
+    output_keys: dict[str, Any] = {}
+    for field in scope.outputs_model.model_fields:
+        combined = combine_keys([s.provenance_key(field) for s in slices])
+        if combined is not None:
+            output_keys[field] = ProvenanceKey(combined, None)
 
     stdout = "\n".join(s.stdout for s in slices if s.stdout)
     stderr = "\n".join(s.stderr for s in slices if s.stderr)

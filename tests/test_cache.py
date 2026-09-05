@@ -9,7 +9,7 @@ from shinobi import cache
 from shinobi.backends.recording import RecordingBackend
 from shinobi.cache import CacheManifest, ProvenanceKey, as_provenance_key, combine_keys, compute_cache_key, get_cache_manifest, invalidate_path_hashes
 from shinobi.results import StepResult
-from shinobi.steps import Cab, Recipe, register_step_backend
+from shinobi.steps import Cab, register_step_backend
 from shinobi.steps.schema import Mutability
 from shinobi.steps.dispatch import _dispatch
 
@@ -863,11 +863,17 @@ def test_a_scattered_leaf_keys_its_consumers_exactly_as_before(tmp_path):
     from shinobi.cache import combine_keys
     from shinobi.steps.dispatch import _aggregate_scatter_results
 
-    scope = Recipe(name="w", inputs_model=MsOut, outputs_model=MsOut)
-    slices = [StepResult(name="w", returncode=0, outputs=MsOut(ms=Path(f"s{i}.ms")), inputs=MsOut(ms=Path(f"s{i}.ms")), cache_key=f"k{i}") for i in range(3)]
-    aggregate = _aggregate_scatter_results(scope, ["ms"], {"ms": [Path("s0.ms")]}, slices)
+    @shinobi.pystep()
+    def leaf(ctx, ms: Path) -> MsOut:
+        return MsOut(ms=ms)
+
+    slices = [StepResult(name="leaf", returncode=0, outputs=MsOut(ms=Path(f"s{i}.ms")), inputs=MsOut(ms=Path(f"s{i}.ms")), cache_key=f"k{i}") for i in range(3)]
+    aggregate = _aggregate_scatter_results(leaf.step, ["ms"], {"ms": [Path("s0.ms")]}, slices)
 
     assert aggregate.provenance_key("ms") == combine_keys(["k0", "k1", "k2"]) == aggregate.cache_key
+    # ...but it names no Tier 1 state, so a downstream consumer's slices are
+    # declined rather than all given the same snapshot name.
+    assert aggregate.provenance_key("ms").producer_field is None
 
 
 def test_rerunning_an_unconsumed_sibling_does_not_invalidate_the_consumer(tmp_path):
