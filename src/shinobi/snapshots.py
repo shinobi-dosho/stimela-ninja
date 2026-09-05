@@ -451,6 +451,18 @@ def eligible_fields(
       index threaded down into `_dispatch`, and scatter-plus-mutation is not
       the shape this is for (a caracal-style pipeline mutates one MS through
       a linear chain and parallelises by nesting recipes).
+    - **Mutated fields wired to a *gathered* producer**, for the same reason
+      reached from the other side. A scattered step's slices are gathered
+      into one `StepResult` carrying one key per output field, and that key
+      is handed identically to every slice of a downstream scattered
+      consumer (they share a single `sub_input_keys`). It stands for all the
+      slices at once, so it names no one state -- `state_name` on it would
+      give every target the same name in a flat snapshot namespace, and one
+      target's tree would be restored over another's. Such a key carries no
+      `producer_field`, which is what says "keyed, but names no state": it
+      still identifies the consumed *content* for the skip cache, and only
+      Tier 1 declines. Protecting this shape properly is the same deferred
+      work as the scattered-mutation case above.
     - **Many-valued mutated fields.** One `(key, field)` name cannot stand
       for N paths. A wrong restore here is catastrophic rather than merely
       wasteful, so the shape is refused rather than misnamed. A *single*-
@@ -478,8 +490,12 @@ def eligible_fields(
                 continue
             value = value[0]
         wired = name in wired_fields if wired_fields is not None else name in keys
-        if wired and _single_key(keys.get(name)) is None:
+        key = _single_key(keys.get(name))
+        if wired and key is None:
             excluded.append(Excluded(name, "wired to a producer with no cache key (uncached or uncacheable), so the state it consumes has no name"))
+            continue
+        if key is not None and key.producer_field is None:
+            excluded.append(Excluded(name, "wired to a scattered producer, whose gathered key stands for every slice at once and so names no one state"))
             continue
         protected[name] = Path(value)
     return protected, excluded
