@@ -59,7 +59,6 @@ mutability override yet; add one if a real need surfaces.
 
 from __future__ import annotations
 
-import copy
 import inspect
 import json
 import logging
@@ -230,22 +229,35 @@ def _field_default_with_meta(default: Any, meta: ParamMeta | None) -> Any:
     into the option's `--help` text), so the same declaration documents a
     pystep's parameter and a cab's.
 
-    A `FieldInfo` default is *copied* before the extra is attached: it lives
-    in the decorated function's `__defaults__` and a module-level
-    `Field(...)` spec may be shared by several functions, so writing into it
-    would leak this parameter's metadata onto theirs (and permanently alter
-    the function's own signature default).
+    A `FieldInfo` default is *merged*, never written into: it lives in the
+    decorated function's `__defaults__` and a module-level `Field(...)` spec
+    may be shared by several functions, so writing into it would leak this
+    parameter's metadata onto theirs (and permanently alter the function's
+    own signature default). `merge_field_infos` returns a fresh `FieldInfo`
+    and leaves both inputs alone.
+
+    Merging is also the only spelling that survives model construction.
+    Setting `json_schema_extra` as an attribute on a copy looks equivalent
+    but is not: `create_model` rebuilds every field through
+    `FieldInfo.from_annotated_attribute`, which reads a `FieldInfo` default
+    back out of its `_attributes_set` -- the constructor arguments -- so an
+    attribute assigned after construction is silently dropped and the whole
+    `ParamMeta` never reaches `clickutil._field_meta`. Choices would still
+    appear (`_narrow_choices` rewrites the annotation), but `abbreviation`
+    and a `ParamMeta`-supplied `info` would vanish for exactly the
+    parameters that spell both halves -- `Annotated[T, ParamMeta(...)] =
+    Field(...)`.
     """
     if meta is None:
         return default
     if isinstance(default, FieldInfo):
-        default = copy.copy(default)
-        extra = dict(default.json_schema_extra or {})
-        extra["param_meta"] = meta
-        default.json_schema_extra = extra
+        overlay: dict[str, Any] = {"json_schema_extra": {"param_meta": meta}}
         if meta.info and not default.description:
-            default.description = meta.info
-        return default
+            overlay["description"] = meta.info
+        # pydantic merges the two `json_schema_extra` dicts, so a cab-style
+        # flat key already on the field (`{"abbreviation": "as"}`) is kept
+        # alongside the `param_meta` this adds.
+        return FieldInfo.merge_field_infos(default, Field(**overlay))
     return Field(default, description=meta.info, json_schema_extra={"param_meta": meta})
 
 
