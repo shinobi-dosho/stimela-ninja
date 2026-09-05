@@ -9,7 +9,7 @@ from shinobi import cache
 from shinobi.backends.recording import RecordingBackend
 from shinobi.cache import CacheManifest, ProvenanceKey, as_provenance_key, combine_keys, compute_cache_key, get_cache_manifest, invalidate_path_hashes
 from shinobi.results import StepResult
-from shinobi.steps import Cab, register_step_backend
+from shinobi.steps import Cab, Recipe, register_step_backend
 from shinobi.steps.schema import Mutability
 from shinobi.steps.dispatch import _dispatch
 
@@ -783,6 +783,91 @@ def test_provenance_crosses_nested_recipe_boundaries(tmp_path):
 
     pipeline(spw="*:880~1658MHz", cache=True, cache_dir=cache_dir)
     assert calls == {"split": 2, "flag": 2}
+
+
+def test_provenance_crosses_a_scattered_recipe_boundary(tmp_path):
+    """The same shape once the producing worker is `scatter`ed over N
+    targets, which is how a multi-pointing pipeline is written.
+
+    A scattered step's slices are gathered into one `StepResult`, and its
+    provenance has to be gathered too. A *leaf* slice answers every field
+    with its own `cache_key`, so gathering those was enough for as long as
+    only leaves were scattered. A *recipe* slice has no `cache_key` at all --
+    it carries `output_keys`, one per declared output -- so a gathered
+    recipe used to hand its consumers `combine_keys([None, None])`, i.e.
+    nothing. The consumer's `ms` then had neither provenance nor (being
+    mutated in place) a content hash, so it cache-hit however the producer
+    changed: the split was redone with new parameters and the flagging that
+    was supposed to follow it silently never re-applied.
+    """
+    from shinobi.steps import InputRef, OutputRef, Recipe
+
+    calls = {"split": 0, "flag": 0}
+
+    @shinobi.pystep()
+    def split(ctx, spw: str = "*", field: str = "t0") -> MsOut:
+        calls["split"] += 1
+        out = tmp_path / f"{field}.ms"
+        out.write_text(f"visibilities for {spw}")
+        return MsOut(ms=out)
+
+    @shinobi.pystep()
+    def flag(ctx, ms: Path) -> MsOut:
+        calls["flag"] += 1
+        ms.write_text(ms.read_text() + " | flagged")
+        return MsOut(ms=ms)
+
+    class SplitInputs(BaseModel):
+        spw: str = "*"
+        field: str = "t0"
+
+    transform = Recipe(
+        name="transform",
+        inputs_model=SplitInputs,
+        outputs_model=MsOut,
+        steps=[split.model_copy(update={"wiring": {"spw": InputRef(field="spw"), "field": InputRef(field="field")}})],
+        output_wiring={"ms": OutputRef(step="split", field="ms")},
+    )
+    prep = Recipe(
+        name="prep",
+        inputs_model=MsOut,
+        outputs_model=MsOut,
+        steps=[flag.model_copy(update={"wiring": {"ms": InputRef(field="ms")}})],
+        output_wiring={"ms": OutputRef(step="flag", field="ms")},
+    )
+    pipeline = (
+        Recipe(name="pipe", inputs_model=SpwInputs, outputs_model=SpwInputs)
+        .add_step("transform", transform, spw=InputRef(field="spw"), field=["t0", "t1"], scatter=["field"])
+        .add_step("prep", prep, ms=OutputRef(step="transform", field="ms"), scatter=["ms"])
+    )
+
+    cache_dir = str(tmp_path / "cache")
+    pipeline(spw="*", cache=True, cache_dir=cache_dir)
+    assert calls == {"split": 2, "flag": 2}
+
+    pipeline(spw="*", cache=True, cache_dir=cache_dir)
+    assert calls == {"split": 2, "flag": 2}
+
+    pipeline(spw="*:880~1658MHz", cache=True, cache_dir=cache_dir)
+    assert calls == {"split": 4, "flag": 4}
+    for name in ("t0", "t1"):
+        assert (tmp_path / f"{name}.ms").read_text() == "visibilities for *:880~1658MHz | flagged"
+
+
+def test_a_scattered_leaf_keys_its_consumers_exactly_as_before(tmp_path):
+    """Per-field gathering must not move a key that already existed. A leaf
+    slice resolves every output field to its own `cache_key`, so gathering
+    per field hashes the same list `cache_key` already did -- and every
+    manifest written before there was an `output_keys` here stays valid.
+    """
+    from shinobi.cache import combine_keys
+    from shinobi.steps.dispatch import _aggregate_scatter_results
+
+    scope = Recipe(name="w", inputs_model=MsOut, outputs_model=MsOut)
+    slices = [StepResult(name="w", returncode=0, outputs=MsOut(ms=Path(f"s{i}.ms")), inputs=MsOut(ms=Path(f"s{i}.ms")), cache_key=f"k{i}") for i in range(3)]
+    aggregate = _aggregate_scatter_results(scope, ["ms"], {"ms": [Path("s0.ms")]}, slices)
+
+    assert aggregate.provenance_key("ms") == combine_keys(["k0", "k1", "k2"]) == aggregate.cache_key
 
 
 def test_rerunning_an_unconsumed_sibling_does_not_invalidate_the_consumer(tmp_path):

@@ -1007,7 +1007,8 @@ def _aggregate_scatter_results(
     Outputs are gathered into lists (one element per slice). Inputs are the
     list-valued scatter fields plus the shared scalar fields. If any slice
     failed, outputs are empty lists and the returncode is the first failure
-    by slice index.
+    by slice index. Provenance is gathered too, per output field -- see
+    `output_keys` below.
     """
     scatter_set = set(scatter_fields)
     InputsModel = _scatter_inputs_model(scope, scatter_set)
@@ -1024,6 +1025,27 @@ def _aggregate_scatter_results(
 
     outputs = OutputsModel(**outputs_data)
     inputs = InputsModel(**inputs_data)
+
+    # Per-output provenance for whoever consumes the gathered result, built
+    # the same way as the gathered outputs themselves: one field at a time,
+    # across the slices.
+    #
+    # Doing it per field rather than leaving `cache_key` to answer for the
+    # whole step is what keeps a scattered *Recipe* keyed at all. A leaf
+    # slice resolves every field to its own `cache_key`, so for a scattered
+    # leaf this reproduces exactly what `cache_key` already said (same list,
+    # same hash -- no existing key moves). A recipe slice does not have a
+    # `cache_key`: it carries `output_keys`, one per declared output. So
+    # `combine_keys([s.cache_key ...])` over recipe slices combines a list of
+    # `None`s and yields `None`, and the gathered result hands its consumers
+    # no provenance at all -- their `__upstream__` loses the field, and a
+    # path input that is *also* mutated in place then drops out of the key
+    # entirely (`compute_cache_key`). The consumer of a scattered recipe
+    # therefore cache-hit forever, however the producer changed, and an
+    # in-place mutation it was supposed to apply was silently never applied.
+    output_keys = {
+        field: key for field in scope.outputs_model.model_fields if (key := as_provenance_key(combine_keys([s.provenance_key(field) for s in slices]), field)) is not None
+    }
 
     stdout = "\n".join(s.stdout for s in slices if s.stdout)
     stderr = "\n".join(s.stderr for s in slices if s.stderr)
@@ -1047,6 +1069,11 @@ def _aggregate_scatter_results(
         # *gathered* result -- so its provenance is all the slices' keys
         # together, and a change in any one of them invalidates dependents.
         cache_key=combine_keys([s.cache_key for s in slices]),
+        # `or None` so an aggregate with nothing to say falls back to
+        # `cache_key` exactly as it did before there was a per-field answer
+        # -- `provenance_key` stops consulting `cache_key` the moment
+        # `output_keys` is set, empty or not.
+        output_keys=output_keys or None,
     )
 
 
