@@ -327,3 +327,53 @@ def test_write_paths_agree_between_scope_and_model_metadata():
     assert ref.step.field_meta["out"].write_path is True
     assert ref.step.inputs_model.model_fields["out"].json_schema_extra["param_meta"].write_path is True
     assert ref.step.field_meta["keep"].write_path is False
+
+
+def annotated_over_field_default(
+    ascii_sky: Annotated[Optional[str], ParamMeta(abbreviation="as", info="ignored")] = Field(None, description="Catalogue of sources."),
+    smearing_subsamples: Annotated[int, ParamMeta(abbreviation="sss")] = Field(8, ge=1, description="Sub-sample cap."),
+    mode: Annotated[str, ParamMeta(choices=["sim", "add"], abbreviation="m")] = Field("sim", description="What to do."),
+    described_by_meta: Annotated[str, ParamMeta(abbreviation="d", info="from ParamMeta")] = Field("x"),
+    cab_style: Annotated[str, ParamMeta(choices=["a", "b"])] = Field("a", description="Flat extra.", json_schema_extra={"abbreviation": "cs"}),
+) -> OffsetOutputs:
+    return OffsetOutputs(shifted=mode)
+
+
+def test_param_meta_survives_a_field_default():
+    # `Annotated[T, ParamMeta(...)] = Field(...)` spells both halves. The
+    # `ParamMeta` has to reach the built model's field, not just
+    # `Scope.field_meta`: `create_model` rebuilds a `FieldInfo` default out
+    # of its constructor arguments, so metadata attached afterwards would be
+    # dropped and every CLI-facing key but `choices` (which rewrites the
+    # annotation) would silently vanish.
+    fields = pystep()(annotated_over_field_default).step.inputs_model.model_fields
+
+    assert fields["ascii_sky"].json_schema_extra["param_meta"].abbreviation == "as"
+    assert fields["smearing_subsamples"].json_schema_extra["param_meta"].abbreviation == "sss"
+    # the `Field(...)` half survives the merge intact
+    assert fields["ascii_sky"].description == "Catalogue of sources."
+    assert fields["smearing_subsamples"].default == 8
+    assert fields["smearing_subsamples"].metadata  # ge=1 is not dropped
+    assert fields["mode"].annotation == Literal["sim", "add"]
+
+
+def test_field_default_abbreviations_reach_the_cli():
+    options = {option.name: option for option in build_options(pystep()(annotated_over_field_default).step.inputs_model)}
+
+    assert options["ascii_sky"].opts == ["--ascii-sky", "-as"]
+    assert options["smearing_subsamples"].opts == ["--smearing-subsamples", "-sss"]
+    assert options["mode"].opts == ["--mode", "-m"]
+    assert list(options["mode"].type.choices) == ["sim", "add"]
+    # a `Field(description=...)` wins over `ParamMeta.info`, which only fills a gap
+    assert options["ascii_sky"].help == "Catalogue of sources."
+    assert options["described_by_meta"].help == "from ParamMeta"
+    # a flat cab-style key already on the field is kept alongside `param_meta`
+    assert options["cab_style"].opts == ["--cab-style", "-cs"]
+
+
+def test_field_default_is_not_mutated_by_the_pystep():
+    # The `Field(...)` object lives in the function's `__defaults__`; the
+    # decorator must leave it as the author wrote it.
+    default = annotated_over_field_default.__defaults__[0]
+    pystep()(annotated_over_field_default)
+    assert default.json_schema_extra is None
