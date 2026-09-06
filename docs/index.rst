@@ -6,27 +6,37 @@ reproducible radio astronomy pipelines.
 
 A spiritual successor to `Stimela classic
 <https://github.com/ratt-ru/Stimela-classic>`_, built around the same core
-philosophy (see :doc:`design` for the full rationale). Recipes are plain
-Python: a step is a function call, and a step's output is a Python value you
-wire into the next call. There is no YAML expression/substitution language,
-no alias-propagation system, and no stacked config libraries -- control flow
-is just Python, and it doesn't need reinventing.
+philosophy (see :doc:`design` for the full rationale). Recipes are declared
+directed acyclic graphs built in Python: typed references wire a step's inputs
+to recipe inputs or earlier step outputs, and the resulting graph can be
+validated and rendered before execution. There is no YAML
+expression/substitution language, alias-propagation system, or second set of
+control-flow semantics hidden in configuration.
 
-.. note::
-
-   Early scaffolding. The interfaces documented here are real and tested
-   (``pytest``), but the project is not yet ready to run real pipelines.
+The execution layer is usable end to end: native, virtualenv, container,
+Slurm, and Kubernetes backends; concurrent and resource-aware scheduling;
+scatter and bounded declared loops; sandboxed execution; caching and mutation
+snapshots; provenance/replay; and remote or compiled cluster runs. Backend
+limitations and live-verification status are stated in :doc:`concepts/backends`
+and :doc:`offloading`.
 
 .. code-block:: python
+
+    from pathlib import Path
 
     from pydantic import BaseModel
 
     from shinobi import Cab, step
+    from shinobi.steps import ParamMeta
 
 
     class ImageInputs(BaseModel):
-        ms: str = "obs.ms"
+        ms: Path = Path("obs.ms")
         prefix: str = "img"
+
+
+    class ImageOutputs(BaseModel):
+        restored: Path | None = None
 
 
     wsclean = Cab(
@@ -34,6 +44,10 @@ is just Python, and it doesn't need reinventing.
         command="wsclean",
         image="quay.io/stimela/wsclean:latest",
         inputs_model=ImageInputs,
+        outputs_model=ImageOutputs,
+        field_meta={
+            "restored": ParamMeta(implicit="{prefix}-MFS-image.fits")
+        },
     )
 
 
@@ -64,6 +78,7 @@ is just Python, and it doesn't need reinventing.
    concepts/backends
    concepts/loaders
    concepts/config
+   concepts/results
    concepts/provenance
    concepts/sandbox
 

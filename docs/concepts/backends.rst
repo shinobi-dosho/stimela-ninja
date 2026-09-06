@@ -6,8 +6,8 @@ are pluggable executors; every one shells out to the relevant CLI rather than
 using a Python SDK, and every one *blocks* until the job finishes. A backend
 returns a raw :class:`~shinobi.results.BackendRun` (return code, stdout,
 stderr); the dispatch layer wrangles that into the schema-aware
-:class:`~shinobi.results.StepResult` a step call yields. There is no async
-mode -- recipes are plain Python.
+:class:`~shinobi.results.StepResult` a step call yields. There is no fire-and-forget backend mode: recipe concurrency is coordinated
+by the declared-DAG scheduler.
 
 Available backends
 ------------------
@@ -78,11 +78,12 @@ Available backends
 
 ``kubernetes``
     Runs the command as a batch ``Job`` via ``kubectl``. Mounts carry the same
-    read-only classification as the container backends, but the nested-mount
-    case above is **refused** rather than emitted: whether a kubelet shadows a
-    nested ``readOnly`` volumeMount the way docker, podman and apptainer shadow a
-    nested ``:ro`` bind is unverified, and a silent failure there would hand
-    the step write access to an input the cab declared read-only.
+    read-only classification and nested shadowing as the
+    container backends: a writable parent is mounted first and the protected
+    input is re-asserted as a nested ``readOnly`` volumeMount. This behavior is
+    live-verified on a real kubelet. ``namespace`` is required, and pods run
+    with the caller's uid/gid, privilege escalation disabled, and all
+    capabilities dropped.
 
 Choosing a backend
 ------------------
@@ -251,9 +252,10 @@ and the remedy spelled out instead of the raw ``openat2`` message. See
 Verification status
 --------------------
 
-The ``native`` and container backends were verified against a real
-``quay.io/stimela/wsclean`` image, and ``kubernetes`` against a real ``kind``
-cluster (``hostPath`` volumes there only work if the node running the pod
+The ``native``, ``docker``, ``podman``, and ``apptainer`` paths were
+verified with real runtimes and bind-mounted host data, and ``kubernetes``
+against a real ``kind`` cluster (``hostPath`` volumes there only work if the
+node running the pod
 has the path -- fine for a single-node dev cluster or nodes with shared
 storage, not a general multi-node cluster without a shared filesystem, which
 would need ``PersistentVolumeClaim``\ s instead).

@@ -15,18 +15,21 @@ lives in (used by the container/cluster backends).
 
 .. code-block:: python
 
+    from pathlib import Path
+
     from pydantic import BaseModel
 
     from shinobi import Cab
+    from shinobi.steps import ParamMeta
 
 
     class ImageInputs(BaseModel):
-        ms: str = "obs.ms"
+        ms: Path = Path("obs.ms")
         prefix: str = "img"
 
 
     class ImageOutputs(BaseModel):
-        restored: str | None = None
+        restored: Path | None = None
 
 
     wsclean = Cab(
@@ -35,6 +38,9 @@ lives in (used by the container/cluster backends).
         image="quay.io/stimela/wsclean:latest",
         inputs_model=ImageInputs,
         outputs_model=ImageOutputs,
+        field_meta={
+            "restored": ParamMeta(implicit="{prefix}-MFS-image.fits")
+        },
     )
 
 Fields with a default are optional; fields without one are required. The dtype
@@ -104,8 +110,8 @@ All three are resolved against the step's own inputs *before* the run, and
 drive real behaviour: the sandbox pre-creates the directories they imply, and
 the container backends bind-mount them so a write outside the working
 directory reaches the host instead of dying inside the container. A cab that
-declares none of them is taken at its word -- a bare ``str`` stem is just a string, and a value pointing
-somewhere no declaration mentions gets no mount.
+declares none of them is taken at its word -- a bare ``str`` stem is just a string, and a value pointing somewhere no
+declaration mentions gets no mount.
 
 Turning parameters into argv
 ----------------------------
@@ -141,6 +147,97 @@ See :class:`shinobi.Cab` and :class:`shinobi.steps.schema.Policies` in the
 :doc:`API reference <../api/index>` for the full set of knobs (prefixes,
 repeat policies, ``nom_de_guerre`` renaming, input patterns, and output
 wranglers).
+
+Policy and field metadata reference
+-----------------------------------
+
+The cab-level :class:`~shinobi.steps.schema.Policies` object controls the
+common spelling shared by all arguments. Its defaults produce
+``--name value`` and comma-join lists. The less common forms are explicit:
+
+* ``prefix`` and ``replace`` transform flag names;
+* ``key_value=True`` produces one ``name=value`` token;
+* ``repeat="[]"`` formats a list as ``[a,b]``, while ``list_sep`` selects the
+  ordinary join string;
+* ``repeat_list=True`` repeats the flag for each list item;
+* ``explicit_true`` / ``explicit_false`` decide whether booleans carry value
+  tokens, and ``true_token`` / ``false_token`` choose their exact spelling.
+
+Per-field :class:`~shinobi.steps.schema.ParamMeta` then handles exceptions:
+``nom_de_guerre`` selects the tool-facing name, ``positional`` and
+``positional_head`` remove the flag, and ``repeat_as_tokens`` emits a list as
+separate values after one flag. ``implicit`` supplies a cab-owned input or a
+predictable output value. ``writable=False`` protects a path input at the
+filesystem mount, while ``write_path=True`` identifies an input that names a
+product rather than caller-owned data. ``choices`` and ``abbreviation`` are
+normally populated by loaders; choices are real pydantic ``Literal``
+validation, not help text alone.
+
+Dynamic parameter names
+-----------------------
+
+Some tools derive parameter names from another input. QuartiCal, for example,
+lets ``solver.terms=[K,G]`` make ``K.type``, ``G.type``, and each term's
+interval fields valid. A static model cannot enumerate names whose first
+segment is caller-selected. ``input_patterns`` declares that family while the
+input model uses pydantic ``extra="allow"``:
+
+.. code-block:: python
+
+    from pathlib import Path
+
+    from pydantic import BaseModel, ConfigDict
+
+    from shinobi.steps import ParamMeta, ParamPattern, ParamSegment
+
+
+    class QuarticalInputs(BaseModel):
+        model_config = ConfigDict(extra="allow")
+        input_ms: Path
+
+
+    quartical = Cab(
+        ...,
+        inputs_model=QuarticalInputs,
+        input_patterns=[
+            ParamPattern(
+                separator=".",
+                segments=[
+                    ParamSegment(regex=r".+?"),
+                    ParamSegment(
+                        attrs={
+                            "type": ParamMeta(),
+                            "time_interval": ParamMeta(dtype="int"),
+                            "load_from": ParamMeta(
+                                dtype="Directory", writable=False
+                            ),
+                        }
+                    ),
+                ],
+            )
+        ],
+    )
+
+A match is anchored across every segment. Attribute names are literal and may
+contain the separator themselves; use a lazy regex (``.+?``) for an open
+segment so the longest applicable attribute wins. Matched extras are emitted
+by :func:`shinobi.policies.build_argv`; unmatched extras are retained by the
+pydantic model but are not passed to the command.
+
+``output_patterns`` is the output-side analogue used to validate references to
+dynamically named products, such as WSClean's ``dirty.per-band`` family. It
+does not populate arbitrary fields on ``outputs_model`` after execution: use a
+literal output field, an ``implicit`` value, or a wrangler when the concrete
+value must appear on :class:`~shinobi.results.StepResult`; use ``harvest`` for
+a dynamically named file family that must survive sandboxing.
+
+Output values and wranglers
+---------------------------
+
+Cab output fields are filled from wranglers, pass-through inputs, reserved run
+fields, implicit templates, or model defaults in a documented priority order.
+See :doc:`results` for a complete example and the
+``PARSE_OUTPUT:<group>:<type>`` action.
 
 Loading cabs from YAML
 ----------------------

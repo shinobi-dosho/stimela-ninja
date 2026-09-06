@@ -36,6 +36,14 @@ Supporting types used when defining cabs, not re-exported at the top level.
 
 .. autofunction:: shinobi.steps.schema.declared_output_dirs
 
+.. autofunction:: shinobi.steps.schema.declared_output_paths
+
+.. autofunction:: shinobi.steps.schema.readonly_path_fields
+
+.. autofunction:: shinobi.steps.schema.mutated_path_fields
+
+.. autofunction:: shinobi.steps.schema.paths_overlap
+
 Execution
 ---------
 
@@ -49,7 +57,20 @@ Execution
 
 .. autofunction:: shinobi.steps.dispatch.get_step_backend
 
+.. automodule:: shinobi.wranglers
+   :members:
+
 .. automodule:: shinobi.steps.loops
+   :members:
+
+
+Graphs and resources
+--------------------
+
+.. automodule:: shinobi.graph
+   :members:
+
+.. automodule:: shinobi.resources
    :members:
 
 Backends
@@ -68,6 +89,9 @@ Loaders
 -------
 
 .. automodule:: shinobi.loaders.yaml_cab
+   :members:
+
+.. automodule:: shinobi.loaders.worker_schema
    :members:
 
 .. automodule:: shinobi.loaders.stimela_classic

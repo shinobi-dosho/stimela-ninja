@@ -4,7 +4,7 @@ Installation
 Requirements
 ------------
 
-* Python 3.10 or newer
+* Python 3.11 or newer
 * One or more execution backends available on ``PATH`` for the cabs you run
   (for example ``wsclean``, or a container runtime such as ``docker`` /
   ``podman`` / ``apptainer``, or a ``slurm`` / ``kubernetes`` cluster).

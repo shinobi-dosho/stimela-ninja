@@ -269,10 +269,8 @@ stop it, but does destroy ``ninja status``'s only local record of it.
 
 .. note::
 
-   ``compile``/``submit_slurm``/``status_slurm`` are live-verified
-   single-node against a real Slurm controller (``tests/test_slurm_live.py``,
-   plus the throwaway all-in-one cluster under ``tests/slurm_live/``) -- not
-   proven multi-node, since only a single controller+node was available. The
-   plain ``slurm`` *step* backend used by ``ninja run`` (as opposed to
-   ``ninja compile``) is a separate code path with no live test yet; see
-   :doc:`concepts/backends`.
+   The Slurm compiler and step backend have extensive CLI-mocked coverage.
+   They are not yet proven against an operator's real scheduler; the
+   repository's ``tests/slurm_live`` harness is a local test fixture, not that
+   production validation. Verify generated scripts and accounting behavior on
+   your cluster before relying on them. See :doc:`concepts/backends`.

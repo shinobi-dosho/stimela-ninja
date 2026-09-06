@@ -281,28 +281,32 @@ imaged cabs in; ``none`` for bare argv), and ``--submit`` (submit and detach).
 ``ninja clean`` -- remove runtime artifacts
 -------------------------------------------
 
-Removes shinobi's runtime artifacts: run manifests (``AppConfig.provenance.dir``),
-the step cache (``AppConfig.cache.dir``), and detached-run launch dirs
-(``.shinobi/<recipe>/``, holding the handle file and Slurm job logs written by
+Removes shinobi's runtime artifacts: run manifests
+(``AppConfig.provenance.dir``), the step cache (``AppConfig.cache.dir``),
+leftover failed-step sandboxes (``AppConfig.sandbox.dir``), and detached-run
+launch dirs (``.shinobi/<recipe>/``, holding the handle and logs written by
 ``ninja compile --submit`` / ``ninja run --remote``). ``--dry-run`` previews
-what would be removed without deleting.
+without deleting.
 
-Run manifests and the step cache are removed by default; narrow the
-selection with ``--no-runs`` / ``--no-cache``. Launch dirs are the opposite:
-**off by default**, opt in with ``--launches`` -- deleting one doesn't stop a
-still-running detached job, but it does destroy ``ninja status``'s only local
-record of it, so it isn't swept as part of a routine clean. ``--workdir DIR``
-picks where to look for launch dirs (default: cwd); it has no effect on
-``--runs``/``--cache``, which always come from the active config. Nothing
-outside those targets is touched.
+Run manifests, cache, and sandboxes are selected by default; narrow them with
+``--no-runs``, ``--no-cache``, or ``--no-sandboxes``. Launch dirs are **off by
+default** and require ``--launches``: deleting one does not stop a detached
+job, but destroys ``ninja status``'s local record. ``--workdir DIR`` affects
+only launch discovery; configured run/cache/sandbox paths are unchanged.
+
+Cache cleanup refuses while mutation snapshots have unreconciled quarantined
+trees, because deleting the journal would orphan their only explanation. Run
+``ninja cache check`` first, or use ``--force`` to delete both the cache and
+those trees deliberately.
 
 .. code-block:: console
 
-    $ ninja clean                   # run manifests + step cache
-    $ ninja clean --no-cache        # just run manifests
-    $ ninja clean --dry-run         # preview
-    $ ninja clean --launches        # + all detached-run launch dirs under cwd
-    $ ninja clean --no-runs --no-cache --launches --workdir /scratch/run1
+    $ ninja clean                    # manifests + cache + failed sandboxes
+    $ ninja clean --no-cache         # manifests + failed sandboxes
+    $ ninja clean --dry-run          # preview every default target
+    $ ninja clean --launches         # defaults + launch dirs under cwd
+    $ ninja clean --no-runs --no-cache --no-sandboxes --launches \
+        --workdir /scratch/run1
 
 ``ninja status`` -- check a detached run
 ----------------------------------------
