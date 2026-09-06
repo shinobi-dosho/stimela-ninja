@@ -1,9 +1,10 @@
 Loaders
 =======
 
-You do not have to define cabs in Python. ``shinobi`` reuses existing cab
-definitions from two established formats, each producing the same
-:class:`~shinobi.Cab` objects you would build by hand.
+For executable cabs, ``shinobi`` reuses definitions from two established
+formats, each producing the same :class:`~shinobi.Cab` objects you would build
+by hand. A related loader builds pydantic models from CARACal worker config
+schemas without pretending those schemas are executable cabs.
 
 YAML cabs (the scabha dialect)
 -------------------------------
@@ -85,6 +86,79 @@ Stimela classic parameter files
     from shinobi.loaders.stimela_classic import load_file
 
     cab = load_file("casa_listobs/parameters.json")
+
+
+Worker/config schemas
+---------------------
+
+:func:`shinobi.loaders.worker_schema.load_worker_schema` handles the related
+scabha dialect used by CARACal/caracal2 worker *configuration*. It returns a
+``ConfigSchema`` with generated ``inputs_model`` and ``outputs_model`` classes,
+not a ``Cab``: a config schema validates values but contains no command to
+dispatch.
+
+.. code-block:: python
+
+    from pathlib import Path
+
+    import yaml
+
+    from shinobi.loaders.worker_schema import load_worker_schema
+
+
+    schema = load_worker_schema(
+        "schemas/crosscal_schema.yaml",
+        package_roots={"caracal": Path("schemas").resolve().parent},
+    )
+    raw = yaml.safe_load(Path("pipeline.yml").read_text())["crosscal"]
+    config = schema.inputs_model.model_validate(raw)
+    recipe = build_crosscal_recipe(config)
+
+Nested schema groups become nested pydantic models. ``choices`` become
+``Literal`` annotations and are enforced during validation. Both
+``List[T]``/``list:T`` and nested ``Tuple[...]``/``Union[...]`` dtype forms
+are understood; file-like dtypes become :class:`pathlib.Path`. Parameter names
+containing hyphens or dots are sanitized to Python identifiers, with collisions
+rejected rather than silently overwriting one field.
+
+``_include`` and ``_use`` share the cab loader's resolution helpers and safety
+rules. Package-scoped includes require an explicit ``package_roots`` mapping;
+the loader never imports a package named by YAML. Included paths are contained
+inside the registered package root, including nested include chains.
+
+Config-supplied mapping keys with ``_each``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Ordinary groups declare all their keys in the schema. An ``_each`` group
+declares one value schema while allowing the config to choose the mapping
+keys, which is useful for named calibration chains:
+
+.. code-block:: yaml
+
+    inputs:
+      chains:
+        _key_pattern: '^[A-Za-z][A-Za-z0-9_]*$'
+        _each:
+          solver:
+            dtype: str
+            choices: [gaincal, bandpass]
+          enabled:
+            dtype: bool
+            default: true
+        default:
+          primary:
+            solver: gaincal
+
+This produces ``dict[str, ChainModel]``. Set ``_key_pattern`` whenever keys
+become step names or path components, so an invalid name fails at config load
+rather than much later in a run. Defaults are validated when the schema loads
+and rebuilt for every model instance, so mutable mappings are never shared.
+Only ``_key_pattern``, ``info``, and ``default`` may accompany ``_each``;
+misspelled or inapplicable keys are errors.
+
+The generated CLI deliberately skips ``_each`` fields: there is no fixed set
+of names from which to construct options. Supply those mappings in the config
+file or programmatically.
 
 Inspecting the result
 ---------------------

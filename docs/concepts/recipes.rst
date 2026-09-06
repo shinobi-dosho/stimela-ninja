@@ -83,11 +83,16 @@ no edge between them and may run in either order -- or at the same time.
 The graph is built and validated by ``shinobi.graph.build_graph``, which
 raises ``RecipeGraphError`` on:
 
-* a duplicated step name;
+* duplicate step names;
+* a step constant, wiring destination, scatter field, or recipe output that is
+  not present in the corresponding pydantic model (dynamic cab patterns count
+  as declared fields);
 * an ``InputRef`` to a field the recipe's ``inputs_model`` does not have;
-* an ``OutputRef`` (in a step's wiring or in ``output_wiring``) naming a step
-  that does not exist;
-* a **cycle** in the dependency edges.
+* an ``OutputRef`` naming a missing step or a field absent from that producer's
+  output model/patterns;
+* an ``after`` edge naming a missing step or the step itself;
+* resources declared on a nested ``Recipe`` rather than its executable leaves;
+* a cycle formed by data or ordering-only edges.
 
 Validation runs at **run time and dry-run time**, not when you call
 ``add_step``: a recipe is deliberately mutable while you build it, so a forward

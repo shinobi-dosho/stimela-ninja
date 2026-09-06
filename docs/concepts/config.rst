@@ -30,6 +30,7 @@ Settings
         cpus: auto               #   auto | unbounded | a number
         memory: auto             #   auto | unbounded | e.g. "250GiB"
       enforce_resources: auto    # backend-side limits: auto | always | never
+      clear_stale_outputs: true  # replace declared direct-write products before running
     log:
       dir: "."                   # log output directory
       file: null                  # run-log filename (null = file logging off)
