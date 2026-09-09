@@ -23,11 +23,12 @@ privilege escalation disabled and all capabilities dropped. Even so, a
 shared multi-tenant cluster is not the target -- see the PVC boundary
 above.
 
-Not live-verified against a real cluster: none was available in the dev
-environment this was built in, unlike the container backend, which was
-checked against a real docker daemon and a real wsclean image. Treat this
-as reviewed-by-construction -- verify it against a real cluster before
-depending on it.
+Live-verified against a real ``kind`` cluster and a real wsclean image
+(``tests/test_kubernetes_live.py``, skipped unless a cluster is reachable
+via kubectl and the image is cached locally), including the nested
+``readOnly`` volumeMount shadowing against a real kubelet. That cluster is
+single-node, so multi-node scheduling is not covered -- which is the same
+boundary the ``hostPath`` note above draws.
 """
 
 from __future__ import annotations

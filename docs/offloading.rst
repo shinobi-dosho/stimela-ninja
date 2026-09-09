@@ -269,8 +269,9 @@ stop it, but does destroy ``ninja status``'s only local record of it.
 
 .. note::
 
-   The Slurm compiler and step backend have extensive CLI-mocked coverage.
-   They are not yet proven against an operator's real scheduler; the
-   repository's ``tests/slurm_live`` harness is a local test fixture, not that
-   production validation. Verify generated scripts and accounting behavior on
-   your cluster before relying on them. See :doc:`concepts/backends`.
+   The Slurm compiler and step backend were verified against a real Slurm
+   cluster, and ``tests/test_slurm_live.py`` keeps the offload path covered
+   automatically against the throwaway cluster in ``tests/slurm_live/``. That
+   cluster is single-node, so multi-node scheduling and cross-node shared
+   storage are not proven by it -- check generated scripts and accounting
+   behavior on your own site's scheduler. See :doc:`concepts/backends`.

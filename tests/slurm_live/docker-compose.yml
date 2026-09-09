@@ -10,7 +10,7 @@
 # Usage (see README.md):
 #   export SHINOBI_SLURM_WORKDIR="$PWD/tests/.slurmwork"; mkdir -p "$SHINOBI_SLURM_WORKDIR"
 #   docker compose -f tests/slurm_live/docker-compose.yml up -d
-#   SHINOBI_SLURM_LIVE=1 uv run pytest tests/test_slurm_live.py
+#   uv run pytest tests/test_slurm_live.py
 
 services:
   slurm:

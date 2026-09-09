@@ -320,7 +320,7 @@ What has no equivalent yet
 
 Stated plainly, so you can judge before committing:
 
-* **No resume-from-step.** The opt-in cache (:doc:`concepts/provenance`)
+* **No resume-from-step.** The opt-in cache (:doc:`concepts/config`)
   approximates it by skipping steps whose inputs are unchanged, but there is
   no ``--start-from`` flag.
 * **No per-step retry/backoff** for flaky cluster jobs.

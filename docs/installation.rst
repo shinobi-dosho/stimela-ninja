@@ -46,7 +46,8 @@ The project uses `uv <https://docs.astral.sh/uv/>`_:
     $ cd stimela-ninja
     $ uv sync --group dev
     $ .venv/bin/pytest
-    $ .venv/bin/ruff check src tests
+    $ .venv/bin/ruff check .
+    $ .venv/bin/ruff format --check .
 
 ``uv.lock`` is committed, so ``uv sync`` gives you the same dependency versions
 CI tests against (it runs every job with ``--locked``). Change
