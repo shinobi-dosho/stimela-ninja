@@ -105,3 +105,16 @@ Configuration
 
 .. automodule:: shinobi.config
    :members:
+
+Caching
+-------
+
+.. autoclass:: shinobi.cache.ProvenanceKey
+   :members:
+
+Exceptions
+----------
+
+.. automodule:: shinobi.exceptions
+   :members:
+   :show-inheritance:

@@ -52,9 +52,43 @@ exclude_patterns = [
     "design_remote_venv.md",
 ]
 
-# Treat warnings as build-relevant but don't fail the build on missing
-# autodoc targets during early scaffolding.
-nitpicky = False
+# Every cross-reference in this build resolves, so missing ones are reported
+# rather than passed over: `sphinx-build -n` is clean, and a new dangling
+# reference shows up as a warning instead of silently rendering as plain text.
+nitpicky = True
+
+# Two kinds of unresolvable reference are left, and each needs the opposite
+# treatment.
+#
+# First, third-party names autodoc renders *unqualified*. Every module here
+# uses `from __future__ import annotations`, so an annotation is rendered
+# exactly as the source spells it -- a bare `BaseModel`, which no inventory
+# lists under that name. `_QUALIFY_XREFS` maps those onto the qualified name
+# intersphinx does know; see `_qualify_bare_xref` at the end of this file for
+# why that is a `missing-reference` hook rather than `autodoc_type_aliases`
+# (which re-evaluates its values, and here yields `TypeAliasForwardRef`).
+_QUALIFY_XREFS = {
+    "BaseModel": "pydantic.BaseModel",
+    "CliSettingsSource": "pydantic_settings.CliSettingsSource",
+    "PydanticBaseSettingsSource": "pydantic_settings.PydanticBaseSettingsSource",
+}
+
+# Second, names with nothing to link to anywhere -- which is why these are
+# ignored rather than documented or qualified.
+nitpick_ignore = [
+    # pydantic-settings' internal type aliases. They appear in the settings
+    # source signatures shinobi.config overrides, but are absent from every
+    # published inventory.
+    ("py:class", "DotenvType"),
+    ("py:class", "EnvPrefixTarget"),
+    ("py:class", "PathType"),
+    # The wiring proxies behind `Recipe.inputs`/`Recipe.outputs`. They show up
+    # in return annotations but are deliberately private -- documenting them
+    # would advertise an API that isn't one.
+    ("py:class", "shinobi.steps.schema._InputsProxy"),
+    ("py:class", "shinobi.steps.schema._LoopOutputsProxy"),
+    ("py:class", "shinobi.steps.schema._OutputsProxy"),
+]
 
 # -- Autodoc / autosummary ---------------------------------------------------
 
@@ -99,3 +133,23 @@ html_theme_options = {
 # -- MyST (markdown) ---------------------------------------------------------
 
 myst_enable_extensions = ["colon_fence", "deflist"]
+
+# -- Cross-reference resolution ----------------------------------------------
+
+
+def _qualify_bare_xref(app, env, node, contnode):
+    """Rewrite an unqualified third-party reference to its qualified name.
+
+    Returning None hands the mutated node to the next ``missing-reference``
+    handler, which is intersphinx's -- so this only has to supply the name,
+    not resolve it. Connected below intersphinx's default priority so it runs
+    first. See ``_QUALIFY_XREFS`` above for what this covers and why.
+    """
+    qualified = _QUALIFY_XREFS.get(node.get("reftarget"))
+    if qualified is not None:
+        node["reftarget"] = qualified
+    return None
+
+
+def setup(app):
+    app.connect("missing-reference", _qualify_bare_xref, priority=400)
