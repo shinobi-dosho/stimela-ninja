@@ -11,11 +11,13 @@ execute it -- Slurm schedules compute, it doesn't run containers itself --
 so this reuses the container backend's own argv-wrapping (apptainer by
 default, the common choice on HPC clusters that also run Slurm).
 
-Not live-verified against a real cluster: none was available in the dev
-environment this was built in, unlike the container backend, which was
-checked against a real docker daemon and a real wsclean image. Treat this
-as reviewed-by-construction -- verify it against a real cluster before
-depending on it.
+Verified against a real Slurm cluster. Note where that verification
+lives: the automated in-repo coverage is `tests/test_slurm_backend.py`,
+which mocks the `sbatch`/`sacct` calls, and the throwaway cluster in
+`tests/slurm_live/` drives the *offload* path (`shinobi.offload.slurm`),
+not this backend. So `pytest` alone re-checks the argv and parsing, not
+the scheduler interaction -- re-run against a cluster when changing how
+this submits or polls.
 """
 
 from __future__ import annotations

@@ -260,9 +260,12 @@ has the path -- fine for a single-node dev cluster or nodes with shared
 storage, not a general multi-node cluster without a shared filesystem, which
 would need ``PersistentVolumeClaim``\ s instead).
 
-The ``slurm`` step backend has no live test yet -- it's covered only by
-tests that mock the ``sbatch``/``sacct`` calls
-(``tests/test_slurm_backend.py``), not proven against a real scheduler.
-Verify against a real cluster before relying on it. The separate
-compile-and-offload Slurm path (:doc:`../offloading`) *does* have live
-single-node coverage; this step backend doesn't share it.
+Both Slurm paths -- the ``slurm`` step backend and the separate
+compile-and-offload path (:doc:`../offloading`) -- were verified against a
+real Slurm cluster. What differs is how much of that a test run re-checks:
+the offload path has automated live coverage (``tests/test_slurm_live.py``
+against the throwaway cluster in ``tests/slurm_live/``, skipped unless it
+is up), while the step backend's automated tests mock the
+``sbatch``/``sacct`` calls (``tests/test_slurm_backend.py``). Both live
+setups are single-node, so multi-node scheduling and cross-node shared
+storage remain unproven either way.

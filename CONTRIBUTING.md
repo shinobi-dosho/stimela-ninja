@@ -37,13 +37,14 @@ The project uses [uv](https://docs.astral.sh/uv/):
 ```bash
 uv sync --group dev
 .venv/bin/pytest
-.venv/bin/ruff check src tests
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
 
 # enable the repo's pre-commit hook (once per clone)
 git config core.hooksPath .githooks
 ```
 
-(You can equivalently use `uv run pytest` / `uv run ruff check src tests`.)
+(You can equivalently use `uv run pytest` / `uv run ruff check .`.)
 
 ### The lockfile
 
@@ -125,10 +126,18 @@ layout in `tests/` (flat directory, shared fixtures in `tests/fixtures/`; no
 
 ## Code style
 
-- **Lint must be clean**: `ruff check src tests` should report no errors. Ruff
-  runs with its default rule set at `line-length = 100` (see `pyproject.toml`).
-- `ruff format` is available and uses the same line width if you'd like
-  autoformatting.
+- **Lint must be clean**: `ruff check .` should report no errors. Lint the
+  whole tree, not just `src tests` — CI does, and scoping it narrower once
+  meant `docs/conf.py` and `examples/` went unchecked while the bare command
+  failed on commits CI called green.
+- Ruff's rule set is **pinned explicitly** in `pyproject.toml`
+  (`[tool.ruff.lint] select`), not left at ruff's defaults — those shift
+  between releases, which would make "is this tree clean?" a property of
+  whichever ruff you happen to have installed. `line-length = 180`, and `E501`
+  is ignored because the formatter owns line length. That file also records
+  which rule families were deliberately left out, and what each would cost.
+- **`ruff format --check .` must pass**: formatting is a CI gate, not an
+  optional convenience.
 - Use **type hints** and write **docstrings** on public API — they render into
   the Sphinx API reference via autodoc.
 - Match the surrounding code's naming, comment density, and idiom.
@@ -151,12 +160,12 @@ group in `pyproject.toml` (Read the Docs installs from the former).
 
 1. Branch off `main` and keep PRs **small and focused** — one logical change per
    PR is much easier to review.
-2. Make sure `pytest -q` and `ruff check src tests` pass locally, and that docs
-   build if you touched public API.
+2. Make sure `pytest -q`, `ruff check .` and `ruff format --check .` pass
+   locally, and that docs build if you touched public API.
 3. Push and open a PR against `main`. Reference any related issue
    (e.g. "Closes #12").
-4. **CI must be green.** The `test` job runs the suite and lint across Python
-   3.10, 3.11 and 3.12 — that's the merge gate. An automated `review` job also
+4. **CI must be green.** The `test` job runs the suite, lint and the format
+   check across Python 3.11 and 3.12 — that's the merge gate. An automated `review` job also
    posts an AI code-review comment; treat it as **advisory, not a gate**, and
    weigh its findings with judgement. Per `AGENTS.md`'s *"Reviewing changes:
    check the tree, not just the diff"*, verify any "this doesn't exist / is

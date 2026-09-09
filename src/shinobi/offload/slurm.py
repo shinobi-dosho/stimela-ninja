@@ -11,9 +11,12 @@ Two halves, deliberately split by testability:
 - `compile_slurm(...)` is **pure** -- recipe + inputs in, a `SlurmWorkflow`
   (scripts + declared dependencies) out. No cluster, no side effects; the
   golden-testable core.
-- `submit_slurm(...)` shells out to `sbatch` and returns the job ids. Like
-  `shinobi.backends.slurm`, it is **not verified against a real cluster**
-  (none in the dev env) -- reviewed by construction; verify before relying.
+- `submit_slurm(...)` shells out to `sbatch` and returns the job ids. It is
+  **live-verified**: `tests/test_slurm_live.py` submits a dependency-chained
+  workflow to a real `sbatch`/`sacct` on a disposable single-node cluster
+  (`tests/slurm_live/README.md`), skipped unless that cluster is up. Real
+  submission, `afterok` gating and `sacct` parsing are covered; multi-node
+  scheduling and cross-node shared storage are not.
 
 Only recipes that pass `check_offloadable` get here (no orchestration funcs,
 inter-step data flow via shared-filesystem paths only), so every value the
@@ -388,7 +391,8 @@ def submit_slurm(workflow: SlurmWorkflow, *, workdir: str | None = None) -> dict
     then detach. Jobs are submitted in topological order with
     `--dependency=afterok` linking each to its parents' job ids.
 
-    NOT verified against a real cluster (see module docstring).
+    Live-verified against a real cluster by `tests/test_slurm_live.py`
+    (see module docstring).
     """
     workdir = workdir or os.getcwd()
     # The compiled scripts write stdout/stderr into log_dir; Slurm fails a
@@ -423,7 +427,8 @@ def status_slurm(job_ids: dict[str, str]) -> dict[str, str]:
     {step name -> state}. This is how a fresh `ninja status` invocation
     reconstructs a detached run's progress without any persistent process.
 
-    NOT verified against a real cluster (see module docstring).
+    Live-verified against a real cluster by `tests/test_slurm_live.py`
+    (see module docstring).
     """
     states: dict[str, str] = {}
     for name, job_id in job_ids.items():
