@@ -62,8 +62,8 @@ implicit wrapping of a bare scalar into an invented field name.
    module globals, so any ``BaseModel`` used in the signature or return type
    must be defined at module level, not nested inside another function.
 
-Container-only imports: ``ctx.import_func()`` / ``ctx.import_module()``
------------------------------------------------------------------------
+Container-only imports: ``ctx.import_callable()`` / ``ctx.import_module()``
+---------------------------------------------------------------------------
 
 A pystep declared with ``image=`` runs *inside* that container when a container
 backend is resolved; the module defining it, however, is imported on the
@@ -73,9 +73,9 @@ environment, so ``from casacore.tables import table`` at module scope raises
 ``ImportError`` on the host long before the step ever runs -- and trips linters
 and type checkers there for the same reason.
 
-:meth:`ExecContext.import_func <shinobi.ExecContext.import_func>` defers the
-import to execution time, where the package really exists. Give a pystep a
-leading ``ctx`` parameter and resolve the names inside the body:
+:meth:`ExecContext.import_callable <shinobi.ExecContext.import_callable>`
+defers the import to execution time, where the package really exists. Give a
+pystep a leading ``ctx`` parameter and resolve the names inside the body:
 
 .. code-block:: python
 
@@ -95,8 +95,8 @@ leading ``ctx`` parameter and resolve the names inside the body:
     @pystep(image="quay.io/stimela/casa:latest")
     def phase_centre(ctx, ms: Path, field_id: int = 0) -> PhaseCentre:
         """Read a field's phase centre from an MS and format it for humans."""
-        table = ctx.import_func("table", "casacore.tables")
-        SkyCoord = ctx.import_func("SkyCoord", "astropy.coordinates")
+        table = ctx.import_callable("table", "casacore.tables")
+        SkyCoord = ctx.import_callable("SkyCoord", "astropy.coordinates")
 
         field = table(f"{ms}::FIELD", ack=False)
         try:
@@ -113,23 +113,38 @@ leading ``ctx`` parameter and resolve the names inside the body:
 
 Neither ``python-casacore`` nor ``astropy`` needs to be installed on the host:
 the host only imports this module to *build* the recipe, and by then
-``import_func`` has resolved nothing at all.
+``import_callable`` has resolved nothing at all.
 
-The signature is ``ctx.import_func(func, module=None)``:
+The signature is ``ctx.import_callable(name, module=None)``:
 
 * With ``module``, it imports that module and returns the named attribute --
   ``importlib.import_module(module)`` followed by ``getattr(module, func)``.
   ``module`` is the **full dotted path**, however deep, so
-  ``ctx.import_func("getheader", "astropy.io.fits")`` is the right spelling for
-  an attribute of a submodule. Splitting the path at the package boundary --
-  ``ctx.import_func("fits", "astropy.io")`` -- asks for the ``fits`` *module*
-  as though it were an attribute of ``astropy.io``, and fails, because
-  importing a package does not bind its submodules onto it.
-* Without ``module``, it looks ``func`` up in :mod:`builtins`, so
-  ``ctx.import_func("print")`` and ``ctx.import_func("len")`` work.
+  ``ctx.import_callable("getheader", "astropy.io.fits")`` is the right spelling
+  for an attribute of a submodule. Splitting the path at the package boundary
+  -- ``ctx.import_callable("fits", "astropy.io")`` -- asks for the ``fits``
+  *module* as though it were an attribute of ``astropy.io``, which is not what
+  the caller meant and is rejected.
+* Without ``module``, it looks ``name`` up in :mod:`builtins`, so
+  ``ctx.import_callable("print")`` and ``ctx.import_callable("len")`` work.
 
-The name is historical: the returned object need not be a function. Classes
-(``table`` above), and any other module attribute, resolve the same way.
+**Callable, not function.** What a pystep asks for here is a class about as
+often as a function -- ``casacore.tables.table``, ``astropy.wcs.WCS``,
+``astropy.coordinates.SkyCoord`` -- and numpy hands back neither:
+``numpy.log10`` is a ``ufunc`` and ``numpy.linspace`` an
+``_ArrayFunctionDispatcher``. Callability is the one property they share, and
+the one the body is about to rely on, so it is the one checked: a non-callable
+result raises ``TypeError`` naming the fix.
+
+That check is what makes the split point safe rather than lucky. Whether a
+package boundary split raises on its own depends on the package:
+``("tables", "casacore")`` and ``("fits", "astropy.io")`` raise
+``AttributeError``, but ``("ndimage", "scipy")`` quietly returns the *module*
+on any scipy new enough to expose its subpackages lazily -- a wrong-shaped
+object the body then carries to its first call site.
+
+``ctx.import_func`` is the former name of this method, kept as an alias so
+existing pysteps keep working; it delegates, check included.
 
 When the body wants the **module object itself** rather than one of its
 attributes, use :meth:`ExecContext.import_module
@@ -146,21 +161,24 @@ attributes, use :meth:`ExecContext.import_module
 
 .. important::
 
-   ``import_func`` returns an **attribute of** a module, never a module, and
-   its one-argument form is a :mod:`builtins` lookup, not an import:
-   ``ctx.import_func("numpy")`` raises ``AttributeError: module 'builtins' has
-   no attribute 'numpy'``. Reach for ``ctx.import_module("numpy")`` there. The
-   two methods are kept separate so each has one return type, rather than
-   having ``import_func`` return a callable or a module depending on what the
-   name happens to be.
+   ``import_callable`` returns a **callable attribute of** a module, never a
+   module, and its one-argument form is a :mod:`builtins` lookup, not an
+   import: ``ctx.import_callable("numpy")`` raises ``AttributeError: module
+   'builtins' has no attribute 'numpy'``. Reach for
+   ``ctx.import_module("numpy")`` there. The two methods are kept separate so
+   each has one return type, rather than having one of them return a callable
+   or a module depending on what the name happens to be.
 
 .. note::
 
    Inside the container the runner stubs out ``shinobi``, ``pydantic`` and the
    step's own top-level package, so those never load there. Only stdlib and
-   whatever the body pulls in through ``import_func``/``import_module`` are
+   whatever the body pulls in through ``import_callable``/``import_module`` are
    real -- one more reason tool imports belong in the body rather than at
-   module scope.
+   module scope. All three import methods (``import_callable``,
+   ``import_func``, ``import_module``) are lifted into that in-container shim
+   from the real ``ExecContext``, so they behave there exactly as they do on
+   the host.
 
 Which to use
 ------------
