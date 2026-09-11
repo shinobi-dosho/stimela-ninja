@@ -11,7 +11,7 @@ out collection when it is absent.
 `backend="native"`, so wsclean and cubical need nothing installed. It cannot
 intercept a **pystep**: as of simms 3.0, dosho's `skysim`/`telsim` are
 `@shinobi.pystep` `StepRef`s rather than binary Cabs, and a pystep runs its
-own Python body (`ctx.import_func("runit", "simms.apps.telsim")`) instead of
+own Python body (`ctx.import_callable("runit", "simms.apps.telsim")`) instead of
 dispatching through a backend. A backend override cannot reach it, so the one
 test that dispatches those steps needs the real `simms` module -- which has no
 docker image and is not on PyPI, hence still a manual install:

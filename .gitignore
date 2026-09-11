@@ -230,6 +230,8 @@ tests/.slurmwork/
 # Agents
 .claude/
 .opencode/
+.agents/
+.codex/
 
 # Real output from running examples/meerkat_simulation.py (or similar) by
 # hand -- generated data, not source.

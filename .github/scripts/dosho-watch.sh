@@ -82,7 +82,7 @@ if [[ "$ci_status" == skip ]] && command -v uv >/dev/null; then
 
     # simms, installed separately and tolerantly. dosho's skysim/telsim are
     # `@shinobi.pystep` StepRefs, not Cabs, so a backend override cannot
-    # intercept them -- they run their own body and `import_func` the real
+    # intercept them -- they run their own body and `import_callable` the real
     # `simms.apps.*` at execution time. Without simms present the one test
     # that dispatches them skips, and dosho's pysteps go unexercised in the
     # only place that tests them against dosho main.
