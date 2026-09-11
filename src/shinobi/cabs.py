@@ -28,7 +28,7 @@ document path is tried first, so a mixed provider can serve most cabs as data
 and the rest as objects. A provider entry can
 be either shape -- a `Cab` for real "binary"-flavour tools, or a `StepRef`
 (what `@shinobi.pystep` produces) for Python-package tools that have no
-standalone executable (e.g. CASA tasks, run via `ctx.import_func` inside a
+standalone executable (e.g. CASA tasks, run via `ctx.import_callable` inside a
 container rather than argv-built and shelled out to) -- `Recipe.add_step`
 already accepts either identically, so this resolver doesn't need to care
 which one it got. This module only resolves *names* to providers -- it
