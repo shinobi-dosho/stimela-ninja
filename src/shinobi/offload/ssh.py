@@ -52,7 +52,7 @@ import subprocess
 import time
 import uuid
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -423,6 +423,15 @@ def _resolve(remote: RemoteSpec, mode: str, source: rv.EnvSource) -> ResolvedVen
 
     if mode == rv.VENV_SYNC and probe.uv_version is None and not probe.can_bootstrap_uv:
         raise BackendError(_no_uv_message(remote.host))
+
+    # Every path from here on -- staging, the published `final`, a
+    # bootstrapped uv, the venv `launch_remote` later activates -- is built
+    # by string-joining onto this one, and some of them are used by a script
+    # that has `cd`ed first. A relative path would then be resolved a second
+    # time against the new cwd; see `remote_venv.absolute_remote_path` for
+    # what that looks like when it happens. Fixed once, at the only point
+    # where the answer is known.
+    remote = replace(remote, path=rv.absolute_remote_path(remote.path, probe.cwd))
 
     lock_bytes, pyproject_bytes = source.read()
     inputs = rv.EnvInputs(

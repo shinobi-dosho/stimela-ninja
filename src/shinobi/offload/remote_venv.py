@@ -129,6 +129,7 @@ _PROBE_PY = "; ".join(
 _MARK_PLATFORM = "shinobi-platform:"
 _MARK_UV = "shinobi-uv:"
 _MARK_ENSUREPIP = "shinobi-ensurepip:"
+_MARK_CWD = "shinobi-cwd:"
 
 # The remote command `parse_probe` reads. `python3` rather than
 # `uv python find`: this has to work in `use` mode on a host with no uv, and
@@ -146,6 +147,13 @@ PROBE_COMMAND = "; ".join(
         # `python3-venv` package, so `python3 -m venv` exists and then fails
         # partway with "ensurepip is not available". Import both.
         f"printf '{_MARK_ENSUREPIP}%s\\n' \"$(python3 -c 'import venv, ensurepip' 2>/dev/null && echo yes || echo no)\"",
+        # The directory a *relative* `--remote host:path` is relative *to*.
+        # Read from the same shell every other command runs in rather than
+        # assumed to be `$HOME`, because matching those commands is the whole
+        # point: a login shell that cds elsewhere in its own rc file moves
+        # rsync's destination and every `ssh host '<relative path>'` with it,
+        # and this probe moves with them.
+        f"printf '{_MARK_CWD}%s\\n' \"$PWD\"",
     )
 )
 
@@ -209,11 +217,15 @@ class RemoteProbe:
             at all, and `sync` can bootstrap one (see `can_bootstrap_uv`).
         can_bootstrap_uv: Whether `python3 -m venv` works here, which is all
             it takes to install uv from the index as an ordinary wheel.
+        cwd: The remote login shell's working directory -- what a relative
+            remote path resolves against. None where the probe did not say,
+            which `absolute_remote_path` treats as "leave the path alone".
     """
 
     platform: PlatformTriple
     uv_version: str | None
     can_bootstrap_uv: bool = False
+    cwd: str | None = None
 
 
 def parse_probe(stdout: str) -> RemoteProbe:
@@ -231,6 +243,7 @@ def parse_probe(stdout: str) -> RemoteProbe:
     platform: PlatformTriple | None = None
     uv_version: str | None = None
     can_bootstrap = False
+    cwd: str | None = None
     for line in stdout.splitlines():
         line = line.strip()
         if line.startswith(_MARK_PLATFORM):
@@ -239,9 +252,11 @@ def parse_probe(stdout: str) -> RemoteProbe:
             uv_version = line[len(_MARK_UV) :].strip() or None
         elif line.startswith(_MARK_ENSUREPIP):
             can_bootstrap = line[len(_MARK_ENSUREPIP) :].strip() == "yes"
+        elif line.startswith(_MARK_CWD):
+            cwd = line[len(_MARK_CWD) :].strip() or None
     if platform is None:
         raise ValueError(f"probe produced no {_MARK_PLATFORM!r} line; got: {stdout.strip()!r}")
-    return RemoteProbe(platform=platform, uv_version=uv_version, can_bootstrap_uv=can_bootstrap)
+    return RemoteProbe(platform=platform, uv_version=uv_version, can_bootstrap_uv=can_bootstrap, cwd=cwd)
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +331,50 @@ def env_id(inputs: EnvInputs) -> str:
         h.update(field)
         h.update(b"\0")
     return h.hexdigest()[:16]
+
+
+def absolute_remote_path(remote_path: str, cwd: str | None) -> str:
+    """`remote_path` made absolute against the remote login shell's `cwd`.
+
+    **Why a relative remote path cannot be left relative.** `--remote
+    host:path` accepts a relative path, and rsync, `mkdir -p` and every
+    `ssh host '<path>'` all resolve it the same way -- against the login
+    shell's working directory -- so it looks like it works. It stops working
+    the moment a generated script `cd`s somewhere and *then* uses a path
+    built from the same string, because the second resolution happens
+    against the new cwd. `provision_command` does exactly that: it cds into
+    the staging directory and hands `uv venv` `<staging>/.venv`, which lands
+    at `<staging>/<staging>/.venv`. Provisioning still exits 0 -- every
+    later line in that script is equally displaced, so they agree with each
+    other -- and `publish_command`, which does not cd, is the first to
+    disagree:
+
+        bash: line 3: <staging>/.venv/.shinobi-env.json: No such file or directory
+
+    Two more consumers have the same shape, and one of them fails silently:
+    a bootstrapped uv (`<staging>/.uv-bootstrap/bin/uv`, used after the same
+    cd) is simply not found, and `_venv_activation`'s `resolved` path is
+    tested *inside* `cd <remote.path>; ...`, so a freshly provisioned
+    environment fails its `[ -f ]` test and the run proceeds against the
+    login shell's PATH with only a note in the log.
+
+    Making the path absolute once, here, is what stops any of that being
+    reachable: nothing downstream can resolve twice what is already
+    absolute. It is deliberately not a per-command `cd`-and-fix, because the
+    bug is in the *shape* -- any future command that cds would reintroduce
+    it.
+
+    `cwd` of None means the probe did not report one (an older or noisier
+    remote), and the path is returned unchanged: that is exactly today's
+    behaviour, which works for everything except the double resolution, and
+    a fabricated `$HOME` would be a guess about the one thing this function
+    exists to stop guessing about.
+    """
+    if not remote_path:
+        return remote_path
+    if PurePosixPath(remote_path).is_absolute() or cwd is None:
+        return remote_path
+    return str(PurePosixPath(cwd) / remote_path)
 
 
 def venv_dir(remote_path: str, env_id_: str) -> str:
