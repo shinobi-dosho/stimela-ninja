@@ -33,6 +33,13 @@ demanding one. ``ninja run TARGET --remote user@host:/path`` rsyncs the target
 and its cab dependencies to one host, starts ``ninja run`` there detached, and
 gives you a handle to poll -- no scheduler in between.
 
+The path may be relative, in which case it means what it would mean to
+``rsync`` or ``ssh``: relative to the remote login shell's working directory.
+It is resolved to an absolute path once, from that shell's own ``$PWD``, before
+anything is built from it -- the provisioning script ``cd``\ s, so a path left
+relative would be resolved a second time against the directory it had just
+entered.
+
 Which to reach for:
 
 .. list-table::

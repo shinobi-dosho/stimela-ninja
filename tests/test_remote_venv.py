@@ -6,6 +6,7 @@ import pytest
 
 from shinobi.backends.venv import digest_of_dists
 from shinobi.offload.remote_venv import (
+    absolute_remote_path,
     MODE_UV_PIP_INSTALL,
     MODE_UV_PIP_SYNC,
     MODE_UV_SYNC,
@@ -705,3 +706,39 @@ def test_the_probe_reports_this_host_can_bootstrap():
     """Run for real -- this machine has a working `python3 -m venv`."""
     proc = subprocess.run(["bash", "-lc", PROBE_COMMAND], capture_output=True, text=True)
     assert parse_probe(proc.stdout).can_bootstrap_uv
+
+
+# -- a relative remote path ------------------------------------------------
+
+
+def test_the_probe_reports_the_directory_a_relative_path_resolves_against():
+    """Read from the same login shell the other commands run in, not
+    assumed to be `$HOME`: an rc file that cds moves rsync's destination and
+    every relative `ssh host '<path>'` with it."""
+    assert '"$PWD"' in PROBE_COMMAND
+    probe = parse_probe("shinobi-platform:x86_64/glibc-2.39/3.11\nshinobi-cwd:/home/u\n")
+    assert probe.cwd == "/home/u"
+
+
+def test_a_probe_that_says_nothing_about_its_cwd_is_not_an_error():
+    """Same policy as the uv line: informational, and an honest None beats a
+    fabricated home directory."""
+    assert parse_probe("shinobi-platform:x86_64/glibc-2.39/3.11\n").cwd is None
+
+
+def test_a_relative_path_is_joined_onto_the_remote_cwd():
+    assert absolute_remote_path("tests/pystep-tests", "/home/u") == "/home/u/tests/pystep-tests"
+
+
+def test_an_absolute_path_is_returned_unchanged():
+    assert absolute_remote_path("/data/p", "/home/u") == "/data/p"
+
+
+def test_no_cwd_leaves_the_path_alone_rather_than_guessing():
+    assert absolute_remote_path("rel/p", None) == "rel/p"
+
+
+def test_an_empty_path_is_left_alone():
+    """`RemoteSpec.path` is never empty in practice; joining one onto the
+    remote cwd would silently retarget the whole feature at `$HOME`."""
+    assert absolute_remote_path("", "/home/u") == ""

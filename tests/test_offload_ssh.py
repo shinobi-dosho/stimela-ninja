@@ -1,6 +1,8 @@
 from pathlib import Path
 
 import json
+import posixpath
+import re
 import shlex
 import subprocess
 
@@ -449,6 +451,7 @@ class _FakeRemote:
         self,
         *,
         uv="uv 0.11.21",
+        cwd="/home/u",
         can_bootstrap=True,
         bootstrap_uv="uv 0.12.2",
         sentinel="",
@@ -458,6 +461,7 @@ class _FakeRemote:
         dists=None,
     ):
         self.uv = uv
+        self.cwd = cwd
         self.can_bootstrap = can_bootstrap
         self.bootstrap_uv = bootstrap_uv
         self.dists = dists
@@ -472,9 +476,10 @@ class _FakeRemote:
         self.commands.append(command)
         if "shinobi-platform" in command:
             ensurepip = "yes" if self.can_bootstrap else "no"
+            cwd_line = f"shinobi-cwd:{self.cwd}\n" if self.cwd else ""
             return _FakeProc(
                 returncode=0,
-                stdout=f"shinobi-platform:x86_64/glibc-2.39/3.11\nshinobi-uv:{self.uv}\nshinobi-ensurepip:{ensurepip}\n",
+                stdout=f"shinobi-platform:x86_64/glibc-2.39/3.11\nshinobi-uv:{self.uv}\nshinobi-ensurepip:{ensurepip}\n{cwd_line}",
             )
         if "python3 -m venv" in command:
             return _FakeProc(returncode=0, stdout=f"shinobi-uv:{self.bootstrap_uv}\n")
@@ -838,3 +843,94 @@ def test_a_remote_that_cannot_describe_itself_says_so(fake_remote, lock_source):
     resolved = resolve_remote_venv(RemoteSpec("host", "/p"), "sync", lock_source)
     assert resolved.provisioned
     assert any("did not report a distribution list" in note for note in resolved.notes)
+
+
+# -- a relative `--remote host:path` --------------------------------------
+#
+# `--remote host:path` accepts a relative path, and rsync, `mkdir -p` and a
+# bare `ssh host '<path>'` all resolve it identically -- against the login
+# shell's cwd -- so it appears to work. It breaks where a generated script
+# `cd`s and *then* uses a path built from the same string, which resolves it
+# a second time against the new cwd. Every test above uses `/p`, which is
+# why none of them saw it.
+
+
+def test_a_relative_remote_path_is_made_absolute_before_anything_uses_it(fake_remote, lock_source):
+    """The staging path reaches `uv venv` *after* the script has cd'd into
+    it. Relative, it lands at `<staging>/<staging>/.venv`, provisioning
+    still exits 0 (every later line is equally displaced), and publishing --
+    which does not cd -- is the first to disagree."""
+    remote = fake_remote(cwd="/home/u", sentinel="")
+    resolve_remote_venv(RemoteSpec("host", "tests/pystep-tests"), "sync", lock_source)
+
+    build = next(c for c in remote.commands if "venv --relocatable" in c)
+    venv_arg = build.split("venv --relocatable ")[1].split(";")[0].strip()
+    assert venv_arg.startswith("/home/u/tests/pystep-tests/"), venv_arg
+    assert "tests/pystep-tests/tests/pystep-tests" not in build
+
+
+def test_provision_and_publish_resolve_to_the_same_venv_for_a_relative_path(fake_remote, lock_source):
+    """The bug's actual signature: two commands naming one directory with
+    the same *string* and meaning two different places, reported as
+    `.shinobi-env.json: No such file or directory`.
+
+    Comparing the strings proves nothing -- they were always equal. What
+    differs is the directory each is resolved against: the provision script
+    `cd`s into the staging directory first, publish does not. So resolve
+    both the way their own shell would, and require the same answer.
+    """
+    login_cwd = "/home/u"
+    remote = fake_remote(cwd=login_cwd, sentinel="")
+    resolve_remote_venv(RemoteSpec("host", "tests/pystep-tests"), "sync", lock_source)
+
+    build = next(c for c in remote.commands if "venv --relocatable" in c)
+    publish = next(c for c in remote.commands if "os.rename" in c)
+
+    cd_arg = build.split("cd ")[1].split(";")[0].strip()
+    venv_arg = build.split("venv --relocatable ")[1].split(";")[0].strip()
+    # the very line the failure was reported on: `cat > <venv>/.shinobi-env.json`
+    publish_arg = re.search(r"cat > (\S+)/\.shinobi-env\.json", publish).group(1).strip("'")
+
+    # the provision script's shell has already cd'd
+    in_provision = posixpath.normpath(posixpath.join(login_cwd, cd_arg, venv_arg))
+    # publish's shell has not
+    in_publish = posixpath.normpath(posixpath.join(login_cwd, publish_arg))
+    assert in_provision == in_publish
+
+
+def test_a_bootstrapped_uv_is_found_after_the_cd_for_a_relative_path(fake_remote, lock_source):
+    """Same double resolution, second victim: the bootstrapped uv lives
+    under the staging directory and is invoked after the cd into it."""
+    remote = fake_remote(cwd="/home/u", uv="", can_bootstrap=True, sentinel="")
+    resolve_remote_venv(RemoteSpec("host", "tests/pystep-tests"), "sync", lock_source)
+
+    build = next(c for c in remote.commands if "venv --relocatable" in c)
+    assert "/home/u/tests/pystep-tests/.shinobi/venvs/" in build
+    assert build.count("tests/pystep-tests") == build.count("/home/u/tests/pystep-tests")
+
+
+def test_the_resolved_path_is_absolute_so_the_launch_can_activate_it(fake_remote, lock_source):
+    """`launch_remote` tests this path inside `cd <remote.path>; ...`. Left
+    relative it fails its own `[ -f ]` test, falls through to the legacy
+    `venv/`/`.venv/` branches and finally to a note in the log -- so a
+    freshly provisioned environment is silently not used and the run
+    proceeds against the login shell's PATH."""
+    fake_remote(cwd="/home/u", sentinel="")
+    resolved = resolve_remote_venv(RemoteSpec("host", "tests/pystep-tests"), "sync", lock_source)
+    assert resolved.path.startswith("/home/u/tests/pystep-tests/")
+
+
+def test_an_absolute_remote_path_is_left_exactly_as_given(fake_remote, lock_source):
+    remote = fake_remote(cwd="/home/u", sentinel="")
+    resolved = resolve_remote_venv(RemoteSpec("host", "/data/p"), "sync", lock_source)
+    assert resolved.path.startswith("/data/p/")
+    assert not remote.ran("/home/u/data/p")
+
+
+def test_a_remote_that_reports_no_cwd_keeps_todays_behaviour(fake_remote, lock_source):
+    """An older or noisier host whose probe says nothing about its cwd. The
+    path stays as given -- which is what works for everything except the
+    double resolution -- rather than being joined onto a guessed `$HOME`."""
+    fake_remote(cwd="", sentinel="")
+    resolved = resolve_remote_venv(RemoteSpec("host", "rel/p"), "sync", lock_source)
+    assert resolved.path.startswith("rel/p/")
