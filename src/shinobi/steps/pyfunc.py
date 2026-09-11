@@ -35,18 +35,22 @@ packages is the point. The host rebuilds the typed outputs from the child's
 JSON. Native runs call the function in-process (the original behaviour).
 
 For container-only imports (e.g. CASA tasks that don't exist on the host),
-use `ctx.import_func()` to avoid linter warnings:
+use `ctx.import_callable()` to avoid linter warnings:
 
     @shinobi.pystep(image="quay.io/stimela/casa:latest")
     def flagdata(ctx, vis: Path, mode: str = "manual") -> FlagdataOutputs:
-        flagdata_fn = ctx.import_func("flagdata", "casatasks")
+        flagdata_fn = ctx.import_callable("flagdata", "casatasks")
         flagdata_fn(vis=str(vis), mode=mode)
         return FlagdataOutputs(...)
 
 This is cleaner than `from casatasks import flagdata` which triggers linter
-errors when the module isn't installed on the host. `ctx.import_module()` is
-the companion for when the body wants a module rather than one of its
-attributes (`np = ctx.import_module("numpy")`).
+errors when the module isn't installed on the host. It is named for what a
+pystep actually asks for -- a class (`casacore.tables.table`) and a numpy
+`ufunc` are as common here as a plain function -- and it rejects a
+non-callable, which is how a dotted path split at the wrong point announces
+itself. `ctx.import_func()` is the old name, kept as an alias.
+`ctx.import_module()` is the companion for when the body wants a module
+rather than one of its attributes (`np = ctx.import_module("numpy")`).
 
 Caveat: `typing.get_type_hints` resolves annotations against the function's
 own module globals, so any `BaseModel` used in the signature or return type
@@ -343,13 +347,19 @@ def _ctx_shim() -> str:
     the real ExecContext; instead the shim's import methods are lifted
     verbatim from the real ones with `inspect.getsource`, so the two cannot
     drift. Their bodies rely on the runner's module-level `importlib` import
-    plus the `builtins` import added here; their annotations stay
-    unevaluated thanks to the runner's `from __future__ import annotations`.
+    plus the `builtins` and `ModuleType` imports added here; their
+    annotations stay unevaluated thanks to the runner's `from __future__
+    import annotations`.
+
+    All three import methods are lifted, `import_callable` included even
+    though `import_func` is only its alias -- an alias whose target is
+    missing is an `AttributeError` inside the image, which is the one place
+    it cannot be debugged.
     """
     from shinobi.steps.dispatch import ExecContext
 
-    methods = "\n".join(inspect.getsource(m) for m in (ExecContext.import_func, ExecContext.import_module))
-    return "import builtins\n\n\nclass _Ctx:\n" + methods + "\nctx = _Ctx()\n"
+    methods = "\n".join(inspect.getsource(m) for m in (ExecContext.import_callable, ExecContext.import_func, ExecContext.import_module))
+    return "import builtins\nfrom types import ModuleType\n\n\nclass _Ctx:\n" + methods + "\nctx = _Ctx()\n"
 
 
 # All paths in the runner (`inputs_path`, `outputs_path`, the script's own
@@ -372,7 +382,7 @@ def _ctx_shim() -> str:
 # in-child. This honours the ctx-shim's "shinobi is not assumed installed
 # in the container" design: the function is *defined* against dependency-free
 # stubs and *runs* using only stdlib plus whatever it pulls in via
-# `ctx.import_func`/`ctx.import_module` (real, container-provided packages
+# `ctx.import_callable`/`ctx.import_module` (real, container-provided packages
 # like `casatasks`). The
 # function returns a stubbed `*Outputs` (kwargs stored as attrs); its plain
 # dict is written out and the host -- which has real pydantic -- rebuilds the

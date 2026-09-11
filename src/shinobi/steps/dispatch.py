@@ -285,39 +285,76 @@ class ExecContext:
         """
         return override or self._backend_override or self.scope.backend or self._recipe_backend or (self._config or AppConfig.load()).backend.default
 
-    def import_func(self, func: str, module: str | None = None) -> Callable:
+    def import_callable(self, name: str, module: str | None = None) -> Callable:
         """Import and return a callable by name.
 
-        If `module` is None, looks up `func` in builtins (e.g. ``print``,
+        If `module` is None, looks up `name` in builtins (e.g. ``print``,
         ``len``). Otherwise imports `module` -- which may be a dotted path of
         any depth (``"astropy.io.fits"``) -- and returns
-        `getattr(module, func)`.
+        `getattr(module, name)`.
 
-        Useful for pysteps that invoke container-only functions (e.g. CASA
+        Useful for pysteps that invoke container-only callables (e.g. CASA
         tasks) without triggering linter warnings about missing imports on
         the host.
 
-        This always returns an *attribute of* a module, never a module: name
-        the full dotted path in `module` and the attribute in `func`. Use
-        `import_module` when the step wants the module object itself.
+        **Callable, not function**, and the distinction is not pedantry: what
+        a pystep asks for here is a *class* about as often as it is a
+        function (``casacore.tables.table``, ``astropy.wcs.WCS``,
+        ``astropy.coordinates.SkyCoord``), and numpy hands back neither --
+        ``numpy.log10`` is a ``ufunc`` and ``numpy.linspace`` an
+        ``_ArrayFunctionDispatcher``. The one property all of them share is
+        the one the caller is about to rely on, so that is the one checked.
+
+        **The check is what makes the split point safe.** This always returns
+        an *attribute of* a module, never a module: name the full dotted path
+        in `module` and the attribute in `name`. Splitting it at the wrong
+        point asks for a submodule as though it were an attribute of its
+        parent, and whether that raises depends on the package --
+        ``("ndimage", "scipy")`` quietly returns the *module* on any scipy new
+        enough to expose its subpackages lazily, while ``("tables",
+        "casacore")`` and ``("fits", "astropy.io")`` raise `AttributeError`.
+        Version-dependent luck is a bad way to learn the path was wrong, so a
+        non-callable result is a `TypeError` here rather than a mystery at the
+        first call site. Use `import_module` when the step wants the module.
         """
-        if module is None:
-            return getattr(builtins, func)
-        mod = importlib.import_module(module)
-        return getattr(mod, func)
+        obj = getattr(builtins, name) if module is None else getattr(importlib.import_module(module), name)
+        if not callable(obj):
+            where = f"{module}.{name}" if module else f"builtins.{name}"
+            hint = (
+                f' -- it is a module, so the dotted path is split one segment too early: ask for it with ctx.import_module("{where}"),'
+                " or name the attribute you actually want and put the rest in the module argument"
+                if isinstance(obj, ModuleType)
+                else ""
+            )
+            raise TypeError(f"import_callable({name!r}, {module!r}) returned {type(obj).__name__}, which is not callable{hint}")
+        return obj
+
+    def import_func(self, func: str, module: str | None = None) -> Callable:
+        """Deprecated alias for `import_callable`.
+
+        Kept because it is what every existing pystep calls, and renaming a
+        method a container shim lifts by source is not a change worth
+        breaking a caller over. The name was wrong -- half of what real
+        pysteps ask for is a class, not a function -- but the behaviour is
+        `import_callable`'s, including its callability check, so there is
+        exactly one implementation to reason about.
+        """
+        return self.import_callable(func, module)
 
     def import_module(self, module: str) -> ModuleType:
         """Import and return a module by its full dotted path.
 
-        The companion to `import_func` for the case where a pystep wants the
-        module itself rather than one of its attributes -- ``np =
+        The companion to `import_callable` for the case where a pystep wants
+        the module itself rather than one of its attributes -- ``np =
         ctx.import_module("numpy")``, ``fits =
-        ctx.import_module("astropy.io.fits")``. `import_func` cannot express
-        this: its one-argument form is a builtins lookup, and its two-argument
-        form ends in a `getattr`, which does not reach a submodule
-        (`import_module` does not bind one onto its parent package).
+        ctx.import_module("astropy.io.fits")``. `import_callable` cannot
+        express this: its one-argument form is a builtins lookup, and its
+        two-argument form ends in a `getattr`, which does not reach a
+        submodule (`import_module` does not bind one onto its parent
+        package) -- and now rejects the module it would occasionally have
+        returned by accident.
 
-        Kept as a separate name rather than folded into `import_func`'s
+        Kept as a separate name rather than folded into `import_callable`'s
         one-argument form so the return type stays predictable per method
         instead of varying with whatever the name happens to resolve to.
         """

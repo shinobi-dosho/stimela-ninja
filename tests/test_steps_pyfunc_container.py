@@ -7,6 +7,8 @@ execution when the backend is `native`.
 
 from __future__ import annotations
 
+import importlib
+import inspect
 import json
 import pickle
 import subprocess
@@ -774,3 +776,107 @@ def test_stub_modules_do_not_break_module_introspection():
     assert result.success, result.stderr
     assert "not _Any" not in result.stderr
     assert result.outputs.found == "ok"
+
+
+# --- import_callable -------------------------------------------------------
+
+
+def _bare_ctx():
+    from pydantic import BaseModel
+
+    from shinobi.steps.dispatch import ExecContext
+    from shinobi.steps.schema import Scope
+
+    class DummyModel(BaseModel):
+        pass
+
+    return ExecContext(Scope(name="test", inputs_model=DummyModel, outputs_model=DummyModel), {})
+
+
+def test_import_callable_returns_functions_classes_and_other_callables():
+    """A pystep asks for a class about as often as a function, and numpy
+    hands back neither -- all three go through the same door."""
+    ctx = _bare_ctx()
+
+    assert ctx.import_callable("join", "os.path")("/a", "b") == "/a/b"
+    assert ctx.import_callable("Path", "pathlib")("/tmp") == Path("/tmp")
+    assert ctx.import_callable("len")([1, 2]) == 2
+
+    # A callable that is neither a function nor a class: `partial` instances
+    # stand in here for numpy's `ufunc`/`_ArrayFunctionDispatcher`, which are
+    # what the real call sites get and which no `isfunction` check accepts.
+    import functools
+
+    assert callable(ctx.import_callable("partial", "functools"))
+    assert not inspect.isfunction(functools.partial(len))
+
+
+def test_import_callable_rejects_a_module_and_names_the_fix():
+    """The split-one-segment-too-early mistake. `os.path` is an attribute of
+    `os`, so this is the case that silently *succeeds* without the check --
+    exactly as `("ndimage", "scipy")` does on a modern scipy."""
+    ctx = _bare_ctx()
+
+    with pytest.raises(TypeError) as excinfo:
+        ctx.import_callable("path", "os")
+    message = str(excinfo.value)
+    assert "not callable" in message
+    assert 'ctx.import_module("os.path")' in message
+
+
+def test_import_callable_rejects_a_non_callable_attribute():
+    ctx = _bare_ctx()
+
+    with pytest.raises(TypeError, match="not callable"):
+        ctx.import_callable("sep", "os")
+
+
+def test_import_func_is_an_alias_with_the_same_check():
+    """Every existing pystep calls the old name; it must keep working, and
+    must not be a second implementation that can drift."""
+    ctx = _bare_ctx()
+
+    assert ctx.import_func("join", "os.path")("/a", "b") == "/a/b"
+    with pytest.raises(TypeError, match="not callable"):
+        ctx.import_func("path", "os")
+
+
+def test_pystep_ctx_shim_carries_all_three_import_methods():
+    """`import_func` delegates to `import_callable`, so a shim missing the
+    target raises `AttributeError` inside the image -- the one place it
+    cannot be debugged. `ModuleType` is in the preamble for the same reason:
+    the rejection path names it."""
+    ref = pystep(image="casa:latest", backend="docker")(ctx_func)
+
+    captured_runner = {}
+    original_write_text = Path.write_text
+
+    def capture_write_text(self, content, *args, **kwargs):
+        if self.name == "runner.py":
+            captured_runner["content"] = content
+        return original_write_text(self, content, *args, **kwargs)
+
+    fake = _fake_container_run({"joined": "/x/y"})
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
+        with patch.object(Path, "write_text", capture_write_text):
+            ref(a="/x", b="y")
+
+    runner = captured_runner["content"]
+    assert "def import_callable" in runner
+    assert "def import_func" in runner
+    assert "def import_module" in runner
+    assert "from types import ModuleType" in runner
+
+
+def test_the_shim_itself_rejects_a_module():
+    """The shim is lifted source, so exec it and drive the real thing rather
+    than trusting that the lift kept the behaviour."""
+    from shinobi.steps.pyfunc import _ctx_shim
+
+    namespace: dict = {"importlib": importlib}
+    exec(_ctx_shim(), namespace)
+    shim_ctx = namespace["ctx"]
+
+    assert shim_ctx.import_callable("join", "os.path")("/a", "b") == "/a/b"
+    with pytest.raises(TypeError, match="not callable"):
+        shim_ctx.import_callable("path", "os")
