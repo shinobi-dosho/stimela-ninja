@@ -1,205 +1,82 @@
 stimela-ninja (Stimela 3.0)
 ===========================
 
-A spiritual successor to `Stimela classic
-<https://github.com/ratt-ru/Stimela-classic>`_, built around the same core
-philosophy: **robust and flexible simplicity for reproducible radio
-astronomy pipelines**.
+Stimela 3.0 is a Python framework for reproducible radio astronomy pipelines.
+It builds on `Stimela classic <https://github.com/ratt-ru/Stimela-classic>`_
+with typed task inputs and outputs, Python recipes, and execution on local
+machines, containers, and computing clusters.
 
-Recipes are plain Python. A step is a function call; a step's output is a
-Python value you wire into the next call. There is no YAML
-expression/substitution language, no alias-propagation system, and no stacked
-config libraries -- control flow is just Python, and it doesn't need
-reinventing.
+Use it to compose radio astronomy tools into workflows, run independent tasks
+concurrently, cache results, and record provenance for reproducible runs.
+`dosho <https://github.com/shinobi-dosho/dosho>`_ provides ready-to-use task
+definitions for tools such as WSClean, CASA, QuartiCal, and simms.
 
-.. code-block:: python
+Academic attribution
+--------------------
 
-    from pydantic import BaseModel
-
-    from shinobi import Cab, Recipe, step
-
-
-    class ImageInputs(BaseModel):
-        ms: str = "obs.ms"
-        prefix: str = "img"
-
-
-    class ImageOutputs(BaseModel):
-        restored: str | None = None
-
-
-    wsclean = Cab(
-        name="wsclean",
-        command="wsclean",
-        image="quay.io/stimela/wsclean:latest",
-        inputs_model=ImageInputs,
-        outputs_model=ImageOutputs,
-    )
-
-
-    @step(wsclean, backend="native")
-    def image(ctx):
-        """Image the visibilities. A near-empty body auto-runs the cab."""
-        return ctx.run()
-
-Run it straight from the command line -- the step's schema becomes the CLI
-options, no entrypoint script required::
-
-    ninja run myrecipe.py:image --ms data.ms --prefix out
-
-Architecture
-------------
-
-- **Cabs** (``shinobi.Cab``) -- a typed, backend-agnostic description of
-  an atomic task: an inputs/outputs schema (pydantic models) plus *policies*
-  for turning parameters into a CLI invocation. Define one directly in Python,
-  or load one from existing `cult-cargo
-  <https://github.com/caracal-pipeline/cult-cargo>`_ YAML
-  (``shinobi.loaders.yaml_cab``) -- that schema format is good design and
-  is reused as-is, including its ``_include`` (file composition) and ``_use``
-  (dotted-path deep-merge) mechanisms, verified against real upstream cab
-  files. Package-scoped includes resolve against an explicit
-  ``package_roots={"cultcargo": Path(...)}`` mapping the caller supplies,
-  never by importing the named package.
-
-  **Two limitations worth knowing before you evaluate this against your own
-  cab library**, both deliberate (see ``SECURITY.md`` for the reasoning, and
-  the module docstring for detail):
-
-  - The ``=config.x.y`` / ``${...}`` expression language is not evaluated;
-    such values stay literal strings.
-  - ``dynamic_schema:`` is not resolved, because doing so means importing and
-    *calling* a function a cab file names. A cab using it — real cult-cargo's
-    ``wsclean.yml``, ``cubical.yml`` and ``quartical.yml`` all do — loads with
-    a warning and whatever static ``inputs:``/``outputs:`` it has, which may
-    be an **incomplete** schema. Hand-authored full ports of those three live
-    in `dosho <https://github.com/shinobi-dosho/dosho>`_; prefer them.
-
-  Relatedly, only ``flavour: binary`` cabs execute. cult-cargo's
-  code-carrying flavours (``python``, inline source — e.g. ``msutils.copycol``,
-  ``bdsf.catalog``) are refused with ``UnsupportedFlavourError`` rather than
-  run.
-
-- **Steps** (``shinobi.step``, ``shinobi.pystep``) -- a step binds an
-  orchestration function to a scope. ``@shinobi.step`` decorates a function
-  with an existing ``Cab``/``Recipe``; its body receives an ``ExecContext``
-  (``ctx``) and calls ``ctx.run()`` to execute. ``@shinobi.pystep`` turns a
-  plain, type-hinted Python function into a step, deriving its schema from the
-  signature -- no external tool, no hand-written models.
-
-- **Backends** (``shinobi.backends``) -- pluggable executors, all shelling
-  out to the relevant CLI rather than a Python SDK: ``native`` (subprocess),
-  ``docker``/``podman``/``apptainer``, ``slurm`` (``sbatch``/``sacct``),
-  ``kubernetes`` (``kubectl``, batch ``Job``\ s). Every backend blocks until
-  the job finishes and returns a ``BackendRun`` -- no async mode, steps are
-  scheduled by dispatch, not left to fire-and-forget. Container/cluster
-  backends derive bind mounts from the cab's own schema (File/MS-dtype
-  params get their parent dir mounted). ``native``/container backends were
-  verified against a real ``quay.io/stimela/wsclean`` image; ``kubernetes``
-  against a real ``kind`` cluster; the ``slurm`` step backend has no live
-  test yet (covered only by mocked-CLI tests) -- see
-  ``docs/concepts/backends.rst`` for the full verification status.
-
-- **Recipes** (``shinobi.Recipe``) -- just Python. A ``Recipe`` composes
-  steps, wiring one step's output into the next either declaratively (via
-  ``StepRef``/``InputRef``/``OutputRef``, or the ``recipe.inputs`` /
-  ``recipe.outputs`` proxies and ``add_step``) or through an orchestration
-  function whose body is ordinary Python.
-
-- **Config** (``shinobi.config.AppConfig``) -- layered settings via
-  pydantic-settings: built-in defaults < config file < env vars
-  (``SHINOBI_*``) < explicit overrides.
-
-CLI
----
-
-Every ``Cab``, ``Recipe``, or ``@shinobi.step``-decorated function can be run
-directly, without writing a Python entrypoint script -- its signature/schema
-becomes CLI options automatically::
-
-    ninja run myrecipe.py:image --ms data.ms --prefix out
-    ninja run myrecipe.py:selfcal --ms data.ms
-
-``ninja run <target>`` resolves ``<target>`` (``path/to/file.py:name`` or a
-dotted module path) to the ``Cab``, ``Recipe``, or ``StepRef`` it names and
-dispatches it with the parsed options.
-
-Add ``--dryrun`` to see the execution graph a recipe would produce, without
-running anything::
-
-    $ ninja run myrecipe.py:selfcal --ms data.ms --dryrun
-    [ image ]
-        |
-        v
-    [ mask ]
-
-Nothing is executed to produce this: a ``Recipe`` is a declared graph -- a
-list of steps plus their ``InputRef``/``OutputRef`` wiring, built once when
-the recipe module runs -- and ``--dryrun`` simply renders that graph. The
-same validation (``shinobi.graph.build_graph``) backs both the renderer and
-the real executor, so a cyclic or mis-wired recipe is rejected identically
-either way, and the diagram never disagrees with what a real run would do.
-Steps that share the same declared dependencies render on one row (a
-**fan-out**); a step fed by several upstream outputs is a **fan-in**.
-
-A purely-declarative recipe (no orchestration functions, no MUTABLE inputs,
-only paths crossing between steps) can be **offloaded** to a cluster with
-``ninja compile``, which emits linked ``sbatch`` scripts and, with
-``--submit``, hands the workflow off and detaches::
-
-    ninja compile myrecipe.py:pipe --target /scratch/made.ms --submit
-    ninja status /scratch/.shinobi/pipe/handle.json
-
-See ``docs/design.rst`` for the design philosophy behind the declared-DAG
-model and what's deliberately left out.
-
-Coming from CARACal or Stimela 2?
----------------------------------
-
-``docs/migration.rst`` maps a CARACal worker onto a shinobi recipe, with two
-real workers (``transform`` and ``flag``) side by side: what carries over
-(your cab YAML, your worker *schemas*), what you rewrite by hand (the worker
-body -- ``enable:`` flags become ordinary ``if`` statements), and what has no
-equivalent yet. Read it before porting anything -- it opens with a breaking
-change to package-scoped ``_include`` that you will otherwise hit first.
-
-Status
-------
-
-Early scaffolding. Interfaces above are real and tested (``pytest``), but this
-is not yet ready to run real pipelines.
+Please acknowledge this project and its contributors when using the work
+in research, and cite the associated publications and software release
+where applicable. This is a scholarly request, not an additional licence
+condition.
+Citation information can be found in `CITATION.cff <CITATION.cff>`_.
 
 Installation
 ------------
 
-Once published to PyPI::
+Requires Python 3.11 or newer::
 
     pip install stimela-ninja
 
-Until then, install the latest from GitHub::
-
-    pip install git+https://github.com/shinobi-dosho/stimela-ninja.git
-
 This installs the ``ninja`` command and the importable ``shinobi`` package.
+For the companion task library::
+
+    pip install dosho
+
+External tools must be installed locally or available through the container
+or cluster backend you use. See the `installation guide
+<https://stimela-ninja.readthedocs.io/en/latest/installation.html>`_.
+
+Quick start
+-----------
+
+Save this minimal Python step as ``myrecipe.py``:
+
+.. code-block:: python
+
+    from shinobi import pystep
+
+
+    @pystep()
+    def greet(name: str = "world") -> None:
+        print(f"Hello, {name}!")
+
+Run it from the command line; the function parameters become CLI options::
+
+    ninja run myrecipe.py:greet --name astronomer
+
+For an imaging workflow that combines multiple tools, follow the
+`pipeline tutorial <https://stimela-ninja.readthedocs.io/en/latest/quickstart.html>`_.
 
 Documentation
 -------------
 
-Full documentation is built with Sphinx and hosted on Read the Docs. Build it
-locally with::
+* `User guide <https://stimela-ninja.readthedocs.io/en/latest/>`_
+* `Command-line reference <https://stimela-ninja.readthedocs.io/en/latest/cli.html>`_
+* `Execution backends <https://stimela-ninja.readthedocs.io/en/latest/concepts/backends.html>`_
+* `Migrating from CARACal or Stimela 2 <https://stimela-ninja.readthedocs.io/en/latest/migration.html>`_
+* `Examples <https://github.com/shinobi-dosho/stimela-ninja/tree/main/examples>`_
 
-    uv sync --group docs
-    uv run sphinx-build -b html docs docs/_build/html
+Contributing
+------------
 
-Development
------------
+Bug reports and contributions are welcome. See `CONTRIBUTING.md
+<https://github.com/shinobi-dosho/stimela-ninja/blob/main/CONTRIBUTING.md>`_
+for development setup and testing, and use the `issue tracker
+<https://github.com/shinobi-dosho/stimela-ninja/issues>`_ for bugs and feature
+requests. Report security issues as described in `SECURITY.md
+<https://github.com/shinobi-dosho/stimela-ninja/blob/main/SECURITY.md>`_.
 
-.. code-block:: bash
+License
+-------
 
-    uv sync --group dev
-    .venv/bin/pytest
-    .venv/bin/ruff check src tests
-
-``uv.lock`` is committed and ``uv sync`` installs exactly what it pins, which
-is what CI runs too (every job uses ``--locked``). See ``CONTRIBUTING.md`` for
-the lockfile workflow and the repo's pre-commit hook.
+Apache License 2.0 — see `LICENSE <LICENSE>`_ and `NOTICE <NOTICE>`_.
