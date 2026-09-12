@@ -1,11 +1,6 @@
 stimela-ninja (Stimela 3.0)
 ===========================
 
-Please acknowledge this project and its contributors when using the work
-in research, and cite the associated publications and software release
-where applicable. This is a scholarly request, not an additional licence
-condition.
-
 Stimela 3.0 is a Python framework for reproducible radio astronomy pipelines.
 It builds on `Stimela classic <https://github.com/ratt-ru/Stimela-classic>`_
 with typed task inputs and outputs, Python recipes, and execution on local
@@ -15,6 +10,15 @@ Use it to compose radio astronomy tools into workflows, run independent tasks
 concurrently, cache results, and record provenance for reproducible runs.
 `dosho <https://github.com/shinobi-dosho/dosho>`_ provides ready-to-use task
 definitions for tools such as WSClean, CASA, QuartiCal, and simms.
+
+Academic attribution
+--------------------
+
+Please acknowledge this project and its contributors when using the work
+in research, and cite the associated publications and software release
+where applicable. This is a scholarly request, not an additional licence
+condition.
+Citation information can be found in `CITATION.md <CITATION.md>`_.
 
 Installation
 ------------
