@@ -191,4 +191,11 @@ and publishes to PyPI.
 ## License
 
 By contributing, you agree that your contributions are licensed under the
-project's [MIT License](https://github.com/shinobi-dosho/stimela-ninja/blob/main/LICENSE).
+project's [Apache License 2.0](https://github.com/shinobi-dosho/stimela-ninja/blob/main/LICENSE).
+
+You are responsible for ensuring that you have the right to submit your
+contribution under this licence, including any necessary employer or
+third-party permissions. Do not submit confidential, proprietary, or
+otherwise restricted material that you are not authorised to release.
+The project's open-source terms apply irrespective of contributors'
+employment or institutional affiliations. See [NOTICE](https://github.com/shinobi-dosho/stimela-ninja/blob/main/NOTICE).

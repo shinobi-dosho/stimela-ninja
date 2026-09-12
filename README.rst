@@ -203,3 +203,8 @@ Development
 ``uv.lock`` is committed and ``uv sync`` installs exactly what it pins, which
 is what CI runs too (every job uses ``--locked``). See ``CONTRIBUTING.md`` for
 the lockfile workflow and the repo's pre-commit hook.
+
+License
+-------
+
+Apache License 2.0 — see `LICENSE <LICENSE>`_ and `NOTICE <NOTICE>`_.
