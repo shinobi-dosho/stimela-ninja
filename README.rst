@@ -1,6 +1,11 @@
 stimela-ninja (Stimela 3.0)
 ===========================
 
+Please acknowledge this project and its contributors when using the work
+in research, and cite the associated publications and software release
+where applicable. This is a scholarly request, not an additional licence
+condition.
+
 A spiritual successor to `Stimela classic
 <https://github.com/ratt-ru/Stimela-classic>`_, built around the same core
 philosophy: **robust and flexible simplicity for reproducible radio
