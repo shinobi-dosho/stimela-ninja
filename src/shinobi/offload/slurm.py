@@ -243,9 +243,7 @@ def _static_inputs(
             return recipe_inputs[source.field]
         value = resolved_outputs.get(source.step, {}).get(source.field)
         if value is None:
-            if not allow_runtime_values or (
-                step_field in path_fields(scope.inputs_model) and scope.mutability_of(step_field) is Mutability.MUTABLE
-            ):
+            if not allow_runtime_values or (step_field in path_fields(scope.inputs_model) and scope.mutability_of(step_field) is Mutability.MUTABLE):
                 raise OffloadCompileError(
                     f"step '{name}' input '{step_field}' reads '{source.step}.{source.field}', "
                     "whose path isn't statically known at compile time -- supply it as an "
@@ -575,13 +573,10 @@ def _pin_worker_bundle(bundle):
             pinned, digest = _pin_image(step.backend, image)
             if digest is None:
                 raise OffloadCompileError(
-                    f"step {step.name!r}: image {image!r} could not be pinned on the submission host; "
-                    "worker jobs never resolve mutable image tags on compute nodes"
+                    f"step {step.name!r}: image {image!r} could not be pinned on the submission host; worker jobs never resolve mutable image tags on compute nodes"
                 )
             settings["image"] = pack(pinned)
-            step = step.model_copy(
-                update={"scope": step.scope.model_copy(update={"settings": settings}), "image_digest": digest}
-            )
+            step = step.model_copy(update={"scope": step.scope.model_copy(update={"settings": settings}), "image_digest": digest})
         steps.append(step)
     return bundle.model_copy(update={"steps": tuple(steps)})
 
@@ -670,9 +665,15 @@ def prepare_worker_slurm(
     final_argv = ["env", f"PYTHONPATH={worker.source}", worker.python, "-m", "shinobi.offload.worker", "finalize", "--submission", str(submission_dir)]
     finalizer = SlurmJob(
         name="finalize",
-        script=build_sbatch_script(job_name=safe_slurm_name(f"{recipe.name}.finalize", "job name", error=OffloadCompileError),
-                                   chdir=pinned.workspace, stdout_path=log_dir / "finalize.out", stderr_path=log_dir / "finalize.err",
-                                   sbatch_opts=options, argv=final_argv, error=OffloadCompileError),
+        script=build_sbatch_script(
+            job_name=safe_slurm_name(f"{recipe.name}.finalize", "job name", error=OffloadCompileError),
+            chdir=pinned.workspace,
+            stdout_path=log_dir / "finalize.out",
+            stderr_path=log_dir / "finalize.err",
+            sbatch_opts=options,
+            argv=final_argv,
+            error=OffloadCompileError,
+        ),
         depends_on=[step.name for step in pinned.steps],
     )
     return WorkerSlurmWorkflow(submission_dir=submission_dir, jobs=jobs, finalizer=finalizer)
@@ -707,9 +708,10 @@ def submit_worker_slurm(workflow: WorkerSlurmWorkflow) -> WorkerSlurmHandle:
             job_id = parse_sbatch_job_id(proc.stdout)
             job_ids[job.name] = job_id
             attempt = plan.attempt(job.name)
-            write_new(directory / "jobs" / f"{index:04d}.json",
-                      SubmittedJob(workflow_id=submission.workflow_id, bundle_digest=bundle.digest,
-                                   step_path=job.name, attempt_id=attempt.attempt_id, job_id=job_id))
+            write_new(
+                directory / "jobs" / f"{index:04d}.json",
+                SubmittedJob(workflow_id=submission.workflow_id, bundle_digest=bundle.digest, step_path=job.name, attempt_id=attempt.attempt_id, job_id=job_id),
+            )
 
         # Always schedule recovery/finalization for whatever Slurm accepted.
         final_script = script_dir / "finalize.sh"

@@ -124,9 +124,19 @@ _FACTORIES = {"list": list, "dict": dict, "tuple": tuple}
 # Only explicitly-set attributes are emitted. Unknown future Field options
 # fail at freeze time, so upgrading pydantic cannot quietly weaken validation.
 _FIELD_ATTRIBUTES = {
-    "alias", "alias_priority", "validation_alias", "serialization_alias", "title",
-    "description", "examples", "exclude", "frozen", "validate_default", "repr",
-    "discriminator", "json_schema_extra",
+    "alias",
+    "alias_priority",
+    "validation_alias",
+    "serialization_alias",
+    "title",
+    "description",
+    "examples",
+    "exclude",
+    "frozen",
+    "validate_default",
+    "repr",
+    "discriminator",
+    "json_schema_extra",
 }
 
 
@@ -230,7 +240,9 @@ class ModelSpec(WireModel):
         if model in seen:
             raise BundleError(f"recursive parameter model {model.__name__!r} is unsupported")
         decorators = model.__pydantic_decorators__
-        if any(getattr(decorators, n) for n in ("validators", "field_validators", "root_validators", "field_serializers", "model_serializers", "model_validators", "computed_fields")):
+        if any(
+            getattr(decorators, n) for n in ("validators", "field_validators", "root_validators", "field_serializers", "model_serializers", "model_validators", "computed_fields")
+        ):
             raise BundleError(f"model {model.__name__!r} has custom validators/serializers; cannot freeze it faithfully")
         if model.__pydantic_custom_init__ or model.__pydantic_post_init__ or model.__private_attributes__:
             raise BundleError(f"model {model.__name__!r} has custom initialization or private state")
@@ -249,11 +261,17 @@ class ModelSpec(WireModel):
                 factory = next((n for n, f in _FACTORIES.items() if f is field.default_factory), None)
                 if factory is None:
                     raise BundleError(f"field {model.__name__}.{name} has an executable default factory")
-            fields.append(FieldSpec(
-                name=name, annotation=TypeSpec.capture(field.annotation, (*seen, model)), required=field.is_required(),
-                default=None if field.default is PydanticUndefined else pack(field.default), factory=factory,
-                attributes={k: pack(v) for k, v in attrs.items()}, constraints=tuple(Constraint.capture(m) for m in field.metadata),
-            ))
+            fields.append(
+                FieldSpec(
+                    name=name,
+                    annotation=TypeSpec.capture(field.annotation, (*seen, model)),
+                    required=field.is_required(),
+                    default=None if field.default is PydanticUndefined else pack(field.default),
+                    factory=factory,
+                    attributes={k: pack(v) for k, v in attrs.items()},
+                    constraints=tuple(Constraint.capture(m) for m in field.metadata),
+                )
+            )
         return cls(name=model.__name__, fields=tuple(fields), config=pack(dict(model.model_config)))
 
     def restore(self) -> type[BaseModel]:

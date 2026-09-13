@@ -973,9 +973,7 @@ def compile_recipe(
             try:
                 launched = submit_worker_slurm(workflow)
             except WorkerSubmissionError as exc:
-                raise click.ClickException(
-                    f"{exc}; accepted jobs remain detached and recoverable from {exc.handle.submission_dir / 'handle.json'}"
-                ) from None
+                raise click.ClickException(f"{exc}; accepted jobs remain detached and recoverable from {exc.handle.submission_dir / 'handle.json'}") from None
             handle = workflow.submission_dir / "handle.json"
             click.echo(f"submitted {len(launched.jobs)} worker jobs (detached); handle: {handle}")
             for name, job_id in launched.jobs.items():

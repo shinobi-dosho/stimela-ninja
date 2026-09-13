@@ -46,9 +46,14 @@ def recipe(image: Path, tool_venv: Path, *, fail: bool = False) -> Recipe:
         inputs_model=Empty,
         outputs_model=m1_funcs.Product,
         steps=[
-            StepRef(name="binary", step=write,
-                    params={"script": "from pathlib import Path;import sys;Path(sys.argv[1]).write_text('binary')" + (";raise SystemExit(7)" if fail else ""),
-                            "out": "binary-product.txt"}),
+            StepRef(
+                name="binary",
+                step=write,
+                params={
+                    "script": "from pathlib import Path;import sys;Path(sys.argv[1]).write_text('binary')" + (";raise SystemExit(7)" if fail else ""),
+                    "out": "binary-product.txt",
+                },
+            ),
             image_ref.model_copy(update={"wiring": {"source": OutputRef(step="binary", field="product")}}),
             venv_ref.model_copy(update={"wiring": {"source": OutputRef(step="image", field="product")}}),
         ],
@@ -61,9 +66,13 @@ def submit(args) -> int:
     workspace.mkdir(parents=True, exist_ok=False)
     value = recipe(args.image, args.tool_venv, fail=args.fail)
     bundle = freeze_recipe(value, {}, config=AppConfig(), workspace=workspace, code_roots=(args.source_root,))
-    workflow = prepare_worker_slurm(bundle, submission_root=workspace / ".shinobi" / "submissions", worker_python=args.worker_python,
-                                    sbatch_opts={"partition": "dev"},
-                                    step_sbatch_opts={"binary": {"nodelist": "k1"}, "image": {"nodelist": "n1"}, "venv": {"nodelist": "k1"}})
+    workflow = prepare_worker_slurm(
+        bundle,
+        submission_root=workspace / ".shinobi" / "submissions",
+        worker_python=args.worker_python,
+        sbatch_opts={"partition": "dev"},
+        step_sbatch_opts={"binary": {"nodelist": "k1"}, "image": {"nodelist": "n1"}, "venv": {"nodelist": "k1"}},
+    )
     handle = submit_worker_slurm(workflow)
     data = {"submission": str(handle.submission_dir), "jobs": handle.jobs, "finalizer": handle.finalizer_job}
     (args.root / "handle.json").write_text(json.dumps(data, indent=2))

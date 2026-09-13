@@ -38,13 +38,23 @@ class Empty(BaseModel):
 
 
 def recipe():
-    cab = Cab(name="tool", command="tool", inputs_model=Inputs, outputs_model=Outputs,
-              field_meta={"n": ParamMeta(nom_de_guerre="count")},
-              harvest=["products/*.fits"], scratch=["scratch/*"])
-    return Recipe(name="pipeline", inputs_model=Inputs, outputs_model=Outputs, sandbox=True,
-                  steps=[StepRef(name="first", step=cab, wiring={"ms": InputRef(field="ms")}),
-                         StepRef(name="second", step=cab, wiring={"ms": OutputRef(step="first", field="ms")})],
-                  output_wiring={"ms": OutputRef(step="second", field="ms")})
+    cab = Cab(
+        name="tool",
+        command="tool",
+        inputs_model=Inputs,
+        outputs_model=Outputs,
+        field_meta={"n": ParamMeta(nom_de_guerre="count")},
+        harvest=["products/*.fits"],
+        scratch=["scratch/*"],
+    )
+    return Recipe(
+        name="pipeline",
+        inputs_model=Inputs,
+        outputs_model=Outputs,
+        sandbox=True,
+        steps=[StepRef(name="first", step=cab, wiring={"ms": InputRef(field="ms")}), StepRef(name="second", step=cab, wiring={"ms": OutputRef(step="first", field="ms")})],
+        output_wiring={"ms": OutputRef(step="second", field="ms")},
+    )
 
 
 def freeze(value, tmp_path, **kwargs):
@@ -138,7 +148,10 @@ def test_nested_models_constraints_and_value_tags_round_trip():
 
 def source_function(tmp_path, source=None):
     entry = tmp_path / "computation.py"
-    entry.write_text(source or "from pathlib import Path\nfrom pydantic import BaseModel\nclass Result(BaseModel):\n    ms: Path\ndef compute(ms: Path = Path('data.ms')) -> Result:\n    import helper\n    return Result(ms=ms)\n")
+    entry.write_text(
+        source
+        or "from pathlib import Path\nfrom pydantic import BaseModel\nclass Result(BaseModel):\n    ms: Path\ndef compute(ms: Path = Path('data.ms')) -> Result:\n    import helper\n    return Result(ms=ms)\n"
+    )
     (tmp_path / "helper.py").write_text("raise RuntimeError('must not import helper during freeze')\n")
     spec = importlib.util.spec_from_file_location("computation", entry)
     module = importlib.util.module_from_spec(spec)
@@ -210,10 +223,17 @@ def test_unsafe_code_paths_rejected(path):
 @pytest.mark.parametrize("state", ["succeeded", "cached", "skipped", "failed"])
 def test_attempt_round_trip_and_identity(tmp_path, state):
     scope = recipe().steps[0].step
-    result = StepResult(name="tool", returncode=1 if state == "failed" else 0,
-                        inputs=Inputs(), outputs=Outputs(ms=Path("data.ms")), stdout="captured",
-                        cached=state == "cached", skipped=state == "skipped", cache_key="own",
-                        output_keys={"ms": ProvenanceKey("upstream-key", "original_ms")})
+    result = StepResult(
+        name="tool",
+        returncode=1 if state == "failed" else 0,
+        inputs=Inputs(),
+        outputs=Outputs(ms=Path("data.ms")),
+        stdout="captured",
+        cached=state == "cached",
+        skipped=state == "skipped",
+        cache_key="own",
+        output_keys={"ms": ProvenanceKey("upstream-key", "original_ms")},
+    )
     identity = {"workflow_id": uuid4(), "attempt_id": uuid4(), "step_path": "selfcal.2.image", "bundle_digest": "bundle-key"}
     record = AttemptRecord.from_result(result, **identity)
     assert record.state == state

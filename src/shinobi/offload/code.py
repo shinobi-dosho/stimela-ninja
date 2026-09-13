@@ -210,5 +210,6 @@ def capture_code(func: Callable, *, roots: tuple[Path, ...] = (), include: tuple
                         before = set(external)
                         find(candidate)
                         external.intersection_update(before)
-    return CodeBundle(module=func.__module__, qualname=func.__qualname__, entry=entry,
-                      files=tuple(captured[p] for p in sorted(captured)), environment_imports=tuple(sorted(external)))
+    return CodeBundle(
+        module=func.__module__, qualname=func.__qualname__, entry=entry, files=tuple(captured[p] for p in sorted(captured)), environment_imports=tuple(sorted(external))
+    )

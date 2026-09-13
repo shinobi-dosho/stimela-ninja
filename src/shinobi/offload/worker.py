@@ -125,9 +125,7 @@ def _load_identity(submission_dir: Path) -> tuple[Submission, RecipeBundle, Exec
 
 def _verify_environment(bundle: RecipeBundle, plan: ExecutionPlan) -> None:
     if plan.worker.shinobi_version != __version__:
-        raise BundleError(
-            f"worker/bundle environment mismatch: staged worker is {plan.worker.shinobi_version}, running worker is {__version__}"
-        )
+        raise BundleError(f"worker/bundle environment mismatch: staged worker is {plan.worker.shinobi_version}, running worker is {__version__}")
     if plan.worker.python_version != platform.python_version() or plan.worker.platform != worker_platform():
         raise BundleError("running worker platform does not match the staged worker environment")
     if plan.worker.distributions_digest is not None:
@@ -277,9 +275,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
     try:
         _verify_environment(bundle, plan)
         if Path(bundle.workspace).stat().st_dev != submission_dir.stat().st_dev:
-            raise BundleError(
-                "submission sandboxes and workspace are on different filesystems; node-local staging is not supported"
-            )
+            raise BundleError("submission sandboxes and workspace are on different filesystems; node-local staging is not supported")
     except BaseException as exc:
         publish_failure(exc)
         return 1
@@ -291,9 +287,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
     try:
         running.write(submission_dir.parent)
     except FileExistsError:
-        exc = BundleError(
-            f"attempt {attempt_id} for step {step_path!r} has already started; a requeue requires a new attempt identity"
-        )
+        exc = BundleError(f"attempt {attempt_id} for step {step_path!r} has already started; a requeue requires a new attempt identity")
         publish_failure(exc, phase="requeue")
         return 1
 
@@ -339,10 +333,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
             except OSError:
                 pass
         if frozen.image_digest is not None and result.image_digest != frozen.image_digest:
-            raise BundleError(
-                f"step {step_path!r}: executed image digest {result.image_digest!r} "
-                f"does not match submission pin {frozen.image_digest!r}"
-            )
+            raise BundleError(f"step {step_path!r}: executed image digest {result.image_digest!r} does not match submission pin {frozen.image_digest!r}")
         result.code_digest = common["code_digest"]
         result.worker_digest = common["worker_digest"]
         result.job_id = job_id
@@ -455,8 +446,7 @@ def finalize_submission(submission_dir: Path) -> Finalization:
         diagnostic_path = next((path for path in diagnostic_paths if path.exists()), None)
         chosen_path = diagnostic_path or (final_path if final_path.exists() else None)
         if chosen_path is not None:
-            record = AttemptRecord.read(chosen_path, workflow_id=plan.workflow_id, attempt_id=attempt.attempt_id,
-                                        step_path=frozen.name, bundle_digest=plan.bundle_digest)
+            record = AttemptRecord.read(chosen_path, workflow_id=plan.workflow_id, attempt_id=attempt.attempt_id, step_path=frozen.name, bundle_digest=plan.bundle_digest)
             state = record.state
             record_path: Path | None = chosen_path
         else:
@@ -472,18 +462,30 @@ def finalize_submission(submission_dir: Path) -> Finalization:
             result.scheduler_state = scheduler_state
             result.job_id = job.job_id if job else result.job_id
             results[frozen.name] = result
-        finalized.append(FinalizedStep(step_path=frozen.name, attempt_id=attempt.attempt_id,
-                                       job_id=job.job_id if job else None, scheduler_state=scheduler_state,
-                                       state=state,
-                                       record=str(record_path.relative_to(submission_dir)) if record_path is not None else None))
+        finalized.append(
+            FinalizedStep(
+                step_path=frozen.name,
+                attempt_id=attempt.attempt_id,
+                job_id=job.job_id if job else None,
+                scheduler_state=scheduler_state,
+                state=state,
+                record=str(record_path.relative_to(submission_dir)) if record_path is not None else None,
+            )
+        )
 
     manifest_name = None
     if all_committed:
         recipe = bundle.declaration()
         output_values = {name: getattr(results[binding.step].outputs, binding.field) for name, binding in recipe.output_wiring.items()}
-        root = StepResult(name=recipe.name, returncode=0, inputs=recipe.inputs_model(**unpack(bundle.inputs)),
-                          outputs=recipe.outputs_model(**output_values), kind="recipe", backend="slurm-worker",
-                          sub_results={step.name: results[step.name] for step in bundle.steps})
+        root = StepResult(
+            name=recipe.name,
+            returncode=0,
+            inputs=recipe.inputs_model(**unpack(bundle.inputs)),
+            outputs=recipe.outputs_model(**output_values),
+            kind="recipe",
+            backend="slurm-worker",
+            sub_results={step.name: results[step.name] for step in bundle.steps},
+        )
         manifest = build_manifest(root, backend="slurm-worker")
         manifest_path = submission_dir / "manifest.json"
         if not manifest_path.exists():
@@ -491,8 +493,7 @@ def finalize_submission(submission_dir: Path) -> Finalization:
         else:
             RunManifest.model_validate_json(manifest_path.read_text())
         manifest_name = manifest_path.name
-    finalization = Finalization(workflow_id=submission.workflow_id, bundle_digest=bundle.digest,
-                                complete=all_committed, steps=tuple(finalized), manifest=manifest_name)
+    finalization = Finalization(workflow_id=submission.workflow_id, bundle_digest=bundle.digest, complete=all_committed, steps=tuple(finalized), manifest=manifest_name)
     # An early status observation is deliberately not canonical: scheduler
     # state changes and an absent final record may appear moments later. Once
     # every attempt is terminal, persist exactly one stable reconstruction.

@@ -87,10 +87,19 @@ class AttemptRecord(WireModel):
         return self.state in ("succeeded", "cached", "skipped")
 
     @classmethod
-    def from_result(cls, result: StepResult, *, workflow_id: UUID, attempt_id: UUID,
-                    step_path: str, bundle_digest: str, job_id: str | None = None,
-                    code_digest: str | None = None, worker_digest: str | None = None,
-                    sandbox: str | None = None) -> AttemptRecord:
+    def from_result(
+        cls,
+        result: StepResult,
+        *,
+        workflow_id: UUID,
+        attempt_id: UUID,
+        step_path: str,
+        bundle_digest: str,
+        job_id: str | None = None,
+        code_digest: str | None = None,
+        worker_digest: str | None = None,
+        sandbox: str | None = None,
+    ) -> AttemptRecord:
         inputs, outputs = pack_model(result.inputs), pack_model(result.outputs)
         # Reuse provenance's metadata mapping, but not its lossy I/O payload.
         metadata = _record(result, name=step_path).model_dump(exclude={"inputs", "outputs"})
@@ -101,10 +110,22 @@ class AttemptRecord(WireModel):
                 if key is not None:
                     keys[field] = ProducedState(cache_key=str(key), producer_field=getattr(key, "producer_field", None) or field)
         state = "failed" if not result.success else "skipped" if result.skipped else "cached" if result.cached else "succeeded"
-        return cls(workflow_id=workflow_id, attempt_id=attempt_id, step_path=step_path, bundle_digest=bundle_digest,
-                   state=state, observation=Observation(inputs=inputs, outputs=outputs, **metadata),
-                   stdout=result.stdout, stderr=result.stderr, cache_key=result.cache_key if result.success else None, output_keys=keys,
-                   job_id=job_id, code_digest=code_digest, worker_digest=worker_digest, sandbox=sandbox)
+        return cls(
+            workflow_id=workflow_id,
+            attempt_id=attempt_id,
+            step_path=step_path,
+            bundle_digest=bundle_digest,
+            state=state,
+            observation=Observation(inputs=inputs, outputs=outputs, **metadata),
+            stdout=result.stdout,
+            stderr=result.stderr,
+            cache_key=result.cache_key if result.success else None,
+            output_keys=keys,
+            job_id=job_id,
+            code_digest=code_digest,
+            worker_digest=worker_digest,
+            sandbox=sandbox,
+        )
 
     def result(self, scope: Scope) -> StepResult:
         """Restore validated outputs and their *original* producing-field keys."""
@@ -112,9 +133,17 @@ class AttemptRecord(WireModel):
             raise BundleError("attempt has no final worker result")
         record = self.observation
         metadata = {name: getattr(record, name) for name in Observation.model_fields if name not in {"steps", "inputs", "outputs", "name", "returncode"}}
-        return StepResult(name=record.name, returncode=record.returncode, inputs=scope.inputs_model.model_validate({k: unpack(v) for k, v in record.inputs.items()}),
-                          outputs=scope.outputs_model.model_validate({k: unpack(v) for k, v in record.outputs.items()}), stdout=self.stdout, stderr=self.stderr,
-                          cache_key=self.cache_key, output_keys={f: ProvenanceKey(v.cache_key, v.producer_field) for f, v in self.output_keys.items()}, **metadata)
+        return StepResult(
+            name=record.name,
+            returncode=record.returncode,
+            inputs=scope.inputs_model.model_validate({k: unpack(v) for k, v in record.inputs.items()}),
+            outputs=scope.outputs_model.model_validate({k: unpack(v) for k, v in record.outputs.items()}),
+            stdout=self.stdout,
+            stderr=self.stderr,
+            cache_key=self.cache_key,
+            output_keys={f: ProvenanceKey(v.cache_key, v.producer_field) for f, v in self.output_keys.items()},
+            **metadata,
+        )
 
     def write(self, directory: Path) -> Path:
         """Publish once per identity and phase; logical step names aren't paths."""

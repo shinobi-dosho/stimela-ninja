@@ -28,19 +28,23 @@ def identity():
     return {"workflow_id": uuid4(), "attempt_id": uuid4(), "step_path": "loop.2.step", "bundle_digest": "bundle-key"}
 
 
-@pytest.mark.parametrize("annotation,value,strict", [
-    (Path, Path("relative.ms"), True),
-    (tuple[Path, int], (Path("relative.ms"), 1), True),
-    (Path | str, Path("relative.ms"), False),
-    (tuple[int, ...] | list[int], (1, 2), False),
-    (Any, {"nested": (Path("relative.ms"), [1, True])}, False),
-])
+@pytest.mark.parametrize(
+    "annotation,value,strict",
+    [
+        (Path, Path("relative.ms"), True),
+        (tuple[Path, int], (Path("relative.ms"), 1), True),
+        (Path | str, Path("relative.ms"), False),
+        (tuple[int, ...] | list[int], (1, 2), False),
+        (Any, {"nested": (Path("relative.ms"), [1, True])}, False),
+    ],
+)
 @pytest.mark.parametrize("state", ["succeeded", "cached", "skipped", "failed"])
 def test_record_io_survives_disk_round_trip(tmp_path, annotation, value, strict, state):
     model = create_model("Payload", __config__=ConfigDict(strict=strict), value=(annotation, ...))
     scope = Scope(name="payload", inputs_model=model, outputs_model=model)
-    result = StepResult(name="payload", returncode=1 if state == "failed" else 0, inputs=model(value=value), outputs=model(value=value),
-                        cached=state == "cached", skipped=state == "skipped")
+    result = StepResult(
+        name="payload", returncode=1 if state == "failed" else 0, inputs=model(value=value), outputs=model(value=value), cached=state == "cached", skipped=state == "skipped"
+    )
     ids = identity()
     record = AttemptRecord.from_result(result, **ids)
     loaded = AttemptRecord.read(record.write(tmp_path), **ids)
@@ -100,8 +104,7 @@ def test_explicit_nested_model_record_round_trip(tmp_path):
     assert restored.outputs.child.path == Path("child.ms")
 
 
-@pytest.mark.parametrize("wrap", [lambda child: child, lambda child: [child], lambda child: (child,),
-                                  lambda child: {"child": child}, lambda child: [{"nested": (child,)}]])
+@pytest.mark.parametrize("wrap", [lambda child: child, lambda child: [child], lambda child: (child,), lambda child: {"child": child}, lambda child: [{"nested": (child,)}]])
 def test_model_defaults_rejected_at_any_container_depth(wrap):
     class Child(BaseModel):
         n: int
@@ -181,8 +184,7 @@ def test_package_entry_address_matches_materialized_module(tmp_path, entry, modu
 
 @pytest.mark.parametrize("state", ["succeeded", "cached", "skipped", "failed"])
 def test_final_observation_must_agree_with_envelope_on_read(tmp_path, state):
-    result = StepResult(name="cab", returncode=1 if state == "failed" else 0, inputs=Empty(), outputs=Empty(),
-                        cached=state == "cached", skipped=state == "skipped")
+    result = StepResult(name="cab", returncode=1 if state == "failed" else 0, inputs=Empty(), outputs=Empty(), cached=state == "cached", skipped=state == "skipped")
     ids = identity()
     record = AttemptRecord.from_result(result, **ids)
     path = record.write(tmp_path)

@@ -87,9 +87,12 @@ class ScopeSpec(WireModel):
         kinds = {Cab: "cab", Scope: "pyfunc", Recipe: "recipe"}
         if type(scope) not in kinds:
             raise BundleError(f"custom scope {type(scope).__name__!r} cannot be frozen")
-        return cls(kind=kinds[type(scope)], inputs=ModelSpec.capture(scope.inputs_model),
-                   outputs=ModelSpec.capture(scope.outputs_model),
-                   settings={k: pack(v) for k, v in scope.model_dump(mode="python", exclude={"inputs_model", "outputs_model", "steps", "output_wiring", "max_workers"}).items()})
+        return cls(
+            kind=kinds[type(scope)],
+            inputs=ModelSpec.capture(scope.inputs_model),
+            outputs=ModelSpec.capture(scope.outputs_model),
+            settings={k: pack(v) for k, v in scope.model_dump(mode="python", exclude={"inputs_model", "outputs_model", "steps", "output_wiring", "max_workers"}).items()},
+        )
 
     def restore(self) -> Scope:
         constructor = {"cab": Cab, "pyfunc": Scope, "recipe": Recipe}[self.kind]
@@ -130,9 +133,14 @@ class FrozenStep(WireModel):
 
     def declaration(self) -> StepRef:
         """Reconstruct graph data only. A pystep here is NOT executable."""
-        return StepRef(name=self.name, step=self.scope.restore(), params=unpack(self.params),
-                       wiring={k: [b.restore() for b in v] if isinstance(v, tuple) else v.restore() for k, v in self.wiring.items()},
-                       after=list(self.after), loop=self.loop)
+        return StepRef(
+            name=self.name,
+            step=self.scope.restore(),
+            params=unpack(self.params),
+            wiring={k: [b.restore() for b in v] if isinstance(v, tuple) else v.restore() for k, v in self.wiring.items()},
+            after=list(self.after),
+            loop=self.loop,
+        )
 
 
 class RecipeBundle(WireModel):
@@ -170,11 +178,7 @@ class RecipeBundle(WireModel):
             if step.backend == "venv" and (not step.tool_venv or not Path(step.tool_venv).is_absolute()):
                 raise BundleError(f"step {step.name!r}: venv execution needs a resolved shared tool environment")
             image = unpack(step.scope.settings["image"]) if "image" in step.scope.settings else None
-            if step.image_digest is not None and (
-                not image
-                or step.backend not in ("docker", "podman", "apptainer")
-                or not step.image_digest.startswith("sha256:")
-            ):
+            if step.image_digest is not None and (not image or step.backend not in ("docker", "podman", "apptainer") or not step.image_digest.startswith("sha256:")):
                 raise BundleError(f"step {step.name!r}: image digest does not describe its container execution")
             if step.code is not None and step.backend != "venv" and (step.backend == "native" or not image):
                 raise BundleError(f"step {step.name!r}: a pystep must execute in an image or venv, never in-process")
@@ -226,8 +230,9 @@ class Submission(WireModel):
     worker_version: str = __version__
 
 
-def freeze_recipe(recipe: Recipe, inputs: dict[str, Any], *, config: AppConfig, workspace: Path,
-                  code_roots: tuple[Path, ...] = (), include_modules: tuple[str, ...] = ()) -> RecipeBundle:
+def freeze_recipe(
+    recipe: Recipe, inputs: dict[str, Any], *, config: AppConfig, workspace: Path, code_roots: tuple[Path, ...] = (), include_modules: tuple[str, ...] = ()
+) -> RecipeBundle:
     """Freeze declarations without writing files, running tools or resolving pins.
 
     Configuration is explicit so compilation never consults a new ambient
@@ -267,11 +272,27 @@ def freeze_recipe(recipe: Recipe, inputs: dict[str, Any], *, config: AppConfig, 
                 raise BundleError(f"step {ref.name!r}: invalid known inputs: {exc}") from exc
         code = capture_code(ref.func.__wrapped__, roots=code_roots, include=include_modules) if isinstance(ref.func, PystepCallable) else None
         pystep = ref.func if isinstance(ref.func, PystepCallable) else None
-        steps.append(FrozenStep(name=ref.name, scope=spec, params=pack(ref.params),
-                                wiring={k: tuple(Binding.capture(b) for b in v) if isinstance(v, list) else Binding.capture(v) for k, v in ref.wiring.items()},
-                                after=tuple(ref.after), loop=ref.loop.model_copy(deep=True) if ref.loop else None,
-                                backend=backend, tool_venv=str(venv) if venv else None, code=code,
-                                pystep_is_empty=pystep.is_empty if pystep else None,
-                                pystep_wants_ctx=pystep.wants_ctx if pystep else None))
-    return RecipeBundle(workspace=str(workspace.resolve()), recipe=root, inputs=pack(prepared), config={k: pack(v) for k, v in config.model_dump(mode="python").items()},
-                        steps=tuple(steps), output_wiring={k: Binding.capture(v) for k, v in recipe.output_wiring.items()}, max_workers=recipe.max_workers)
+        steps.append(
+            FrozenStep(
+                name=ref.name,
+                scope=spec,
+                params=pack(ref.params),
+                wiring={k: tuple(Binding.capture(b) for b in v) if isinstance(v, list) else Binding.capture(v) for k, v in ref.wiring.items()},
+                after=tuple(ref.after),
+                loop=ref.loop.model_copy(deep=True) if ref.loop else None,
+                backend=backend,
+                tool_venv=str(venv) if venv else None,
+                code=code,
+                pystep_is_empty=pystep.is_empty if pystep else None,
+                pystep_wants_ctx=pystep.wants_ctx if pystep else None,
+            )
+        )
+    return RecipeBundle(
+        workspace=str(workspace.resolve()),
+        recipe=root,
+        inputs=pack(prepared),
+        config={k: pack(v) for k, v in config.model_dump(mode="python").items()},
+        steps=tuple(steps),
+        output_wiring={k: Binding.capture(v) for k, v in recipe.output_wiring.items()},
+        max_workers=recipe.max_workers,
+    )
