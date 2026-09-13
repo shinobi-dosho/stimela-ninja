@@ -158,6 +158,14 @@ def test_submission_records_each_job_and_detached_finalizer(tmp_path, monkeypatc
     assert len(records) == len(plan.attempts)
 
 
+def test_worker_compile_accepts_checked_per_step_scheduler_placement(tmp_path):
+    bundle = freeze_recipe(_recipe(), {}, config=AppConfig(), workspace=tmp_path)
+    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable),
+                                    step_sbatch_opts={"write": {"nodelist": "k1"}, "copy": {"nodelist": "n1"}})
+    assert "#SBATCH --nodelist=k1" in workflow.jobs[0].script
+    assert "#SBATCH --nodelist=n1" in workflow.jobs[1].script
+
+
 def test_frozen_venv_pystep_runs_out_of_process(make_venv, tmp_path):
     from shinobi import pystep
     from tests import _venv_pystep_funcs as funcs

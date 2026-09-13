@@ -61,7 +61,8 @@ def submit(args) -> int:
     value = recipe(args.image, args.tool_venv)
     bundle = freeze_recipe(value, {}, config=AppConfig(), workspace=workspace, code_roots=(args.source_root,))
     workflow = prepare_worker_slurm(bundle, submission_root=workspace / ".shinobi" / "submissions", worker_python=args.worker_python,
-                                    sbatch_opts={"partition": "dev"})
+                                    sbatch_opts={"partition": "dev"},
+                                    step_sbatch_opts={"binary": {"nodelist": "k1"}, "image": {"nodelist": "n1"}, "venv": {"nodelist": "k1"}})
     handle = submit_worker_slurm(workflow)
     data = {"submission": str(handle.submission_dir), "jobs": handle.jobs, "finalizer": handle.finalizer_job}
     (args.root / "handle.json").write_text(json.dumps(data, indent=2))

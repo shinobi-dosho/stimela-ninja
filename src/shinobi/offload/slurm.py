@@ -558,6 +558,7 @@ def prepare_worker_slurm(
     submission_root: Path,
     worker_python: Path | None = None,
     sbatch_opts: dict[str, str] | None = None,
+    step_sbatch_opts: dict[str, dict[str, str]] | None = None,
 ) -> WorkerSlurmWorkflow:
     """Stage a frozen bundle and compile one short-lived worker job per step.
 
@@ -587,6 +588,10 @@ def prepare_worker_slurm(
     mutation = MutationOrder()
     options = dict(sbatch_opts or {})
     options.setdefault("kill-on-invalid-dep", "yes")
+    per_step = step_sbatch_opts or {}
+    unknown_steps = per_step.keys() - {step.name for step in pinned.steps}
+    if unknown_steps:
+        raise OffloadCompileError(f"step-specific sbatch options name unknown steps: {sorted(unknown_steps)}")
     log_dir = submission_dir / "logs"
     jobs: list[SlurmJob] = []
     for index, (frozen, attempt) in enumerate(zip(pinned.steps, attempts)):
@@ -624,7 +629,7 @@ def prepare_worker_slurm(
             chdir=pinned.workspace,
             stdout_path=log_dir / f"{frozen.name}.out",
             stderr_path=log_dir / f"{frozen.name}.err",
-            sbatch_opts={**sbatch_resource_opts(scope.resources), **options},
+            sbatch_opts={**sbatch_resource_opts(scope.resources), **options, **per_step.get(frozen.name, {})},
             argv=argv,
             error=OffloadCompileError,
         )
