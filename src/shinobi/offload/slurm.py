@@ -206,7 +206,7 @@ class MutationOrder:
         return required
 
 
-def _static_outputs(cab: Cab, resolved_inputs: dict[str, Any]) -> dict[str, Any]:
+def _static_outputs(cab: Scope, resolved_inputs: dict[str, Any]) -> dict[str, Any]:
     """The cab's output values knowable without running it: a same-named
     input passthrough, else the output field's declared default. (Wrangler-
     derived outputs are excluded by `check_offloadable`, so they never need
@@ -219,6 +219,62 @@ def _static_outputs(cab: Cab, resolved_inputs: dict[str, Any]) -> dict[str, Any]
         else:
             out[name] = None if model_field.default is PydanticUndefined else model_field.default
     return out
+
+
+def _static_inputs(
+    name: str,
+    scope: Scope,
+    ref,
+    recipe_inputs: dict[str, Any],
+    resolved_outputs: dict[str, dict[str, Any]],
+    *,
+    allow_runtime_values: bool = False,
+) -> dict[str, Any]:
+    """Resolve the compile-time subset of one step's effective inputs.
+
+    The legacy argv compiler needs every value. The worker compiler permits
+    ordinary runtime data flow, but a MUTABLE path still has to be known so
+    the same in-place ordering edges can be derived before submission.
+    """
+    unresolved: set[str] = set()
+
+    def one(step_field: str, source: InputRef | OutputRef) -> Any:
+        if isinstance(source, InputRef):
+            return recipe_inputs[source.field]
+        value = resolved_outputs.get(source.step, {}).get(source.field)
+        if value is None:
+            if not allow_runtime_values or (
+                step_field in path_fields(scope.inputs_model) and scope.mutability_of(step_field) is Mutability.MUTABLE
+            ):
+                raise OffloadCompileError(
+                    f"step '{name}' input '{step_field}' reads '{source.step}.{source.field}', "
+                    "whose path isn't statically known at compile time -- supply it as an "
+                    "input to the producing step"
+                )
+            unresolved.add(step_field)
+        return value
+
+    kwargs: dict[str, Any] = dict(ref.params)
+    for step_field, source in ref.wiring.items():
+        if isinstance(source, list):
+            values = [one(step_field, item) for item in source]
+            if step_field not in unresolved:
+                kwargs[step_field] = values
+        else:
+            value = one(step_field, source)
+            if step_field not in unresolved:
+                kwargs[step_field] = value
+
+    if not unresolved:
+        validated = scope.inputs_model(**kwargs)
+        return {field: getattr(validated, field) for field in scope.inputs_model.model_fields}
+
+    # Fill only ordinary defaults; executing a default factory at compile
+    # time would turn preparation into user-code execution.
+    for field_name, model_field in scope.inputs_model.model_fields.items():
+        if field_name not in kwargs and field_name not in unresolved and model_field.default is not PydanticUndefined:
+            kwargs[field_name] = model_field.default
+    return kwargs
 
 
 def _script(
@@ -294,46 +350,9 @@ def compile_slurm(
         cab = ref.step
         assert isinstance(cab, Cab)  # guaranteed by check_offloadable
 
-        def resolve_one(step_field: str, source: InputRef | OutputRef) -> Any:
-            """Resolve one step input to its statically-known value.
-
-            Args:
-                step_field: Name of the input field being resolved, used
-                    in the error message if resolution fails.
-                source: Where the value comes from -- either the recipe's
-                    own inputs (`InputRef`) or a prior step's output
-                    (`OutputRef`).
-
-            Returns:
-                The resolved value.
-
-            Raises:
-                OffloadCompileError: If `source` is an `OutputRef` whose
-                    value isn't statically known at compile time.
-            """
-            if isinstance(source, InputRef):
-                return recipe_inputs[source.field]
-            value = resolved_outputs[source.step][source.field]
-            if value is None:
-                raise OffloadCompileError(
-                    f"step '{name}' input '{step_field}' reads "
-                    f"'{source.step}.{source.field}', whose path isn't statically "
-                    "known at compile time (offloaded steps can't discover it at "
-                    "run time) -- supply it as an input to the producing step"
-                )
-            return value
-
-        kwargs: dict[str, Any] = dict(ref.params)
-        for step_field, source in ref.wiring.items():
-            if isinstance(source, list):
-                kwargs[step_field] = [resolve_one(step_field, s) for s in source]
-            else:
-                kwargs[step_field] = resolve_one(step_field, source)
-
         # Validate + fill defaults exactly as dispatch would, so the argv
         # matches a local run (and bad inputs fail here, before submission).
-        validated_step = cab.inputs_model(**kwargs)
-        resolved = {n: getattr(validated_step, n) for n in cab.inputs_model.model_fields}
+        resolved = _static_inputs(name, cab, ref, recipe_inputs, resolved_outputs)
 
         argv = build_argv(cab, resolved)  # inherits the non-"binary" flavour guard
         if cab.image and container_runtime:
@@ -467,6 +486,14 @@ class WorkerSlurmHandle:
     finalizer_job: str | None
 
 
+class WorkerSubmissionError(BackendError):
+    """Slurm accepted only part of a worker workflow; ``handle`` is durable."""
+
+    def __init__(self, message: str, handle: WorkerSlurmHandle):
+        super().__init__(message)
+        self.handle = handle
+
+
 def _stage_worker(submission_dir: Path, worker_python: Path):
     """Freeze the installed Shinobi package that prepares this submission."""
     import shinobi
@@ -545,9 +572,16 @@ def _pin_worker_bundle(bundle):
         settings = dict(step.scope.settings)
         image = unpack(settings["image"]) if "image" in settings else None
         if image and step.backend in CONTAINER_RUNTIMES:
-            pinned, _digest = _pin_image(step.backend, image)
+            pinned, digest = _pin_image(step.backend, image)
+            if digest is None:
+                raise OffloadCompileError(
+                    f"step {step.name!r}: image {image!r} could not be pinned on the submission host; "
+                    "worker jobs never resolve mutable image tags on compute nodes"
+                )
             settings["image"] = pack(pinned)
-            step = step.model_copy(update={"scope": step.scope.model_copy(update={"settings": settings})})
+            step = step.model_copy(
+                update={"scope": step.scope.model_copy(update={"settings": settings}), "image_digest": digest}
+            )
         steps.append(step)
     return bundle.model_copy(update={"steps": tuple(steps)})
 
@@ -586,6 +620,7 @@ def prepare_worker_slurm(
     step_index = {name: i for i, name in enumerate(graph.names)}
     recipe_inputs = unpack(pinned.inputs)
     mutation = MutationOrder()
+    resolved_outputs: dict[str, dict[str, Any]] = {}
     options = dict(sbatch_opts or {})
     options.setdefault("kill-on-invalid-dep", "yes")
     per_step = step_sbatch_opts or {}
@@ -596,18 +631,14 @@ def prepare_worker_slurm(
     jobs: list[SlurmJob] = []
     for index, (frozen, attempt) in enumerate(zip(pinned.steps, attempts)):
         scope = frozen.scope.restore()
-        known = dict(unpack(frozen.params))
-        deferred = False
-        for field_name, source in frozen.wiring.items():
-            sources = source if isinstance(source, tuple) else (source,)
-            if any(item.step is not None for item in sources):
-                deferred = True
-                continue
-            values = [recipe_inputs[item.field] for item in sources]
-            known[field_name] = values if isinstance(source, tuple) else values[0]
-        if not deferred:
-            validated = scope.inputs_model(**known)
-            known = {name: getattr(validated, name) for name in scope.inputs_model.model_fields}
+        known = _static_inputs(
+            frozen.name,
+            scope,
+            frozen.declaration(),
+            recipe_inputs,
+            resolved_outputs,
+            allow_runtime_values=True,
+        )
         mutation_deps = mutation.order_after(frozen.name, scope, known)
         depends_on = sorted({graph.names[item] for item in graph.deps[index]} | mutation_deps, key=step_index.get)
         argv = [
@@ -634,6 +665,7 @@ def prepare_worker_slurm(
             error=OffloadCompileError,
         )
         jobs.append(SlurmJob(name=frozen.name, script=script, depends_on=depends_on))
+        resolved_outputs[frozen.name] = _static_outputs(scope, known)
 
     final_argv = ["env", f"PYTHONPATH={worker.source}", worker.python, "-m", "shinobi.offload.worker", "finalize", "--submission", str(submission_dir)]
     finalizer = SlurmJob(
@@ -649,7 +681,7 @@ def prepare_worker_slurm(
 def submit_worker_slurm(workflow: WorkerSlurmWorkflow) -> WorkerSlurmHandle:
     """Submit a worker workflow, durably recording every accepted job id."""
     from shinobi.offload.bundle import RecipeBundle, Submission, write_new
-    from shinobi.offload.worker import ExecutionPlan, SubmittedFinalizer, SubmittedJob
+    from shinobi.offload.worker import ExecutionPlan, SubmittedFinalizer, SubmittedJob, WorkerHandleRecord
 
     directory = workflow.submission_dir
     (directory / "logs").mkdir(parents=True, exist_ok=True)
@@ -701,6 +733,16 @@ def submit_worker_slurm(workflow: WorkerSlurmWorkflow) -> WorkerSlurmHandle:
             )
     finally:
         shutil.rmtree(script_dir, ignore_errors=True)
+    handle = WorkerSlurmHandle(submission_dir=directory, jobs=job_ids, finalizer_job=finalizer_id)
+    write_new(
+        directory / "handle.json",
+        WorkerHandleRecord(
+            recipe=bundle.declaration().name,
+            submission=str(directory),
+            jobs=job_ids,
+            finalizer=finalizer_id,
+        ),
+    )
     if failure is not None:
-        raise failure
-    return WorkerSlurmHandle(submission_dir=directory, jobs=job_ids, finalizer_job=finalizer_id)
+        raise WorkerSubmissionError(str(failure), handle)
+    return handle

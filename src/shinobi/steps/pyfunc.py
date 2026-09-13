@@ -471,6 +471,10 @@ class _StubFinder(importlib.abc.MetaPathFinder):
 
 sys.meta_path.insert(0, _StubFinder())
 
+_SOURCE_ROOT = {source_root!r}
+if _SOURCE_ROOT is not None:
+    sys.path.insert(0, _SOURCE_ROOT)
+
 _spec = importlib.util.spec_from_file_location("_shinobi_pystep_target", {source_file!r})
 _module = importlib.util.module_from_spec(_spec)
 sys.modules["_shinobi_pystep_target"] = _module
@@ -606,6 +610,11 @@ def _run_pystep_subprocess(
         raise TypeError(f"pystep {func.__name__!r}: a function defined inside another function has no importable module path, so it cannot run out-of-process")
 
     source_file = Path(inspect.getfile(func)).resolve()
+    # Offload workers attach the import root of the immutable staged source
+    # tree to the reconstructed callable. The ordinary local path leaves
+    # this unset and retains the historical isolated-module/stub behaviour.
+    staged_code_root_value = getattr(func, "__shinobi_staged_code_root__", None)
+    staged_code_root = Path(staged_code_root_value).resolve() if staged_code_root_value else None
 
     # The runner loads this file as an isolated module, stubbing the framework
     # packages (shinobi, pydantic) always, and the target's own top-level
@@ -613,7 +622,7 @@ def _run_pystep_subprocess(
     # function defined in a directly-run script has __module__ == '__main__'
     # and no importable package.
     stub_prefixes = {"shinobi", "pydantic"}
-    if launcher.stub_target_package and func.__module__ != "__main__":
+    if launcher.stub_target_package and staged_code_root is None and func.__module__ != "__main__":
         stub_prefixes.add(func.__module__.split(".")[0])
 
     # Same objects the in-process path passes: prepare_inputs() applies
@@ -665,6 +674,7 @@ def _run_pystep_subprocess(
         runner_path.write_text(
             _RUNNER_TEMPLATE.format(
                 stub_prefixes=stub_prefixes,
+                source_root=str(staged_code_root) if staged_code_root is not None else None,
                 source_file=str(source_file),
                 qualname_parts=func.__qualname__.split("."),
                 func_name=func.__name__,
@@ -676,11 +686,10 @@ def _run_pystep_subprocess(
         )
 
         workdir = str(sandbox_dir) if sandbox_dir is not None else workspace
-        # Mount only the target file's own directory (identity bind), not the
-        # whole package root -- the runner loads the file by path and never
-        # puts it on sys.path, so nothing else in the tree is read. (The venv
-        # launcher ignores extra_dirs: same filesystem, no mounts needed.)
-        extra_dirs = [str(io_dir), str(source_file.parent)]
+        # A normal local pystep needs only its entry directory. An offloaded
+        # pystep needs the complete frozen import root: its captured helpers
+        # are deliberately part of the executable identity.
+        extra_dirs = [str(io_dir), str(staged_code_root or source_file.parent)]
 
         launch = launcher.build(runner_path, workdir, extra_dirs, run_prepared)
 
@@ -735,6 +744,7 @@ def _run_pystep_subprocess(
             kind="pyfunc",
             backend=launcher.backend_name,
             sandboxed=sandbox_dir is not None,
+            sandbox_path=str(sandbox_dir) if sandbox_dir is not None and sandbox_dir.exists() else None,
             resources=scope.resources,
             **launch.provenance,
         )

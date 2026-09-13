@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import logging
 import os
 import platform
 import sys
@@ -28,7 +29,9 @@ from shinobi.results import StepResult
 from shinobi.steps.dispatch import _dispatch, _prepare_inputs
 from shinobi.steps.loops import passthrough_result, should_skip
 from shinobi.steps.pyfunc import _make_adapter
-from shinobi.steps.schema import InputRef, OutputRef
+from shinobi.steps.schema import InputRef, OutputRef, Scope, declared_output_dirs
+
+logger = logging.getLogger(__name__)
 
 
 class PlannedAttempt(WireModel):
@@ -76,13 +79,22 @@ class SubmittedFinalizer(WireModel):
     job_id: str
 
 
+class WorkerHandleRecord(WireModel):
+    schema_version: Literal[1] = 1
+    engine: Literal["slurm-worker"] = "slurm-worker"
+    recipe: str
+    submission: str
+    jobs: dict[str, str]
+    finalizer: str | None = None
+
+
 class FinalizedStep(WireModel):
     step_path: str
     attempt_id: UUID
     job_id: str | None = None
     scheduler_state: str = "UNKNOWN"
-    state: Literal["running", "succeeded", "failed", "cached", "skipped", "unknown"]
-    record: str
+    state: Literal["running", "succeeded", "failed", "cancelled", "cached", "skipped", "unknown"]
+    record: str | None = None
 
 
 class Finalization(WireModel):
@@ -100,7 +112,7 @@ def worker_platform() -> str:
     return f"{sys.platform}-{platform.machine()}-{libc}-{version}"
 
 
-def _load(submission_dir: Path) -> tuple[Submission, RecipeBundle, ExecutionPlan]:
+def _load_identity(submission_dir: Path) -> tuple[Submission, RecipeBundle, ExecutionPlan]:
     submission_dir = submission_dir.resolve()
     submission = Submission.model_validate_json((submission_dir / "submission.json").read_text())
     bundle = RecipeBundle.read(submission_dir / "bundle.json")
@@ -108,6 +120,10 @@ def _load(submission_dir: Path) -> tuple[Submission, RecipeBundle, ExecutionPlan
     identity = (submission.workflow_id, submission.bundle_digest)
     if identity != (plan.workflow_id, plan.bundle_digest) or submission.bundle_digest != bundle.digest:
         raise BundleError("submission, execution plan and bundle identities disagree")
+    return submission, bundle, plan
+
+
+def _verify_environment(bundle: RecipeBundle, plan: ExecutionPlan) -> None:
     if plan.worker.shinobi_version != __version__:
         raise BundleError(
             f"worker/bundle environment mismatch: staged worker is {plan.worker.shinobi_version}, running worker is {__version__}"
@@ -122,6 +138,15 @@ def _load(submission_dir: Path) -> tuple[Submission, RecipeBundle, ExecutionPlan
             raise BundleError("running worker dependencies do not match the staged worker environment")
     if source_tree_digest(Path(plan.worker.source)) != plan.worker.source_digest:
         raise BundleError("staged worker source no longer matches its recorded digest")
+    for step in bundle.steps:
+        image = unpack(step.scope.settings["image"]) if "image" in step.scope.settings else None
+        if image and step.backend in ("docker", "podman", "apptainer") and step.image_digest is None:
+            raise BundleError(f"step {step.name!r}: worker execution refuses an image without a submission-time pin")
+
+
+def _load(submission_dir: Path) -> tuple[Submission, RecipeBundle, ExecutionPlan]:
+    submission, bundle, plan = _load_identity(submission_dir)
+    _verify_environment(bundle, plan)
     return submission, bundle, plan
 
 
@@ -162,6 +187,7 @@ def _callable(submission_dir: Path, index: int, bundle: RecipeBundle):
         obj = getattr(obj, part)
     if not callable(obj):
         raise BundleError(f"staged pystep {frozen.code.module}.{frozen.code.qualname} is not callable")
+    setattr(obj, "__shinobi_staged_code_root__", str(source_root))
     scope = frozen.scope.restore()
     return _make_adapter(obj, scope.outputs_model, bool(frozen.pystep_is_empty), bool(frozen.pystep_wants_ctx))
 
@@ -190,20 +216,36 @@ def _resolved_inputs(submission_dir: Path, bundle: RecipeBundle, plan: Execution
     return kwargs, loaded
 
 
+def _check_scratch_filesystems(scope: Scope, prepared: dict, workspace: Path) -> None:
+    """Refuse absolute declared scratch on another filesystem in M1."""
+    workspace_device = workspace.stat().st_dev
+    for directory, source in declared_output_dirs(scope, prepared):
+        if not source.startswith("scratch pattern") or not directory.is_absolute():
+            continue
+        existing = directory
+        while not existing.exists() and existing.parent != existing:
+            existing = existing.parent
+        if existing.stat().st_dev != workspace_device:
+            raise BundleError(
+                f"{source} resolves through {directory}, which is on a different filesystem from the shared workspace; "
+                "node-local/cross-filesystem scratch is not supported by the M1 worker"
+            )
+
+
 def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
     """Execute one planned step and atomically publish its terminal record."""
     submission_dir = submission_dir.resolve()
-    submission, bundle, plan = _load(submission_dir)
-    if Path(bundle.workspace).stat().st_dev != submission_dir.stat().st_dev:
-        raise BundleError("submission sandboxes and workspace are on different filesystems; node-local staging is not supported")
+    submission, bundle, plan = _load_identity(submission_dir)
     planned = plan.attempt(step_path)
     if planned.attempt_id != attempt_id:
         raise BundleError(f"attempt id for {step_path!r} does not match the execution plan")
     index = next(i for i, step in enumerate(bundle.steps) if step.name == step_path)
     frozen = bundle.steps[index]
     job_id = os.environ.get("SLURM_JOB_ID")
-    sandbox_root = submission_dir / "sandboxes"
-    before = set(sandbox_root.iterdir()) if sandbox_root.is_dir() else set()
+    # Attempts never share a scratch root. Besides making provenance exact
+    # under concurrent Slurm jobs, this gives later retry work a natural
+    # ownership boundary without changing the sandbox implementation.
+    sandbox_root = submission_dir / "sandboxes" / str(attempt_id)
     common = {
         "workflow_id": submission.workflow_id,
         "attempt_id": attempt_id,
@@ -213,13 +255,47 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         "code_digest": frozen.code.digest if frozen.code else None,
         "worker_digest": plan.worker.source_digest,
     }
-    AttemptRecord(state="running", sandbox=str(sandbox_root), **common).write(submission_dir.parent)
+
+    def publish_failure(exc: BaseException, *, phase: str = "final") -> None:
+        diagnostic = "".join(traceback.format_exception(exc))
+        failure = AttemptRecord(state="failed", error=str(exc), stderr=diagnostic, sandbox=retained_sandbox(), **common)
+        path = _record_path(submission_dir, attempt_id, phase)
+        try:
+            write_new(path, failure)
+        except FileExistsError:
+            # A concurrently-published terminal record always wins. Preserve
+            # the diagnostic separately when possible, never overwrite it.
+            if phase == "final":
+                _write_or_read(_record_path(submission_dir, attempt_id, "publication-error"), failure)
 
     def retained_sandbox() -> str | None:
         if not sandbox_root.is_dir():
             return None
-        candidates = [path for path in sandbox_root.iterdir() if path not in before]
-        return str(max(candidates, key=lambda path: path.stat().st_mtime_ns)) if candidates else None
+        candidates = list(sandbox_root.iterdir())
+        return str(candidates[0]) if len(candidates) == 1 else None
+
+    try:
+        _verify_environment(bundle, plan)
+        if Path(bundle.workspace).stat().st_dev != submission_dir.stat().st_dev:
+            raise BundleError(
+                "submission sandboxes and workspace are on different filesystems; node-local staging is not supported"
+            )
+    except BaseException as exc:
+        publish_failure(exc)
+        return 1
+
+    if _record_path(submission_dir, attempt_id).exists():
+        logger.error("attempt %s for step %r already has a terminal record; refusing to execute it again", attempt_id, step_path)
+        return 1
+    running = AttemptRecord(state="running", sandbox=str(sandbox_root), **common)
+    try:
+        running.write(submission_dir.parent)
+    except FileExistsError:
+        exc = BundleError(
+            f"attempt {attempt_id} for step {step_path!r} has already started; a requeue requires a new attempt identity"
+        )
+        publish_failure(exc, phase="requeue")
+        return 1
 
     try:
         old_cwd = Path.cwd()
@@ -234,11 +310,12 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                 prepared = _prepare_inputs(scope, kwargs)
                 result = passthrough_result(ref, upstream[ref.loop.prev_step], scope.inputs_model(**prepared))
             else:
+                _check_scratch_filesystems(scope, _prepare_inputs(scope, kwargs), Path(bundle.workspace))
                 config = AppConfig.model_validate({name: unpack(value) for name, value in bundle.config.items()})
                 config.cache.enabled = False
                 config.cache.snapshots.mode = "off"
                 config.sandbox.enabled = True
-                config.sandbox.dir = str(submission_dir / "sandboxes")
+                config.sandbox.dir = str(sandbox_root)
                 config.provenance.enabled = True
                 result = _dispatch(
                     scope,
@@ -255,17 +332,43 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                 )
         finally:
             os.chdir(old_cwd)
-        result.sandbox_path = retained_sandbox()
+        result.sandbox_path = result.sandbox_path or retained_sandbox()
+        if result.success:
+            try:
+                sandbox_root.rmdir()
+            except OSError:
+                pass
+        if frozen.image_digest is not None and result.image_digest != frozen.image_digest:
+            raise BundleError(
+                f"step {step_path!r}: executed image digest {result.image_digest!r} "
+                f"does not match submission pin {frozen.image_digest!r}"
+            )
         result.code_digest = common["code_digest"]
         result.worker_digest = common["worker_digest"]
         result.job_id = job_id
         terminal = AttemptRecord.from_result(result, sandbox=result.sandbox_path, **common)
-        terminal.write(submission_dir.parent)
+        try:
+            terminal.write(submission_dir.parent)
+        except BaseException:
+            final_path = _record_path(submission_dir, attempt_id)
+            if not final_path.exists():
+                raise
+            visible = AttemptRecord.read(
+                final_path,
+                workflow_id=plan.workflow_id,
+                attempt_id=attempt_id,
+                step_path=step_path,
+                bundle_digest=plan.bundle_digest,
+            )
+            if visible != terminal:
+                raise
+            # The atomic link is visible and contains the exact terminal
+            # record. Avoid reporting a failed Slurm job beside that commit;
+            # a later disappearance is still handled as unknown, never success.
+            logger.warning("terminal record %s is visible but its directory sync could not be confirmed", final_path)
         return 0 if result.success else max(1, abs(result.returncode))
     except BaseException as exc:
-        diagnostic = "".join(traceback.format_exception(exc))
-        failure = AttemptRecord(state="failed", error=str(exc), stderr=diagnostic, sandbox=retained_sandbox(), **common)
-        failure.write(submission_dir.parent)
+        publish_failure(exc)
         return 1
 
 
@@ -279,10 +382,43 @@ def _write_or_read(path: Path, model: WireModel):
         return path
 
 
+def _scheduler_attempt_state(state: str) -> tuple[str, bool]:
+    """Map volatile Slurm text to a typed observation and terminality."""
+    normalized = (state.strip().upper().split() or ["UNKNOWN"])[0].split("+")[0]
+    if normalized.startswith("CANCELLED"):
+        return "cancelled", True
+    if normalized in {
+        "FAILED",
+        "TIMEOUT",
+        "NODE_FAIL",
+        "OUT_OF_MEMORY",
+        "PREEMPTED",
+        "BOOT_FAIL",
+        "DEADLINE",
+        "REVOKED",
+        "SPECIAL_EXIT",
+    }:
+        return "failed", True
+    if normalized == "COMPLETED":
+        # Scheduler success is never a Shinobi commit.
+        return "unknown", True
+    if normalized in {"PENDING", "RUNNING", "CONFIGURING", "COMPLETING", "REQUEUED", "RESIZING", "SUSPENDED", "STOPPED"}:
+        return "running", False
+    return "unknown", normalized == "UNKNOWN"
+
+
 def finalize_submission(submission_dir: Path) -> Finalization:
     """Reconstruct ordered status and, for a complete success, a run manifest."""
     submission_dir = submission_dir.resolve()
     submission, bundle, plan = _load(submission_dir)
+    finalization_path = submission_dir / "finalization.json"
+    if finalization_path.exists():
+        existing = Finalization.model_validate_json(finalization_path.read_text())
+        if (existing.workflow_id, existing.bundle_digest) != (submission.workflow_id, bundle.digest):
+            raise BundleError("finalization record has the wrong workflow identity")
+        if existing.manifest is not None:
+            RunManifest.model_validate_json((submission_dir / existing.manifest).read_text())
+        return existing
     from shinobi.offload.slurm import status_slurm
 
     jobs: dict[str, SubmittedJob] = {}
@@ -295,31 +431,42 @@ def finalize_submission(submission_dir: Path) -> Finalization:
     finalized: list[FinalizedStep] = []
     results: dict[str, StepResult] = {}
     all_committed = len(jobs) == len(bundle.steps)
+    settled = True
+    submission_finished = (submission_dir / "finalizer-job.json").exists()
     for index, frozen in enumerate(bundle.steps):
         attempt = plan.attempt(frozen.name)
         final_path = _record_path(submission_dir, attempt.attempt_id)
-        unknown_path = _record_path(submission_dir, attempt.attempt_id, "unknown")
+        started_path = _record_path(submission_dir, attempt.attempt_id, "started")
+        diagnostic_paths = [
+            _record_path(submission_dir, attempt.attempt_id, "publication-error"),
+            _record_path(submission_dir, attempt.attempt_id, "requeue"),
+        ]
         job = jobs.get(frozen.name)
-        state = scheduler.get(frozen.name, "UNKNOWN")
-        if final_path.exists():
-            record = AttemptRecord.read(final_path, workflow_id=plan.workflow_id, attempt_id=attempt.attempt_id,
+        scheduler_state = scheduler.get(frozen.name, "UNKNOWN")
+        diagnostic_path = next((path for path in diagnostic_paths if path.exists()), None)
+        chosen_path = diagnostic_path or (final_path if final_path.exists() else None)
+        if chosen_path is not None:
+            record = AttemptRecord.read(chosen_path, workflow_id=plan.workflow_id, attempt_id=attempt.attempt_id,
                                         step_path=frozen.name, bundle_digest=plan.bundle_digest)
+            state = record.state
+            record_path: Path | None = chosen_path
         else:
-            record = AttemptRecord(workflow_id=plan.workflow_id, attempt_id=attempt.attempt_id,
-                                   step_path=frozen.name, bundle_digest=plan.bundle_digest, state="unknown",
-                                   error="worker left no committed final record", job_id=job.job_id if job else None,
-                                   scheduler_state=state, code_digest=frozen.code.digest if frozen.code else None,
-                                   worker_digest=plan.worker.source_digest)
-            _write_or_read(unknown_path, record)
-        all_committed = all_committed and record.committed
-        if record.committed:
+            state, terminal = _scheduler_attempt_state(scheduler_state)
+            if job is None:
+                terminal = submission_finished
+            settled = settled and terminal
+            record = None
+            record_path = started_path if started_path.exists() else None
+        all_committed = all_committed and record is not None and record.committed
+        if record is not None and record.committed:
             result = record.result(frozen.scope.restore())
-            result.scheduler_state = state
+            result.scheduler_state = scheduler_state
             result.job_id = job.job_id if job else result.job_id
             results[frozen.name] = result
         finalized.append(FinalizedStep(step_path=frozen.name, attempt_id=attempt.attempt_id,
-                                       job_id=job.job_id if job else None, scheduler_state=state,
-                                       state=record.state, record=str((final_path if final_path.exists() else unknown_path).relative_to(submission_dir))))
+                                       job_id=job.job_id if job else None, scheduler_state=scheduler_state,
+                                       state=state,
+                                       record=str(record_path.relative_to(submission_dir)) if record_path is not None else None))
 
     manifest_name = None
     if all_committed:
@@ -337,7 +484,11 @@ def finalize_submission(submission_dir: Path) -> Finalization:
         manifest_name = manifest_path.name
     finalization = Finalization(workflow_id=submission.workflow_id, bundle_digest=bundle.digest,
                                 complete=all_committed, steps=tuple(finalized), manifest=manifest_name)
-    _write_or_read(submission_dir / "finalization.json", finalization)
+    # An early status observation is deliberately not canonical: scheduler
+    # state changes and an absent final record may appear moments later. Once
+    # every attempt is terminal, persist exactly one stable reconstruction.
+    if settled:
+        _write_or_read(finalization_path, finalization)
     return finalization
 
 

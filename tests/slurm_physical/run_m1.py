@@ -77,7 +77,7 @@ def check(args) -> int:
     finalized = Finalization.model_validate_json((submission / "finalization.json").read_text())
     if args.fail:
         assert not finalized.complete
-        assert [step.state for step in finalized.steps] == ["failed", "unknown", "unknown"]
+        assert [step.state for step in finalized.steps] == ["failed", "cancelled", "cancelled"]
         assert finalized.steps[0].scheduler_state == "FAILED"
         assert finalized.steps[1].scheduler_state.startswith("CANCELLED")
         assert finalized.steps[2].scheduler_state.startswith("CANCELLED")

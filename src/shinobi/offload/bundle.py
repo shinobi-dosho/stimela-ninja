@@ -123,6 +123,7 @@ class FrozenStep(WireModel):
     loop: LoopIteration | None = None
     backend: Literal["native", "docker", "podman", "apptainer", "venv"]
     tool_venv: str | None = None
+    image_digest: str | None = None
     code: CodeBundle | None = None
     pystep_is_empty: bool | None = None
     pystep_wants_ctx: bool | None = None
@@ -169,6 +170,12 @@ class RecipeBundle(WireModel):
             if step.backend == "venv" and (not step.tool_venv or not Path(step.tool_venv).is_absolute()):
                 raise BundleError(f"step {step.name!r}: venv execution needs a resolved shared tool environment")
             image = unpack(step.scope.settings["image"]) if "image" in step.scope.settings else None
+            if step.image_digest is not None and (
+                not image
+                or step.backend not in ("docker", "podman", "apptainer")
+                or not step.image_digest.startswith("sha256:")
+            ):
+                raise BundleError(f"step {step.name!r}: image digest does not describe its container execution")
             if step.code is not None and step.backend != "venv" and (step.backend == "native" or not image):
                 raise BundleError(f"step {step.name!r}: a pystep must execute in an image or venv, never in-process")
         return self

@@ -10,7 +10,24 @@ source identity, pystep code identity, actual image or tool-venv provenance,
 captured streams and retained sandbox location. The declaration-order
 finalizer treats a missing final worker record as ``unknown`` regardless of a
 ``COMPLETED`` scheduler state. Only committed worker results can contribute to
-the aggregate manifest; venv-backed steps remain unpinned.
+the aggregate manifest; venv-backed steps remain unpinned. ``cancelled`` is a
+typed scheduler-derived status distinct from ``unknown``, but neither is a
+committed result.
+
+An early finalization made while jobs are still pending or running is not
+published as the canonical ``finalization.json``. Once every submitted job is
+terminal, the finalizer publishes one stable declaration-order reconstruction;
+later calls return it even if Slurm accounting has purged the jobs. To recover
+after an interrupted submitter or finalizer, keep the submission directory,
+inspect its ``handle.json`` and ``jobs/*.json``, then run::
+
+  python -m shinobi.offload.worker finalize --submission /shared/path/to/submission
+
+If jobs remain active this reports their current state without freezing it. If
+they are terminal it records the final result. A missing worker record remains
+``unknown`` and must be investigated from the retained ``logs/`` and per-attempt
+``sandboxes/<attempt-id>/``; rerunning finalization can never turn scheduler
+``COMPLETED`` into scientific success.
 
 Provenance makes a run **reproducible**: it pins every container image to a
 content digest before running, and writes a static manifest recording exactly

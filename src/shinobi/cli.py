@@ -24,6 +24,7 @@ from shinobi.exceptions import ShinobiError
 from shinobi.graph import RecipeGraphError, RecipeNotOffloadableError
 from shinobi.offload import (
     OffloadCompileError,
+    WorkerSubmissionError,
     compile_slurm,
     prepare_worker_slurm,
     status_slurm,
@@ -967,13 +968,15 @@ def compile_recipe(
             try:
                 bundle = freeze_recipe(recipe, inputs, config=ctx.obj, workspace=workspace, code_roots=code_root)
                 workflow = prepare_worker_slurm(bundle, submission_root=root, worker_python=worker_python)
-                launched = submit_worker_slurm(workflow)
             except (BundleError, RecipeNotOffloadableError, OffloadCompileError, RecipeGraphError) as exc:
                 raise click.ClickException(str(exc)) from None
+            try:
+                launched = submit_worker_slurm(workflow)
+            except WorkerSubmissionError as exc:
+                raise click.ClickException(
+                    f"{exc}; accepted jobs remain detached and recoverable from {exc.handle.submission_dir / 'handle.json'}"
+                ) from None
             handle = workflow.submission_dir / "handle.json"
-            handle.write_text(json.dumps({"engine": "slurm-worker", "recipe": recipe.name,
-                                          "submission": str(workflow.submission_dir), "jobs": launched.jobs,
-                                          "finalizer": launched.finalizer_job}, indent=2))
             click.echo(f"submitted {len(launched.jobs)} worker jobs (detached); handle: {handle}")
             for name, job_id in launched.jobs.items():
                 click.echo(f"  {name}: {job_id}")

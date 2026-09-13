@@ -113,17 +113,21 @@ record, using a same-filesystem hard link followed by directory fsync of the
 leaf and its full ancestor chain, including newly created submission and
 attempt directories. This covers parent-entry durability as well as atomic
 visibility; the shared filesystem must support and honor those semantics.
-Sync failures propagate. A failure after the final link becomes visible means
-durability is uncertain, not that the call succeeded; a retry cannot overwrite
-the existing record. Started/unknown/final
-records have separate names per attempt. This is not a multi-process cache
+Sync failures before publication propagate and cannot create a commit. If the
+final link is already visible and contains the exact intended record, the worker
+keeps that single terminal verdict and warns that directory durability could not
+be confirmed; it never tries to publish a contradictory failure beside it.
+Started/final records and requeue/publication diagnostics have separate names
+per attempt. Volatile ``unknown`` status is reconstructed rather than frozen as
+a write-once attempt record. This is not a multi-process cache
 journal or ownership lease. Shared cache coordination follows in M2.
 
 Worker submission and execution
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``prepare_worker_slurm`` is deliberately separate from ``freeze_recipe``. It
-resolves container tags to immutable references where possible, creates a
+requires every executed container image to resolve to an immutable reference
+on the submission host, creates a
 unique submission, materializes every pystep code bundle, snapshots the
 installed Shinobi worker source, fingerprints the worker interpreter's package
 set, and emits one worker command per Slurm allocation. A caller may use
@@ -132,7 +136,10 @@ from ``uv.lock`` on the login host, or name an already provisioned absolute
 ``--worker-python`` that is identically visible on every compute node. Compute
 jobs never install or download Python packages. The staged source digest,
 Python version, platform ABI tag and distribution digest are checked before a
-scientific command starts.
+scientific command starts. An unresolved image is refused before ``sbatch``;
+compute workers never repeat mutable-tag resolution. Sites that prohibit image
+downloads on compute nodes should supply shared, pre-staged ``.sif`` files (or
+otherwise pre-populate their runtime storage) during provisioning.
 
 For example, from a cluster driver whose workspace and interpreter paths are
 shared with the workers::
@@ -145,6 +152,9 @@ shared with the workers::
 
 Each allocation imports a pystep only from ``<submission>/code/<index>`` and
 executes exactly one declared step through the ordinary dispatch lifecycle.
+That complete captured root is also mounted and placed on the child runner's
+``sys.path``, so bundled package helpers resolve in image and venv subprocesses;
+the original checkout is never consulted.
 Binary cabs select their frozen native/container/venv tool backend; image- and
 venv-backed pysteps reuse the existing out-of-process runner. A tool venv is
 separate from the worker environment and remains unpinned even when its
@@ -153,8 +163,9 @@ the prepared image digest and staged Python-code digest.
 
 M1 always disables cache and mutation-snapshot writes inside workers. The
 existing stores are process-local/thread-coordinated; multi-process shared
-metadata is M2. Sandboxing is always enabled. Sandboxes live under the unique
-submission directory on the same filesystem as the recorded workspace;
+metadata is M2. Sandboxing is always enabled. Each attempt owns
+``sandboxes/<attempt-id>/...`` under the unique submission directory on the
+same filesystem as the recorded workspace;
 cross-filesystem scratch is refused rather than silently becoming node-local
 staging. A successful tool must validate and harvest its declared outputs
 before its final attempt record is committed. Failed tools and harvest errors
@@ -162,21 +173,27 @@ retain the exact shared sandbox path in their diagnostics. Harvesting several
 products is ordered, but is not a filesystem transaction across all products.
 
 Submission writes one immutable job-id record immediately after every
-successful ``sbatch`` call. This makes a partial submission discoverable even
-if the submitter dies. Scientific jobs use ``afterok`` dependencies and ask
+successful ``sbatch`` call and writes ``handle.json`` even when a later
+submission fails. This makes accepted jobs recoverable and discoverable after
+a partial handoff. Scientific jobs use ``afterok`` dependencies and ask
 Slurm to terminate impossible dependencies. An ``afterany`` finalizer reads
 the durable job/attempt records, queries accounting, and writes steps in
 declaration order. A missing final worker record is ``unknown`` even when
-Slurm says ``COMPLETED``; scheduler state never manufactures success. Complete
-successful workflows additionally publish ``manifest.json``. Finalization is
-idempotent: repeating it validates or reconstructs the same durable result.
+Slurm says ``COMPLETED``; scheduler state never manufactures success. Cancelled
+jobs are reported separately from missing/unknown attempts. An early
+finalization while work is still active is only a volatile observation and does
+not publish ``finalization.json``. Once all jobs are terminal, finalization is
+written once; a successful workflow additionally publishes ``manifest.json``.
+Repeating finalization returns that stable record without depending on later
+``sacct`` availability.
 
 When a recipe can be offloaded
 ------------------------------
 
 Offloading requires that the whole recipe be statically knowable -- the
 compiler must be able to determine every job and every dependency without
-running any Python. A recipe is offload-eligible only when:
+running any Python. A recipe using the legacy ``ninja compile`` argv path is
+eligible only when:
 
 * it has **no orchestration functions** (nothing whose behaviour depends on
   live Python control flow),
@@ -188,6 +205,16 @@ running any Python. A recipe is offload-eligible only when:
 Anything relying on live Python is rejected with an explanation. That is not
 the end of the road for a cluster: see :ref:`offload-remote` below, which runs
 any recipe on a remote host and has none of these restrictions.
+
+The experimental ``ninja compile --worker --submit`` path admits a wider but
+still declared subset: binary cabs plus image-backed or pre-provisioned
+venv-backed ``@pystep`` nodes with explicitly bundled, transportable source and
+typed data. It retains declared loops, but rejects arbitrary orchestration
+functions, nested recipes and scatter. Ordinary non-path outputs may cross
+between worker steps through committed attempt records. A path mutated in place
+must remain statically resolvable so submission can derive the same mutation
+ordering as the legacy compiler; an unresolved wired ``MUTABLE`` path is
+refused before any job is submitted.
 
 .. _offload-remote:
 
