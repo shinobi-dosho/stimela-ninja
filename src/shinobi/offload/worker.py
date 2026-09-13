@@ -404,7 +404,7 @@ def _scheduler_attempt_state(state: str) -> tuple[str, bool]:
         return "unknown", True
     if normalized in {"PENDING", "RUNNING", "CONFIGURING", "COMPLETING", "REQUEUED", "RESIZING", "SUSPENDED", "STOPPED"}:
         return "running", False
-    return "unknown", normalized == "UNKNOWN"
+    return "unknown", False
 
 
 def finalize_submission(submission_dir: Path) -> Finalization:
@@ -428,11 +428,20 @@ def finalize_submission(submission_dir: Path) -> Finalization:
             raise BundleError(f"submitted-job record {path} has the wrong workflow identity")
         jobs[job.step_path] = job
     scheduler = status_slurm({name: job.job_id for name, job in jobs.items()}) if jobs else {}
+    finalizer_record_path = submission_dir / "finalizer-job.json"
+    terminal_context = False
+    if finalizer_record_path.exists():
+        finalizer_job = SubmittedFinalizer.model_validate_json(finalizer_record_path.read_text())
+        if (finalizer_job.workflow_id, finalizer_job.bundle_digest) != (submission.workflow_id, bundle.digest):
+            raise BundleError("submitted-finalizer record has the wrong workflow identity")
+        terminal_context = os.environ.get("SLURM_JOB_ID") == finalizer_job.job_id
+        if not terminal_context:
+            finalizer_state = status_slurm({"__finalizer__": finalizer_job.job_id}).get("__finalizer__", "UNKNOWN")
+            _outcome, terminal_context = _scheduler_attempt_state(finalizer_state)
     finalized: list[FinalizedStep] = []
     results: dict[str, StepResult] = {}
     all_committed = len(jobs) == len(bundle.steps)
     settled = True
-    submission_finished = (submission_dir / "finalizer-job.json").exists()
     for index, frozen in enumerate(bundle.steps):
         attempt = plan.attempt(frozen.name)
         final_path = _record_path(submission_dir, attempt.attempt_id)
@@ -452,8 +461,8 @@ def finalize_submission(submission_dir: Path) -> Finalization:
             record_path: Path | None = chosen_path
         else:
             state, terminal = _scheduler_attempt_state(scheduler_state)
-            if job is None:
-                terminal = submission_finished
+            if not terminal and terminal_context:
+                terminal = True
             settled = settled and terminal
             record = None
             record_path = started_path if started_path.exists() else None

@@ -518,6 +518,30 @@ def test_early_finalization_is_superseded_and_completed_result_survives_accounti
     assert finalize_submission(workflow.submission_dir) == complete
 
 
+def test_unavailable_accounting_does_not_freeze_early_unknown_status(tmp_path, monkeypatch):
+    workflow, bundle, plan = _prepared(tmp_path)
+    (workflow.submission_dir / "jobs").mkdir()
+    for index, attempt in enumerate(plan.attempts):
+        write_new(
+            workflow.submission_dir / "jobs" / f"{index:04d}.json",
+            SubmittedJob(workflow_id=plan.workflow_id, bundle_digest=bundle.digest,
+                         step_path=attempt.step_path, attempt_id=attempt.attempt_id, job_id=str(300 + index)),
+        )
+    write_new(
+        workflow.submission_dir / "finalizer-job.json",
+        SubmittedFinalizer(workflow_id=plan.workflow_id, bundle_digest=bundle.digest, job_id="399"),
+    )
+
+    def unavailable_or_pending(jobs):
+        return {name: "PENDING" if name == "__finalizer__" else "UNKNOWN" for name in jobs}
+
+    monkeypatch.setattr("shinobi.offload.slurm.status_slurm", unavailable_or_pending)
+    observed = finalize_submission(workflow.submission_dir)
+    assert not observed.complete
+    assert [step.state for step in observed.steps] == ["unknown", "unknown"]
+    assert not (workflow.submission_dir / "finalization.json").exists()
+
+
 def test_cancelled_attempt_is_distinct_from_unknown(tmp_path, monkeypatch):
     workflow, bundle, plan = _prepared(tmp_path)
     attempt = plan.attempts[0]
