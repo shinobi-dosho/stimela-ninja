@@ -151,6 +151,13 @@ class StepResult:
     # not the cache key, so output paths are normalized before recording
     # (see `sandbox.relativize_path_outputs`).
     sandboxed: bool = False
+    # Detached-worker execution identity. Local runs leave these unset;
+    # offloaded finalization carries them into the aggregate manifest.
+    sandbox_path: str | None = None
+    code_digest: str | None = None
+    worker_digest: str | None = None
+    job_id: str | None = None
+    scheduler_state: str | None = None
     # What this step declared it needed (`Scope.resources`). Recorded purely
     # so a post-mortem can compare the declaration against what happened:
     # "killed by SIGKILL, declared 200GiB" is a diagnosis, whereas a bare

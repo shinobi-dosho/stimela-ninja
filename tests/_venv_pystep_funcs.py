@@ -22,6 +22,22 @@ def use_venv_only_pkg(n: int) -> MagicOut:
     return MagicOut(value=venvonlypkg.MAGIC + n)
 
 
+def use_bundled_helper(n: int) -> MagicOut:
+    from tests._offload_helper import bump
+
+    return MagicOut(value=bump(n))
+
+
+class MutationOut(BaseModel):
+    ms: Path
+
+
+def fail_after_touch(ms: Path) -> MutationOut:
+    Path(ms).write_text("touched")
+    Path("failed-scratch.txt").write_text("inspect me")
+    raise RuntimeError("intentional worker pystep failure")
+
+
 class PathOut(BaseModel):
     report: Path
 

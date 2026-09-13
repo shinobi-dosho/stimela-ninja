@@ -5,12 +5,195 @@ A recipe that is *purely declarative* can be compiled to a cluster workflow and
 handed off, so the pipeline runs without a live ``ninja`` process babysitting
 it. This is what ``ninja compile`` does.
 
+Worker bundles (M1, experimental)
+----------------------------------
+
+M1 provides a **plan and result protocol** through ``shinobi.offload.bundle``
+and ``shinobi.offload.records``, plus an opt-in short-lived compute worker.
+The legacy argv compiler remains the default. ``ninja compile --worker
+--submit`` stages and submits the worker lifecycle; ``--worker`` without
+``--submit`` is refused because immutable source and environment staging is a
+submission-preparation side effect.
+
+``freeze_recipe(recipe, inputs, config=config, workspace=workspace)`` builds a
+version-1 ``RecipeBundle`` without writing files, launching tools, importing
+captured user code or resolving network-dependent image pins. It records:
+
+* the declared flat DAG in declaration order, including explicit wiring,
+  ordering edges, recipe outputs and unrolled-loop bookkeeping;
+* reconstructible input/output models, field/path metadata, command policies,
+  wranglers, output declarations, harvest, scratch and resource settings;
+* validated recipe inputs, step constants and the resolved configuration
+  snapshot, plus each step's selected tool backend and shared tool-venv path.
+
+Known step inputs are checked during freezing. Inputs wired from a producing
+step remain references, **not fabricated values**; the worker must validate
+them once that producer commits its result. Relative paths retain their
+spelling and are interpreted against the recorded absolute shared workspace,
+never against the submission directory. The initial deployment assumes that
+workspace, cache and snapshot paths are visible identically on all nodes;
+node-local staging is separate work.
+
+The experimental worker eligibility check explicitly recognizes the generated
+``PystepCallable`` adapter, not arbitrary functions with a ``__wrapped__``
+attribute. Binary cabs and image-/venv-backed pysteps have distinct execution
+specifications. Arbitrary orchestration functions, nested recipes, scatter,
+local/nested callables and closures are refused. A pystep cannot silently
+fall back to native/in-process execution. Tool venvs must already exist at
+their resolved shared paths; submission preparation must additionally verify
+compute-node compatibility. They are separate from the version-pinned worker
+environment and remain **unpinned**, even with a package-version digest.
+
+For pysteps, supply explicit ``code_roots=(Path(...),)`` Python import roots.
+The bundle captures the source module, package initializers and local helpers
+reachable through literal imports, without importing those modules. Use
+``include_modules=("package.helper",)`` for dynamically selected local helpers.
+Imports outside those roots are execution-environment requirements, not files
+to discover by importing an installed package. This is a source snapshot,
+not serialization of a live interpreter: runtime monkey-patching, mutable
+module state and dynamically generated dependencies are not supported.
+The caller is responsible for declaring all dynamically selected helpers.
+Captured sources are trusted executable code under the same trust boundary as
+the original Python recipe; merely reading a bundle never executes them.
+The callable's module address must match its entry path within the supplied
+root (``pkg/mod.py`` means ``pkg.mod``; ``pkg/__init__.py`` means ``pkg``).
+Alias-loaded modules and ``__main__`` callables are rejected; import the
+callable by its canonical module name before freezing it.
+
+The bundle's SHA-256 covers captured source and helper contents as well as
+the declaration. ``bundle.stage(shared_root)`` creates a UUID-named submission
+directory containing ``bundle.json`` and ``submission.json``. Source contents
+are embedded in the bundle and can be materialized with ``CodeBundle.write``
+into a fresh directory; subsequent edits/removal of the original files cannot
+change them. Staging records bundle/worker protocol and software versions,
+but does not yet provision a worker or pin an image. Those are submission
+preparation responsibilities, not compilation side effects.
+
+Serialization is deliberately closed: finite JSON scalars, ``Path``, lists,
+tuples and string-keyed dictionaries; models built from these types, unions,
+scalar ``Literal`` choices and nested data-only models; numeric/length
+constraints and ``Strict``; and builtin ``list``/``dict``/``tuple`` default
+factories. Framework ``ParamMeta`` is preserved explicitly. Executable default
+factories, validators, serializers, custom initialization/core schemas,
+recursive models, model-instance defaults (including inside containers) and unrecognized types/constraints
+are rejected rather than silently weakened. Unsupported protocol versions or
+unknown protocol fields also fail. No Recipe pickle, class-name import or
+expression evaluation is involved.
+Scope settings and the configuration snapshot use the same finite tagged
+encoding as parameter values, including nested metadata. Non-finite numbers
+are rejected during freezing, before any submission directory is created.
+
+Plans versus observed execution
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A submission UUID identifies a workflow; a declared step name identifies a
+logical node within it; a separate UUID identifies each execution attempt.
+These identities are independent of scheduler job IDs. Produced-state identity
+is the pair ``(cache_key, producer_field)``: cache hits and loop pass-through
+must retain the original producing field, even when an output is renamed.
+
+``AttemptRecord`` carries the existing provenance observation vocabulary,
+captured streams and produced-state identities. States are ``running``,
+``succeeded``, ``failed``, ``cached``, ``skipped`` and ``unknown``. Final states
+require a matching leaf observation; unsuccessful or unknown attempts cannot
+publish reusable state. Readers check workflow, attempt, logical step and
+bundle identity before accepting a record. A missing/truncated final record
+or scheduler-reported completion is **not success**.
+The observation's name must also agree with the envelope's logical step.
+Unlike a reporting manifest, its input/output fields contain tagged values:
+strict ``Path``/tuple values, union branches and values under ``Any`` must not
+be converted to strings or lists. Unsupported runtime values are rejected
+before a final record can be published. ``AttemptRecord.result(scope)``
+decodes these fields and validates the executable inputs/outputs.
+Model instances require explicit model annotations; hiding one under ``Any``
+is rejected because a data dictionary cannot recover its undeclared class.
+
+Files are fsynced and published atomically without replacing an existing
+record, using a same-filesystem hard link followed by directory fsync of the
+leaf and its full ancestor chain, including newly created submission and
+attempt directories. This covers parent-entry durability as well as atomic
+visibility; the shared filesystem must support and honor those semantics.
+Sync failures before publication propagate and cannot create a commit. If the
+final link is already visible and contains the exact intended record, the worker
+keeps that single terminal verdict and warns that directory durability could not
+be confirmed; it never tries to publish a contradictory failure beside it.
+Started/final records and requeue/publication diagnostics have separate names
+per attempt. Volatile ``unknown`` status is reconstructed rather than frozen as
+a write-once attempt record. This is not a multi-process cache
+journal or ownership lease. Shared cache coordination follows in M2.
+
+Worker submission and execution
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``prepare_worker_slurm`` is deliberately separate from ``freeze_recipe``. It
+requires every executed container image to resolve to an immutable reference
+on the submission host, creates a
+unique submission, materializes every pystep code bundle, snapshots the
+installed Shinobi worker source, fingerprints the worker interpreter's package
+set, and emits one worker command per Slurm allocation. A caller may use
+``provision_worker_venv`` to build a content-addressed dependency environment
+from ``uv.lock`` on the login host, or name an already provisioned absolute
+``--worker-python`` that is identically visible on every compute node. Compute
+jobs never install or download Python packages. The staged source digest,
+Python version, platform ABI tag and distribution digest are checked before a
+scientific command starts. An unresolved image is refused before ``sbatch``;
+compute workers never repeat mutable-tag resolution. Sites that prohibit image
+downloads on compute nodes should supply shared, pre-staged ``.sif`` files (or
+otherwise pre-populate their runtime storage) during provisioning.
+
+For example, from a cluster driver whose workspace and interpreter paths are
+shared with the workers::
+
+  ninja compile recipe.py:pipeline --worker --submit \
+      --workdir /data/project \
+      --submission-root /data/project/.shinobi/submissions \
+      --worker-python /data/worker-env/bin/python \
+      --code-root /data/src
+
+Each allocation imports a pystep only from ``<submission>/code/<index>`` and
+executes exactly one declared step through the ordinary dispatch lifecycle.
+That complete captured root is also mounted and placed on the child runner's
+``sys.path``, so bundled package helpers resolve in image and venv subprocesses;
+the original checkout is never consulted.
+Binary cabs select their frozen native/container/venv tool backend; image- and
+venv-backed pysteps reuse the existing out-of-process runner. A tool venv is
+separate from the worker environment and remains unpinned even when its
+installed-distribution digest is recorded. An image-backed pystep records both
+the prepared image digest and staged Python-code digest.
+
+M1 always disables cache and mutation-snapshot writes inside workers. The
+existing stores are process-local/thread-coordinated; multi-process shared
+metadata is M2. Sandboxing is always enabled. Each attempt owns
+``sandboxes/<attempt-id>/...`` under the unique submission directory on the
+same filesystem as the recorded workspace;
+cross-filesystem scratch is refused rather than silently becoming node-local
+staging. A successful tool must validate and harvest its declared outputs
+before its final attempt record is committed. Failed tools and harvest errors
+retain the exact shared sandbox path in their diagnostics. Harvesting several
+products is ordered, but is not a filesystem transaction across all products.
+
+Submission writes one immutable job-id record immediately after every
+successful ``sbatch`` call and writes ``handle.json`` even when a later
+submission fails. This makes accepted jobs recoverable and discoverable after
+a partial handoff. Scientific jobs use ``afterok`` dependencies and ask
+Slurm to terminate impossible dependencies. An ``afterany`` finalizer reads
+the durable job/attempt records, queries accounting, and writes steps in
+declaration order. A missing final worker record is ``unknown`` even when
+Slurm says ``COMPLETED``; scheduler state never manufactures success. Cancelled
+jobs are reported separately from missing/unknown attempts. An early
+finalization while work is still active is only a volatile observation and does
+not publish ``finalization.json``. Once all jobs are terminal, finalization is
+written once; a successful workflow additionally publishes ``manifest.json``.
+Repeating finalization returns that stable record without depending on later
+``sacct`` availability.
+
 When a recipe can be offloaded
 ------------------------------
 
 Offloading requires that the whole recipe be statically knowable -- the
 compiler must be able to determine every job and every dependency without
-running any Python. A recipe is offload-eligible only when:
+running any Python. A recipe using the legacy ``ninja compile`` argv path is
+eligible only when:
 
 * it has **no orchestration functions** (nothing whose behaviour depends on
   live Python control flow),
@@ -22,6 +205,16 @@ running any Python. A recipe is offload-eligible only when:
 Anything relying on live Python is rejected with an explanation. That is not
 the end of the road for a cluster: see :ref:`offload-remote` below, which runs
 any recipe on a remote host and has none of these restrictions.
+
+The experimental ``ninja compile --worker --submit`` path admits a wider but
+still declared subset: binary cabs plus image-backed or pre-provisioned
+venv-backed ``@pystep`` nodes with explicitly bundled, transportable source and
+typed data. It retains declared loops, but rejects arbitrary orchestration
+functions, nested recipes and scatter. Ordinary non-path outputs may cross
+between worker steps through committed attempt records. A path mutated in place
+must remain statically resolvable so submission can derive the same mutation
+ordering as the legacy compiler; an unresolved wired ``MUTABLE`` path is
+refused before any job is submitted.
 
 .. _offload-remote:
 

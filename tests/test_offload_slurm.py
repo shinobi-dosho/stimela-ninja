@@ -76,6 +76,17 @@ def test_sbatch_opts_are_emitted():
     assert "#SBATCH --partition=gpu" in wf.jobs[0].script
 
 
+def test_sbatch_option_value_cannot_inject_a_directive():
+    with pytest.raises(OffloadCompileError, match="line break unsafe"):
+        compile_slurm(
+            _linear_recipe(),
+            {"ms": "/x.ms"},
+            workdir="/work",
+            container_runtime=None,
+            sbatch_opts={"partition": "gpu\n#SBATCH --account=stolen"},
+        )
+
+
 def test_container_image_is_wrapped_in_runtime():
     make = Cab(name="make", command="mk", inputs_model=MakeIn, outputs_model=MSOut, image="repo/img:1")
     wf = compile_slurm(_linear_recipe(make=make), {"ms": "/x.ms"}, workdir="/work", container_runtime="apptainer")

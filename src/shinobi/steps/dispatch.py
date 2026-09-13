@@ -853,6 +853,7 @@ def _run_cab(
         stdout=run.stdout,
         stderr=run.stderr,
         kind="cab",
+        sandbox_path=str(sandbox_dir) if sandbox_dir is not None and sandbox_dir.exists() else None,
         backend=backend_name,
         image=cab.image,
         image_digest=run.image_digest,

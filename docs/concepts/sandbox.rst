@@ -1,6 +1,17 @@
 Sandboxed execution
 ===================
 
+Offloaded worker sandboxes
+--------------------------
+
+The M1 Slurm worker uses the same preparation, stale-output clearing, path
+anchoring and harvesting helpers as a local subprocess-backed step. Its
+per-attempt sandbox is placed below the unique shared submission directory and
+must be on the same filesystem as the workspace. Failed sandboxes are retained
+and their exact path is written to the attempt record. A successful final
+record is published only after output validation and harvesting complete.
+Multi-product harvesting is not an all-or-nothing filesystem transaction.
+
 Radio-astronomy tools are messy neighbours: they drop logfiles, ``*.last``
 files, and scratch products into whatever directory they run in. Sandboxed
 execution keeps the workspace clean by running each step with its working

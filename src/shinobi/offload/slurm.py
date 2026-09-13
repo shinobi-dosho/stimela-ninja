@@ -36,12 +36,17 @@ whole MUTABLE class no longer has to be refused.
 from __future__ import annotations
 
 import os
+import hashlib
+import json
+import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from pydantic_core import PydanticUndefined
 
@@ -56,7 +61,7 @@ from shinobi.backends.slurm_script import (
 from shinobi.exceptions import BackendError
 from shinobi.graph import check_offloadable
 from shinobi.policies import build_argv
-from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, path_fields, paths_overlap
+from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope, path_fields, paths_overlap
 
 
 class OffloadCompileError(ValueError):
@@ -94,7 +99,7 @@ class SlurmWorkflow:
     log_dir: Path  # where each job's --output/--error land; created by submit
 
 
-def _touched_paths(cab: Cab, resolved: dict[str, Any]) -> list[tuple[Path, bool]]:
+def _touched_paths(cab: Scope, resolved: dict[str, Any]) -> list[tuple[Path, bool]]:
     """Every path-typed input the step touches, as `(canonical_path,
     mutates)` -- `mutates` being whether the cab declares that field
     `Mutability.MUTABLE`, i.e. the tool rewrites the file in place rather
@@ -155,7 +160,7 @@ class MutationOrder:
     def __init__(self) -> None:
         self._accesses: dict[Path, _PathState] = {}
 
-    def order_after(self, name: str, cab: Cab, resolved: dict[str, Any]) -> set[str]:
+    def order_after(self, name: str, cab: Scope, resolved: dict[str, Any]) -> set[str]:
         """Record `name`'s path accesses and return the already-seen steps
         it must run after.
 
@@ -201,7 +206,7 @@ class MutationOrder:
         return required
 
 
-def _static_outputs(cab: Cab, resolved_inputs: dict[str, Any]) -> dict[str, Any]:
+def _static_outputs(cab: Scope, resolved_inputs: dict[str, Any]) -> dict[str, Any]:
     """The cab's output values knowable without running it: a same-named
     input passthrough, else the output field's declared default. (Wrangler-
     derived outputs are excluded by `check_offloadable`, so they never need
@@ -214,6 +219,60 @@ def _static_outputs(cab: Cab, resolved_inputs: dict[str, Any]) -> dict[str, Any]
         else:
             out[name] = None if model_field.default is PydanticUndefined else model_field.default
     return out
+
+
+def _static_inputs(
+    name: str,
+    scope: Scope,
+    ref,
+    recipe_inputs: dict[str, Any],
+    resolved_outputs: dict[str, dict[str, Any]],
+    *,
+    allow_runtime_values: bool = False,
+) -> dict[str, Any]:
+    """Resolve the compile-time subset of one step's effective inputs.
+
+    The legacy argv compiler needs every value. The worker compiler permits
+    ordinary runtime data flow, but a MUTABLE path still has to be known so
+    the same in-place ordering edges can be derived before submission.
+    """
+    unresolved: set[str] = set()
+
+    def one(step_field: str, source: InputRef | OutputRef) -> Any:
+        if isinstance(source, InputRef):
+            return recipe_inputs[source.field]
+        value = resolved_outputs.get(source.step, {}).get(source.field)
+        if value is None:
+            if not allow_runtime_values or (step_field in path_fields(scope.inputs_model) and scope.mutability_of(step_field) is Mutability.MUTABLE):
+                raise OffloadCompileError(
+                    f"step '{name}' input '{step_field}' reads '{source.step}.{source.field}', "
+                    "whose path isn't statically known at compile time -- supply it as an "
+                    "input to the producing step"
+                )
+            unresolved.add(step_field)
+        return value
+
+    kwargs: dict[str, Any] = dict(ref.params)
+    for step_field, source in ref.wiring.items():
+        if isinstance(source, list):
+            values = [one(step_field, item) for item in source]
+            if step_field not in unresolved:
+                kwargs[step_field] = values
+        else:
+            value = one(step_field, source)
+            if step_field not in unresolved:
+                kwargs[step_field] = value
+
+    if not unresolved:
+        validated = scope.inputs_model(**kwargs)
+        return {field: getattr(validated, field) for field in scope.inputs_model.model_fields}
+
+    # Fill only ordinary defaults; executing a default factory at compile
+    # time would turn preparation into user-code execution.
+    for field_name, model_field in scope.inputs_model.model_fields.items():
+        if field_name not in kwargs and field_name not in unresolved and model_field.default is not PydanticUndefined:
+            kwargs[field_name] = model_field.default
+    return kwargs
 
 
 def _script(
@@ -289,46 +348,9 @@ def compile_slurm(
         cab = ref.step
         assert isinstance(cab, Cab)  # guaranteed by check_offloadable
 
-        def resolve_one(step_field: str, source: InputRef | OutputRef) -> Any:
-            """Resolve one step input to its statically-known value.
-
-            Args:
-                step_field: Name of the input field being resolved, used
-                    in the error message if resolution fails.
-                source: Where the value comes from -- either the recipe's
-                    own inputs (`InputRef`) or a prior step's output
-                    (`OutputRef`).
-
-            Returns:
-                The resolved value.
-
-            Raises:
-                OffloadCompileError: If `source` is an `OutputRef` whose
-                    value isn't statically known at compile time.
-            """
-            if isinstance(source, InputRef):
-                return recipe_inputs[source.field]
-            value = resolved_outputs[source.step][source.field]
-            if value is None:
-                raise OffloadCompileError(
-                    f"step '{name}' input '{step_field}' reads "
-                    f"'{source.step}.{source.field}', whose path isn't statically "
-                    "known at compile time (offloaded steps can't discover it at "
-                    "run time) -- supply it as an input to the producing step"
-                )
-            return value
-
-        kwargs: dict[str, Any] = dict(ref.params)
-        for step_field, source in ref.wiring.items():
-            if isinstance(source, list):
-                kwargs[step_field] = [resolve_one(step_field, s) for s in source]
-            else:
-                kwargs[step_field] = resolve_one(step_field, source)
-
         # Validate + fill defaults exactly as dispatch would, so the argv
         # matches a local run (and bad inputs fail here, before submission).
-        validated_step = cab.inputs_model(**kwargs)
-        resolved = {n: getattr(validated_step, n) for n in cab.inputs_model.model_fields}
+        resolved = _static_inputs(name, cab, ref, recipe_inputs, resolved_outputs)
 
         argv = build_argv(cab, resolved)  # inherits the non-"binary" flavour guard
         if cab.image and container_runtime:
@@ -440,3 +462,289 @@ def status_slurm(job_ids: dict[str, str]) -> dict[str, str]:
         fields = sacct_job_fields(proc.stdout, job_id)
         states[name] = fields[1].strip() if fields and len(fields) >= 2 else "UNKNOWN"
     return states
+
+
+# ---------------------------------------------------------------------------
+# Experimental M1 worker workflow.  The legacy argv compiler above deliberately
+# remains unchanged; callers opt into the frozen-bundle lifecycle explicitly.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class WorkerSlurmWorkflow:
+    submission_dir: Path
+    jobs: list[SlurmJob]
+    finalizer: SlurmJob
+
+
+@dataclass
+class WorkerSlurmHandle:
+    submission_dir: Path
+    jobs: dict[str, str]
+    finalizer_job: str | None
+
+
+class WorkerSubmissionError(BackendError):
+    """Slurm accepted only part of a worker workflow; ``handle`` is durable."""
+
+    def __init__(self, message: str, handle: WorkerSlurmHandle):
+        super().__init__(message)
+        self.handle = handle
+
+
+def _stage_worker(submission_dir: Path, worker_python: Path):
+    """Freeze the installed Shinobi package that prepares this submission."""
+    import shinobi
+
+    from shinobi.backends.venv import digest_of_dists, freeze_dists
+    from shinobi.offload.code import source_tree_digest
+    from shinobi.offload.worker import WorkerEnvironment, worker_platform
+
+    if not worker_python.is_absolute() or not worker_python.is_file() or not os.access(worker_python, os.X_OK):
+        raise OffloadCompileError(f"worker Python must be an existing executable absolute path, got {worker_python}")
+    package = Path(shinobi.__file__).resolve().parent
+    source_root = submission_dir / "worker-src"
+    shutil.copytree(package, source_root / "shinobi", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    distributions = freeze_dists(worker_python)
+    return WorkerEnvironment(
+        python=str(worker_python),
+        source=str(source_root),
+        source_digest=source_tree_digest(source_root),
+        python_version=platform.python_version(),
+        platform=worker_platform(),
+        distributions_digest=digest_of_dists(distributions) if distributions is not None else None,
+    )
+
+
+def provision_worker_venv(shared_root: Path, *, project_root: Path | None = None, python: Path | None = None) -> Path:
+    """Provision an immutable, lock-derived worker dependency environment.
+
+    Downloads/builds happen here on the submission host.  Compute jobs only
+    execute the finished shared venv plus the separately digested staged
+    Shinobi source tree.
+    """
+    project_root = (project_root or Path(__file__).resolve().parents[3]).resolve()
+    lock = project_root / "uv.lock"
+    if not lock.is_file():
+        raise OffloadCompileError(f"cannot provision a worker without {lock}")
+    if shutil.which("uv") is None:
+        raise OffloadCompileError("worker provisioning requires the 'uv' executable on the submission host")
+    python = (python or Path(sys.executable)).absolute()
+    identity = hashlib.sha256(lock.read_bytes() + f"\0{platform.python_version()}\0{sys.platform}\0{platform.machine()}".encode()).hexdigest()[:24]
+    shared_root = shared_root.resolve()
+    shared_root.mkdir(parents=True, exist_ok=True)
+    final = shared_root / identity
+    if (final / "bin" / "python").is_file():
+        return final
+    staging = Path(tempfile.mkdtemp(prefix=f".{identity}-", dir=shared_root))
+    requirements = staging.parent / f".{identity}-{uuid4().hex}.requirements.txt"
+    try:
+        commands = [
+            ["uv", "export", "--locked", "--no-dev", "--no-emit-project", "--output-file", str(requirements), "--directory", str(project_root)],
+            ["uv", "venv", "--python", str(python), "--no-python-downloads", str(staging)],
+            ["uv", "pip", "install", "--python", str(staging / "bin" / "python"), "--require-hashes", "-r", str(requirements)],
+        ]
+        for command in commands:
+            proc = subprocess.run(command, capture_output=True, text=True)
+            if proc.returncode:
+                raise OffloadCompileError(f"worker environment provisioning failed: {proc.stderr.strip()}")
+        try:
+            staging.rename(final)
+        except FileExistsError:
+            if not (final / "bin" / "python").is_file():
+                raise
+        return final
+    finally:
+        requirements.unlink(missing_ok=True)
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+def _pin_worker_bundle(bundle):
+    """Resolve image references before staging; compute nodes do no lookup."""
+    from shinobi.backends.container import CONTAINER_RUNTIMES, _pin_image
+    from shinobi.offload._codec import pack, unpack
+
+    steps = []
+    for step in bundle.steps:
+        settings = dict(step.scope.settings)
+        image = unpack(settings["image"]) if "image" in settings else None
+        if image and step.backend in CONTAINER_RUNTIMES:
+            pinned, digest = _pin_image(step.backend, image)
+            if digest is None:
+                raise OffloadCompileError(
+                    f"step {step.name!r}: image {image!r} could not be pinned on the submission host; worker jobs never resolve mutable image tags on compute nodes"
+                )
+            settings["image"] = pack(pinned)
+            step = step.model_copy(update={"scope": step.scope.model_copy(update={"settings": settings}), "image_digest": digest})
+        steps.append(step)
+    return bundle.model_copy(update={"steps": tuple(steps)})
+
+
+def prepare_worker_slurm(
+    bundle,
+    *,
+    submission_root: Path,
+    worker_python: Path | None = None,
+    sbatch_opts: dict[str, str] | None = None,
+    step_sbatch_opts: dict[str, dict[str, str]] | None = None,
+) -> WorkerSlurmWorkflow:
+    """Stage a frozen bundle and compile one short-lived worker job per step.
+
+    This is the side-effecting submission-preparation half: image pins and the
+    worker source/environment are resolved here, never during ``freeze_recipe``
+    and never on a compute node.
+    """
+    from shinobi.graph import build_graph
+    from shinobi.offload._codec import unpack
+    from shinobi.offload.bundle import RecipeBundle, write_new
+    from shinobi.offload.worker import ExecutionPlan, PlannedAttempt
+
+    if not isinstance(bundle, RecipeBundle):
+        raise TypeError("prepare_worker_slurm expects a RecipeBundle")
+    pinned = _pin_worker_bundle(bundle)
+    submission_dir = pinned.stage(submission_root)
+    worker = _stage_worker(submission_dir, (worker_python or Path(sys.executable)).absolute())
+    submission = json.loads((submission_dir / "submission.json").read_text())
+    attempts = tuple(PlannedAttempt(step_path=step.name, attempt_id=uuid4()) for step in pinned.steps)
+    plan = ExecutionPlan(workflow_id=submission["workflow_id"], bundle_digest=pinned.digest, worker=worker, attempts=attempts)
+    write_new(submission_dir / "execution.json", plan)
+
+    recipe = pinned.declaration()
+    graph = build_graph(recipe)
+    step_index = {name: i for i, name in enumerate(graph.names)}
+    recipe_inputs = unpack(pinned.inputs)
+    mutation = MutationOrder()
+    resolved_outputs: dict[str, dict[str, Any]] = {}
+    options = dict(sbatch_opts or {})
+    options.setdefault("kill-on-invalid-dep", "yes")
+    per_step = step_sbatch_opts or {}
+    unknown_steps = per_step.keys() - {step.name for step in pinned.steps}
+    if unknown_steps:
+        raise OffloadCompileError(f"step-specific sbatch options name unknown steps: {sorted(unknown_steps)}")
+    log_dir = submission_dir / "logs"
+    jobs: list[SlurmJob] = []
+    for index, (frozen, attempt) in enumerate(zip(pinned.steps, attempts)):
+        scope = frozen.scope.restore()
+        known = _static_inputs(
+            frozen.name,
+            scope,
+            frozen.declaration(),
+            recipe_inputs,
+            resolved_outputs,
+            allow_runtime_values=True,
+        )
+        mutation_deps = mutation.order_after(frozen.name, scope, known)
+        depends_on = sorted({graph.names[item] for item in graph.deps[index]} | mutation_deps, key=step_index.get)
+        argv = [
+            "env",
+            f"PYTHONPATH={worker.source}",
+            worker.python,
+            "-m",
+            "shinobi.offload.worker",
+            "run",
+            "--submission",
+            str(submission_dir),
+            "--step",
+            frozen.name,
+            "--attempt-id",
+            str(attempt.attempt_id),
+        ]
+        script = build_sbatch_script(
+            job_name=safe_slurm_name(frozen.name, "step name", error=OffloadCompileError),
+            chdir=pinned.workspace,
+            stdout_path=log_dir / f"{frozen.name}.out",
+            stderr_path=log_dir / f"{frozen.name}.err",
+            sbatch_opts={**sbatch_resource_opts(scope.resources), **options, **per_step.get(frozen.name, {})},
+            argv=argv,
+            error=OffloadCompileError,
+        )
+        jobs.append(SlurmJob(name=frozen.name, script=script, depends_on=depends_on))
+        resolved_outputs[frozen.name] = _static_outputs(scope, known)
+
+    final_argv = ["env", f"PYTHONPATH={worker.source}", worker.python, "-m", "shinobi.offload.worker", "finalize", "--submission", str(submission_dir)]
+    finalizer = SlurmJob(
+        name="finalize",
+        script=build_sbatch_script(
+            job_name=safe_slurm_name(f"{recipe.name}.finalize", "job name", error=OffloadCompileError),
+            chdir=pinned.workspace,
+            stdout_path=log_dir / "finalize.out",
+            stderr_path=log_dir / "finalize.err",
+            sbatch_opts=options,
+            argv=final_argv,
+            error=OffloadCompileError,
+        ),
+        depends_on=[step.name for step in pinned.steps],
+    )
+    return WorkerSlurmWorkflow(submission_dir=submission_dir, jobs=jobs, finalizer=finalizer)
+
+
+def submit_worker_slurm(workflow: WorkerSlurmWorkflow) -> WorkerSlurmHandle:
+    """Submit a worker workflow, durably recording every accepted job id."""
+    from shinobi.offload.bundle import RecipeBundle, Submission, write_new
+    from shinobi.offload.worker import ExecutionPlan, SubmittedFinalizer, SubmittedJob, WorkerHandleRecord
+
+    directory = workflow.submission_dir
+    (directory / "logs").mkdir(parents=True, exist_ok=True)
+    (directory / "jobs").mkdir(parents=True, exist_ok=True)
+    submission = Submission.model_validate_json((directory / "submission.json").read_text())
+    bundle = RecipeBundle.read(directory / "bundle.json")
+    plan = ExecutionPlan.model_validate_json((directory / "execution.json").read_text())
+    script_dir = Path(tempfile.mkdtemp(prefix="scripts-", dir=directory))
+    job_ids: dict[str, str] = {}
+    finalizer_id = None
+    failure: BackendError | None = None
+    try:
+        for index, job in enumerate(workflow.jobs):
+            script = script_dir / f"{index:04d}-{job.name}.sh"
+            script.write_text(job.script)
+            args = ["sbatch", "--parsable"]
+            if job.depends_on:
+                args.append(f"--dependency=afterok:{':'.join(job_ids[parent] for parent in job.depends_on)}")
+            proc = subprocess.run([*args, str(script)], capture_output=True, text=True)
+            if proc.returncode:
+                failure = BackendError(f"sbatch failed for step '{job.name}': {proc.stderr.strip()}")
+                break
+            job_id = parse_sbatch_job_id(proc.stdout)
+            job_ids[job.name] = job_id
+            attempt = plan.attempt(job.name)
+            write_new(
+                directory / "jobs" / f"{index:04d}.json",
+                SubmittedJob(workflow_id=submission.workflow_id, bundle_digest=bundle.digest, step_path=job.name, attempt_id=attempt.attempt_id, job_id=job_id),
+            )
+
+        # Always schedule recovery/finalization for whatever Slurm accepted.
+        final_script = script_dir / "finalize.sh"
+        final_script.write_text(workflow.finalizer.script)
+        args = ["sbatch", "--parsable"]
+        if job_ids:
+            args.append(f"--dependency=afterany:{':'.join(job_ids.values())}")
+        proc = subprocess.run([*args, str(final_script)], capture_output=True, text=True)
+        if proc.returncode:
+            if failure is None:
+                failure = BackendError(f"sbatch failed for finalizer: {proc.stderr.strip()}")
+        else:
+            finalizer_id = parse_sbatch_job_id(proc.stdout)
+            write_new(
+                directory / "finalizer-job.json",
+                SubmittedFinalizer(
+                    workflow_id=submission.workflow_id,
+                    bundle_digest=bundle.digest,
+                    job_id=finalizer_id,
+                ),
+            )
+    finally:
+        shutil.rmtree(script_dir, ignore_errors=True)
+    handle = WorkerSlurmHandle(submission_dir=directory, jobs=job_ids, finalizer_job=finalizer_id)
+    write_new(
+        directory / "handle.json",
+        WorkerHandleRecord(
+            recipe=bundle.declaration().name,
+            submission=str(directory),
+            jobs=job_ids,
+            finalizer=finalizer_id,
+        ),
+    )
+    if failure is not None:
+        raise WorkerSubmissionError(str(failure), handle)
+    return handle
