@@ -649,7 +649,7 @@ def prepare_worker_slurm(
 def submit_worker_slurm(workflow: WorkerSlurmWorkflow) -> WorkerSlurmHandle:
     """Submit a worker workflow, durably recording every accepted job id."""
     from shinobi.offload.bundle import RecipeBundle, Submission, write_new
-    from shinobi.offload.worker import ExecutionPlan, SubmittedJob
+    from shinobi.offload.worker import ExecutionPlan, SubmittedFinalizer, SubmittedJob
 
     directory = workflow.submission_dir
     (directory / "logs").mkdir(parents=True, exist_ok=True)
@@ -691,7 +691,14 @@ def submit_worker_slurm(workflow: WorkerSlurmWorkflow) -> WorkerSlurmHandle:
                 failure = BackendError(f"sbatch failed for finalizer: {proc.stderr.strip()}")
         else:
             finalizer_id = parse_sbatch_job_id(proc.stdout)
-            (directory / "finalizer-job.json").write_text(json.dumps({"job_id": finalizer_id}, indent=2))
+            write_new(
+                directory / "finalizer-job.json",
+                SubmittedFinalizer(
+                    workflow_id=submission.workflow_id,
+                    bundle_digest=bundle.digest,
+                    job_id=finalizer_id,
+                ),
+            )
     finally:
         shutil.rmtree(script_dir, ignore_errors=True)
     if failure is not None:

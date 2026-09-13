@@ -69,6 +69,13 @@ class SubmittedJob(WireModel):
     job_id: str
 
 
+class SubmittedFinalizer(WireModel):
+    schema_version: Literal[1] = 1
+    workflow_id: UUID
+    bundle_digest: str
+    job_id: str
+
+
 class FinalizedStep(WireModel):
     step_path: str
     attempt_id: UUID
@@ -168,7 +175,9 @@ def _resolved_inputs(submission_dir: Path, bundle: RecipeBundle, plan: Execution
     def one(source: InputRef | OutputRef):
         if isinstance(source, InputRef):
             return recipe_inputs[source.field]
-        result = loaded.setdefault(source.step, _result_for(submission_dir, bundle, plan, source.step))
+        if source.step not in loaded:
+            loaded[source.step] = _result_for(submission_dir, bundle, plan, source.step)
+        result = loaded[source.step]
         return getattr(result.outputs, source.field)
 
     ref = frozen.declaration()
@@ -213,25 +222,24 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         return str(max(candidates, key=lambda path: path.stat().st_mtime_ns)) if candidates else None
 
     try:
-        scope = frozen.scope.restore().model_copy(
-            update={"backend": frozen.backend, "venv": frozen.tool_venv or frozen.scope.restore().venv}
-        )
-        func = _callable(submission_dir, index, bundle)
-        kwargs, upstream = _resolved_inputs(submission_dir, bundle, plan, index)
-        ref = frozen.declaration()
-        if should_skip(ref, upstream):
-            prepared = _prepare_inputs(scope, kwargs)
-            result = passthrough_result(ref, upstream[ref.loop.prev_step], scope.inputs_model(**prepared))
-        else:
-            config = AppConfig.model_validate({name: unpack(value) for name, value in bundle.config.items()})
-            config.cache.enabled = False
-            config.cache.snapshots.mode = "off"
-            config.sandbox.enabled = True
-            config.sandbox.dir = str(submission_dir / "sandboxes")
-            config.provenance.enabled = True
-            old_cwd = Path.cwd()
-            os.chdir(bundle.workspace)
-            try:
+        old_cwd = Path.cwd()
+        os.chdir(bundle.workspace)
+        try:
+            restored = frozen.scope.restore()
+            scope = restored.model_copy(update={"backend": frozen.backend, "venv": frozen.tool_venv or restored.venv})
+            func = _callable(submission_dir, index, bundle)
+            kwargs, upstream = _resolved_inputs(submission_dir, bundle, plan, index)
+            ref = frozen.declaration()
+            if should_skip(ref, upstream):
+                prepared = _prepare_inputs(scope, kwargs)
+                result = passthrough_result(ref, upstream[ref.loop.prev_step], scope.inputs_model(**prepared))
+            else:
+                config = AppConfig.model_validate({name: unpack(value) for name, value in bundle.config.items()})
+                config.cache.enabled = False
+                config.cache.snapshots.mode = "off"
+                config.sandbox.enabled = True
+                config.sandbox.dir = str(submission_dir / "sandboxes")
+                config.provenance.enabled = True
                 result = _dispatch(
                     scope,
                     func,
@@ -245,8 +253,8 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                     _run_id=str(submission.workflow_id),
                     **kwargs,
                 )
-            finally:
-                os.chdir(old_cwd)
+        finally:
+            os.chdir(old_cwd)
         result.sandbox_path = retained_sandbox()
         result.code_digest = common["code_digest"]
         result.worker_digest = common["worker_digest"]

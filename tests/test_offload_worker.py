@@ -11,7 +11,7 @@ from shinobi.config import AppConfig
 from shinobi.offload.bundle import RecipeBundle, freeze_recipe, write_new
 from shinobi.offload.records import AttemptRecord
 from shinobi.offload.slurm import prepare_worker_slurm, submit_worker_slurm
-from shinobi.offload.worker import ExecutionPlan, SubmittedJob, execute_step, finalize_submission
+from shinobi.offload.worker import ExecutionPlan, SubmittedFinalizer, SubmittedJob, execute_step, finalize_submission
 from shinobi.steps.schema import Cab, InputRef, OutputRef, ParamMeta, Recipe, StepRef
 
 
@@ -55,7 +55,7 @@ def _recipe() -> Recipe:
             StepRef(
                 name="write",
                 step=write,
-                params={"script": "from pathlib import Path;import sys;Path(sys.argv[1]).write_text('frozen')"},
+                params={"script": "from pathlib import Path;import sys;Path(sys.argv[1]).write_text('frozen');Path('junk.log').write_text('junk')"},
                 wiring={"out": InputRef(field="first")},
             ),
             StepRef(
@@ -86,6 +86,7 @@ def test_worker_executes_wiring_in_shared_sandboxes_and_finalizes(tmp_path, monk
         assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 0
     assert (tmp_path / "first.txt").read_text() == "frozen"
     assert (tmp_path / "second.txt").read_text() == "frozen worker"
+    assert not (tmp_path / "junk.log").exists()
     assert list((workflow.submission_dir / "sandboxes").iterdir()) == []
 
     for index, attempt in enumerate(plan.attempts):
@@ -156,6 +157,10 @@ def test_submission_records_each_job_and_detached_finalizer(tmp_path, monkeypatc
     assert "--dependency=afterany:101:102" in calls[2]
     records = sorted((workflow.submission_dir / "jobs").glob("*.json"))
     assert len(records) == len(plan.attempts)
+    finalizer = SubmittedFinalizer.model_validate_json((workflow.submission_dir / "finalizer-job.json").read_text())
+    assert finalizer.workflow_id == plan.workflow_id
+    assert finalizer.bundle_digest == plan.bundle_digest
+    assert finalizer.job_id == "199"
 
 
 def test_worker_compile_accepts_checked_per_step_scheduler_placement(tmp_path):
@@ -227,3 +232,103 @@ def test_failed_worker_keeps_shared_sandbox_and_publishes_no_success(tmp_path):
     assert not record.committed
     assert record.sandbox is not None and Path(record.sandbox).is_dir()
     assert not (tmp_path / "first.txt").exists()
+
+
+def test_worker_preserves_declared_loop_short_circuit(tmp_path):
+    class WorkLoopIn(BaseModel):
+        ms: Path
+
+    class WorkLoopOut(BaseModel):
+        ms: Path | None = None
+
+    class AssessLoopIn(BaseModel):
+        script: str
+        ms: Path
+        flag: Path
+
+    class AssessLoopOut(BaseModel):
+        flag: Path | None = None
+
+    class BodyIn(BaseModel):
+        ms: Path
+        flag: Path
+
+    class BodyOut(BaseModel):
+        ms: Path | None = None
+        converged: Path | None = None
+
+    work = Cab(name="work", command="/bin/true", inputs_model=WorkLoopIn, outputs_model=WorkLoopOut)
+    assess = Cab(name="assess", command=f"{sys.executable} -c", inputs_model=AssessLoopIn, outputs_model=AssessLoopOut,
+                 field_meta={"script": ParamMeta(positional_head=True), "flag": ParamMeta(positional=True)})
+    body = Recipe(name="body", inputs_model=BodyIn, outputs_model=BodyOut)
+    body.add_step("work", work, ms=InputRef(field="ms"))
+    body.add_step("assess", assess,
+                  script="from pathlib import Path;import sys;Path(sys.argv[-1]).write_text('done')",
+                  ms=OutputRef(step="work", field="ms"), flag=InputRef(field="flag"))
+    body.set_output("ms", OutputRef(step="work", field="ms"))
+    body.set_output("converged", OutputRef(step="assess", field="flag"))
+    outer = Recipe(name="loop-worker", inputs_model=WorkLoopIn, outputs_model=WorkLoopOut)
+    outer.add_loop("cycle", body, max_iter=3, until="converged", carry={"ms": "ms"},
+                   ms=InputRef(field="ms"), flag=tmp_path / "converged.flag")
+    (tmp_path / "input.ms").write_text("input")
+    workflow = prepare_worker_slurm(freeze_recipe(outer, {"ms": "input.ms"}, config=AppConfig(), workspace=tmp_path),
+                                    submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    states = []
+    bundle = RecipeBundle.read(workflow.submission_dir / "bundle.json")
+    for attempt in plan.attempts:
+        assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 0
+        record = AttemptRecord.read(workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "final.json",
+                                    workflow_id=plan.workflow_id, attempt_id=attempt.attempt_id,
+                                    step_path=attempt.step_path, bundle_digest=bundle.digest)
+        states.append(record.state)
+    assert states == ["succeeded", "succeeded", "skipped", "skipped", "skipped", "skipped"]
+
+
+def test_result_publication_failure_makes_worker_fail(tmp_path, monkeypatch):
+    workflow, bundle, plan = _prepared(tmp_path)
+    attempt = plan.attempts[0]
+    original = AttemptRecord.write
+
+    def fail_success(self, directory):
+        if self.state == "succeeded":
+            raise OSError("simulated result publication failure")
+        return original(self, directory)
+
+    monkeypatch.setattr(AttemptRecord, "write", fail_success)
+    assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
+    record = AttemptRecord.read(workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "final.json",
+                                workflow_id=plan.workflow_id, attempt_id=attempt.attempt_id,
+                                step_path=attempt.step_path, bundle_digest=bundle.digest)
+    assert record.state == "failed"
+    assert "publication failure" in record.error
+    assert not record.committed
+
+
+def test_harvest_failure_retains_sandbox_and_cannot_publish_success(tmp_path):
+    class ScriptIn(BaseModel):
+        script: str
+
+    class NoOutput(BaseModel):
+        pass
+
+    collision = tmp_path / "collision"
+    collision.mkdir()
+    (collision / "caller-owned.txt").write_text("keep")
+    cab = Cab(name="harvest", command=f"{sys.executable} -c", inputs_model=ScriptIn, outputs_model=NoOutput,
+              field_meta={"script": ParamMeta(positional=True)}, harvest=["collision"])
+    recipe = Recipe(name="harvest-worker", inputs_model=NoOutput, outputs_model=NoOutput,
+                    steps=[StepRef(name="harvest", step=cab,
+                                   params={"script": "from pathlib import Path;p=Path('collision');p.mkdir();(p/'new.txt').write_text('new')"})])
+    workflow = prepare_worker_slurm(freeze_recipe(recipe, {}, config=AppConfig(), workspace=tmp_path),
+                                    submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    attempt = plan.attempts[0]
+    assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
+    bundle = RecipeBundle.read(workflow.submission_dir / "bundle.json")
+    record = AttemptRecord.read(workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "final.json",
+                                workflow_id=plan.workflow_id, attempt_id=attempt.attempt_id,
+                                step_path=attempt.step_path, bundle_digest=bundle.digest)
+    assert record.state == "failed" and "Refusing to delete" in record.error
+    assert record.sandbox is not None and (Path(record.sandbox) / "collision" / "new.txt").is_file()
+    assert (collision / "caller-owned.txt").read_text() == "keep"

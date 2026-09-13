@@ -69,6 +69,14 @@ def safe_slurm_name(name: str, kind: str, *, error: type[Exception] = ValueError
     return name
 
 
+def safe_slurm_value(value: str, kind: str, *, error: type[Exception] = ValueError) -> str:
+    """Reject line breaks in values interpolated into ``#SBATCH`` directives."""
+    value = str(value)
+    if "\n" in value or "\r" in value:
+        raise error(f"{kind} {value!r} contains a line break unsafe for a Slurm script")
+    return value
+
+
 def build_sbatch_script(
     *,
     job_name: str,
@@ -107,7 +115,9 @@ def build_sbatch_script(
         f"#SBATCH --error={stderr_path}",
     ]
     for key, value in sbatch_opts.items():
-        lines.append(f"#SBATCH --{safe_slurm_name(key, 'sbatch option', error=error)}={value}")
+        key = safe_slurm_name(key, "sbatch option", error=error)
+        value = safe_slurm_value(value, f"sbatch option {key!r} value", error=error)
+        lines.append(f"#SBATCH --{key}={value}")
     lines.append("")
     if skip_if_exists:
         lines.append(f"if [ -e {shlex.quote(skip_if_exists)} ]; then")
