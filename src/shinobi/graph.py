@@ -203,7 +203,7 @@ def _wrangler_output_fields(cab: Cab) -> set[str]:
     return fields
 
 
-def check_offloadable(recipe: "Recipe") -> RecipeGraph:
+def check_offloadable(recipe: "Recipe", *, worker: bool = False) -> RecipeGraph:
     """Raise `RecipeNotOffloadableError` (with *all* disqualifying reasons)
     unless `recipe` is a purely declarative DAG that can be compiled to an
     external engine and detached. A valid graph is a precondition, so this
@@ -212,7 +212,13 @@ def check_offloadable(recipe: "Recipe") -> RecipeGraph:
     eligibility (e.g. `offload.slurm.compile_slurm`) doesn't have to call
     `build_graph` a second time.
 
-    The rules follow directly from "the cluster runs the graph, shinobi is
+    ``worker=True`` checks the experimental worker-bundle graph shape:
+    explicitly identified pysteps and venvs are admitted, and structured
+    outputs can cross nodes in result records. The bundle compiler must
+    additionally validate the serializable schema, code and environment.
+    It does not enable worker submission in the legacy Slurm compiler.
+
+    The default rules follow directly from "the cluster runs the graph, shinobi is
     not in the loop per step" (see AGENTS.md / the design note):
 
     - **No orchestration function** on any step -- arbitrary Python run
@@ -246,6 +252,10 @@ def check_offloadable(recipe: "Recipe") -> RecipeGraph:
       a downstream `ninja status` reconstructs what it can (paths yes,
       dynamic values best-effort).
     """
+    # Worker bundles transport structured results and explicitly identified
+    # pysteps. The legacy argv compiler keeps its stricter default contract.
+    from shinobi.steps.pyfunc import PystepCallable
+
     graph = build_graph(recipe)  # valid graph is a precondition
     reasons: list[str] = []
     by_name = {ref.name: ref for ref in recipe.steps}
@@ -254,17 +264,18 @@ def check_offloadable(recipe: "Recipe") -> RecipeGraph:
         scope = ref.step
         if ref.scatter is not None:
             reasons.append(f"step '{ref.name}' declares scatter over {ref.scatter.fields} -- scatter is not supported by offloaded engines in this version")
-        if ref.func is not None:
+        pystep = worker and isinstance(ref.func, PystepCallable)
+        if ref.func is not None and not pystep:
             reasons.append(f"step '{ref.name}' has an orchestration function -- run it locally")
-        if not isinstance(scope, Cab):
+        if not isinstance(scope, Cab) and not pystep:
             reasons.append(f"step '{ref.name}' is a {type(scope).__name__}, not a Cab -- only atomic Cab steps can be compiled to an external workflow")
             continue
         # A venv step compiles to a bare argv the offload engine would run
         # natively on the compute node, silently ignoring the venv -- refuse
         # rather than mis-run it (venv-in-sbatch is deliberately not built).
-        if scope.venv is not None or scope.backend == "venv":
+        if not worker and (scope.venv is not None or scope.backend == "venv"):
             reasons.append(f"step '{ref.name}' runs in a venv -- venv execution is not supported by offloaded engines in this version; run it locally")
-        if scope.flavour not in EXECUTABLE_FLAVOURS:
+        if isinstance(scope, Cab) and scope.flavour not in EXECUTABLE_FLAVOURS:
             reasons.append(
                 f"step '{ref.name}' uses cab '{scope.name}' with flavour '{scope.flavour}' -- only "
                 "'binary' cabs compile to an argv an external engine can run (see dosho for real ports)"
@@ -292,6 +303,8 @@ def check_offloadable(recipe: "Recipe") -> RecipeGraph:
             src: The output reference to check (wrangler-derived and
                 non-path outputs are ineligible for offload).
         """
+        if worker:
+            return  # typed values and wrangler outputs travel in result records
         producer = by_name.get(src.step)
         if producer is None or not isinstance(producer.step, Cab):
             return  # unknown/non-Cab producer already reported elsewhere

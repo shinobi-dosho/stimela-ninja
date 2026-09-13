@@ -5,6 +5,122 @@ A recipe that is *purely declarative* can be compiled to a cluster workflow and
 handed off, so the pipeline runs without a live ``ninja`` process babysitting
 it. This is what ``ninja compile`` does.
 
+Worker bundles (M1, experimental)
+----------------------------------
+
+The first M1 implementation slice is a **plan and result protocol**, available
+through ``shinobi.offload.bundle`` and ``shinobi.offload.records``. It is not
+yet connected to ``ninja compile`` or a compute-node worker. The existing
+compiler's eligibility rules below still apply; offloaded cache, sandbox and
+provenance execution are not enabled by this protocol alone.
+
+``freeze_recipe(recipe, inputs, config=config, workspace=workspace)`` builds a
+version-1 ``RecipeBundle`` without writing files, launching tools, importing
+captured user code or resolving network-dependent image pins. It records:
+
+* the declared flat DAG in declaration order, including explicit wiring,
+  ordering edges, recipe outputs and unrolled-loop bookkeeping;
+* reconstructible input/output models, field/path metadata, command policies,
+  wranglers, output declarations, harvest, scratch and resource settings;
+* validated recipe inputs, step constants and the resolved configuration
+  snapshot, plus each step's selected tool backend and shared tool-venv path.
+
+Known step inputs are checked during freezing. Inputs wired from a producing
+step remain references, **not fabricated values**; the worker must validate
+them once that producer commits its result. Relative paths retain their
+spelling and are interpreted against the recorded absolute shared workspace,
+never against the submission directory. The initial deployment assumes that
+workspace, cache and snapshot paths are visible identically on all nodes;
+node-local staging is separate work.
+
+The experimental worker eligibility check explicitly recognizes the generated
+``PystepCallable`` adapter, not arbitrary functions with a ``__wrapped__``
+attribute. Binary cabs and image-/venv-backed pysteps have distinct execution
+specifications. Arbitrary orchestration functions, nested recipes, scatter,
+local/nested callables and closures are refused. A pystep cannot silently
+fall back to native/in-process execution. Tool venvs must already exist at
+their resolved shared paths; submission preparation must additionally verify
+compute-node compatibility. They are separate from the version-pinned worker
+environment and remain **unpinned**, even with a package-version digest.
+
+For pysteps, supply explicit ``code_roots=(Path(...),)`` Python import roots.
+The bundle captures the source module, package initializers and local helpers
+reachable through literal imports, without importing those modules. Use
+``include_modules=("package.helper",)`` for dynamically selected local helpers.
+Imports outside those roots are execution-environment requirements, not files
+to discover by importing an installed package. This is a source snapshot,
+not serialization of a live interpreter: runtime monkey-patching, mutable
+module state and dynamically generated dependencies are not supported.
+The caller is responsible for declaring all dynamically selected helpers.
+Captured sources are trusted executable code under the same trust boundary as
+the original Python recipe; merely reading a bundle never executes them.
+The callable's module address must match its entry path within the supplied
+root (``pkg/mod.py`` means ``pkg.mod``; ``pkg/__init__.py`` means ``pkg``).
+Alias-loaded modules and ``__main__`` callables are rejected; import the
+callable by its canonical module name before freezing it.
+
+The bundle's SHA-256 covers captured source and helper contents as well as
+the declaration. ``bundle.stage(shared_root)`` creates a UUID-named submission
+directory containing ``bundle.json`` and ``submission.json``. Source contents
+are embedded in the bundle and can be materialized with ``CodeBundle.write``
+into a fresh directory; subsequent edits/removal of the original files cannot
+change them. Staging records bundle/worker protocol and software versions,
+but does not yet provision a worker or pin an image. Those are submission
+preparation responsibilities, not compilation side effects.
+
+Serialization is deliberately closed: finite JSON scalars, ``Path``, lists,
+tuples and string-keyed dictionaries; models built from these types, unions,
+scalar ``Literal`` choices and nested data-only models; numeric/length
+constraints and ``Strict``; and builtin ``list``/``dict``/``tuple`` default
+factories. Framework ``ParamMeta`` is preserved explicitly. Executable default
+factories, validators, serializers, custom initialization/core schemas,
+recursive models, model-instance defaults (including inside containers) and unrecognized types/constraints
+are rejected rather than silently weakened. Unsupported protocol versions or
+unknown protocol fields also fail. No Recipe pickle, class-name import or
+expression evaluation is involved.
+Scope settings and the configuration snapshot use the same finite tagged
+encoding as parameter values, including nested metadata. Non-finite numbers
+are rejected during freezing, before any submission directory is created.
+
+Plans versus observed execution
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A submission UUID identifies a workflow; a declared step name identifies a
+logical node within it; a separate UUID identifies each execution attempt.
+These identities are independent of scheduler job IDs. Produced-state identity
+is the pair ``(cache_key, producer_field)``: cache hits and loop pass-through
+must retain the original producing field, even when an output is renamed.
+
+``AttemptRecord`` carries the existing provenance observation vocabulary,
+captured streams and produced-state identities. States are ``running``,
+``succeeded``, ``failed``, ``cached``, ``skipped`` and ``unknown``. Final states
+require a matching leaf observation; unsuccessful or unknown attempts cannot
+publish reusable state. Readers check workflow, attempt, logical step and
+bundle identity before accepting a record. A missing/truncated final record
+or scheduler-reported completion is **not success**.
+The observation's name must also agree with the envelope's logical step.
+Unlike a reporting manifest, its input/output fields contain tagged values:
+strict ``Path``/tuple values, union branches and values under ``Any`` must not
+be converted to strings or lists. Unsupported runtime values are rejected
+before a final record can be published. ``AttemptRecord.result(scope)``
+decodes these fields and validates the executable inputs/outputs.
+Model instances require explicit model annotations; hiding one under ``Any``
+is rejected because a data dictionary cannot recover its undeclared class.
+
+Files are fsynced and published atomically without replacing an existing
+record, using a same-filesystem hard link followed by directory fsync of the
+leaf and its full ancestor chain, including newly created submission and
+attempt directories. This covers parent-entry durability as well as atomic
+visibility; the shared filesystem must support and honor those semantics.
+Sync failures propagate. A failure after the final link becomes visible means
+durability is uncertain, not that the call succeeded; a retry cannot overwrite
+the existing record. Started/unknown/final
+records have separate names per attempt. This is not a multi-process cache
+journal, ownership lease, or proof that product publication completed: the
+worker must publish products before committing its final result. Worker
+execution, sandbox/publication integration and declaration-order manifest
+assembly are the remaining M1 slices; shared cache coordination follows in M2.
+
 When a recipe can be offloaded
 ------------------------------
 

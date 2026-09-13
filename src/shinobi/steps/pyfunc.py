@@ -751,7 +751,29 @@ def _run_pystep_subprocess(
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def _make_adapter(func: Callable, outputs_model: type[BaseModel], is_empty: bool, wants_ctx: bool) -> Callable[[ExecContext], StepResult]:
+@dataclass(frozen=True)
+class PystepCallable:
+    """A declared Python computation, distinct from an orchestration function.
+
+    ``__wrapped__`` preserves the cache's source identity. The explicit type
+    lets a compiler recognize pysteps without guessing from a closure name
+    or accepting every function carrying a ``__wrapped__`` attribute.
+    """
+
+    __wrapped__: Callable
+    _run: Callable[[ExecContext], StepResult]
+    is_empty: bool
+    wants_ctx: bool
+
+    @property
+    def __name__(self) -> str:
+        return self._run.__name__
+
+    def __call__(self, ctx: ExecContext) -> StepResult:
+        return self._run(ctx)
+
+
+def _make_adapter(func: Callable, outputs_model: type[BaseModel], is_empty: bool, wants_ctx: bool) -> PystepCallable:
     def _adapter(ctx: ExecContext) -> StepResult:
         # Check the cheap local fields first: resolving the backend name can
         # fall through to a config-file read, which plain pysteps (no image,
@@ -808,7 +830,7 @@ def _make_adapter(func: Callable, outputs_model: type[BaseModel], is_empty: bool
             kind="pyfunc",  # ran in-process; no container -> backend/image left None
         )
 
-    return _adapter
+    return PystepCallable(func, _adapter, is_empty, wants_ctx)
 
 
 def pystep(
@@ -896,7 +918,6 @@ def pystep(
         # cache-key identity, which hashes a pystep's own source so
         # editing its implementation invalidates cached results) needs
         # this standard `__wrapped__` pointer to see past the adapter.
-        adapter.__wrapped__ = func
         step_name = name or func.__name__
         scope = Scope(
             name=step_name,
