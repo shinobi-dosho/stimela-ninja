@@ -163,6 +163,41 @@ default and must also be opted into per-step or per-recipe via ``Scope.cache``
 -- see ``shinobi.cache``. ``ninja run --cache-dir``/``--no-cache`` override
 this per invocation.
 
+The cache manifest and mutation journal are mutable shared metadata. Their
+read-modify-write transactions are serialized with persistent sibling lock
+files. A checksummed transaction is appended and synced in that same persistent
+inode before the familiar JSON file is refreshed from a collision-safe
+temporary by atomic replacement and directory sync. Readers replay the log, so
+a crash before the refresh leaves a recoverable commit instead of a stale hit;
+an incomplete trailing record is ignored, while corruption in a completed
+record fails closed. The JSON filenames and payloads did not change, so existing
+cache directories need no migration: the first update imports their current
+state as the log's initial snapshot. Lock/log files are intentionally left in
+place, because deleting one while a process holds it could create two unrelated
+lock domains.
+
+This protocol requires 64-bit Linux open-file-description locks
+(``F_OFD_SETLKW``), which conflict with the POSIX locks used by NFSv4, plus
+atomic same-directory replacement and working file/directory ``fsync`` on the
+cache filesystem. An operating-system failure is fatal rather than silently
+falling back to unsafe writes. Some network filesystems can nevertheless report
+success while enforcing locks only locally; a deployment that shares one cache
+directory across cluster nodes must run Shinobi's physical cross-node M2 probe
+on that exact mount before treating it as supported. Every participant must use
+the same distributed locking mode: NFSv3 without working lock services, or NFS
+mounted with local-only locking, is unsupported.
+
+The reference Kudu/Nyala topology passed this probe across its mixed local-ext4
+server and NFSv4.2 clients on 2026-09-13. That result establishes this one mount,
+not a blanket guarantee for other NFS or parallel-filesystem configurations.
+
+Mixing a server-local participant with NFS clients also has one inherent reboot
+window: after the server restarts, clients reclaim locks during the NFS grace
+period while a local process is not covered by that grace. Keep workers off the
+shared cache until recovery finishes. These short metadata locks do not
+serialize tools that mutate the same measurement set; graph ordering and
+mutation ownership are separate contracts.
+
 ``cache.snapshots.mode`` controls mutation-chain snapshots, which ride on
 caching being enabled (see ``shinobi.snapshots``). When several steps rewrite
 one measurement set in turn -- split, then flag, then calibrate -- the cache

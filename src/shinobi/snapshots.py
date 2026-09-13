@@ -105,8 +105,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
-from shinobi.cache import ProvenanceKey, _JsonFileStore, _hash_path
+from shinobi.cache import ProvenanceKey, _hash_path
 from shinobi.clonefs import CloneTier, can_afford, clone_tree, probe, tree_size
+from shinobi.storage import JsonFileStore
 from shinobi.steps.schema import Scope, mutated_path_fields
 
 logger = logging.getLogger("shinobi.snapshots")
@@ -320,16 +321,12 @@ def aliased_chain(chains: dict[str, "Chain"], cid: str, dev: int, ino: int) -> s
     return None
 
 
-class ChainJournal(_JsonFileStore):
+class ChainJournal(JsonFileStore):
     """`snapshots/chains.json` -- the per-path chain of named states.
 
-    Shares `CacheManifest`'s discipline exactly (one JSON file, a
-    per-process lock, write-temp-then-rename), and its limitation: two
-    concurrent *processes* on one cache directory are unguarded. Per-path
-    serialisation against concurrent mutators is inherited from "the
-    declared graph is the truth" -- two steps mutating one path with no
-    edge between them are already an unprotected race at `max_workers > 1`,
-    and with an edge they never run concurrently.
+    Shares `CacheManifest`'s cross-process transaction and atomic-publication
+    discipline through `storage.JsonFileStore`. This short metadata lock is
+    separate from ownership of the scientific path represented by a chain.
 
     The journal and the snapshot directory are one unit, created and
     destroyed together. A partial clean is worse than either alone: a
@@ -345,19 +342,15 @@ class ChainJournal(_JsonFileStore):
     def snapshot_dir(self, name: str) -> Path:
         return self.root / "states" / name
 
-    def _load(self) -> dict[str, Chain]:
-        return {cid: Chain.from_json(data) for cid, data in self._read().items()}
-
-    def _store(self, chains: dict[str, Chain]) -> None:
-        self._write_atomic({cid: chain.as_json() for cid, chain in chains.items()})
+    @staticmethod
+    def _load(data: dict[str, Any]) -> dict[str, Chain]:
+        return {cid: Chain.from_json(value) for cid, value in data.items()}
 
     def all_chains(self) -> dict[str, Chain]:
-        with self._lock:
-            return self._load()
+        return self._load(self.read())
 
     def get(self, cid: str) -> Chain | None:
-        with self._lock:
-            return self._load().get(cid)
+        return self._load(self.read()).get(cid)
 
     def update(self, cid: str, mutate: Callable[[Chain | None], Chain | None]) -> None:
         """Read-modify-write one chain under the lock.
@@ -366,23 +359,28 @@ class ChainJournal(_JsonFileStore):
         chain, decide something, and write back over a change made in
         between.
         """
-        with self._lock:
-            chains = self._load()
+
+        def update_data(data: dict[str, Any]) -> None:
+            chains = self._load(data)
             result = mutate(chains.get(cid))
             if result is None:
                 chains.pop(cid, None)
             else:
                 chains[cid] = result
-            self._store(chains)
+            data.clear()
+            data.update({name: chain.as_json() for name, chain in chains.items()})
+
+        super().update(update_data)
 
 
 _journals: dict[str, ChainJournal] = {}
 
 
 def get_journal(cache_dir: str) -> ChainJournal:
-    """One `ChainJournal` (and one lock) per cache directory, as with
-    `get_cache_manifest` -- separate instances would each hold their own
-    lock and defeat the thread-safety they exist to provide.
+    """One `ChainJournal` instance per cache directory.
+
+    Independently constructed instances and processes are also serialized by
+    the shared-filesystem transaction lock.
     """
     root = Path(cache_dir) / "snapshots"
     key = str(root.resolve())
@@ -1055,7 +1053,10 @@ class RunPresence:
     **Best-effort, and deliberately so.** `flock` is unreliable on precisely
     the filesystems A1 names: it needs the `flock` mount option on Lustre and
     can otherwise fail *or silently no-op*, and on NFS it depends on the
-    protocol version and a healthy lock daemon. So this never claims safety
+    protocol version and a healthy lock daemon. It also occupies a different
+    kernel lock table from an NFS client's POSIX-emulated `flock` when the NFS
+    server accesses the export locally, as the M2 physical probe demonstrated.
+    So this never claims safety
     it cannot demonstrate -- anything it cannot establish reads as "not
     alone", and reconciliation is skipped.
 
@@ -1402,11 +1403,8 @@ def invalidate(cache_dir: str, step_path: str, manifest) -> list[str]:
     # only link from a step path to a state name.
     entry = manifest.entry(step_path)
     cache_key = entry.get("cache_key") if entry else None
-    with manifest._lock:
-        data = manifest._read()
-        if data.pop(step_path, None) is not None:
-            manifest._write_atomic(data)
-            notes.append(f"removed the manifest entry for '{step_path}'")
+    if manifest.remove({step_path}):
+        notes.append(f"removed the manifest entry for '{step_path}'")
     if cache_key is None:
         return notes
 
@@ -1427,11 +1425,7 @@ def invalidate(cache_dir: str, step_path: str, manifest) -> list[str]:
         # generation or anything after it is downstream of it; one that
         # consumed something earlier is not, and is left alone.
         downstream = {key.split("::")[0] for key, record in chain.consumed.items() if order.get(record, -1) >= first}
-        with manifest._lock:
-            data = manifest._read()
-            dropped_steps = [name for name in downstream if data.pop(name, None) is not None]
-            if dropped_steps:
-                manifest._write_atomic(data)
+        dropped_steps = manifest.remove(downstream)
         for name in sorted(dropped_steps):
             notes.append(f"removed the manifest entry for '{name}', downstream of '{step_path}' on {chain.path}")
 

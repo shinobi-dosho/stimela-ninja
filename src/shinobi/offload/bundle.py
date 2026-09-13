@@ -23,6 +23,7 @@ from shinobi.config import AppConfig
 from shinobi.graph import check_offloadable
 from shinobi.offload._codec import BundleError, ModelSpec, WireModel, pack, unpack
 from shinobi.offload.code import CodeBundle, capture_code
+from shinobi.storage import sync_directory_chain as _sync_directory_chain
 from shinobi.steps.dispatch import _prepare_inputs
 from shinobi.steps.pyfunc import PystepCallable
 from shinobi.steps.schema import Cab, InputRef, LoopIteration, OutputRef, Recipe, Scope, StepRef
@@ -32,25 +33,6 @@ def fingerprint(model: WireModel) -> str:
     """Canonical content identity, independent of dictionary insertion order."""
     data = json.dumps(model.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(data.encode()).hexdigest()
-
-
-def _sync_directory_chain(path: Path) -> None:
-    """Persist the final link and every ancestor directory entry.
-
-    Sync even pre-existing parents: a concurrent publisher may have just
-    created them without syncing yet. Walking to the filesystem root also
-    covers directories the caller created before calling ``write_new``.
-    """
-    path = path.absolute()
-    resolved = path.resolve()
-    # Shared storage is often reached through a symlink. Persist both its
-    # target ancestry and the directory entries naming the alias itself.
-    for parent in dict.fromkeys((resolved, *resolved.parents, path, *path.parents)):
-        directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
 
 
 def write_new(path: Path, model: WireModel) -> Path:
