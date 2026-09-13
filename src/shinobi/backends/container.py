@@ -464,6 +464,13 @@ def _pin_image(runtime: str, image: str) -> tuple[str, str | None]:
         return image, "sha256:" + _sha256_file(image)
     docker_like = runtime in _DOCKER_LIKE
     ref = image if docker_like else _apptainer_image_uri(image)
+    parsed = _split_ref(ref)
+    if parsed is not None and parsed[2].startswith("sha256:"):
+        # Submission preparation may already have resolved the immutable
+        # reference.  Trust the digest carried by that reference: repeating
+        # a registry lookup on the compute node would break offline workers
+        # without making the executed identity any stronger.
+        return ref, parsed[2]
     if docker_like or ref.startswith("docker://"):
         # Primary: a pure-Python registry API query (no external tool, works
         # for every runtime incl. apptainer). Fall back to skopeo, then a

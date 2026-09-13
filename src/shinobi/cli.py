@@ -22,7 +22,15 @@ from shinobi.backends._stream import set_capture_limits
 from shinobi.logsetup import setup_file_logging
 from shinobi.exceptions import ShinobiError
 from shinobi.graph import RecipeGraphError, RecipeNotOffloadableError
-from shinobi.offload import OffloadCompileError, compile_slurm, status_slurm, status_ssh, submit_slurm
+from shinobi.offload import (
+    OffloadCompileError,
+    compile_slurm,
+    prepare_worker_slurm,
+    status_slurm,
+    status_ssh,
+    submit_slurm,
+    submit_worker_slurm,
+)
 from shinobi.policies import build_argv
 from shinobi.steps.dispatch import _dispatch, _prepare_inputs
 from shinobi.steps.schema import Recipe, Scope, StepRef
@@ -906,6 +914,10 @@ def _handle_path(workdir: str | None, recipe: str) -> Path:
     help="Runtime to wrap imaged cabs in (use 'none' for bare argv).",
 )
 @click.option("--submit", is_flag=True, help="Submit the compiled workflow and detach.")
+@click.option("--worker", is_flag=True, help="Use the experimental frozen-bundle M1 worker lifecycle (requires --submit).")
+@click.option("--submission-root", type=click.Path(path_type=Path), default=None, help="Shared directory for immutable worker submissions.")
+@click.option("--worker-python", type=click.Path(path_type=Path), default=None, help="Absolute compute-visible Python for the staged worker.")
+@click.option("--code-root", type=click.Path(path_type=Path), multiple=True, help="Python import root for bundled pystep source (repeatable).")
 @click.pass_context
 def compile_recipe(
     ctx: click.Context,
@@ -914,6 +926,10 @@ def compile_recipe(
     workdir: str | None,
     container_runtime: str,
     submit: bool,
+    worker: bool,
+    submission_root: Path | None,
+    worker_python: Path | None,
+    code_root: tuple[Path, ...],
 ) -> None:
     """Compile a Recipe TARGET ('path/to/file.py:name' or 'pkg.mod:name')
     into a cluster workflow and, with --submit, hand it off and detach.
@@ -937,9 +953,33 @@ def compile_recipe(
         raise click.ClickException(f"{target!r} is not a Recipe -- only recipes can be offloaded")
     recipe = obj
     runtime = None if container_runtime.lower() == "none" else container_runtime
+    if worker and not submit:
+        raise click.ClickException("--worker currently requires --submit because submission preparation stages immutable source and environment data")
 
     def _callback(**kwargs):
         inputs = unflatten_kwargs(recipe.inputs_model, kwargs)
+        if worker:
+            from shinobi.offload._codec import BundleError
+            from shinobi.offload.bundle import freeze_recipe
+
+            workspace = Path(workdir or os.getcwd()).resolve()
+            root = (submission_root or workspace / ".shinobi" / "submissions").resolve()
+            try:
+                bundle = freeze_recipe(recipe, inputs, config=ctx.obj, workspace=workspace, code_roots=code_root)
+                workflow = prepare_worker_slurm(bundle, submission_root=root, worker_python=worker_python)
+                launched = submit_worker_slurm(workflow)
+            except (BundleError, RecipeNotOffloadableError, OffloadCompileError, RecipeGraphError) as exc:
+                raise click.ClickException(str(exc)) from None
+            handle = workflow.submission_dir / "handle.json"
+            handle.write_text(json.dumps({"engine": "slurm-worker", "recipe": recipe.name,
+                                          "submission": str(workflow.submission_dir), "jobs": launched.jobs,
+                                          "finalizer": launched.finalizer_job}, indent=2))
+            click.echo(f"submitted {len(launched.jobs)} worker jobs (detached); handle: {handle}")
+            for name, job_id in launched.jobs.items():
+                click.echo(f"  {name}: {job_id}")
+            if launched.finalizer_job:
+                click.echo(f"  finalize: {launched.finalizer_job}")
+            return
         try:
             workflow = compile_slurm(recipe, inputs, workdir=workdir, container_runtime=runtime)
         except (RecipeNotOffloadableError, OffloadCompileError, RecipeGraphError) as exc:
@@ -987,6 +1027,11 @@ def show_status(handle_file: str) -> None:
         if engine == "slurm":
             for name, state in status_slurm(data["jobs"]).items():
                 click.echo(f"{name}: {state}")
+        elif engine == "slurm-worker":
+            for name, state in status_slurm(data["jobs"]).items():
+                click.echo(f"{name}: {state}")
+            final = Path(data["submission"]) / "finalization.json"
+            click.echo(f"finalization: {'published' if final.exists() else 'pending'}")
         elif engine == "ssh":
             click.echo(status_ssh(data))
         else:

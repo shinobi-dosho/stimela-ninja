@@ -8,11 +8,12 @@ it. This is what ``ninja compile`` does.
 Worker bundles (M1, experimental)
 ----------------------------------
 
-The first M1 implementation slice is a **plan and result protocol**, available
-through ``shinobi.offload.bundle`` and ``shinobi.offload.records``. It is not
-yet connected to ``ninja compile`` or a compute-node worker. The existing
-compiler's eligibility rules below still apply; offloaded cache, sandbox and
-provenance execution are not enabled by this protocol alone.
+M1 provides a **plan and result protocol** through ``shinobi.offload.bundle``
+and ``shinobi.offload.records``, plus an opt-in short-lived compute worker.
+The legacy argv compiler remains the default. ``ninja compile --worker
+--submit`` stages and submits the worker lifecycle; ``--worker`` without
+``--submit`` is refused because immutable source and environment staging is a
+submission-preparation side effect.
 
 ``freeze_recipe(recipe, inputs, config=config, workspace=workspace)`` builds a
 version-1 ``RecipeBundle`` without writing files, launching tools, importing
@@ -116,10 +117,59 @@ Sync failures propagate. A failure after the final link becomes visible means
 durability is uncertain, not that the call succeeded; a retry cannot overwrite
 the existing record. Started/unknown/final
 records have separate names per attempt. This is not a multi-process cache
-journal, ownership lease, or proof that product publication completed: the
-worker must publish products before committing its final result. Worker
-execution, sandbox/publication integration and declaration-order manifest
-assembly are the remaining M1 slices; shared cache coordination follows in M2.
+journal or ownership lease. Shared cache coordination follows in M2.
+
+Worker submission and execution
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``prepare_worker_slurm`` is deliberately separate from ``freeze_recipe``. It
+resolves container tags to immutable references where possible, creates a
+unique submission, materializes every pystep code bundle, snapshots the
+installed Shinobi worker source, fingerprints the worker interpreter's package
+set, and emits one worker command per Slurm allocation. A caller may use
+``provision_worker_venv`` to build a content-addressed dependency environment
+from ``uv.lock`` on the login host, or name an already provisioned absolute
+``--worker-python`` that is identically visible on every compute node. Compute
+jobs never install or download Python packages. The staged source digest,
+Python version, platform ABI tag and distribution digest are checked before a
+scientific command starts.
+
+For example, from a cluster driver whose workspace and interpreter paths are
+shared with the workers::
+
+  ninja compile recipe.py:pipeline --worker --submit \
+      --workdir /data/project \
+      --submission-root /data/project/.shinobi/submissions \
+      --worker-python /data/worker-env/bin/python \
+      --code-root /data/src
+
+Each allocation imports a pystep only from ``<submission>/code/<index>`` and
+executes exactly one declared step through the ordinary dispatch lifecycle.
+Binary cabs select their frozen native/container/venv tool backend; image- and
+venv-backed pysteps reuse the existing out-of-process runner. A tool venv is
+separate from the worker environment and remains unpinned even when its
+installed-distribution digest is recorded. An image-backed pystep records both
+the prepared image digest and staged Python-code digest.
+
+M1 always disables cache and mutation-snapshot writes inside workers. The
+existing stores are process-local/thread-coordinated; multi-process shared
+metadata is M2. Sandboxing is always enabled. Sandboxes live under the unique
+submission directory on the same filesystem as the recorded workspace;
+cross-filesystem scratch is refused rather than silently becoming node-local
+staging. A successful tool must validate and harvest its declared outputs
+before its final attempt record is committed. Failed tools and harvest errors
+retain the exact shared sandbox path in their diagnostics. Harvesting several
+products is ordered, but is not a filesystem transaction across all products.
+
+Submission writes one immutable job-id record immediately after every
+successful ``sbatch`` call. This makes a partial submission discoverable even
+if the submitter dies. Scientific jobs use ``afterok`` dependencies and ask
+Slurm to terminate impossible dependencies. An ``afterany`` finalizer reads
+the durable job/attempt records, queries accounting, and writes steps in
+declaration order. A missing final worker record is ``unknown`` even when
+Slurm says ``COMPLETED``; scheduler state never manufactures success. Complete
+successful workflows additionally publish ``manifest.json``. Finalization is
+idempotent: repeating it validates or reconstructs the same durable result.
 
 When a recipe can be offloaded
 ------------------------------

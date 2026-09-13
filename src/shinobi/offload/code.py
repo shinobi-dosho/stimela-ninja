@@ -22,6 +22,17 @@ from pydantic import model_validator
 from shinobi.offload._codec import BundleError, WireModel
 
 
+def source_tree_digest(root: Path) -> str:
+    """Content identity for a staged source tree, excluding bytecode caches."""
+    digest = hashlib.sha256()
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and "__pycache__" not in p.parts):
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _entry_module(entry: str) -> str:
     """The sole import address of a source file within its explicit root."""
     path = PurePosixPath(entry).with_suffix("")

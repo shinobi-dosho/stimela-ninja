@@ -536,7 +536,7 @@ class _ContainerLauncher:
             run_prepared,
             workdir,
             extra_dirs=extra_dirs,
-            run_as_host_user=AppConfig.load().backend.run_as_host_user,
+            run_as_host_user=(self.ctx._config or AppConfig.load()).backend.run_as_host_user,
             pin=self.ctx._pin,
             container_name=container_name,
         )

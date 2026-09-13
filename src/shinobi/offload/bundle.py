@@ -124,6 +124,8 @@ class FrozenStep(WireModel):
     backend: Literal["native", "docker", "podman", "apptainer", "venv"]
     tool_venv: str | None = None
     code: CodeBundle | None = None
+    pystep_is_empty: bool | None = None
+    pystep_wants_ctx: bool | None = None
 
     def declaration(self) -> StepRef:
         """Reconstruct graph data only. A pystep here is NOT executable."""
@@ -160,6 +162,8 @@ class RecipeBundle(WireModel):
         for step in self.steps:
             if (step.scope.kind == "pyfunc") != (step.code is not None):
                 raise BundleError(f"step {step.name!r}: pystep code and scope kind disagree")
+            if (step.code is not None) != (step.pystep_is_empty is not None and step.pystep_wants_ctx is not None):
+                raise BundleError(f"step {step.name!r}: pystep adapter metadata and code disagree")
             if step.scope.kind == "recipe":
                 raise BundleError("nested recipes are not supported by the worker bundle")
             if step.backend == "venv" and (not step.tool_venv or not Path(step.tool_venv).is_absolute()):
@@ -199,6 +203,9 @@ class RecipeBundle(WireModel):
         workflow_id = uuid4()
         directory = root / str(workflow_id)
         directory.mkdir()
+        for index, step in enumerate(snapshot.steps):
+            if step.code is not None:
+                step.code.write(directory / "code" / str(index))
         write_new(directory / "bundle.json", snapshot)
         write_new(directory / "submission.json", Submission(workflow_id=workflow_id, bundle_digest=digest))
         return directory
@@ -252,9 +259,12 @@ def freeze_recipe(recipe: Recipe, inputs: dict[str, Any], *, config: AppConfig, 
             if any(e["type"] != "missing" or len(e["loc"]) != 1 or e["loc"][0] not in deferred for e in exc.errors()):
                 raise BundleError(f"step {ref.name!r}: invalid known inputs: {exc}") from exc
         code = capture_code(ref.func.__wrapped__, roots=code_roots, include=include_modules) if isinstance(ref.func, PystepCallable) else None
+        pystep = ref.func if isinstance(ref.func, PystepCallable) else None
         steps.append(FrozenStep(name=ref.name, scope=spec, params=pack(ref.params),
                                 wiring={k: tuple(Binding.capture(b) for b in v) if isinstance(v, list) else Binding.capture(v) for k, v in ref.wiring.items()},
                                 after=tuple(ref.after), loop=ref.loop.model_copy(deep=True) if ref.loop else None,
-                                backend=backend, tool_venv=str(venv) if venv else None, code=code))
+                                backend=backend, tool_venv=str(venv) if venv else None, code=code,
+                                pystep_is_empty=pystep.is_empty if pystep else None,
+                                pystep_wants_ctx=pystep.wants_ctx if pystep else None))
     return RecipeBundle(workspace=str(workspace.resolve()), recipe=root, inputs=pack(prepared), config={k: pack(v) for k, v in config.model_dump(mode="python").items()},
                         steps=tuple(steps), output_wiring={k: Binding.capture(v) for k, v in recipe.output_wiring.items()}, max_workers=recipe.max_workers)

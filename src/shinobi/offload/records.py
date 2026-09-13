@@ -53,6 +53,12 @@ class AttemptRecord(WireModel):
     stderr: str = ""
     cache_key: str | None = None
     output_keys: dict[str, ProducedState] = Field(default_factory=dict)
+    error: str | None = None
+    sandbox: str | None = None
+    job_id: str | None = None
+    scheduler_state: str | None = None
+    code_digest: str | None = None
+    worker_digest: str | None = None
 
     @model_validator(mode="after")
     def _check_outcome(self) -> AttemptRecord:
@@ -61,13 +67,17 @@ class AttemptRecord(WireModel):
             if result is not None or self.cache_key is not None or self.output_keys:
                 raise BundleError("an unfinished/unknown attempt cannot publish a result or produced state")
         else:
-            if result is None or result.steps:
-                raise BundleError("a final worker record needs one leaf observation")
-            if result.name != self.step_path:
-                raise BundleError("observation name does not match the logical step_path")
-            expected = "failed" if result.returncode else "skipped" if result.skipped else "cached" if result.cached else "succeeded"
-            if self.state != expected:
-                raise BundleError(f"attempt state {self.state!r} disagrees with observation ({expected})")
+            if result is None:
+                if self.state != "failed" or not self.error:
+                    raise BundleError("only a failed attempt with diagnostics may omit its leaf observation")
+            else:
+                if result.steps:
+                    raise BundleError("a final worker record needs one leaf observation")
+                if result.name != self.step_path:
+                    raise BundleError("observation name does not match the logical step_path")
+                expected = "failed" if result.returncode else "skipped" if result.skipped else "cached" if result.cached else "succeeded"
+                if self.state != expected:
+                    raise BundleError(f"attempt state {self.state!r} disagrees with observation ({expected})")
             if self.state == "failed" and (self.cache_key is not None or self.output_keys):
                 raise BundleError("a failed attempt cannot publish reusable produced state")
         return self
@@ -78,7 +88,9 @@ class AttemptRecord(WireModel):
 
     @classmethod
     def from_result(cls, result: StepResult, *, workflow_id: UUID, attempt_id: UUID,
-                    step_path: str, bundle_digest: str) -> AttemptRecord:
+                    step_path: str, bundle_digest: str, job_id: str | None = None,
+                    code_digest: str | None = None, worker_digest: str | None = None,
+                    sandbox: str | None = None) -> AttemptRecord:
         inputs, outputs = pack_model(result.inputs), pack_model(result.outputs)
         # Reuse provenance's metadata mapping, but not its lossy I/O payload.
         metadata = _record(result, name=step_path).model_dump(exclude={"inputs", "outputs"})
@@ -91,7 +103,8 @@ class AttemptRecord(WireModel):
         state = "failed" if not result.success else "skipped" if result.skipped else "cached" if result.cached else "succeeded"
         return cls(workflow_id=workflow_id, attempt_id=attempt_id, step_path=step_path, bundle_digest=bundle_digest,
                    state=state, observation=Observation(inputs=inputs, outputs=outputs, **metadata),
-                   stdout=result.stdout, stderr=result.stderr, cache_key=result.cache_key if result.success else None, output_keys=keys)
+                   stdout=result.stdout, stderr=result.stderr, cache_key=result.cache_key if result.success else None, output_keys=keys,
+                   job_id=job_id, code_digest=code_digest, worker_digest=worker_digest, sandbox=sandbox)
 
     def result(self, scope: Scope) -> StepResult:
         """Restore validated outputs and their *original* producing-field keys."""

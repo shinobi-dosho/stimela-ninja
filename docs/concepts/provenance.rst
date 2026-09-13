@@ -1,6 +1,17 @@
 Provenance
 ==========
 
+Detached worker provenance
+--------------------------
+
+An M1 Slurm submission records workflow, logical-step, attempt and scheduler
+job identities separately. Per-attempt records include the staged worker
+source identity, pystep code identity, actual image or tool-venv provenance,
+captured streams and retained sandbox location. The declaration-order
+finalizer treats a missing final worker record as ``unknown`` regardless of a
+``COMPLETED`` scheduler state. Only committed worker results can contribute to
+the aggregate manifest; venv-backed steps remain unpinned.
+
 Provenance makes a run **reproducible**: it pins every container image to a
 content digest before running, and writes a static manifest recording exactly
 what ran -- resolved inputs and outputs, the backend, and the pinned image
