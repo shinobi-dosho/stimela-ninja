@@ -66,6 +66,11 @@ class StepRecord(BaseModel):
     venv: str | None = None
     venv_digest: str | None = None
     sandboxed: bool = False
+    sandbox_path: str | None = None
+    code_digest: str | None = None
+    worker_digest: str | None = None
+    job_id: str | None = None
+    scheduler_state: str | None = None
     # What the step declared it needed, if anything. Purely diagnostic: it is
     # what turns a post-mortem `returncode -9` into "SIGKILL, and it had
     # declared 200GiB". Deliberately NOT restored by `apply_manifest_pins` --
@@ -142,6 +147,11 @@ def _record(result: StepResult, name: str | None = None) -> StepRecord:
         venv=result.venv,
         venv_digest=result.venv_digest,
         sandboxed=result.sandboxed,
+        sandbox_path=result.sandbox_path,
+        code_digest=result.code_digest,
+        worker_digest=result.worker_digest,
+        job_id=result.job_id,
+        scheduler_state=result.scheduler_state,
         resources=result.resources,
         inputs=_jsonable(result.inputs),
         outputs=_jsonable(result.outputs),

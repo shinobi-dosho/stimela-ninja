@@ -92,6 +92,8 @@ def check(args) -> int:
     manifest = RunManifest.model_validate_json((submission / "manifest.json").read_text())
     assert [step.name for step in manifest.root.steps] == ["binary", "image", "venv"]
     assert manifest.root.steps[1].containerized and manifest.root.steps[1].image_digest
+    assert manifest.root.steps[1].code_digest and manifest.root.steps[1].worker_digest
+    assert manifest.root.steps[1].job_id and manifest.root.steps[1].scheduler_state == "COMPLETED"
     assert manifest.root.steps[2].venv == str(args.tool_venv) and manifest.root.steps[2].venv_digest
     assert not manifest.pinned  # a venv is version parity, never an OS/image pin
     assert (submission.parent.parent.parent / "venv-product.txt").read_text() == "binary image venv=4242"

@@ -247,7 +247,11 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                 )
             finally:
                 os.chdir(old_cwd)
-        terminal = AttemptRecord.from_result(result, sandbox=retained_sandbox(), **common)
+        result.sandbox_path = retained_sandbox()
+        result.code_digest = common["code_digest"]
+        result.worker_digest = common["worker_digest"]
+        result.job_id = job_id
+        terminal = AttemptRecord.from_result(result, sandbox=result.sandbox_path, **common)
         terminal.write(submission_dir.parent)
         return 0 if result.success else max(1, abs(result.returncode))
     except BaseException as exc:
@@ -301,7 +305,10 @@ def finalize_submission(submission_dir: Path) -> Finalization:
             _write_or_read(unknown_path, record)
         all_committed = all_committed and record.committed
         if record.committed:
-            results[frozen.name] = record.result(frozen.scope.restore())
+            result = record.result(frozen.scope.restore())
+            result.scheduler_state = state
+            result.job_id = job.job_id if job else result.job_id
+            results[frozen.name] = result
         finalized.append(FinalizedStep(step_path=frozen.name, attempt_id=attempt.attempt_id,
                                        job_id=job.job_id if job else None, scheduler_state=state,
                                        state=record.state, record=str((final_path if final_path.exists() else unknown_path).relative_to(submission_dir))))
