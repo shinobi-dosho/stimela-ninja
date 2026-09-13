@@ -27,7 +27,17 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 from shinobi.backends._stream import display_label, terminate_all
-from shinobi.cache import ProvenanceKey, as_provenance_key, combine_keys, compute_cache_key, get_cache_manifest, invalidate_path_hashes, set_content_sample
+from shinobi.cache import (
+    ExecutionIdentity,
+    ProvenanceKey,
+    as_provenance_key,
+    combine_keys,
+    compute_cache_key,
+    get_cache_manifest,
+    invalidate_path_hashes,
+    resolve_input_keys,
+    set_content_sample,
+)
 from shinobi.snapshots import SnapshotGuard, announce_run, eligible_fields, get_journal, new_run_id, reconcile
 from shinobi.config import AppConfig
 from shinobi.exceptions import CabRunError, ParameterError, ShinobiError, StepError
@@ -121,6 +131,42 @@ def get_step_backend(name: str) -> Any:
     from shinobi.backends import get_backend
 
     return get_backend(name)
+
+
+def _local_execution_identity(scope: Scope, ctx: "ExecContext", *, pinned: bool) -> ExecutionIdentity | None:
+    """Resolve cache-relevant software facts for an in-process dispatch.
+
+    ``None`` means the selected environment could not be fingerprinted, in
+    which case the caller executes without reading or writing a reusable
+    cache entry.  A cache optimization must never turn an unknown mutable
+    environment into a hit.
+    """
+    backend = ctx.resolve_backend_name()
+    image_digest = None
+    if pinned and scope.image:
+        from shinobi.backends.container import CONTAINER_RUNTIMES, _pin_image
+
+        if backend in CONTAINER_RUNTIMES:
+            _pinned_ref, image_digest = _pin_image(backend, scope.image)
+            if image_digest is None:
+                return None
+
+    resolved_venv = None
+    resolved_venv_digest = None
+    if backend == "venv":
+        from shinobi.backends.venv import resolve_venv, venv_digest
+
+        resolved = resolve_venv(scope.venv, ctx._config)
+        if resolved is not None:
+            resolved_venv = str(resolved)
+            resolved_venv_digest = venv_digest(resolved)
+            if resolved_venv_digest is None:
+                return None
+    return ExecutionIdentity(
+        image_digest=image_digest,
+        venv=resolved_venv,
+        venv_digest=resolved_venv_digest,
+    )
 
 
 def _prepare_inputs(scope: Scope, kwargs: dict[str, Any], *, validated: Any = None) -> dict[str, Any]:
@@ -534,17 +580,23 @@ def _dispatch(
     _budget: Budget | None = None,
     _run_id: str | None = None,
     _slice_index: int | None = None,
+    _execution_identity: ExecutionIdentity | None = None,
     **kwargs: Any,
 ) -> StepResult:
     config = _config or AppConfig.load()
     run_id = _run_id or new_run_id()
     if _cache_path is None:
         # Top-level entry: the start of a run, and the memoized boundary-path
-        # hashes must not outlive one. Anything could have happened to the
-        # workspace between two runs sharing a process (a `ninja run` in a
-        # long-lived session, two `_dispatch` calls in one test), and none of
-        # it went through the post-execution invalidation below.
+        # hashes and execution-environment identities must not outlive one.
+        # Anything could have happened to the workspace, a mutable image tag,
+        # or a venv between two runs sharing a process, and none of it went
+        # through the post-execution invalidation below.
         invalidate_path_hashes()
+        from shinobi.backends.container import clear_image_pin_cache
+        from shinobi.backends.venv import venv_digest
+
+        clear_image_pin_cache()
+        venv_digest.cache_clear()
         # Whether boundary fingerprints carry a content sample is a property
         # of the workspace, not of a step, so it is set once per run rather
         # than passed down (see `cache.set_content_sample`).
@@ -620,9 +672,14 @@ def _dispatch(
     manifest = None
     cache_key = None
     if cacheable:
+        execution_identity = _execution_identity or _local_execution_identity(scope, ctx, pinned=provenance_enabled)
+        if execution_identity is None:
+            logger.warning("step %s: cache disabled -- selected execution environment could not be fingerprinted", cache_path)
+            cacheable = False
+    if cacheable:
         manifest = get_cache_manifest(cache_dir_value)
         prepared_for_key = ctx.prepare_inputs()
-        cache_key = compute_cache_key(scope, func, prepared_for_key, _input_keys)
+        cache_key = compute_cache_key(scope, func, prepared_for_key, _input_keys, execution_identity)
         hit = manifest.check(cache_path, cache_key, scope, prepared_for_key)
         if hit is not None:
             # A hit stands in for the run that first produced this key, so it
@@ -897,59 +954,6 @@ def _resolve_wiring(ref, prepared: dict[str, Any], results: dict[str, StepResult
         else:
             wired[field] = resolve_one(field, source)
     return {**ref.params, **wired}  # wiring overrides params
-
-
-def _resolve_input_keys(ref, inbound_keys: dict[str, Any], results: dict[str, StepResult]) -> dict[str, Any]:
-    """The provenance half of `_resolve_wiring`: for each input this
-    sub-step wires, the cache key of whatever produced it (see
-    `shinobi.cache`).
-
-    An `OutputRef` resolves against the producing step's result; an
-    `InputRef` reaches past the recipe boundary to `inbound_keys` -- the
-    provenance the enclosing recipe was itself handed -- so a nested recipe
-    doesn't sever the chain. Fields whose producer has no key (caching
-    disabled, or an uncacheable producer) are omitted rather than recorded
-    as `None`, so enabling caching part-way up a pipeline doesn't rewrite
-    the keys of steps that had no provenance to begin with.
-
-    `ref.params` are deliberately absent: a constant declared on the step is
-    already hashed by value as an ordinary param, and nothing produced it.
-    """
-
-    def key_of(source: InputRef | OutputRef) -> Any:
-        if isinstance(source, InputRef):
-            # Already a `ProvenanceKey` if the enclosing recipe had one to
-            # give: an inbound key names the leaf that produced it, and the
-            # boundary is not a new producer.
-            return inbound_keys.get(source.field)
-        producer = results.get(source.step)
-        if producer is None:
-            return None
-        # `source.field` is the producing step's own output field, which is
-        # exactly what names the state (see `cache.ProvenanceKey`). It is in
-        # scope only here, at the wiring site -- `provenance_key` itself
-        # cannot supply it for a leaf step, which resolves every field to one
-        # key.
-        return as_provenance_key(producer.provenance_key(source.field), source.field)
-
-    keys: dict[str, Any] = {}
-    for field, source in ref.wiring.items():
-        if isinstance(source, list):
-            resolved = [key_of(one) for one in source]
-            # `any`, not `all`, on purpose. Presence here also suppresses the
-            # content hash (see `compute_cache_key`), and for a field that is
-            # also a declared output of this step there is no content hash to
-            # fall back to -- it is excluded either way -- so requiring every
-            # element to have a key would leave such a field keyed on nothing
-            # at all. Partial provenance still invalidates on the elements it
-            # does cover.
-            if any(key is not None for key in resolved):
-                keys[field] = resolved
-        else:
-            resolved_one = key_of(source)
-            if resolved_one is not None:
-                keys[field] = resolved_one
-    return keys
 
 
 class ScatterError(ValueError):
@@ -1305,7 +1309,7 @@ def _run_recipe(
             """
             ref = recipe.steps[i]
             sub_kwargs = _resolve_wiring(ref, prepared, results)
-            sub_input_keys = _resolve_input_keys(ref, input_keys or {}, results)
+            sub_input_keys = resolve_input_keys(ref, input_keys or {}, results)
             # An unrolled loop iteration whose predecessor already converged
             # does no work: it hands the same body step's previous outputs
             # on, completing immediately without occupying a worker. The

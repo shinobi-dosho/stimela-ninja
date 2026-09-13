@@ -970,6 +970,17 @@ def _handle_path(workdir: str | None, recipe: str) -> Path:
 @click.option("--submission-root", type=click.Path(path_type=Path), default=None, help="Shared directory for immutable worker submissions.")
 @click.option("--worker-python", type=click.Path(path_type=Path), default=None, help="Absolute compute-visible Python for the staged worker.")
 @click.option("--code-root", type=click.Path(path_type=Path), multiple=True, help="Python import root for bundled pystep source (repeatable).")
+@click.option(
+    "--cache/--no-cache",
+    "cache",
+    default=None,
+    help="Enable or disable runtime worker caching, overriding Scope/AppConfig settings.",
+)
+@click.option(
+    "--cache-dir",
+    default=None,
+    help="Shared runtime cache directory for worker jobs; this option alone does not enable caching.",
+)
 @click.pass_context
 def compile_recipe(
     ctx: click.Context,
@@ -982,6 +993,8 @@ def compile_recipe(
     submission_root: Path | None,
     worker_python: Path | None,
     code_root: tuple[Path, ...],
+    cache: bool | None,
+    cache_dir: str | None,
 ) -> None:
     """Compile a Recipe TARGET ('path/to/file.py:name' or 'pkg.mod:name')
     into a cluster workflow and, with --submit, hand it off and detach.
@@ -1007,6 +1020,8 @@ def compile_recipe(
     runtime = None if container_runtime.lower() == "none" else container_runtime
     if worker and not submit:
         raise click.ClickException("--worker currently requires --submit because submission preparation stages immutable source and environment data")
+    if not worker and (cache is not None or cache_dir is not None):
+        raise click.ClickException("--cache/--no-cache/--cache-dir require --worker; the legacy argv compiler has no runtime cache lifecycle")
 
     def _callback(**kwargs):
         inputs = unflatten_kwargs(recipe.inputs_model, kwargs)
@@ -1017,7 +1032,15 @@ def compile_recipe(
             workspace = Path(workdir or os.getcwd()).resolve()
             root = (submission_root or workspace / ".shinobi" / "submissions").resolve()
             try:
-                bundle = freeze_recipe(recipe, inputs, config=ctx.obj, workspace=workspace, code_roots=code_root)
+                bundle = freeze_recipe(
+                    recipe,
+                    inputs,
+                    config=ctx.obj,
+                    workspace=workspace,
+                    code_roots=code_root,
+                    cache=cache,
+                    cache_dir=cache_dir,
+                )
                 workflow = prepare_worker_slurm(bundle, submission_root=root, worker_python=worker_python)
             except (BundleError, RecipeNotOffloadableError, OffloadCompileError, RecipeGraphError) as exc:
                 raise click.ClickException(str(exc)) from None

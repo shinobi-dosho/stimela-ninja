@@ -42,6 +42,52 @@ def _entry_module(entry: str) -> str:
     return ".".join(parts)
 
 
+def _selected_entry_nodes(tree: ast.Module, qualname: str) -> list[ast.AST]:
+    """Module nodes that can affect importing and calling ``qualname``."""
+    declarations: dict[str, ast.AST] = {}
+    unconditional: list[ast.AST] = []
+    for index, node in enumerate(tree.body):
+        names: list[str] = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names = [node.name]
+        elif isinstance(node, ast.Import):
+            names = [alias.asname or alias.name.split(".")[0] for alias in node.names]
+            unconditional.append(node)  # imports execute while loading the module
+        elif isinstance(node, ast.ImportFrom):
+            names = [alias.asname or alias.name for alias in node.names]
+            unconditional.append(node)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = [target.id for target in targets if isinstance(target, ast.Name)]
+            value = node.value
+            try:
+                ast.literal_eval(value)
+            except (ValueError, TypeError, SyntaxError):
+                # A nonliteral initializer executes arbitrary module code.
+                unconditional.append(node)
+        elif not (index == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
+            unconditional.append(node)
+        for name in names:
+            declarations[name] = node
+
+    root_name = qualname.split(".", 1)[0]
+    if root_name not in declarations:
+        raise BundleError(f"callable {qualname!r} is missing from captured entry source")
+    selected: dict[int, ast.AST] = {id(node): node for node in unconditional}
+    pending = [declarations[root_name]]
+    while pending:
+        node = pending.pop()
+        if id(node) in selected:
+            continue
+        selected[id(node)] = node
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
+                dependency = declarations.get(child.id)
+                if dependency is not None and id(dependency) not in selected:
+                    pending.append(dependency)
+    return sorted(selected.values(), key=lambda item: getattr(item, "lineno", 0))
+
+
 class CodeFile(WireModel):
     path: str
     source: str
@@ -78,6 +124,42 @@ class CodeBundle(WireModel):
     @property
     def digest(self) -> str:
         return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
+
+    @property
+    def execution_digest(self) -> str:
+        """Identity of the selected callable and its bundled dependencies.
+
+        The complete bundle digest is an integrity identity: changing any
+        captured byte changes it.  A cache key needs a narrower answer.  Two
+        pysteps commonly share one recipe module, and editing the body of one
+        must not evict the other's independent branch merely because both
+        workers transport that module.  We therefore retain the selected
+        top-level declaration and the module declarations it references,
+        while hashing every separately bundled helper module in full.
+
+        This is intentionally conservative for helpers and package
+        initializers.  Their whole module executes on import, so a change
+        there is an execution-identity reason, not worker-packaging noise.
+        """
+        entry = next(file for file in self.files if file.path == self.entry)
+        tree = ast.parse(entry.source, filename=entry.path)
+
+        digest = hashlib.sha256()
+        digest.update(self.module.encode())
+        digest.update(b"\0")
+        digest.update(self.qualname.encode())
+        digest.update(b"\0")
+        for node in _selected_entry_nodes(tree, self.qualname):
+            digest.update(ast.dump(node, include_attributes=False).encode())
+            digest.update(b"\0")
+        for file in self.files:
+            if file.path == self.entry:
+                continue
+            digest.update(file.path.encode())
+            digest.update(b"\0")
+            digest.update(file.source.encode())
+            digest.update(b"\0")
+        return digest.hexdigest()
 
     def write(self, root: Path) -> Path:
         """Materialize into a new directory; never replace an existing snapshot."""
@@ -186,7 +268,8 @@ def capture_code(func: Callable, *, roots: tuple[Path, ...] = (), include: tuple
             parent = parent.parent
         module = relative.removesuffix(".py").replace("/", ".")
         package = module.rsplit(".", 1)[0] if "." in module else ""
-        for node in ast.walk(tree):
+        scan_roots = _selected_entry_nodes(tree, func.__qualname__) if relative == entry else [tree]
+        for node in (child for root_node in scan_roots for child in ast.walk(root_node)):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     find(alias.name)

@@ -561,10 +561,14 @@ def provision_worker_venv(shared_root: Path, *, project_root: Path | None = None
 
 
 def _pin_worker_bundle(bundle):
-    """Resolve image references before staging; compute nodes do no lookup."""
-    from shinobi.backends.container import CONTAINER_RUNTIMES, _pin_image
+    """Resolve execution environments before staging; workers only verify."""
+    from shinobi.backends.container import CONTAINER_RUNTIMES, _pin_image, clear_image_pin_cache
+    from shinobi.backends.venv import inspect_venv_digest
     from shinobi.offload._codec import pack, unpack
 
+    # A programmatic caller may submit several bundles from one process. Keep
+    # mutable tag resolution shared within this bundle, never across submits.
+    clear_image_pin_cache()
     steps = []
     for step in bundle.steps:
         settings = dict(step.scope.settings)
@@ -577,6 +581,14 @@ def _pin_worker_bundle(bundle):
                 )
             settings["image"] = pack(pinned)
             step = step.model_copy(update={"scope": step.scope.model_copy(update={"settings": settings}), "image_digest": digest})
+        if step.backend == "venv":
+            # Submission is a new run boundary: inspect afresh instead of
+            # reusing the within-run memo, so a long-lived compiler process
+            # notices a provisioned environment update.
+            digest = inspect_venv_digest(Path(step.tool_venv))
+            if digest is None:
+                raise OffloadCompileError(f"step {step.name!r}: tool venv {step.tool_venv!r} could not be fingerprinted on the submission host")
+            step = step.model_copy(update={"tool_venv_digest": digest})
         steps.append(step)
     return bundle.model_copy(update={"steps": tuple(steps)})
 

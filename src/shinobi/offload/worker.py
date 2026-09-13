@@ -20,6 +20,7 @@ from uuid import UUID
 
 from shinobi import __version__
 from shinobi.config import AppConfig
+from shinobi.cache import ExecutionIdentity, resolve_input_keys
 from shinobi.offload._codec import BundleError, WireModel, unpack
 from shinobi.offload.bundle import RecipeBundle, Submission, write_new
 from shinobi.offload.code import source_tree_digest
@@ -29,7 +30,7 @@ from shinobi.results import StepResult
 from shinobi.steps.dispatch import _dispatch, _prepare_inputs
 from shinobi.steps.loops import passthrough_result, should_skip
 from shinobi.steps.pyfunc import _make_adapter
-from shinobi.steps.schema import InputRef, OutputRef, Scope, declared_output_dirs
+from shinobi.steps.schema import InputRef, OutputRef, Scope, declared_output_dirs, mutated_path_fields
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,20 @@ def _verify_environment(bundle: RecipeBundle, plan: ExecutionPlan) -> None:
             raise BundleError(f"step {step.name!r}: worker execution refuses an image without a submission-time pin")
 
 
+def _verify_tool_environment(frozen) -> None:
+    """Verify only this allocation's tool environment.
+
+    A changed environment on one branch must not prevent an unrelated branch
+    from reaching its own cache decision or running successfully.
+    """
+    if frozen.backend == "venv":
+        from shinobi.backends.venv import inspect_venv_digest
+
+        actual = inspect_venv_digest(Path(frozen.tool_venv))
+        if frozen.tool_venv_digest is None or actual != frozen.tool_venv_digest:
+            raise BundleError(f"step {frozen.name!r}: tool venv no longer matches its submission-time fingerprint")
+
+
 def _load(submission_dir: Path) -> tuple[Submission, RecipeBundle, ExecutionPlan]:
     submission, bundle, plan = _load_identity(submission_dir)
     _verify_environment(bundle, plan)
@@ -190,7 +205,7 @@ def _callable(submission_dir: Path, index: int, bundle: RecipeBundle):
     return _make_adapter(obj, scope.outputs_model, bool(frozen.pystep_is_empty), bool(frozen.pystep_wants_ctx))
 
 
-def _resolved_inputs(submission_dir: Path, bundle: RecipeBundle, plan: ExecutionPlan, index: int) -> tuple[dict, dict[str, StepResult]]:
+def _resolved_inputs(submission_dir: Path, bundle: RecipeBundle, plan: ExecutionPlan, index: int) -> tuple[dict, dict[str, StepResult], dict]:
     frozen = bundle.steps[index]
     recipe_inputs = unpack(bundle.inputs)
     kwargs = dict(unpack(frozen.params))
@@ -211,7 +226,7 @@ def _resolved_inputs(submission_dir: Path, bundle: RecipeBundle, plan: Execution
         for related in (ref.loop.sentinel_step, ref.loop.prev_step):
             if related and related not in loaded:
                 loaded[related] = _result_for(submission_dir, bundle, plan, related)
-    return kwargs, loaded
+    return kwargs, loaded, resolve_input_keys(ref, {}, loaded)
 
 
 def _check_scratch_filesystems(scope: Scope, prepared: dict, workspace: Path) -> None:
@@ -274,6 +289,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
 
     try:
         _verify_environment(bundle, plan)
+        _verify_tool_environment(frozen)
         if Path(bundle.workspace).stat().st_dev != submission_dir.stat().st_dev:
             raise BundleError("submission sandboxes and workspace are on different filesystems; node-local staging is not supported")
     except BaseException as exc:
@@ -298,7 +314,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
             restored = frozen.scope.restore()
             scope = restored.model_copy(update={"backend": frozen.backend, "venv": frozen.tool_venv or restored.venv})
             func = _callable(submission_dir, index, bundle)
-            kwargs, upstream = _resolved_inputs(submission_dir, bundle, plan, index)
+            kwargs, upstream, input_keys = _resolved_inputs(submission_dir, bundle, plan, index)
             ref = frozen.declaration()
             if should_skip(ref, upstream):
                 prepared = _prepare_inputs(scope, kwargs)
@@ -306,7 +322,11 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
             else:
                 _check_scratch_filesystems(scope, _prepare_inputs(scope, kwargs), Path(bundle.workspace))
                 config = AppConfig.model_validate({name: unpack(value) for name, value in bundle.config.items()})
-                config.cache.enabled = False
+                recipe = bundle.recipe.restore()
+                # M2 deliberately does not restore mutation chains.  Until M3
+                # adds workspace ownership, a worker that can rewrite a
+                # scientific path must execute and publish no reusable key.
+                cache_override = False if mutated_path_fields(scope) else bundle.cache_override
                 config.cache.snapshots.mode = "off"
                 config.sandbox.enabled = True
                 config.sandbox.dir = str(sandbox_root)
@@ -315,13 +335,24 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                     scope,
                     func,
                     backend=frozen.backend,
-                    cache=False,
+                    cache=cache_override,
+                    cache_dir=bundle.cache_dir_override,
                     provenance=True,
                     sandbox=True,
                     stream=False,
-                    _cache_path=step_path,
+                    _recipe_cache=recipe.cache,
+                    _recipe_cache_dir=recipe.cache_dir,
+                    _cache_path=f"{recipe.name}.{step_path}",
                     _config=config,
                     _run_id=str(submission.workflow_id),
+                    _input_keys=input_keys,
+                    _wired_fields=set(ref.wiring),
+                    _execution_identity=ExecutionIdentity(
+                        code_digest=frozen.code.execution_digest if frozen.code else None,
+                        image_digest=frozen.image_digest,
+                        venv=frozen.tool_venv,
+                        venv_digest=frozen.tool_venv_digest,
+                    ),
                     **kwargs,
                 )
         finally:
@@ -334,6 +365,8 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                 pass
         if frozen.image_digest is not None and result.image_digest != frozen.image_digest:
             raise BundleError(f"step {step_path!r}: executed image digest {result.image_digest!r} does not match submission pin {frozen.image_digest!r}")
+        if frozen.tool_venv_digest is not None and result.venv_digest != frozen.tool_venv_digest:
+            raise BundleError(f"step {step_path!r}: executed tool venv digest {result.venv_digest!r} does not match submission fingerprint {frozen.tool_venv_digest!r}")
         result.code_digest = common["code_digest"]
         result.worker_digest = common["worker_digest"]
         result.job_id = job_id

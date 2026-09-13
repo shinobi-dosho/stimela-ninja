@@ -83,6 +83,20 @@ def test_binary_bundle_round_trip_is_independent_and_pure(tmp_path):
     assert len(restored.steps) == 2
 
 
+def test_bundle_preserves_explicit_runtime_cache_overrides(tmp_path):
+    bundle = freeze_recipe(
+        recipe(),
+        {},
+        config=AppConfig(),
+        workspace=tmp_path,
+        cache=True,
+        cache_dir="shared/cache",
+    )
+    restored = RecipeBundle.model_validate_json(bundle.model_dump_json())
+    assert restored.cache_override is True
+    assert restored.cache_dir_override == "shared/cache"
+
+
 def test_unique_submission_directories_and_no_original_source_dependency(tmp_path):
     bundle = freeze(recipe(), tmp_path)
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -195,7 +209,24 @@ def test_helper_change_changes_code_identity(tmp_path):
     func = source_function(tmp_path)
     first = capture_code(func, roots=(tmp_path,))
     (tmp_path / "helper.py").write_text("CHANGED = True\n")
-    assert first.digest != capture_code(func, roots=(tmp_path,)).digest
+    changed = capture_code(func, roots=(tmp_path,))
+    assert first.digest != changed.digest
+    assert first.execution_digest != changed.execution_digest
+
+
+def test_unrelated_callable_change_does_not_change_pystep_execution_identity(tmp_path):
+    first_func = source_function(
+        tmp_path,
+        "def compute(value: int = 1):\n    return value + 1\n\ndef unrelated():\n    return 'first'\n",
+    )
+    first = capture_code(first_func, roots=(tmp_path,))
+    second_func = source_function(
+        tmp_path,
+        "def compute(value: int = 1):\n    return value + 1\n\ndef unrelated():\n    return 'changed'\n",
+    )
+    second = capture_code(second_func, roots=(tmp_path,))
+    assert first.digest != second.digest
+    assert first.execution_digest == second.execution_digest
 
 
 def test_unsupported_callable_and_environment_fail_before_staging(tmp_path):

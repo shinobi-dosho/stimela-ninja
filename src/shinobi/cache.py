@@ -89,11 +89,16 @@ key: each of its declared outputs is produced by a different sub-step, and
 keying all of them off "something in this recipe changed" would invalidate
 most of the cache on any edit.
 
-The cache key's image component is the image's tag string, not a resolved
-container digest -- avoids an extra `docker`/`podman inspect` call and a
-hard runtime dependency on the container tool being reachable at
-cache-check time. Known, accepted limitation: rebuilding a mutable tag
-like `:latest` without bumping the tag string won't invalidate the cache.
+An unpinned run keeps the historical image-tag identity. A provenance-
+pinned local run and every detached worker instead key on the resolved image
+digest, so moving a mutable tag cannot reuse incompatible work. Venv-backed
+steps add the resolved environment path and its installed-distribution
+fingerprint; the fingerprint detects supported package-version changes but
+does not turn a venv into an exact binary/OS pin. Detached pysteps add the
+digest of their captured implementation and bundled helper source. All of
+these facts enter through `ExecutionIdentity`, keeping one key algorithm for
+local and worker execution; the staged Shinobi worker digest is deliberately
+not scientific identity.
 
 `CacheManifest` is one JSON file per configured cache directory, shared
 by every step regardless of which top-level Recipe it belongs to --
@@ -114,6 +119,7 @@ import json
 import os
 import stat
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -437,9 +443,62 @@ def combine_keys(keys: list[Any]) -> str | None:
     return hashlib.sha256(json.dumps(keys, sort_keys=True).encode()).hexdigest()
 
 
-def compute_cache_key(scope: Scope, func: Callable | None, prepared: dict[str, Any], input_keys: dict[str, Any] | None = None) -> str:
-    """Hashes `(scope.image, _identity(scope, func), canonicalized
-    prepared params, upstream provenance)`.
+@dataclass(frozen=True)
+class ExecutionIdentity:
+    """Resolved software identity that is not present in a bare ``Scope``.
+
+    Local dispatch and detached workers feed the same cache-key function with
+    the facts they can establish about the execution environment.  Fields are
+    optional so an ordinary unpinned/native run keeps its historical key.
+    ``worker_digest`` is deliberately absent: packaging a newer Shinobi worker
+    is not a reason to invalidate unrelated scientific work.
+    """
+
+    code_digest: str | None = None
+    image_digest: str | None = None
+    venv: str | None = None
+    venv_digest: str | None = None
+
+
+def resolve_input_keys(ref, inbound_keys: dict[str, Any], results: dict[str, StepResult]) -> dict[str, Any]:
+    """Resolve the producing-state identity for each explicitly wired input.
+
+    This is shared by the in-process recipe scheduler and detached workers.
+    An ordering-only dependency never appears here, and a producer with no
+    reusable key is omitted rather than turned into fabricated provenance.
+    """
+
+    def key_of(source: Any) -> Any:
+        from shinobi.steps.schema import InputRef
+
+        if isinstance(source, InputRef):
+            return inbound_keys.get(source.field)
+        producer = results.get(source.step)
+        if producer is None:
+            return None
+        return as_provenance_key(producer.provenance_key(source.field), source.field)
+
+    keys: dict[str, Any] = {}
+    for field, source in ref.wiring.items():
+        if isinstance(source, list):
+            resolved = [key_of(one) for one in source]
+            if any(key is not None for key in resolved):
+                keys[field] = resolved
+        else:
+            resolved_one = key_of(source)
+            if resolved_one is not None:
+                keys[field] = resolved_one
+    return keys
+
+
+def compute_cache_key(
+    scope: Scope,
+    func: Callable | None,
+    prepared: dict[str, Any],
+    input_keys: dict[str, Any] | None = None,
+    execution: ExecutionIdentity | None = None,
+) -> str:
+    """Hash execution identity, canonicalized params and upstream state.
 
     `input_keys` maps an input field name to the cache key of the step that
     produced it (or a list of them, for a field wired from several
@@ -481,14 +540,21 @@ def compute_cache_key(scope: Scope, func: Callable | None, prepared: dict[str, A
     mutated_paths = mutated_path_fields(scope)
     wired = set(input_keys or ())
 
-    parts: list[Any] = [scope.image, _identity(scope, func)]
+    execution = execution or ExecutionIdentity()
+    image_identity = execution.image_digest or scope.image
+    code_identity = ["code", execution.code_digest] if execution.code_digest else _identity(scope, func)
+    parts: list[Any] = [image_identity, code_identity]
     # Appended conditionally rather than seeded into `parts`: a venv-less
     # scope keys byte-identically to before this field existed, so its cache
     # entries survive the upgrade (same reasoning as `__upstream__` below).
-    # The *declared* venv string keys the step, not its resolved freeze hash
-    # -- mirroring the image-tag stance in this module's docstring.
-    if scope.venv:
-        parts.append(["__venv__", scope.venv])
+    # With no resolved execution identity this preserves the historical
+    # declared-venv key; venv dispatch and detached workers append the
+    # resolved environment fingerprint below.
+    effective_venv = execution.venv or scope.venv
+    if effective_venv:
+        parts.append(["__venv__", effective_venv])
+    if execution.venv_digest:
+        parts.append(["__venv_digest__", execution.venv_digest])
     # `Scope.resources` is deliberately NOT keyed, even though `venv` above
     # is and the two look alike. A venv changes *which software runs*; a
     # resource declaration only changes how the scheduler and the container

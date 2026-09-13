@@ -7,7 +7,17 @@ from pydantic import BaseModel
 
 from shinobi import cache
 from shinobi.backends.recording import RecordingBackend
-from shinobi.cache import CacheManifest, ProvenanceKey, as_provenance_key, combine_keys, compute_cache_key, get_cache_manifest, invalidate_path_hashes
+from shinobi.cache import (
+    CacheManifest,
+    ExecutionIdentity,
+    ProvenanceKey,
+    as_provenance_key,
+    combine_keys,
+    compute_cache_key,
+    get_cache_manifest,
+    invalidate_path_hashes,
+    resolve_input_keys,
+)
 from shinobi.results import StepResult
 from shinobi.steps import Cab, register_step_backend
 from shinobi.steps.schema import Mutability
@@ -58,6 +68,34 @@ def test_second_run_result_is_marked_cached(tmp_path):
     second = _dispatch(cab, None, x=1)
     assert first.cached is False
     assert second.cached is True
+
+
+def test_local_pinned_image_digest_controls_cache_identity(tmp_path, monkeypatch):
+    recorder = RecordingBackend()
+    register_step_backend("docker", recorder)
+    cab = Cab(
+        name="tool",
+        command="tool",
+        inputs_model=Inputs,
+        outputs_model=Outputs,
+        backend="docker",
+        image="repo/tool:latest",
+        cache=True,
+        cache_dir=str(tmp_path),
+    )
+    current = {"digest": "sha256:" + "a" * 64}
+    monkeypatch.setattr(
+        "shinobi.backends.container._pin_image",
+        lambda runtime, image: (f"{image}@{current['digest']}", current["digest"]),
+    )
+
+    _dispatch(cab, None, provenance=True, _cache_path="pipe.tool", x=1)
+    _dispatch(cab, None, provenance=True, _cache_path="pipe.tool", x=1)
+    assert len(recorder.calls) == 1
+
+    current["digest"] = "sha256:" + "b" * 64
+    _dispatch(cab, None, provenance=True, _cache_path="pipe.tool", x=1)
+    assert len(recorder.calls) == 2
 
 
 def test_cache_disabled_by_default_executes_every_time(tmp_path):
@@ -601,6 +639,34 @@ def test_venv_changes_cache_key():
     other_venv = compute_cache_key(Cab(name="c", command="c", venv="/opt/other", inputs_model=Inputs, outputs_model=Outputs), None, {"x": 1})
     assert plain != with_venv
     assert with_venv != other_venv
+
+
+def test_resolved_code_image_and_venv_identity_change_cache_key_independently():
+    scope = Cab(name="c", command="c", image="repo/tool:latest", inputs_model=Inputs, outputs_model=Outputs)
+    base = compute_cache_key(scope, None, {"x": 1}, execution=ExecutionIdentity(code_digest="code-a", image_digest="sha256:image-a"))
+    assert compute_cache_key(scope, None, {"x": 1}, execution=ExecutionIdentity(code_digest="code-b", image_digest="sha256:image-a")) != base
+    assert compute_cache_key(scope, None, {"x": 1}, execution=ExecutionIdentity(code_digest="code-a", image_digest="sha256:image-b")) != base
+    assert (
+        compute_cache_key(
+            scope,
+            None,
+            {"x": 1},
+            execution=ExecutionIdentity(code_digest="code-a", image_digest="sha256:image-a", venv="/env", venv_digest="venv-a"),
+        )
+        != base
+    )
+
+
+def test_ordering_only_edges_do_not_manufacture_input_provenance():
+    from shinobi.steps import OutputRef, StepRef
+
+    scope = Cab(name="consumer", command="consumer", inputs_model=Inputs, outputs_model=Outputs)
+    ref = StepRef(name="consumer", step=scope, after=["producer"])
+    producer = StepResult(name="producer", returncode=0, inputs=Inputs(), outputs=Outputs(), cache_key="producer-key")
+    assert resolve_input_keys(ref, {}, {"producer": producer}) == {}
+
+    wired = ref.model_copy(update={"wiring": {"x": OutputRef(step="producer", field="y")}})
+    assert resolve_input_keys(wired, {}, {"producer": producer}) == {"x": "producer-key"}
 
 
 # -- nested Recipe (the real-world shape: a Recipe-of-Recipes pipeline

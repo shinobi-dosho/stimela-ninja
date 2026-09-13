@@ -485,6 +485,20 @@ def _pin_image(runtime: str, image: str) -> tuple[str, str | None]:
     return ref, None
 
 
+def clear_image_pin_cache() -> None:
+    """Forget successful mutable-reference lookups at a run boundary.
+
+    Resolution is memoized so every step using one image shares a registry
+    round-trip, but a tag may move between two runs in the same Python
+    process. The immutable digest carried by a cache key must therefore not
+    outlive the run that resolved it.
+    """
+    for resolver in (_registry_api_digest, _registry_digest, _docker_digest):
+        clear = getattr(resolver, "cache_clear", None)
+        if clear is not None:
+            clear()
+
+
 def _nearest_existing_dir(path: Path) -> Path | None:
     """The deepest of `path` and its ancestors that exists as a directory on
     this host, or `None` if that search only reaches the filesystem root.

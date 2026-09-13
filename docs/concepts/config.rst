@@ -159,9 +159,12 @@ through the ``shinobi.*`` logger hierarchy); attach your own handler to
 
 ``cache.enabled`` turns on step-level result caching: a step with an
 unchanged cache key is skipped and its prior result reused. It's off by
-default and must also be opted into per-step or per-recipe via ``Scope.cache``
--- see ``shinobi.cache``. ``ninja run --cache-dir``/``--no-cache`` override
-this per invocation.
+default; ``Scope.cache`` may override it per step or enclosing recipe -- see
+``shinobi.cache``. ``ninja run --cache-dir``/``--no-cache`` override this per
+invocation. Detached worker submissions preserve those same scope/config
+settings. ``ninja compile --worker --submit`` additionally accepts
+``--cache``/``--no-cache`` and ``--cache-dir`` as frozen invocation-level
+overrides; the cache decision itself still happens inside each allocation.
 
 The cache manifest and mutation journal are mutable shared metadata. Their
 read-modify-write transactions are serialized with persistent sibling lock
