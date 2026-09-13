@@ -31,7 +31,7 @@ class WriteIn(BaseModel):
     out: str
 
 
-def recipe(image: Path, tool_venv: Path) -> Recipe:
+def recipe(image: Path, tool_venv: Path, *, fail: bool = False) -> Recipe:
     write = Cab(
         name="binary",
         command="python3 -c",
@@ -47,7 +47,8 @@ def recipe(image: Path, tool_venv: Path) -> Recipe:
         outputs_model=m1_funcs.Product,
         steps=[
             StepRef(name="binary", step=write,
-                    params={"script": "from pathlib import Path;import sys;Path(sys.argv[1]).write_text('binary')", "out": "binary-product.txt"}),
+                    params={"script": "from pathlib import Path;import sys;Path(sys.argv[1]).write_text('binary')" + (";raise SystemExit(7)" if fail else ""),
+                            "out": "binary-product.txt"}),
             image_ref.model_copy(update={"wiring": {"source": OutputRef(step="binary", field="product")}}),
             venv_ref.model_copy(update={"wiring": {"source": OutputRef(step="image", field="product")}}),
         ],
@@ -58,7 +59,7 @@ def recipe(image: Path, tool_venv: Path) -> Recipe:
 def submit(args) -> int:
     workspace = args.root / "workspace"
     workspace.mkdir(parents=True, exist_ok=False)
-    value = recipe(args.image, args.tool_venv)
+    value = recipe(args.image, args.tool_venv, fail=args.fail)
     bundle = freeze_recipe(value, {}, config=AppConfig(), workspace=workspace, code_roots=(args.source_root,))
     workflow = prepare_worker_slurm(bundle, submission_root=workspace / ".shinobi" / "submissions", worker_python=args.worker_python,
                                     sbatch_opts={"partition": "dev"},
@@ -74,6 +75,17 @@ def check(args) -> int:
     data = json.loads((args.root / "handle.json").read_text())
     submission = Path(data["submission"])
     finalized = Finalization.model_validate_json((submission / "finalization.json").read_text())
+    if args.fail:
+        assert not finalized.complete
+        assert [step.state for step in finalized.steps] == ["failed", "unknown", "unknown"]
+        assert finalized.steps[0].scheduler_state == "FAILED"
+        assert finalized.steps[1].scheduler_state.startswith("CANCELLED")
+        assert finalized.steps[2].scheduler_state.startswith("CANCELLED")
+        assert not (submission / "manifest.json").exists()
+        failed_record = json.loads((submission / finalized.steps[0].record).read_text())
+        assert Path(failed_record["sandbox"]).is_dir()
+        sys.stdout.write(json.dumps({"complete": False, "failure_verified": True, "submission": str(submission)}) + "\n")
+        return 0
     assert finalized.complete
     assert [step.step_path for step in finalized.steps] == ["binary", "image", "venv"]
     assert all(step.state == "succeeded" for step in finalized.steps)
@@ -95,6 +107,7 @@ def main() -> int:
     parser.add_argument("--image", type=Path, default=Path("/data/images/python-3.12-alpine.sif"))
     parser.add_argument("--tool-venv", type=Path, default=Path("/data/m1-tool-venv"))
     parser.add_argument("--worker-python", type=Path, default=Path("/opt/stimela/bin/python"))
+    parser.add_argument("--fail", action="store_true")
     args = parser.parse_args()
     return globals()[args.command](args)
 
