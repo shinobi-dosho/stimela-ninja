@@ -276,7 +276,7 @@ def test_a_stale_manifest_entry_is_not_read_as_proof_this_run_succeeded(tmp_path
         chain.marker = Marker(step_path="pipe.cal", field="ms", cache_key=entry["cache_key"], run_id="a-later-run", started_at=0.0)
         return chain
 
-    journal.update(cid, arm)
+    journal.update_chain(cid, arm)
 
     reconcile(str(cache_dir), manifest)
 
@@ -302,7 +302,7 @@ def test_an_entry_recorded_by_this_very_run_is_accepted_as_success(tmp_path):
         chain.marker = Marker(step_path="pipe.cal", field="ms", cache_key=entry["cache_key"], run_id=entry["run_id"], started_at=0.0)
         return chain
 
-    journal.update(cid, arm)
+    journal.update_chain(cid, arm)
     reconcile(str(cache_dir), manifest)
 
     chain = journal.get(cid)
@@ -331,7 +331,7 @@ def test_legacy_manifest_entries_without_a_run_id_fail_conservatively(tmp_path):
         chain.marker = Marker(step_path="pipe.cal", field="ms", cache_key=key, run_id="whatever", started_at=0.0)
         return chain
 
-    journal.update(cid, arm)
+    journal.update_chain(cid, arm)
     reconcile(str(cache_dir), get_cache_manifest(str(cache_dir)))
     assert journal.get(cid).status is HeadStatus.UNTRUSTED
 
@@ -795,7 +795,7 @@ def test_a_second_run_does_not_roll_back_a_run_that_is_still_going(tmp_path):
         chain.marker = Marker(step_path="pipe.cal", field="ms", cache_key="k", run_id="live-run", started_at=0.0)
         return chain
 
-    journal.update(chain_id(ms), arm)
+    journal.update_chain(chain_id(ms), arm)
 
     held = _hold_a_foreign_run(cache_dir)
     try:
@@ -828,7 +828,7 @@ def test_a_corpse_is_still_reconciled_when_nobody_else_is_running(tmp_path):
         chain.marker = Marker(step_path="pipe.cal", field="ms", cache_key="k", run_id="dead-run", started_at=0.0)
         return chain
 
-    journal.update(chain_id(ms), arm)
+    journal.update_chain(chain_id(ms), arm)
 
     from shinobi.snapshots import release_runs
 
@@ -941,7 +941,7 @@ def test_reconciliation_runs_for_a_recipe_rooted_pipeline(tmp_path):
         chain.marker = Marker(step_path="pipe.cal", field="ms", cache_key="k", run_id="dead-run", started_at=0.0)
         return chain
 
-    journal.update(chain_id(ms), arm)
+    journal.update_chain(chain_id(ms), arm)
 
     from shinobi.snapshots import release_runs
 

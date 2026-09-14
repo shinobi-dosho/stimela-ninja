@@ -514,12 +514,9 @@ def compute_cache_key(scope: Scope, func: Callable | None, prepared: dict[str, A
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
-_JsonFileStore = JsonFileStore
-
-
 class CacheManifest(JsonFileStore):
     """A JSON-backed `{step_path: {cache_key, outputs}}` store -- see
-    `_JsonFileStore` for the locking and atomicity it inherits.
+    :class:`shinobi.storage.JsonFileStore` for its transaction contract.
     """
 
     def check(self, step_path: str, cache_key: str, scope: Scope, prepared: dict[str, Any]) -> StepResult | None:

@@ -168,19 +168,36 @@ read-modify-write transactions are serialized with persistent sibling lock
 files. A checksummed transaction is appended and synced in that same persistent
 inode before the familiar JSON file is refreshed from a collision-safe
 temporary by atomic replacement and directory sync. Readers replay the log, so
-a crash before the refresh leaves a recoverable commit instead of a stale hit;
+a failed refresh leaves a warning and a recoverable commit instead of falsely
+reporting that the transaction failed;
 an incomplete trailing record is ignored, while corruption in a completed
-record fails closed. The JSON filenames and payloads did not change, so existing
-cache directories need no migration: the first update imports their current
-state as the log's initial snapshot. Lock/log files are intentionally left in
-place, because deleting one while a process holds it could create two unrelated
-lock domains.
+record fails closed. ``ninja clean --cache`` is the explicit recovery when the
+cache can be discarded. The JSON filenames and payloads did not change, so the
+first update imports an existing cache as the log's initial snapshot. This is a
+**one-way upgrade**: every later writer must be M2-aware. A pre-M2 process writes
+only the compatibility JSON, outside the lock, and its changes are ignored to
+protect committed log state. Do not point an older Shinobi or pinned old remote
+launcher environment at an upgraded cache.
+
+Lock/log files are intentionally left in place, including during
+``ninja clean --cache``, because deleting one while a process holds it could
+create two unrelated lock domains. JSON views and newly-created locks use
+ordinary collaborative permissions (``0666`` filtered by umask/default ACLs).
+Readers open an existing lock read-only, so group and read-only-mount cache
+inspection works; writers need write access to both the cache directory and
+lock inode. Lock acquisition waits at most 60 seconds and then reports the lock
+path and a possible stalled/shared-filesystem holder. A filesystem operation
+itself can still remain stuck in the kernel if a remote filesystem is wedged.
 
 This protocol requires 64-bit Linux open-file-description locks
-(``F_OFD_SETLKW``), which conflict with the POSIX locks used by NFSv4, plus
+(``F_OFD_SETLK``), which conflict with the POSIX locks used by NFSv4, plus
 atomic same-directory replacement and working file/directory ``fsync`` on the
-cache filesystem. An operating-system failure is fatal rather than silently
-falling back to unsafe writes. Some network filesystems can nevertheless report
+cache filesystem. Failures before the log commit are fatal rather than silently
+falling back to unsafe writes; compatibility-view failures after it are warnings.
+Some python-build-standalone interpreters omit the ``fcntl`` names despite
+kernel support; Shinobi admits the Linux UAPI values only on its verified
+x86-64/AArch64 ABI and fails closed on every other missing-constant platform.
+Some network filesystems can nevertheless report
 success while enforcing locks only locally; a deployment that shares one cache
 directory across cluster nodes must run Shinobi's physical cross-node M2 probe
 on that exact mount before treating it as supported. Every participant must use
@@ -188,8 +205,10 @@ the same distributed locking mode: NFSv3 without working lock services, or NFS
 mounted with local-only locking, is unsupported.
 
 The reference Kudu/Nyala topology passed this probe across its mixed local-ext4
-server and NFSv4.2 clients on 2026-09-13. That result establishes this one mount,
-not a blanket guarantee for other NFS or parallel-filesystem configurations.
+server and NFSv4.2 clients on 2026-09-13, and the hardened implementation
+passed twice on the hardened tree on 2026-09-14 as jobs 116--118 and 119--121.
+Those results establish this one mount, not a blanket guarantee for other NFS
+or parallel-filesystem configurations.
 
 Mixing a server-local participant with NFS clients also has one inherent reboot
 window: after the server restarts, clients reclaim locks during the NFS grace
@@ -263,10 +282,13 @@ alone would leave that output snapshotted and reachable.
 ``ninja cache evict --bytes N`` frees snapshot space, dropping unreachable
 states first and never one a live chain still needs.
 
-``ninja clean --cache`` removes the cache directory and the snapshot journal
-with it, and refuses while a quarantined tree is outstanding -- the journal
-is the only thing that explains what such a tree was set aside for. Pass
-``--force`` to remove both.
+``ninja clean --cache`` resets the manifest and snapshot journal under their
+exclusive transaction locks, removes snapshot payloads, and retains the lock
+inodes and directories. It refuses while a quarantined tree is outstanding --
+the journal is the only thing that explains what such a tree was set aside for.
+Pass ``--force`` to remove the quarantined trees too. Cleanup also provides the
+deliberate recovery path for a corrupt log and bounds log growth operationally;
+there is no automatic in-place compaction yet.
 
 ``provenance.enabled`` turns on reproducible-run provenance: container images
 are digest-pinned before running (pin-then-run) and a run manifest is written

@@ -352,7 +352,7 @@ class ChainJournal(JsonFileStore):
     def get(self, cid: str) -> Chain | None:
         return self._load(self.read()).get(cid)
 
-    def update(self, cid: str, mutate: Callable[[Chain | None], Chain | None]) -> None:
+    def update_chain(self, cid: str, mutate: Callable[[Chain | None], Chain | None]) -> None:
         """Read-modify-write one chain under the lock.
 
         Every journal write goes through here so that no caller can read a
@@ -361,14 +361,12 @@ class ChainJournal(JsonFileStore):
         """
 
         def update_data(data: dict[str, Any]) -> None:
-            chains = self._load(data)
-            result = mutate(chains.get(cid))
+            current = Chain.from_json(data[cid]) if cid in data else None
+            result = mutate(current)
             if result is None:
-                chains.pop(cid, None)
+                data.pop(cid, None)
             else:
-                chains[cid] = result
-            data.clear()
-            data.update({name: chain.as_json() for name, chain in chains.items()})
+                data[cid] = result.as_json()
 
         super().update(update_data)
 
@@ -757,7 +755,7 @@ class SnapshotGuard:
                 chain.dev, chain.ino, chain.ctime_ns = st.st_dev, st.st_ino, st.st_ctime_ns
             return chain
 
-        self.journal.update(plan.cid, mutate)
+        self.journal.update_chain(plan.cid, mutate)
 
     def _mark_in_flight(self, plan: _FieldPlan) -> None:
         """Record that a mutation is starting, before it starts.
@@ -779,7 +777,7 @@ class SnapshotGuard:
             chain.marker = marker
             return chain
 
-        self.journal.update(plan.cid, mutate)
+        self.journal.update_chain(plan.cid, mutate)
 
     def _rule_a(self, plan: _FieldPlan) -> None:
         """Rule A -- snapshot the state this step is *consuming*, before it
@@ -896,7 +894,7 @@ class SnapshotGuard:
             chain.generations.append(Generation(name=name, size=size, snapshot_present=present))
             return chain
 
-        self.journal.update(plan.cid, mutate)
+        self.journal.update_chain(plan.cid, mutate)
 
     def _commit_generation(self, plan: _FieldPlan) -> None:
         """S2 -- the head now names what is on disk, and vouches for it.
@@ -936,7 +934,7 @@ class SnapshotGuard:
                 chain.consumed[consumed_key] = consumed_name
             return chain
 
-        self.journal.update(plan.cid, mutate)
+        self.journal.update_chain(plan.cid, mutate)
 
     def _taint_excluded(self) -> None:
         """Record the writes this step made through fields Tier 1 excluded.
@@ -999,7 +997,7 @@ class SnapshotGuard:
                 chain.marker = None
             return chain
 
-        self.journal.update(plan.cid, mutate)
+        self.journal.update_chain(plan.cid, mutate)
 
     def _taint(self, cid: str, through: str | None) -> None:
         """Record that a write this journal cannot name landed after `through`.
@@ -1025,7 +1023,7 @@ class SnapshotGuard:
                 chain.tainted_through = through
             return chain
 
-        self.journal.update(cid, mutate)
+        self.journal.update_chain(cid, mutate)
 
 
 # --- who else is running --------------------------------------------------
@@ -1216,7 +1214,7 @@ def reconcile(cache_dir: str, manifest) -> list[str]:
                     c.marker = None
                 return c
 
-            journal.update(cid, clear)
+            journal.update_chain(cid, clear)
             continue
 
         # No entry from this run: the step did not finish. If the crash fell
@@ -1240,7 +1238,7 @@ def reconcile(cache_dir: str, manifest) -> list[str]:
                 c.status = HeadStatus.UNTRUSTED
             return c
 
-        journal.update(cid, interrupted)
+        journal.update_chain(cid, interrupted)
     return notes
 
 
@@ -1375,7 +1373,7 @@ def evict(cache_dir: str, target_bytes: int) -> list[tuple[str, int]]:
             return chain
 
         for cid in chains:
-            journal.update(cid, prune)
+            journal.update_chain(cid, prune)
     return removed
 
 
@@ -1444,7 +1442,7 @@ def invalidate(cache_dir: str, step_path: str, manifest) -> list[str]:
             c.status = HeadStatus.UNTRUSTED
             return c
 
-        journal.update(cid, roll_back)
+        journal.update_chain(cid, roll_back)
         notes.append(f"rolled {chain.path} back to {previous or 'no generation'} and marked it untrusted, so the next run restores it before re-running")
     return notes
 

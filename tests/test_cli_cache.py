@@ -9,6 +9,7 @@ import shinobi
 from click.testing import CliRunner
 from pydantic import BaseModel
 
+from shinobi.cache import CacheManifest
 from shinobi.cli import main
 from shinobi.snapshots import Marker, chain_id, get_journal
 from shinobi.steps import InputRef, OutputRef, Recipe
@@ -73,7 +74,7 @@ def test_check_reports_an_interrupted_step(tmp_path, monkeypatch):
         chain.marker = Marker(step_path="pipe.flag", field="ms", cache_key="k", run_id="dead-run", started_at=0.0)
         return chain
 
-    journal.update(chain_id(ms), arm)
+    journal.update_chain(chain_id(ms), arm)
 
     result = CliRunner().invoke(main, ["cache", "check"])
     assert result.exit_code == 0, result.output
@@ -129,7 +130,7 @@ def test_clean_refuses_to_orphan_a_quarantined_tree(tmp_path, monkeypatch):
         chain.marker = Marker(step_path="pipe.flag", field="ms", cache_key="k", run_id="deadrun", started_at=0.0)
         return chain
 
-    journal.update(chain_id(ms), arm)
+    journal.update_chain(chain_id(ms), arm)
 
     result = CliRunner().invoke(main, ["clean", "--no-runs", "--no-sandboxes"])
     assert result.exit_code != 0
@@ -147,11 +148,14 @@ def test_clean_force_removes_the_cache_and_the_quarantined_tree(tmp_path, monkey
         chain.marker = Marker(step_path="pipe.flag", field="ms", cache_key="k", run_id="deadrun", started_at=0.0)
         return chain
 
-    journal.update(chain_id(ms), arm)
+    journal.update_chain(chain_id(ms), arm)
 
     result = CliRunner().invoke(main, ["clean", "--no-runs", "--no-sandboxes", "--force"])
     assert result.exit_code == 0, result.output
-    assert not cache.exists()
+    assert (cache / "manifest.json.lock").exists()
+    assert (cache / "snapshots" / "chains.json.lock").exists()
+    assert not (cache / "manifest.json").exists()
+    assert not (cache / "snapshots" / "chains.json").exists()
     assert not trash.exists()
 
 
@@ -159,4 +163,21 @@ def test_clean_still_works_when_nothing_is_quarantined(tmp_path, monkeypatch):
     _ms, cache = _run_chain(tmp_path, monkeypatch)
     result = CliRunner().invoke(main, ["clean", "--no-runs", "--no-sandboxes"])
     assert result.exit_code == 0, result.output
-    assert not cache.exists()
+    assert (cache / "manifest.json.lock").exists()
+    assert (cache / "snapshots" / "chains.json.lock").exists()
+
+
+def test_clean_is_the_explicit_recovery_for_a_corrupt_metadata_log(tmp_path, monkeypatch):
+    _ms, cache = _run_chain(tmp_path, monkeypatch)
+    manifest_lock = cache / "manifest.json.lock"
+    journal_lock = cache / "snapshots" / "chains.json.lock"
+    with manifest_lock.open("ab") as stream:
+        stream.write(b"corrupt manifest\n")
+    with journal_lock.open("ab") as stream:
+        stream.write(b"corrupt journal\n")
+
+    result = CliRunner().invoke(main, ["clean", "--no-runs", "--no-sandboxes"])
+
+    assert result.exit_code == 0, result.output
+    assert CacheManifest(cache / "manifest.json").read() == {}
+    assert get_journal(str(cache)).all_chains() == {}

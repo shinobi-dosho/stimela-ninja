@@ -1,6 +1,9 @@
+import threading
+
 from click.testing import CliRunner
 
-from shinobi.cli import main
+from shinobi.cache import CacheManifest
+from shinobi.cli import _clear_step_cache, main
 
 
 def _seed(tmp_path, monkeypatch):
@@ -27,7 +30,10 @@ def test_clean_removes_runs_and_cache(tmp_path, monkeypatch):
     runs, cache = _seed(tmp_path, monkeypatch)
     result = CliRunner().invoke(main, ["clean"])
     assert result.exit_code == 0, result.output
-    assert not runs.exists() and not cache.exists()
+    assert not runs.exists()
+    assert (cache / "manifest.json.lock").exists()
+    assert (cache / "snapshots" / "chains.json.lock").exists()
+    assert not (cache / "manifest.json").exists()
 
 
 def test_clean_dry_run_deletes_nothing(tmp_path, monkeypatch):
@@ -68,6 +74,40 @@ def test_clean_missing_dirs_is_graceful(tmp_path, monkeypatch):
     result = CliRunner().invoke(main, ["clean"])
     assert result.exit_code == 0
     assert "nothing at" in result.output
+
+
+def test_clean_waits_for_metadata_transaction_and_preserves_lock_domain(tmp_path, monkeypatch):
+    _runs, cache = _seed(tmp_path, monkeypatch)
+    manifest = CacheManifest(cache / "manifest.json")
+    manifest.update(lambda data: data.update(seed={"cache_key": "key"}))
+    inode = manifest.lock_path.stat().st_ino
+    entered = threading.Event()
+    release = threading.Event()
+
+    def hold(data):
+        entered.set()
+        release.wait(timeout=10)
+        data["held"] = {"cache_key": "held"}
+
+    holder = threading.Thread(target=lambda: manifest.update(hold))
+    holder.start()
+    assert entered.wait(timeout=10)
+    outcome = {}
+
+    def clean_cache():
+        _clear_step_cache(cache)
+        outcome["complete"] = True
+
+    cleaner = threading.Thread(target=clean_cache)
+    cleaner.start()
+    assert cleaner.is_alive()
+    release.set()
+    holder.join(timeout=10)
+    cleaner.join(timeout=10)
+    assert outcome["complete"] is True
+    assert manifest.lock_path.stat().st_ino == inode
+    manifest.update(lambda data: data.update(after={"cache_key": "after"}))
+    assert set(manifest.read()) == {"after"}
 
 
 def _seed_launch(tmp_path, recipe):

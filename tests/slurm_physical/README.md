@@ -33,6 +33,12 @@ Run from the controller against a unique directory::
 
     python /data/src/stimela-ninja/tests/slurm_physical/run_m2.py submit \
       --root /data/physical-m2-001
+
+For another cluster, pass ``--nodes NODE...``, ``--partition PARTITION``,
+``--expected-host NODE=HOST`` once per node when runtime hostnames differ from
+scheduler names, plus ``--source-root`` and ``--worker-python`` as needed. The
+defaults describe Kudu/Nyala only; the protocol and checker are not tied to
+those names.
     python /data/src/stimela-ninja/tests/slurm_physical/run_m2.py check \
       --root /data/physical-m2-001
 
@@ -49,3 +55,8 @@ node-local across Kudu's local ext4 and Nyala's NFS view, while jobs 62--64
 proved POSIX exclusion alone did not prevent stale-path lost updates after
 atomic replacement. Those failures motivated the OFD lock plus persistent
 transaction log now under test.
+
+After the storage-review hardening (bounded acquisition, collaborative modes,
+immediate-parent syncing and inode-preserving cleanup), the parameterized probe
+passed twice on 2026-09-14 as jobs 116--118 and 119--121 with the same
+three-way exclusion, placement and 60-record agreement.
