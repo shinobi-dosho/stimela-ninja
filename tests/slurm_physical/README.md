@@ -33,14 +33,14 @@ Run from the controller against a unique directory::
 
     python /data/src/stimela-ninja/tests/slurm_physical/run_m2.py submit \
       --root /data/physical-m2-001
+    python /data/src/stimela-ninja/tests/slurm_physical/run_m2.py check \
+      --root /data/physical-m2-001
 
 For another cluster, pass ``--nodes NODE...``, ``--partition PARTITION``,
 ``--expected-host NODE=HOST`` once per node when runtime hostnames differ from
 scheduler names, plus ``--source-root`` and ``--worker-python`` as needed. The
 defaults describe Kudu/Nyala only; the protocol and checker are not tied to
 those names.
-    python /data/src/stimela-ninja/tests/slurm_physical/run_m2.py check \
-      --root /data/physical-m2-001
 
 Do not claim a different shared mount as supported until this probe passes on
 that mount. It tests metadata transactions only, not concurrent ownership of a
@@ -60,3 +60,31 @@ After the storage-review hardening (bounded acquisition, collaborative modes,
 immediate-parent syncing and inode-preserving cleanup), the parameterized probe
 passed twice on 2026-09-14 as jobs 116--118 and 119--121 with the same
 three-way exclusion, placement and 60-record agreement.
+
+## Physical M2 worker-cache probe
+
+``run_m2_cache.py`` submits four successive detached worker workflows against
+one shared cache. Binary, real Apptainer-image pystep and real tool-venv pystep
+jobs are pinned across ``k1``, ``n1`` and ``n2``.
+The first run executes every branch; the unchanged run cache-hits every branch;
+changing the root producer reruns it and both wired descendants while retaining
+the unrelated hit; deleting one declared product reruns only its producer. The
+fresh-process checker validates immutable attempt/finalization states, all
+shared manifest entries, and final products::
+
+    python /data/src/stimela-ninja/tests/slurm_physical/run_m2_cache.py run \
+      --root /data/physical-m2-cache-001
+    python /data/src/stimela-ninja/tests/slurm_physical/run_m2_cache.py check \
+      --root /data/physical-m2-cache-001
+
+This complements ``run_m2.py``: the earlier probe proves the mount's lock and
+transaction primitives directly under forced contention, while this one proves
+the detached-worker cache/provenance behavior built on them.
+
+The strengthened workflow passed on Kudu/Nyala on 2026-09-13 as scientific
+jobs 88--93, 95--100, 102--107 and 109--114. Every job completed on its
+requested node; the real Apptainer pystep ran on ``n1`` and the real tool-venv
+pystep on ``n2`` in every phase. The unchanged phase retained image/code and
+venv/code provenance on its cache hits, and its manifest remained unpinned
+because the venv fingerprint establishes version parity rather than an exact
+OS/binary pin.

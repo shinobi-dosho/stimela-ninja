@@ -137,18 +137,22 @@ def freeze_dists(python: Path) -> list[str] | None:
     return dists if isinstance(dists, list) else None
 
 
+def inspect_venv_digest(venv: Path) -> str | None:
+    """Read a venv's current distribution fingerprint without memoization."""
+    dists = freeze_dists(venv / "bin" / "python")
+    return None if dists is None else digest_of_dists(dists)
+
+
 @lru_cache(maxsize=None)
 def venv_digest(venv: Path) -> str | None:
-    """`sha256` of the venv's sorted `name==version` distribution list, or
-    `None` on any failure (an honest null -- never a fabricated digest).
+    """Memoized ``inspect_venv_digest`` for repeated steps within one run.
 
     Cached per resolved path: a venv does not change mid-run, mirroring the
     container backend's `lru_cache` on image pinning. Under `max_workers > 1`
     several threads may redundantly shell out on a first miss, but the result
     is deterministic.
     """
-    dists = freeze_dists(venv / "bin" / "python")
-    return None if dists is None else digest_of_dists(dists)
+    return inspect_venv_digest(venv)
 
 
 @register

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -8,6 +9,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
+from shinobi.cache import get_cache_manifest
 from shinobi.config import AppConfig
 from shinobi.offload.bundle import RecipeBundle, freeze_recipe, write_new
 from shinobi.offload.records import AttemptRecord
@@ -95,6 +97,32 @@ def _prepared(tmp_path: Path):
     return workflow, staged, plan
 
 
+def _prepared_cached(tmp_path: Path, recipe: Recipe | None = None, config: AppConfig | None = None):
+    config = config or AppConfig.model_validate({"cache": {"enabled": True, "dir": str(tmp_path / "cache")}})
+    bundle = freeze_recipe(recipe or _recipe(), {}, config=config, workspace=tmp_path)
+    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+    staged = RecipeBundle.read(workflow.submission_dir / "bundle.json")
+    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    return workflow, staged, plan
+
+
+def _execute_all(workflow, plan):
+    records = []
+    for attempt in plan.attempts:
+        assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 0
+        bundle = RecipeBundle.read(workflow.submission_dir / "bundle.json")
+        records.append(
+            AttemptRecord.read(
+                _final_record(workflow, attempt),
+                workflow_id=plan.workflow_id,
+                attempt_id=attempt.attempt_id,
+                step_path=attempt.step_path,
+                bundle_digest=bundle.digest,
+            )
+        )
+    return records
+
+
 def _final_record(workflow, attempt) -> Path:
     return workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "final.json"
 
@@ -119,6 +147,82 @@ def test_worker_executes_wiring_in_shared_sandboxes_and_finalizes(tmp_path, monk
     assert [step.step_path for step in finalized.steps] == ["write", "copy"]
     assert (workflow.submission_dir / "manifest.json").is_file()
     assert finalize_submission(workflow.submission_dir) == finalized
+
+
+def test_second_detached_run_uses_runtime_cache_and_committed_upstream_keys(tmp_path):
+    first, _bundle, first_plan = _prepared_cached(tmp_path)
+    assert [record.state for record in _execute_all(first, first_plan)] == ["succeeded", "succeeded"]
+
+    second, _bundle, second_plan = _prepared_cached(tmp_path)
+    records = _execute_all(second, second_plan)
+    assert [record.state for record in records] == ["cached", "cached"]
+    assert all(record.cache_key for record in records)
+    assert records[1].output_keys["out"].cache_key == records[1].cache_key
+
+
+def test_deleted_declared_product_forces_worker_rerun(tmp_path):
+    first, _bundle, first_plan = _prepared_cached(tmp_path)
+    _execute_all(first, first_plan)
+    (tmp_path / "second.txt").unlink()
+
+    second, _bundle, second_plan = _prepared_cached(tmp_path)
+    records = _execute_all(second, second_plan)
+    assert [record.state for record in records] == ["cached", "succeeded"]
+    assert (tmp_path / "second.txt").read_text() == "frozen worker"
+
+
+def test_changed_upstream_worker_identity_invalidates_its_descendant(tmp_path):
+    first, _bundle, first_plan = _prepared_cached(tmp_path)
+    _execute_all(first, first_plan)
+
+    changed = _recipe().model_copy(deep=True)
+    changed.steps[0].params["script"] = "from pathlib import Path;import sys;Path(sys.argv[1]).write_text('changed')"
+    second, _bundle, second_plan = _prepared_cached(tmp_path, changed)
+    records = _execute_all(second, second_plan)
+    assert [record.state for record in records] == ["succeeded", "succeeded"]
+    assert (tmp_path / "second.txt").read_text() == "changed worker"
+
+
+def test_changed_worker_branch_keeps_unrelated_cache_hit(tmp_path):
+    recipe = _recipe().model_copy(deep=True)
+    recipe.steps.append(
+        StepRef(
+            name="unrelated",
+            step=_cab("unrelated", WriteIn),
+            params={
+                "script": "from pathlib import Path;import sys;Path(sys.argv[1]).write_text('unrelated')",
+                "out": "unrelated.txt",
+            },
+        )
+    )
+    first, _bundle, first_plan = _prepared_cached(tmp_path, recipe)
+    assert [record.state for record in _execute_all(first, first_plan)] == ["succeeded", "succeeded", "succeeded"]
+
+    changed = recipe.model_copy(deep=True)
+    changed.steps[0].params["script"] = "from pathlib import Path;import sys;Path(sys.argv[1]).write_text('changed')"
+    second, _bundle, second_plan = _prepared_cached(tmp_path, changed)
+    assert [record.state for record in _execute_all(second, second_plan)] == ["succeeded", "succeeded", "cached"]
+
+
+def test_recipe_cache_setting_is_not_dropped_by_worker_compilation(tmp_path):
+    configured = _recipe().model_copy(update={"cache": True, "cache_dir": str(tmp_path / "scope-cache")})
+    config = AppConfig()
+    first, _bundle, first_plan = _prepared_cached(tmp_path, configured, config)
+    _execute_all(first, first_plan)
+    second, _bundle, second_plan = _prepared_cached(tmp_path, configured, config)
+    assert [record.state for record in _execute_all(second, second_plan)] == ["cached", "cached"]
+
+
+def test_worker_mutator_remains_uncached_until_workspace_ownership_lands(tmp_path):
+    recipe = _recipe().model_copy(deep=True)
+    recipe.steps[1].step.input_mutability["src"] = Mutability.MUTABLE
+    first, _bundle, first_plan = _prepared_cached(tmp_path, recipe)
+    assert [record.state for record in _execute_all(first, first_plan)] == ["succeeded", "succeeded"]
+
+    second, _bundle, second_plan = _prepared_cached(tmp_path, recipe)
+    records = _execute_all(second, second_plan)
+    assert [record.state for record in records] == ["cached", "succeeded"]
+    assert records[1].cache_key is None
 
 
 def test_missing_worker_result_is_unknown_not_success(tmp_path, monkeypatch):
@@ -292,6 +396,152 @@ def test_frozen_venv_pystep_runs_out_of_process(make_venv, tmp_path):
     assert record.observation.venv_digest is not None
 
 
+def test_unchanged_venv_pystep_hits_cache_and_stays_unpinned(make_venv, tmp_path, monkeypatch):
+    from shinobi import pystep
+    from tests import _venv_pystep_funcs as funcs
+
+    venv = make_venv(package=("venvonlypkg", "1.0.0", "MAGIC = 4242\n"))
+
+    class NumberIn(BaseModel):
+        n: int
+
+    ref = pystep(venv=str(venv), backend="venv")(funcs.use_venv_only_pkg)
+    recipe = Recipe(
+        name="cached-venv-worker",
+        inputs_model=NumberIn,
+        outputs_model=funcs.MagicOut,
+        steps=[ref.model_copy(update={"wiring": {"n": InputRef(field="n")}})],
+        output_wiring={"value": OutputRef(step=ref.name, field="value")},
+    )
+    config = AppConfig.model_validate({"cache": {"enabled": True, "dir": str(tmp_path / "cache")}})
+
+    def prepare():
+        return prepare_worker_slurm(
+            freeze_recipe(recipe, {"n": 8}, config=config, workspace=tmp_path, code_roots=(Path.cwd(),)),
+            submission_root=tmp_path / "runs",
+            worker_python=Path(sys.executable),
+        )
+
+    first = prepare()
+    first_plan = ExecutionPlan.model_validate_json((first.submission_dir / "execution.json").read_text())
+    assert _execute_all(first, first_plan)[0].state == "succeeded"
+
+    second = prepare()
+    second_bundle = RecipeBundle.read(second.submission_dir / "bundle.json")
+    second_plan = ExecutionPlan.model_validate_json((second.submission_dir / "execution.json").read_text())
+    cached = _execute_all(second, second_plan)[0]
+    assert cached.state == "cached"
+    assert cached.code_digest == second_bundle.steps[0].code.digest
+    assert cached.observation.venv == str(venv)
+    assert cached.observation.venv_digest == second_bundle.steps[0].tool_venv_digest
+
+    (second.submission_dir / "jobs").mkdir()
+    attempt = second_plan.attempts[0]
+    write_new(
+        second.submission_dir / "jobs" / "0000.json",
+        SubmittedJob(
+            workflow_id=second_plan.workflow_id,
+            bundle_digest=second_bundle.digest,
+            step_path=attempt.step_path,
+            attempt_id=attempt.attempt_id,
+            job_id="88",
+        ),
+    )
+    monkeypatch.setattr("shinobi.offload.slurm.status_slurm", lambda jobs: {attempt.step_path: "COMPLETED"})
+    assert finalize_submission(second.submission_dir).complete
+    manifest = RunManifest.model_validate_json((second.submission_dir / "manifest.json").read_text())
+    assert manifest.pinned is False
+
+
+def test_venv_worker_hits_entry_recorded_without_venv_digest(make_venv, tmp_path):
+    from shinobi import pystep
+    from tests import _venv_pystep_funcs as funcs
+
+    venv = make_venv(package=("venvonlypkg", "1.0.0", "MAGIC = 4242\n"))
+
+    class NumberIn(BaseModel):
+        n: int
+
+    ref = pystep(venv=str(venv), backend="venv")(funcs.use_venv_only_pkg)
+    recipe = Recipe(
+        name="unpinned-venv-entry",
+        inputs_model=NumberIn,
+        outputs_model=funcs.MagicOut,
+        steps=[ref.model_copy(update={"wiring": {"n": InputRef(field="n")}})],
+        output_wiring={"value": OutputRef(step=ref.name, field="value")},
+    )
+    config = AppConfig.model_validate({"cache": {"enabled": True, "dir": str(tmp_path / "cache")}})
+
+    def prepare():
+        return prepare_worker_slurm(
+            freeze_recipe(recipe, {"n": 8}, config=config, workspace=tmp_path, code_roots=(Path.cwd(),)),
+            submission_root=tmp_path / "runs",
+            worker_python=Path(sys.executable),
+        )
+
+    first = prepare()
+    first_plan = ExecutionPlan.model_validate_json((first.submission_dir / "execution.json").read_text())
+    assert _execute_all(first, first_plan)[0].state == "succeeded"
+
+    # An unpinned run keys on the resolved fingerprint but stores no digest.
+    def forget_digest(data):
+        for entry in data.values():
+            entry["venv_digest"] = None
+
+    get_cache_manifest(str(tmp_path / "cache")).update(forget_digest)
+
+    second = prepare()
+    second_bundle = RecipeBundle.read(second.submission_dir / "bundle.json")
+    second_plan = ExecutionPlan.model_validate_json((second.submission_dir / "execution.json").read_text())
+    cached = _execute_all(second, second_plan)[0]
+    assert cached.state == "cached"
+    assert cached.observation.venv_digest == second_bundle.steps[0].tool_venv_digest
+
+
+def test_changed_bundled_pystep_and_helper_invalidate_only_their_branch(make_venv, tmp_path):
+    from shinobi import pystep
+
+    class EmptyInputs(BaseModel):
+        pass
+
+    venv = make_venv()
+    (tmp_path / "helper_a.py").write_text("def value():\n    return 1\n")
+    source_a = tmp_path / "branch_a.py"
+    source_b = tmp_path / "branch_b.py"
+    source_a.write_text("def run():\n    import helper_a\n    helper_a.value()\n")
+    source_b.write_text("def run():\n    return None\n")
+
+    def load(module_name: str, path: Path):
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.run
+
+    def make_recipe() -> Recipe:
+        a = pystep(name="a", venv=str(venv), backend="venv")(load("branch_a", source_a))
+        b = pystep(name="b", venv=str(venv), backend="venv")(load("branch_b", source_b))
+        return Recipe(name="code-branches", inputs_model=EmptyInputs, outputs_model=EmptyInputs, steps=[a, b])
+
+    config = AppConfig.model_validate({"cache": {"enabled": True, "dir": str(tmp_path / "cache")}})
+
+    def prepare():
+        return prepare_worker_slurm(
+            freeze_recipe(make_recipe(), {}, config=config, workspace=tmp_path, code_roots=(tmp_path,)),
+            submission_root=tmp_path / "runs",
+            worker_python=Path(sys.executable),
+        )
+
+    first = prepare()
+    first_plan = ExecutionPlan.model_validate_json((first.submission_dir / "execution.json").read_text())
+    assert [record.state for record in _execute_all(first, first_plan)] == ["succeeded", "succeeded"]
+
+    source_a.write_text("def run():\n    import helper_a\n    helper_a.value() + 1\n")
+    (tmp_path / "helper_a.py").write_text("def value():\n    return 2\n")
+    second = prepare()
+    second_plan = ExecutionPlan.model_validate_json((second.submission_dir / "execution.json").read_text())
+    assert [record.state for record in _execute_all(second, second_plan)] == ["succeeded", "cached"]
+
+
 def test_frozen_venv_pystep_imports_bundled_helper(make_venv, tmp_path):
     from shinobi import pystep
     from tests import _venv_pystep_funcs as funcs
@@ -342,7 +592,10 @@ def test_frozen_image_pystep_imports_helper_and_records_exact_pins(tmp_path, mon
         output_wiring={"value": OutputRef(step=ref.name, field="value")},
     )
 
+    launches = []
+
     def fake_container_argv(runtime, scope, argv, inputs, workdir, **kwargs):
+        launches.append(scope.image)
         assert runtime == "apptainer"
         assert scope.image.endswith(digest)
         assert any(part.endswith("/code/0") for part in kwargs["extra_dirs"])
@@ -350,8 +603,9 @@ def test_frozen_image_pystep_imports_helper_and_records_exact_pins(tmp_path, mon
 
     monkeypatch.setattr("shinobi.backends.container.build_container_argv", fake_container_argv)
     monkeypatch.setattr("shinobi.backends.container.container_stopper", lambda *args: None)
+    config = AppConfig.model_validate({"cache": {"enabled": True, "dir": str(tmp_path / "cache")}})
     workflow = prepare_worker_slurm(
-        freeze_recipe(recipe, {"n": 8}, config=AppConfig(), workspace=tmp_path, code_roots=(Path.cwd(),)),
+        freeze_recipe(recipe, {"n": 8}, config=config, workspace=tmp_path, code_roots=(Path.cwd(),)),
         submission_root=tmp_path / "runs",
         worker_python=Path(sys.executable),
     )
@@ -375,6 +629,18 @@ def test_frozen_image_pystep_imports_helper_and_records_exact_pins(tmp_path, mon
     manifest = RunManifest.model_validate_json((workflow.submission_dir / "manifest.json").read_text())
     assert manifest.root.steps[0].image_digest == digest
     assert manifest.root.steps[0].code_digest == bundle.steps[0].code.digest
+
+    second = prepare_worker_slurm(
+        freeze_recipe(recipe, {"n": 8}, config=config, workspace=tmp_path, code_roots=(Path.cwd(),)),
+        submission_root=tmp_path / "runs",
+        worker_python=Path(sys.executable),
+    )
+    second_plan = ExecutionPlan.model_validate_json((second.submission_dir / "execution.json").read_text())
+    cached = _execute_all(second, second_plan)[0]
+    assert cached.state == "cached"
+    assert cached.observation.image_digest == digest
+    assert len(launches) == 1
+    assert launches[0].endswith(digest)
 
 
 def test_failed_worker_keeps_shared_sandbox_and_publishes_no_success(tmp_path):
@@ -701,6 +967,63 @@ def test_concurrent_attempts_own_distinct_sandbox_roots(tmp_path):
         assert sandbox.parent == workflow.submission_dir / "sandboxes" / str(attempt.attempt_id)
         sandboxes.append(sandbox)
     assert sandboxes[0] != sandboxes[1]
+
+
+def test_concurrent_worker_branches_retain_every_cache_update(tmp_path):
+    writer = _cab("write", WriteIn)
+    names = [f"branch-{index}" for index in range(8)]
+    recipe = Recipe(
+        name="parallel-cache",
+        inputs_model=RootIn,
+        outputs_model=PathOut,
+        steps=[
+            StepRef(
+                name=name,
+                step=writer,
+                params={
+                    "script": "from pathlib import Path;import sys,time;time.sleep(.05);Path(sys.argv[1]).write_text('done')",
+                    "out": f"{name}.txt",
+                },
+            )
+            for name in names
+        ],
+        output_wiring={"out": OutputRef(step=names[0], field="out")},
+    )
+    config = AppConfig.model_validate({"cache": {"enabled": True, "dir": str(tmp_path / "cache")}})
+    workflow = prepare_worker_slurm(
+        freeze_recipe(recipe, {}, config=config, workspace=tmp_path),
+        submission_root=tmp_path / "runs",
+        worker_python=Path(sys.executable),
+    )
+    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(workflow.submission_dir / "worker-src")
+    processes = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "shinobi.offload.worker",
+                "run",
+                "--submission",
+                str(workflow.submission_dir),
+                "--step",
+                attempt.step_path,
+                "--attempt-id",
+                str(attempt.attempt_id),
+            ],
+            cwd=tmp_path,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for attempt in plan.attempts
+    ]
+    outcomes = [proc.communicate() for proc in processes]
+    assert [proc.returncode for proc in processes] == [0] * len(names), outcomes
+    manifest = get_cache_manifest(str(tmp_path / "cache"))
+    assert all(manifest.entry(f"parallel-cache.{name}") is not None for name in names)
 
 
 def test_cross_filesystem_declared_scratch_fails_before_tool(tmp_path):

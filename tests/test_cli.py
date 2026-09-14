@@ -12,6 +12,19 @@ FIXTURES_ABS = Path(FIXTURES).resolve()
 # -- ninja compile (offload) --
 
 
+def test_compile_help_exposes_worker_cache_controls():
+    result = CliRunner().invoke(main, ["compile", "--help"])
+    assert result.exit_code == 0
+    assert "--cache / --no-cache" in result.output
+    assert "--cache-dir" in result.output
+
+
+def test_legacy_compile_refuses_runtime_cache_controls():
+    result = CliRunner().invoke(main, ["compile", f"{FIXTURES}:path_pipe", "--cache", "--ms", "/scratch/obs.ms"])
+    assert result.exit_code != 0
+    assert "require --worker" in result.output
+
+
 def test_compile_recipe_prints_dependency_chained_scripts():
     result = CliRunner().invoke(
         main,

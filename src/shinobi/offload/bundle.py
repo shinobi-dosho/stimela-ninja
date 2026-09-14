@@ -108,6 +108,7 @@ class FrozenStep(WireModel):
     loop: LoopIteration | None = None
     backend: Literal["native", "docker", "podman", "apptainer", "venv"]
     tool_venv: str | None = None
+    tool_venv_digest: str | None = None
     image_digest: str | None = None
     code: CodeBundle | None = None
     pystep_is_empty: bool | None = None
@@ -133,6 +134,8 @@ class RecipeBundle(WireModel):
     recipe: ScopeSpec
     inputs: JsonValue
     config: dict[str, JsonValue]
+    cache_override: bool | None = None
+    cache_dir_override: str | None = None
     steps: tuple[FrozenStep, ...]
     output_wiring: dict[str, Binding]
     max_workers: int | None = None
@@ -159,6 +162,8 @@ class RecipeBundle(WireModel):
                 raise BundleError("nested recipes are not supported by the worker bundle")
             if step.backend == "venv" and (not step.tool_venv or not Path(step.tool_venv).is_absolute()):
                 raise BundleError(f"step {step.name!r}: venv execution needs a resolved shared tool environment")
+            if step.tool_venv_digest is not None and step.backend != "venv":
+                raise BundleError(f"step {step.name!r}: tool-venv digest does not describe venv execution")
             image = unpack(step.scope.settings["image"]) if "image" in step.scope.settings else None
             if step.image_digest is not None and (not image or step.backend not in ("docker", "podman", "apptainer") or not step.image_digest.startswith("sha256:")):
                 raise BundleError(f"step {step.name!r}: image digest does not describe its container execution")
@@ -213,7 +218,15 @@ class Submission(WireModel):
 
 
 def freeze_recipe(
-    recipe: Recipe, inputs: dict[str, Any], *, config: AppConfig, workspace: Path, code_roots: tuple[Path, ...] = (), include_modules: tuple[str, ...] = ()
+    recipe: Recipe,
+    inputs: dict[str, Any],
+    *,
+    config: AppConfig,
+    workspace: Path,
+    code_roots: tuple[Path, ...] = (),
+    include_modules: tuple[str, ...] = (),
+    cache: bool | None = None,
+    cache_dir: str | None = None,
 ) -> RecipeBundle:
     """Freeze declarations without writing files, running tools or resolving pins.
 
@@ -274,6 +287,8 @@ def freeze_recipe(
         recipe=root,
         inputs=pack(prepared),
         config={k: pack(v) for k, v in config.model_dump(mode="python").items()},
+        cache_override=cache,
+        cache_dir_override=cache_dir,
         steps=tuple(steps),
         output_wiring={k: Binding.capture(v) for k, v in recipe.output_wiring.items()},
         max_workers=recipe.max_workers,

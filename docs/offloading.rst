@@ -161,12 +161,32 @@ separate from the worker environment and remains unpinned even when its
 installed-distribution digest is recorded. An image-backed pystep records both
 the prepared image digest and staged Python-code digest.
 
-M1 always disables cache and mutation-snapshot writes inside workers. The M2
-storage foundation makes local cache-manifest and snapshot-journal transactions
-safe across processes by using the shared protocol documented under
-:doc:`concepts/config`; runtime worker cache decisions and durable upstream
-identity are the next layer and remain disabled here. Sandboxing is always
-enabled. Each attempt owns
+M2 performs cache checks inside each allocated worker, after every declared
+predecessor has committed. ``OutputRef`` wiring carries the producing cache
+key and output field out of the immutable parent attempt record; ``after`` and
+compiler-inferred mutation ordering carry no data provenance. The ordinary
+shared cache-key and manifest implementation is used, including declared-
+product validation, boundary fingerprints and partial/uncached-producer
+semantics. A hit still consumes an allocation: submission-time pruning cannot
+prove that its predecessors will publish reusable state.
+
+The frozen execution identity adds the captured pystep code-bundle digest, the
+submission-resolved image digest, or the resolved tool-venv path and
+installed-distribution digest as applicable. Worker packaging is not part of
+a scientific step key, so updating the staged Shinobi worker does not evict
+unrelated branches. A venv fingerprint establishes package-version parity,
+not an exact binary/OS pin; venv-backed results therefore remain unpinned even
+when cached. ``ninja compile --worker --submit --cache`` and ``--no-cache``
+override scope/config settings, while ``--cache-dir`` selects the shared store
+without enabling it by itself. These options are refused by the legacy argv
+compiler rather than silently ignored.
+
+Mutation-snapshot writes remain disabled inside workers. More importantly, a
+leaf that declares an in-place path mutation is forced uncached until M3 adds
+durable workspace ownership and retry-aware recovery. Loop pass-through still
+publishes a current immutable attempt record and carries the producing state's
+key and environment provenance without claiming a new result. Sandboxing is
+always enabled. Each attempt owns
 ``sandboxes/<attempt-id>/...`` under the unique submission directory on the
 same filesystem as the recorded workspace;
 cross-filesystem scratch is refused rather than silently becoming node-local

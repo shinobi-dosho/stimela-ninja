@@ -134,6 +134,29 @@ def test_split_ref_rejects_non_docker_schemes():
     assert C._split_ref("library://x/y:1") is None
 
 
+def test_image_pin_success_cache_is_cleared_at_run_boundary(monkeypatch):
+    current = {"digest": "sha256:" + "a" * 64}
+    calls = {"n": 0}
+
+    def resolve(_ref):
+        calls["n"] += 1
+        return current["digest"]
+
+    C.clear_image_pin_cache()
+    monkeypatch.setattr(C, "_registry_api_digest", C.cache_successes(resolve))
+    monkeypatch.setattr(C, "_registry_digest", C.cache_successes(lambda _ref: None))
+    monkeypatch.setattr(C, "_docker_digest", C.cache_successes(lambda _runtime, _image: None))
+
+    assert C._pin_image("docker", "repo/tool:latest")[1] == current["digest"]
+    current["digest"] = "sha256:" + "b" * 64
+    assert C._pin_image("docker", "repo/tool:latest")[1] != current["digest"]
+    assert calls["n"] == 1
+
+    C.clear_image_pin_cache()
+    assert C._pin_image("docker", "repo/tool:latest")[1] == current["digest"]
+    assert calls["n"] == 2
+
+
 # -- registry credentials (hermetic; no network) --
 
 

@@ -42,6 +42,134 @@ def _entry_module(entry: str) -> str:
     return ".".join(parts)
 
 
+def _bound_names(target: ast.AST) -> list[str] | None:
+    """Plain names bound by an assignment target, or ``None`` for item/attribute targets."""
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, ast.Starred):
+        return _bound_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for element in target.elts:
+            bound = _bound_names(element)
+            if bound is None:
+                return None
+            names.extend(bound)
+        return names
+    return None
+
+
+def _literal_bindings(target: ast.AST, value: object) -> dict[str, object] | None:
+    """Map a destructuring target to its literal values when shape is known."""
+    if isinstance(target, ast.Name):
+        return {target.id: value}
+    if isinstance(target, ast.Starred):
+        return _literal_bindings(target.value, value)
+    if not isinstance(target, (ast.Tuple, ast.List)) or not isinstance(value, (tuple, list)):
+        return None
+
+    starred = next((index for index, element in enumerate(target.elts) if isinstance(element, ast.Starred)), None)
+    if starred is None:
+        if len(target.elts) != len(value):
+            return None
+        pairs = zip(target.elts, value)
+    else:
+        trailing = len(target.elts) - starred - 1
+        if len(value) < starred + trailing:
+            return None
+        pairs = [
+            *zip(target.elts[:starred], value[:starred]),
+            (target.elts[starred], list(value[starred : len(value) - trailing if trailing else None])),
+            *zip(target.elts[starred + 1 :], value[len(value) - trailing :]),
+        ]
+
+    bindings: dict[str, object] = {}
+    for element, element_value in pairs:
+        nested = _literal_bindings(element, element_value)
+        if nested is None:
+            return None
+        bindings.update(nested)
+    return bindings
+
+
+def _function_definition_executes(node: ast.FunctionDef | ast.AsyncFunctionDef, *, evaluate_annotations: bool) -> bool:
+    """Whether binding a function evaluates user expressions at import time."""
+    args = node.args
+    annotations = [
+        *(arg.annotation for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs) if arg.annotation is not None),
+        *([args.vararg.annotation] if args.vararg is not None and args.vararg.annotation is not None else []),
+        *([args.kwarg.annotation] if args.kwarg is not None and args.kwarg.annotation is not None else []),
+        *([node.returns] if node.returns is not None else []),
+    ]
+    return bool(node.decorator_list or args.defaults or any(value is not None for value in args.kw_defaults) or (evaluate_annotations and annotations))
+
+
+def _selected_entry_nodes(tree: ast.Module, qualname: str) -> list[ast.AST]:
+    """Module nodes that can affect importing and calling ``qualname``."""
+    deferred_annotations = any(isinstance(node, ast.ImportFrom) and node.module == "__future__" and any(alias.name == "annotations" for alias in node.names) for node in tree.body)
+    declarations: dict[str, list[ast.AST]] = {}
+    unconditional: list[ast.AST] = []
+    for index, node in enumerate(tree.body):
+        names: list[str] = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names = [node.name]
+            # The function body is deferred, but decorators, defaults and
+            # annotations are evaluated while the module is imported.  They
+            # can mutate state used indirectly by the selected callable.
+            if _function_definition_executes(node, evaluate_annotations=not deferred_annotations):
+                unconditional.append(node)
+        elif isinstance(node, ast.ClassDef):
+            names = [node.name]
+            # A class body, its bases, keywords and decorators all execute at
+            # import time even when no selected callable names the class.
+            unconditional.append(node)
+        elif isinstance(node, ast.Import):
+            names = [alias.asname or alias.name.split(".")[0] for alias in node.names]
+            unconditional.append(node)  # imports execute while loading the module
+        elif isinstance(node, ast.ImportFrom):
+            names = [alias.asname or alias.name for alias in node.names]
+            unconditional.append(node)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            bound = [_bound_names(target) for target in targets]
+            names = [name for group in bound if group is not None for name in group]
+            try:
+                ast.literal_eval(node.value)
+                literal = True
+            except (ValueError, TypeError, SyntaxError):
+                literal = False
+            # A nonliteral initializer executes arbitrary module code, and an
+            # item or attribute target mutates state no name declaration owns.
+            if not literal or any(group is None for group in bound):
+                unconditional.append(node)
+        elif not (index == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
+            unconditional.append(node)
+        for name in names:
+            # Every binding is kept: a later rebinding does not make an
+            # earlier value unobservable to statements that ran in between.
+            declarations.setdefault(name, []).append(node)
+
+    root_name = qualname.split(".", 1)[0]
+    if root_name not in declarations:
+        raise BundleError(f"callable {qualname!r} is missing from captured entry source")
+    always = {id(node) for node in unconditional}
+    selected: dict[int, ast.AST] = {}
+    # Unconditional statements are walked like the callable itself: the
+    # literals they read shape module state as surely as the code does.
+    pending = [*unconditional, *declarations[root_name]]
+    while pending:
+        node = pending.pop()
+        if id(node) in selected:
+            continue
+        selected[id(node)] = node
+        for child in ast.walk(node):
+            # A module-level statement such as ``X += 1`` or ``del X`` depends
+            # on the name it rebinds; inside a callable a store is local.
+            if isinstance(child, ast.Name) and (isinstance(child.ctx, ast.Load) or id(node) in always):
+                pending.extend(dependency for dependency in declarations.get(child.id, ()) if id(dependency) not in selected)
+    return sorted(selected.values(), key=lambda item: getattr(item, "lineno", 0))
+
+
 class CodeFile(WireModel):
     path: str
     source: str
@@ -79,6 +207,44 @@ class CodeBundle(WireModel):
     def digest(self) -> str:
         return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
 
+    @property
+    def execution_digest(self) -> str:
+        """Identity of the selected callable and its bundled dependencies.
+
+        The complete bundle digest is an integrity identity: changing any
+        captured byte changes it.  A cache key needs a narrower answer.  Two
+        pysteps commonly share one recipe module, and editing the body of one
+        must not evict the other's independent branch merely because both
+        workers transport that module.  We therefore retain the selected
+        top-level declaration, the module declarations it references, and
+        every construct that evaluates user expressions while importing the
+        entry module, while hashing every separately bundled helper module in
+        full.
+
+        This is intentionally conservative for helpers and package
+        initializers.  Their whole module executes on import, so a change
+        there is an execution-identity reason, not worker-packaging noise.
+        """
+        entry = next(file for file in self.files if file.path == self.entry)
+        tree = ast.parse(entry.source, filename=entry.path)
+
+        digest = hashlib.sha256()
+        digest.update(self.module.encode())
+        digest.update(b"\0")
+        digest.update(self.qualname.encode())
+        digest.update(b"\0")
+        for node in _selected_entry_nodes(tree, self.qualname):
+            digest.update(ast.dump(node, include_attributes=False).encode())
+            digest.update(b"\0")
+        for file in self.files:
+            if file.path == self.entry:
+                continue
+            digest.update(file.path.encode())
+            digest.update(b"\0")
+            digest.update(file.source.encode())
+            digest.update(b"\0")
+        return digest.hexdigest()
+
     def write(self, root: Path) -> Path:
         """Materialize into a new directory; never replace an existing snapshot."""
         root.mkdir(parents=True, exist_ok=False)
@@ -115,29 +281,35 @@ def capture_code(func: Callable, *, roots: tuple[Path, ...] = (), include: tuple
     # Imported names and definitions are reproducible from source; a global
     # data value must be an unchanged immutable literal assignment.
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-    declarations = {}
+    declaration_only = object()
+    runtime_value = object()
+    declarations: dict[str, object] = {}
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            declarations[node.name] = None
+            declarations[node.name] = declaration_only
         elif isinstance(node, ast.Import):
-            declarations.update({a.asname or a.name.split(".")[0]: None for a in node.names})
+            declarations.update({a.asname or a.name.split(".")[0]: declaration_only for a in node.names})
         elif isinstance(node, ast.ImportFrom):
-            declarations.update({a.asname or a.name: None for a in node.names})
+            declarations.update({a.asname or a.name: declaration_only for a in node.names})
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            try:
+                literal = ast.literal_eval(node.value)
+            except (ValueError, TypeError, SyntaxError):
+                literal = runtime_value
             for target in targets:
-                if isinstance(target, ast.Name):
-                    declarations[target.id] = node.value
+                names = _bound_names(target) or []
+                bindings = None if literal is runtime_value else _literal_bindings(target, literal)
+                for name in names:
+                    declarations[name] = bindings.get(name, runtime_value) if bindings is not None else runtime_value
     for name, value in inspect.getclosurevars(func).globals.items():
         if name not in declarations:
             raise BundleError(f"pystep global {name!r} is not declared by its captured source")
         assignment = declarations[name]
-        if assignment is not None:
-            try:
-                literal = ast.literal_eval(assignment)
-            except (ValueError, TypeError, SyntaxError) as exc:
-                raise BundleError(f"pystep global {name!r} has runtime state; pass it as a declared input") from exc
-            if type(value) not in (str, int, float, bool, type(None)) or type(value) is not type(literal) or value != literal:
+        if assignment is not declaration_only:
+            if assignment is runtime_value:
+                raise BundleError(f"pystep global {name!r} has runtime state; pass it as a declared input")
+            if type(value) not in (str, int, float, bool, type(None)) or type(value) is not type(assignment) or value != assignment:
                 raise BundleError(f"pystep global {name!r} is mutable or changed; pass it as a declared input")
     entry = source.relative_to(containing).as_posix()
     pending = [(source, containing)]
@@ -186,7 +358,8 @@ def capture_code(func: Callable, *, roots: tuple[Path, ...] = (), include: tuple
             parent = parent.parent
         module = relative.removesuffix(".py").replace("/", ".")
         package = module.rsplit(".", 1)[0] if "." in module else ""
-        for node in ast.walk(tree):
+        scan_roots = _selected_entry_nodes(tree, func.__qualname__) if relative == entry else [tree]
+        for node in (child for root_node in scan_roots for child in ast.walk(root_node)):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     find(alias.name)
