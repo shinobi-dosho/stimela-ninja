@@ -453,6 +453,51 @@ def test_unchanged_venv_pystep_hits_cache_and_stays_unpinned(make_venv, tmp_path
     assert manifest.pinned is False
 
 
+def test_venv_worker_hits_entry_recorded_without_venv_digest(make_venv, tmp_path):
+    from shinobi import pystep
+    from tests import _venv_pystep_funcs as funcs
+
+    venv = make_venv(package=("venvonlypkg", "1.0.0", "MAGIC = 4242\n"))
+
+    class NumberIn(BaseModel):
+        n: int
+
+    ref = pystep(venv=str(venv), backend="venv")(funcs.use_venv_only_pkg)
+    recipe = Recipe(
+        name="unpinned-venv-entry",
+        inputs_model=NumberIn,
+        outputs_model=funcs.MagicOut,
+        steps=[ref.model_copy(update={"wiring": {"n": InputRef(field="n")}})],
+        output_wiring={"value": OutputRef(step=ref.name, field="value")},
+    )
+    config = AppConfig.model_validate({"cache": {"enabled": True, "dir": str(tmp_path / "cache")}})
+
+    def prepare():
+        return prepare_worker_slurm(
+            freeze_recipe(recipe, {"n": 8}, config=config, workspace=tmp_path, code_roots=(Path.cwd(),)),
+            submission_root=tmp_path / "runs",
+            worker_python=Path(sys.executable),
+        )
+
+    first = prepare()
+    first_plan = ExecutionPlan.model_validate_json((first.submission_dir / "execution.json").read_text())
+    assert _execute_all(first, first_plan)[0].state == "succeeded"
+
+    # An unpinned run keys on the resolved fingerprint but stores no digest.
+    def forget_digest(data):
+        for entry in data.values():
+            entry["venv_digest"] = None
+
+    get_cache_manifest(str(tmp_path / "cache")).update(forget_digest)
+
+    second = prepare()
+    second_bundle = RecipeBundle.read(second.submission_dir / "bundle.json")
+    second_plan = ExecutionPlan.model_validate_json((second.submission_dir / "execution.json").read_text())
+    cached = _execute_all(second, second_plan)[0]
+    assert cached.state == "cached"
+    assert cached.observation.venv_digest == second_bundle.steps[0].tool_venv_digest
+
+
 def test_changed_bundled_pystep_and_helper_invalidate_only_their_branch(make_venv, tmp_path):
     from shinobi import pystep
 

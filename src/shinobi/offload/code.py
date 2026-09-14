@@ -42,9 +42,26 @@ def _entry_module(entry: str) -> str:
     return ".".join(parts)
 
 
+def _bound_names(target: ast.AST) -> list[str] | None:
+    """Plain names bound by an assignment target, or ``None`` for item/attribute targets."""
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, ast.Starred):
+        return _bound_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for element in target.elts:
+            bound = _bound_names(element)
+            if bound is None:
+                return None
+            names.extend(bound)
+        return names
+    return None
+
+
 def _selected_entry_nodes(tree: ast.Module, qualname: str) -> list[ast.AST]:
     """Module nodes that can affect importing and calling ``qualname``."""
-    declarations: dict[str, ast.AST] = {}
+    declarations: dict[str, list[ast.AST]] = {}
     unconditional: list[ast.AST] = []
     for index, node in enumerate(tree.body):
         names: list[str] = []
@@ -58,33 +75,42 @@ def _selected_entry_nodes(tree: ast.Module, qualname: str) -> list[ast.AST]:
             unconditional.append(node)
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            names = [target.id for target in targets if isinstance(target, ast.Name)]
-            value = node.value
+            bound = [_bound_names(target) for target in targets]
+            names = [name for group in bound if group is not None for name in group]
             try:
-                ast.literal_eval(value)
+                ast.literal_eval(node.value)
+                literal = True
             except (ValueError, TypeError, SyntaxError):
-                # A nonliteral initializer executes arbitrary module code.
+                literal = False
+            # A nonliteral initializer executes arbitrary module code, and an
+            # item or attribute target mutates state no name declaration owns.
+            if not literal or any(group is None for group in bound):
                 unconditional.append(node)
         elif not (index == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
             unconditional.append(node)
         for name in names:
-            declarations[name] = node
+            # Every binding is kept: a later rebinding does not make an
+            # earlier value unobservable to statements that ran in between.
+            declarations.setdefault(name, []).append(node)
 
     root_name = qualname.split(".", 1)[0]
     if root_name not in declarations:
         raise BundleError(f"callable {qualname!r} is missing from captured entry source")
-    selected: dict[int, ast.AST] = {id(node): node for node in unconditional}
-    pending = [declarations[root_name]]
+    always = {id(node) for node in unconditional}
+    selected: dict[int, ast.AST] = {}
+    # Unconditional statements are walked like the callable itself: the
+    # literals they read shape module state as surely as the code does.
+    pending = [*unconditional, *declarations[root_name]]
     while pending:
         node = pending.pop()
         if id(node) in selected:
             continue
         selected[id(node)] = node
         for child in ast.walk(node):
-            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
-                dependency = declarations.get(child.id)
-                if dependency is not None and id(dependency) not in selected:
-                    pending.append(dependency)
+            # A module-level statement such as ``X += 1`` or ``del X`` depends
+            # on the name it rebinds; inside a callable a store is local.
+            if isinstance(child, ast.Name) and (isinstance(child.ctx, ast.Load) or id(node) in always):
+                pending.extend(dependency for dependency in declarations.get(child.id, ()) if id(dependency) not in selected)
     return sorted(selected.values(), key=lambda item: getattr(item, "lineno", 0))
 
 

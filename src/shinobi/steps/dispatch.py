@@ -687,6 +687,11 @@ def _dispatch(
             # see the producer's key vanish and their own keys would flip
             # between runs purely on whether the producer hit or ran.
             hit.cache_key = cache_key
+            if hit.venv_digest is None and execution_identity.venv_digest is not None:
+                # The key embeds this fingerprint, so a match proves it even
+                # when the recording run did not pin (and so stored none).
+                # Venv steps stay unpinned in the manifest either way.
+                hit.venv_digest = execution_identity.venv_digest
             logger.info("step %s: cache hit -- skipping run", cache_path)
             if _cache_path is None and provenance_enabled:
                 _emit_run_manifest(hit, ctx, config, backend, target=_provenance_target)

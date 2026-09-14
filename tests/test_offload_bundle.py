@@ -229,6 +229,43 @@ def test_unrelated_callable_change_does_not_change_pystep_execution_identity(tmp
     assert first.execution_digest == second.execution_digest
 
 
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        pytest.param(
+            "X = 5\nTABLE = list(range(X))\ndef _table():\n    return TABLE\n",
+            "X = 6\nTABLE = list(range(X))\ndef _table():\n    return TABLE\n",
+            id="literal-feeding-unconditional-statement",
+        ),
+        pytest.param(
+            "A, B = 1, 2\ndef _table():\n    return A\n",
+            "A, B = 3, 2\ndef _table():\n    return A\n",
+            id="tuple-unpacking",
+        ),
+        pytest.param(
+            "CFG = {'k': 0}\nCFG['k'] = 1\ndef _table():\n    return CFG['k']\n",
+            "CFG = {'k': 0}\nCFG['k'] = 2\ndef _table():\n    return CFG['k']\n",
+            id="item-assignment",
+        ),
+        pytest.param(
+            "class Settings:\n    level = 1\nSettings.level = 3\ndef _table():\n    return Settings.level\n",
+            "class Settings:\n    level = 1\nSettings.level = 4\ndef _table():\n    return Settings.level\n",
+            id="attribute-assignment",
+        ),
+        pytest.param(
+            "X = 1\nY = [X]\nX = 2\ndef _table():\n    return Y\n",
+            "X = 7\nY = [X]\nX = 2\ndef _table():\n    return Y\n",
+            id="shadowed-earlier-binding",
+        ),
+    ],
+)
+def test_module_state_literal_change_changes_pystep_execution_identity(tmp_path, before, after):
+    call = "def compute(value: int = 1):\n    return _table()\n"
+    first = capture_code(source_function(tmp_path, before + call), roots=(tmp_path,))
+    changed = capture_code(source_function(tmp_path, after + call), roots=(tmp_path,))
+    assert first.execution_digest != changed.execution_digest
+
+
 def test_unsupported_callable_and_environment_fail_before_staging(tmp_path):
     value = recipe()
     value.steps[0].func = lambda ctx: ctx.run()
