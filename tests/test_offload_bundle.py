@@ -229,6 +229,15 @@ def test_unrelated_callable_change_does_not_change_pystep_execution_identity(tmp
     assert first.execution_digest == second.execution_digest
 
 
+def test_unrelated_deferred_annotation_change_does_not_change_pystep_execution_identity(tmp_path):
+    before = "from __future__ import annotations\ndef compute(value: int = 1):\n    return value + 1\n\ndef unrelated(value: int) -> str:\n    return 'same'\n"
+    after = before.replace("unrelated(value: int)", "unrelated(value: bytes)")
+    first = capture_code(source_function(tmp_path, before), roots=(tmp_path,))
+    second = capture_code(source_function(tmp_path, after), roots=(tmp_path,))
+    assert first.digest != second.digest
+    assert first.execution_digest == second.execution_digest
+
+
 @pytest.mark.parametrize(
     ("before", "after"),
     [
@@ -257,6 +266,21 @@ def test_unrelated_callable_change_does_not_change_pystep_execution_identity(tmp
             "X = 7\nY = [X]\nX = 2\ndef _table():\n    return Y\n",
             id="shadowed-earlier-binding",
         ),
+        pytest.param(
+            "STATE = {'value': 0}\ndef _set(value):\n    STATE['value'] = value\n    return int\n\nclass Unrelated:\n    _set(1)\ndef _table():\n    return STATE['value']\n",
+            "STATE = {'value': 0}\ndef _set(value):\n    STATE['value'] = value\n    return int\n\nclass Unrelated:\n    _set(2)\ndef _table():\n    return STATE['value']\n",
+            id="unreferenced-class-body",
+        ),
+        pytest.param(
+            "STATE = {'value': 0}\ndef _set(value):\n    STATE['value'] = value\n    return int\ndef unrelated(value=_set(1)):\n    return value\ndef _table():\n    return STATE['value']\n",
+            "STATE = {'value': 0}\ndef _set(value):\n    STATE['value'] = value\n    return int\ndef unrelated(value=_set(2)):\n    return value\ndef _table():\n    return STATE['value']\n",
+            id="unreferenced-function-default",
+        ),
+        pytest.param(
+            "STATE = {'value': 0}\ndef _decorate(value):\n    def apply(func):\n        STATE['value'] = value\n        return func\n    return apply\n@_decorate(1)\ndef unrelated():\n    pass\ndef _table():\n    return STATE['value']\n",
+            "STATE = {'value': 0}\ndef _decorate(value):\n    def apply(func):\n        STATE['value'] = value\n        return func\n    return apply\n@_decorate(2)\ndef unrelated():\n    pass\ndef _table():\n    return STATE['value']\n",
+            id="unreferenced-function-decorator",
+        ),
     ],
 )
 def test_module_state_literal_change_changes_pystep_execution_identity(tmp_path, before, after):
@@ -264,6 +288,12 @@ def test_module_state_literal_change_changes_pystep_execution_identity(tmp_path,
     first = capture_code(source_function(tmp_path, before + call), roots=(tmp_path,))
     changed = capture_code(source_function(tmp_path, after + call), roots=(tmp_path,))
     assert first.execution_digest != changed.execution_digest
+
+
+def test_tuple_unpacked_scalar_global_can_be_captured(tmp_path):
+    func = source_function(tmp_path, "LEFT, RIGHT = 1, 2\ndef compute(value: int = 1):\n    return value + LEFT\n")
+    bundle = capture_code(func, roots=(tmp_path,))
+    assert bundle.qualname == "compute"
 
 
 def test_unsupported_callable_and_environment_fail_before_staging(tmp_path):
