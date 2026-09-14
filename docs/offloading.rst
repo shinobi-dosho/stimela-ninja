@@ -161,9 +161,12 @@ separate from the worker environment and remains unpinned even when its
 installed-distribution digest is recorded. An image-backed pystep records both
 the prepared image digest and staged Python-code digest.
 
-M1 always disables cache and mutation-snapshot writes inside workers. The
-existing stores are process-local/thread-coordinated; multi-process shared
-metadata is M2. Sandboxing is always enabled. Each attempt owns
+M1 always disables cache and mutation-snapshot writes inside workers. The M2
+storage foundation makes local cache-manifest and snapshot-journal transactions
+safe across processes by using the shared protocol documented under
+:doc:`concepts/config`; runtime worker cache decisions and durable upstream
+identity are the next layer and remain disabled here. Sandboxing is always
+enabled. Each attempt owns
 ``sandboxes/<attempt-id>/...`` under the unique submission directory on the
 same filesystem as the recorded workspace;
 cross-filesystem scratch is refused rather than silently becoming node-local

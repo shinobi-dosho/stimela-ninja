@@ -118,6 +118,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from shinobi.results import StepResult
+from shinobi.storage import JsonFileStore
 from shinobi.steps.schema import Cab, Scope, mutated_path_fields, path_fields
 
 
@@ -513,47 +514,9 @@ def compute_cache_key(scope: Scope, func: Callable | None, prepared: dict[str, A
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
-class _JsonFileStore:
-    """One JSON object in one file, read and written under a
-    `threading.Lock`, with writes going to a temp file that is then renamed
-    over the target.
-
-    Shared by `CacheManifest` and the mutation-chain journal
-    (`shinobi.snapshots`) rather than reimplemented in each: they have the
-    same shape, the same concurrency story, and the same atomicity
-    requirement, and two private copies of "atomic JSON store" is exactly
-    the kind of drift this repo's DRY discipline exists to prevent.
-
-    The lock is cheap and sufficient *within* a process -- `_run_recipe`'s
-    concurrency is a `ThreadPoolExecutor`. Two separate *processes* sharing
-    one file remain unguarded, a known limitation inherited by both users.
-    """
-
-    def __init__(self, path: Path):
-        """Initialize the store, backed by a JSON file at `path`.
-
-        Args:
-            path: Path to the JSON file. Not read until first use; created
-                (with parent directories) on first write.
-        """
-        self._path = path
-        self._lock = threading.Lock()
-
-    def _read(self) -> dict[str, Any]:
-        if not self._path.exists():
-            return {}
-        return json.loads(self._path.read_text())
-
-    def _write_atomic(self, data: dict[str, Any]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_name(self._path.name + f".tmp{os.getpid()}")
-        tmp.write_text(json.dumps(data))
-        tmp.replace(self._path)
-
-
-class CacheManifest(_JsonFileStore):
+class CacheManifest(JsonFileStore):
     """A JSON-backed `{step_path: {cache_key, outputs}}` store -- see
-    `_JsonFileStore` for the locking and atomicity it inherits.
+    :class:`shinobi.storage.JsonFileStore` for its transaction contract.
     """
 
     def check(self, step_path: str, cache_key: str, scope: Scope, prepared: dict[str, Any]) -> StepResult | None:
@@ -562,8 +525,7 @@ class CacheManifest(_JsonFileStore):
         a synthesized `StepResult(cached=True)` restored from the
         manifest's persisted outputs.
         """
-        with self._lock:
-            entry = self._read().get(step_path)
+        entry = self.read().get(step_path)
         if entry is None or entry["cache_key"] != cache_key:
             return None
 
@@ -612,8 +574,16 @@ class CacheManifest(_JsonFileStore):
         not "may this step be skipped" but "did *this run* finish and record
         it". See `record` for why `run_id` is part of the answer.
         """
-        with self._lock:
-            return self._read().get(step_path)
+        return self.read().get(step_path)
+
+    def remove(self, step_paths: set[str]) -> list[str]:
+        """Atomically remove and return the entries present in ``step_paths``."""
+
+        def mutate(data: dict[str, Any]) -> list[str]:
+            removed = [name for name in step_paths if data.pop(name, None) is not None]
+            return removed
+
+        return self.update(mutate)
 
     def record(self, step_path: str, cache_key: str, result, run_id: str | None = None) -> None:
         """Persist the *whole* outputs model (not just path-valued
@@ -635,8 +605,8 @@ class CacheManifest(_JsonFileStore):
         no `run_id`, so they compare unequal and recovery takes the
         conservative branch -- the safe direction.
         """
-        with self._lock:
-            data = self._read()
+
+        def mutate(data: dict[str, Any]) -> None:
             data[step_path] = {
                 "cache_key": cache_key,
                 "run_id": run_id,
@@ -650,7 +620,8 @@ class CacheManifest(_JsonFileStore):
                 "venv_digest": result.venv_digest,
                 "sandboxed": result.sandboxed,
             }
-            self._write_atomic(data)
+
+        self.update(mutate)
 
 
 _manifests: dict[str, CacheManifest] = {}
@@ -658,10 +629,10 @@ _manifests_lock = threading.Lock()
 
 
 def get_cache_manifest(cache_dir: str) -> CacheManifest:
-    """One `CacheManifest` instance (and its lock) per resolved
-    `cache_dir`, reused across calls within a process -- distinct
-    `CacheManifest` objects for the same file would each have their own
-    lock, defeating the thread-safety guarantee.
+    """One `CacheManifest` instance per resolved `cache_dir`.
+
+    Reuse avoids redundant in-process locks; the filesystem transaction lock
+    also serializes independently constructed instances and other processes.
     """
     path = Path(cache_dir) / "manifest.json"
     key = str(path.resolve())

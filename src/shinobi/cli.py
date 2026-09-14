@@ -33,6 +33,7 @@ from shinobi.offload import (
     submit_worker_slurm,
 )
 from shinobi.policies import build_argv
+from shinobi.storage import SharedStorageError
 from shinobi.steps.dispatch import _dispatch, _prepare_inputs
 from shinobi.steps.schema import Recipe, Scope, StepRef
 
@@ -687,7 +688,12 @@ def replay(ctx: click.Context, run_manifest: str, target_override: str | None, a
 
 @main.command("clean")
 @click.option("--runs/--no-runs", "runs", default=True, help="Remove run manifests (AppConfig.provenance.dir).")
-@click.option("--cache/--no-cache", "cache", default=True, help="Remove the step cache (AppConfig.cache.dir).")
+@click.option(
+    "--cache/--no-cache",
+    "cache",
+    default=True,
+    help="Clear the step cache while retaining persistent transaction locks (AppConfig.cache.dir).",
+)
 @click.option(
     "--sandboxes/--no-sandboxes",
     "sandboxes",
@@ -716,17 +722,18 @@ def replay(ctx: click.Context, run_manifest: str, target_override: str | None, a
     "force",
     is_flag=True,
     help=(
-        "Remove the step cache even while quarantined trees are outstanding, and delete those trees too. Without this, --cache refuses rather than orphaning a tree whose only explanation is the journal it would delete."
+        "Clear the step cache even while quarantined trees are outstanding, and delete those trees too. Without this, --cache refuses rather than orphaning a tree whose only explanation is the journal it would clear."
     ),
 )
 @click.pass_context
 def clean(ctx: click.Context, runs: bool, cache: bool, sandboxes: bool, launches: bool, workdir: str | None, dry_run: bool, force: bool) -> None:
-    """Remove shinobi runtime artifacts: run manifests, the step cache,
+    """Remove shinobi runtime artifacts and clear the step cache,
     leftover step sandboxes, and (opt-in) detached-run launch dirs.
 
     Run manifests, the step cache, and leftover sandboxes come from the
     active config (AppConfig.provenance.dir, AppConfig.cache.dir, and
-    AppConfig.sandbox.dir) and are removed by default. Launch dirs
+    AppConfig.sandbox.dir) and are selected by default. Cache transaction
+    lock inodes are retained; the other targets are removed. Launch dirs
     (.shinobi/<recipe>/, written by `ninja compile --submit` / `ninja run
     --remote`) are opt-in via --launches. Use --dry-run to preview.
     """
@@ -748,26 +755,31 @@ def clean(ctx: click.Context, runs: bool, cache: bool, sandboxes: bool, launches
     if not runs and not cache and not sandboxes and not launches:
         raise click.ClickException("nothing selected: pass --runs/--cache/--sandboxes/--launches")
 
-    # Resolved before anything is deleted: the list is derived from the chain
-    # journal, which lives *inside* the cache directory this may be about to
-    # remove.
+    # Resolved before anything is cleared: the list is derived from the chain
+    # journal whose contents are part of that reset.
     pending = _unreconciled_trash(config) if cache else []
     if pending and not force:
-        # Removing the cache directory takes the journal with it, and the
-        # journal is the only thing that says what a quarantined tree was
+        # Clearing the journal removes the only thing that says what a quarantined tree was
         # quarantined for. Refuse rather than strand it: these trees are
         # typically the biggest things in the workspace, and nothing else will
         # ever explain them.
         listing = "\n  ".join(str(path) for path in pending)
         raise click.ClickException(
-            f"refusing to remove the step cache while quarantined trees are outstanding -- removing the journal would leave these unexplained:\n  {listing}\nRun 'ninja cache check' to see why, or pass --force to remove them too."
+            f"refusing to clear the step cache while quarantined trees are outstanding -- clearing the journal would leave these unexplained:\n  {listing}\nRun 'ninja cache check' to see why, or pass --force to remove them too."
         )
 
     for label, path in targets:
         if not path.exists():
             click.echo(f"{label}: nothing at {path}")
         elif dry_run:
-            click.echo(f"{label}: would remove {path}")
+            action = "clear (persistent transaction locks retained)" if label == "step cache" else "remove"
+            click.echo(f"{label}: would {action} {path}")
+        elif label == "step cache":
+            try:
+                _clear_step_cache(path)
+            except SharedStorageError as exc:
+                raise click.ClickException(str(exc)) from exc
+            click.echo(f"{label}: cleared {path} (persistent transaction locks retained)")
         else:
             shutil.rmtree(path)
             click.echo(f"{label}: removed {path}")
@@ -781,6 +793,41 @@ def clean(ctx: click.Context, runs: bool, cache: bool, sandboxes: bool, launches
                 click.echo(f"trash: removed {path}")
 
 
+def _clear_step_cache(root: Path) -> None:
+    """Clear cache contents without ever replacing its lock domains."""
+    from shinobi.cache import CacheManifest
+    from shinobi.snapshots import ChainJournal
+    from shinobi.storage import sync_directory
+
+    manifest = CacheManifest(root / "manifest.json")
+    journal = ChainJournal(root / "snapshots")
+    manifest.reset()
+
+    def clear_snapshot_payloads() -> None:
+        if not journal.root.exists():
+            return
+        for entry in journal.root.iterdir():
+            # The transaction inode and run-presence locks are persistent.
+            # Unlinking either while held would split a lock domain.
+            if entry == journal.lock_path or entry.name == "locks":
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink(missing_ok=True)
+        sync_directory(journal.root)
+
+    journal.reset(clear_snapshot_payloads)
+    for entry in root.iterdir():
+        if entry == manifest.lock_path or entry == journal.root:
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink(missing_ok=True)
+    sync_directory(root)
+
+
 def _unreconciled_trash(config: AppConfig) -> list[Path]:
     """Quarantined trees the journal still has, or once had, a reason for."""
     from shinobi.snapshots import TRASH_SUFFIX, get_journal, orphan_trash
@@ -789,7 +836,11 @@ def _unreconciled_trash(config: AppConfig) -> list[Path]:
         found = list(orphan_trash(config.cache.dir))
     except Exception:  # noqa: BLE001 -- a broken journal must not block a clean
         found = []
-    for chain in get_journal(config.cache.dir).all_chains().values():
+    try:
+        chains = get_journal(config.cache.dir).all_chains().values()
+    except Exception:  # noqa: BLE001 -- explicit reset is corrupt-store recovery
+        chains = ()
+    for chain in chains:
         if chain.marker is None:
             continue
         candidate = Path(chain.path).with_name(Path(chain.path).name + TRASH_SUFFIX + chain.marker.run_id)

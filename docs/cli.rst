@@ -294,10 +294,13 @@ default** and require ``--launches``: deleting one does not stop a detached
 job, but destroys ``ninja status``'s local record. ``--workdir DIR`` affects
 only launch discovery; configured run/cache/sandbox paths are unchanged.
 
-Cache cleanup refuses while mutation snapshots have unreconciled quarantined
-trees, because deleting the journal would orphan their only explanation. Run
-``ninja cache check`` first, or use ``--force`` to delete both the cache and
-those trees deliberately.
+Cache cleanup resets the manifest and mutation journal while holding their
+exclusive transaction locks, removes snapshot payloads, and deliberately keeps
+the persistent lock inodes/directories. It refuses while mutation snapshots
+have unreconciled quarantined trees, because clearing the journal would orphan
+their only explanation. Run ``ninja cache check`` first, or use ``--force`` to
+clear the cache and delete those trees deliberately. Do not run cleanup while a
+scientific-data mutation is active; M2 serializes metadata, not workspace data.
 
 .. code-block:: console
 
