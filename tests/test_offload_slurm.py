@@ -643,6 +643,26 @@ def test_same_named_path_input_and_output_declares_a_mutation():
     assert _deps(wf) == {"rewrite": [], "read": ["rewrite"]}
 
 
+def test_statically_resolved_path_output_orders_an_unwired_reader():
+    """Pin the pure-output leg independently of graph wiring and inputs."""
+
+    class ProductOut(BaseModel):
+        product: Path = Path("/scratch/product.ms")
+
+    writer = Cab(name="make", command="make", inputs_model=OkOut, outputs_model=ProductOut)
+
+    class ProductIn(BaseModel):
+        product: Path
+
+    reader = Cab(name="read", command="read", inputs_model=ProductIn, outputs_model=OkOut)
+    recipe = _steps_recipe(
+        StepRef(name="make", step=writer),
+        StepRef(name="read", step=reader, params={"product": "/scratch/product.ms"}),
+    )
+    wf = compile_slurm(recipe, {"ms": "/scratch/unused.ms"}, workdir="/work", container_runtime=None)
+    assert _deps(wf) == {"make": [], "read": ["make"]}
+
+
 def test_pystep_write_path_is_a_filesystem_write_despite_immutable_input(tmp_path):
     """A bare Scope is how a pystep enters the frozen worker bundle.
 

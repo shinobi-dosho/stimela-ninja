@@ -123,9 +123,10 @@ class MutationOrder:
     Slurm as an unordered DAG it is data corruption. This is what makes the
     mutation order the recipe already relied on explicit.
 
-    Ordering is emitted for a pair only when **at least one** of them
-    declares the shared path MUTABLE -- so read-after-write and
-    write-after-read, not just write-after-write. That breadth is the
+    Ordering is emitted for a pair only when **at least one** of them writes
+    the shared path. ``path_accesses`` is the authority for that declaration:
+    a MUTABLE input, a same-named path input/output, a ``write_path``
+    destination or a statically resolvable path output. That breadth is the
     point: `applycal` mutates the MS while `wsclean` merely reads it, so
     restricting this to mutator-vs-mutator pairs would leave exactly the
     caracal-shaped case racing. Two steps that only read the same path need
@@ -142,8 +143,9 @@ class MutationOrder:
 
         Args:
             name: The step's name.
-            cab: Its cab, consulted for which inputs are paths and which of
-                those are declared MUTABLE.
+            cab: Its Scope, consulted by the shared schema access analysis
+                for path reads and writes. This includes bare pystep Scopes,
+                not only Cabs.
             resolved: Its fully-resolved inputs (defaults filled in), so
                 the comparison is on real path values rather than on how
                 each step happened to spell them.
