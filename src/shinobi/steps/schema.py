@@ -577,12 +577,29 @@ def path_accesses(scope: Scope, prepared: dict[str, Any], *, workspace: Path | N
 
     mutated = mutated_path_fields(scope)
     destinations = write_path_fields(scope)
-    for name in sorted(path_fields(scope.inputs_model)):
+    # A write_path is deliberately allowed on a string-valued stem.  It is
+    # still a filesystem access even though path_fields() cannot infer that
+    # from the annotation (and must not guess for ordinary strings).
+    for name in sorted(path_fields(scope.inputs_model) | destinations):
         if name in prepared:
             add(prepared[name], name in mutated or name in destinations)
     for path, _source in declared_output_paths(scope, prepared):
         add(path, True)
+    for directory, source in declared_output_dirs(scope, prepared):
+        if source.startswith(("harvest pattern ", "scratch pattern ")):
+            add(directory, True)
     return list(accesses.items())
+
+
+def declares_path_writes(scope: Scope) -> bool:
+    """Whether a leaf scope can write through its filesystem declaration.
+
+    Unlike :func:`path_accesses`, this answers from schema shape alone when
+    concrete output values are not available yet. Workspace ownership uses
+    it to decide whether an entire workflow needs a claim; actual offload
+    ordering continues to use ``path_accesses`` and its resolved paths.
+    """
+    return bool(mutated_path_fields(scope) or path_fields(scope.outputs_model) or write_path_fields(scope) or scope.harvest or scope.scratch)
 
 
 class Scope(BaseModel):
@@ -833,6 +850,19 @@ class Cab(Scope):
         mounts and harvests on its own, so nothing here is silent; the marker
         is carrying the other meaning (see `ParamMeta.write_path`).
         """
+        dynamic = sorted(
+            attr
+            for patterns in (self.input_patterns, self.output_patterns)
+            for pattern in patterns
+            for segment in pattern.segments
+            for attr, meta in (segment.attrs or {}).items()
+            if meta.write_path
+        )
+        if dynamic:
+            raise ValueError(
+                f"cab '{self.name}': dynamic pattern attrs {dynamic!r} use write_path, which is supported only on literal input fields; "
+                "a dynamic name cannot be tied statically to the output declaration that must mount and harvest it"
+            )
         marked = [name for name, meta in self.field_meta.items() if meta.write_path]
         if not marked:
             return self

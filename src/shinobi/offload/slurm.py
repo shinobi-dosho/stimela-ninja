@@ -589,6 +589,7 @@ def prepare_worker_slurm(
     from shinobi.offload._codec import unpack
     from shinobi.offload.bundle import RecipeBundle, write_new
     from shinobi.offload.worker import ExecutionPlan, PlannedAttempt
+    from shinobi.ownership import WorkspaceAccess, ownership_registry, ownership_workspace, scope_declares_writes
 
     if not isinstance(bundle, RecipeBundle):
         raise TypeError("prepare_worker_slurm expects a RecipeBundle")
@@ -597,8 +598,6 @@ def prepare_worker_slurm(
     worker = _stage_worker(submission_dir, (worker_python or Path(sys.executable)).absolute())
     submission = json.loads((submission_dir / "submission.json").read_text())
     attempts = tuple(PlannedAttempt(step_path=step.name, attempt_id=uuid4()) for step in pinned.steps)
-    plan = ExecutionPlan(workflow_id=submission["workflow_id"], bundle_digest=pinned.digest, worker=worker, attempts=attempts)
-    write_new(submission_dir / "execution.json", plan)
 
     recipe = pinned.declaration()
     graph = build_graph(recipe)
@@ -614,6 +613,7 @@ def prepare_worker_slurm(
         raise OffloadCompileError(f"step-specific sbatch options name unknown steps: {sorted(unknown_steps)}")
     log_dir = submission_dir / "logs"
     jobs: list[SlurmJob] = []
+    workflow_accesses: dict[Path, bool] = {}
     for index, (frozen, attempt) in enumerate(zip(pinned.steps, attempts)):
         scope = frozen.scope.restore()
         known = _static_inputs(
@@ -624,6 +624,8 @@ def prepare_worker_slurm(
             resolved_outputs,
             allow_runtime_values=True,
         )
+        for path, writes in path_accesses(scope, known, workspace=Path(pinned.workspace)):
+            workflow_accesses[path] = workflow_accesses.get(path, False) or writes
         mutation_deps = mutation.order_after(frozen.name, scope, known)
         depends_on = sorted({graph.names[item] for item in graph.deps[index]} | mutation_deps, key=step_index.get)
         argv = [
@@ -652,6 +654,25 @@ def prepare_worker_slurm(
         jobs.append(SlurmJob(name=frozen.name, script=script, depends_on=depends_on))
         resolved_outputs[frozen.name] = _static_outputs(scope, known)
 
+    ownership_required = scope_declares_writes(recipe)
+    writes = [path for path, writes in workflow_accesses.items() if writes]
+    if ownership_required and not writes:
+        workflow_accesses[Path(pinned.workspace).resolve()] = True
+        owner_root = Path(pinned.workspace).resolve()
+    else:
+        owner_root = ownership_workspace(Path(pinned.workspace), writes)
+    plan = ExecutionPlan(
+        workflow_id=submission["workflow_id"],
+        bundle_digest=pinned.digest,
+        worker=worker,
+        attempts=attempts,
+        ownership_required=ownership_required,
+        ownership_workspace=str(owner_root),
+        ownership_registry=str(ownership_registry()),
+        accesses=tuple(WorkspaceAccess(path=str(path), writes=writes) for path, writes in sorted(workflow_accesses.items(), key=lambda item: str(item[0]))),
+    )
+    write_new(submission_dir / "execution.json", plan)
+
     final_argv = ["env", f"PYTHONPATH={worker.source}", worker.python, "-m", "shinobi.offload.worker", "finalize", "--submission", str(submission_dir)]
     finalizer = SlurmJob(
         name="finalize",
@@ -672,7 +693,7 @@ def prepare_worker_slurm(
 def submit_worker_slurm(workflow: WorkerSlurmWorkflow) -> WorkerSlurmHandle:
     """Submit a worker workflow, durably recording every accepted job id."""
     from shinobi.offload.bundle import RecipeBundle, Submission, write_new
-    from shinobi.offload.worker import ExecutionPlan, SubmittedFinalizer, SubmittedJob, WorkerHandleRecord
+    from shinobi.offload.worker import ExecutionPlan, SubmissionClaim, SubmittedFinalizer, SubmittedJob, WorkerHandleRecord
 
     directory = workflow.submission_dir
     (directory / "logs").mkdir(parents=True, exist_ok=True)
@@ -680,6 +701,35 @@ def submit_worker_slurm(workflow: WorkerSlurmWorkflow) -> WorkerSlurmHandle:
     submission = Submission.model_validate_json((directory / "submission.json").read_text())
     bundle = RecipeBundle.read(directory / "bundle.json")
     plan = ExecutionPlan.model_validate_json((directory / "execution.json").read_text())
+    try:
+        write_new(
+            directory / "submission-claim.json",
+            SubmissionClaim(workflow_id=plan.workflow_id, bundle_digest=plan.bundle_digest),
+        )
+    except FileExistsError:
+        raise OffloadCompileError(
+            f"workflow {plan.workflow_id} has already begun scheduler submission; prepare a new workflow to retry"
+        ) from None
+    from shinobi.ownership import WorkspaceOwner, acquire_workspace
+
+    if plan.ownership_required:
+        lease = acquire_workspace(
+            Path(plan.ownership_workspace or bundle.workspace),
+            str(plan.workflow_id),
+            kind="slurm",
+            submission=directory,
+            accesses=((Path(access.path), access.writes) for access in plan.accesses),
+            registry=Path(plan.ownership_registry) if plan.ownership_registry is not None else None,
+        )
+        try:
+            write_new(directory / "ownership.json", lease.owner)
+        except FileExistsError:
+            required = WorkspaceOwner.model_validate_json((directory / "ownership.json").read_text())
+            raise OffloadCompileError(
+                "the staged workflow already has a workspace-ownership marker"
+                if required == lease.owner
+                else "the staged workspace-ownership requirement disagrees with the active owner"
+            ) from None
     script_dir = Path(tempfile.mkdtemp(prefix="scripts-", dir=directory))
     job_ids: dict[str, str] = {}
     finalizer_id = None

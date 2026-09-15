@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from shinobi.loaders import build_model
-from shinobi.steps.schema import Cab, ParamMeta, declared_output_dirs, path_fields
+from shinobi.steps.schema import Cab, ParamMeta, ParamPattern, ParamSegment, declared_output_dirs, path_fields
 
 
 def _models():
@@ -79,3 +79,17 @@ def test_unmarked_stems_are_left_alone():
     """Opt-in. Every cab written before this field existed still builds."""
     _cab(field_meta={"prefix": ParamMeta(), "dirty": ParamMeta(implicit="{prefix}-dirty.fits")})
     _cab()
+
+
+def test_dynamic_pattern_write_path_is_rejected_instead_of_silently_ignored():
+    with pytest.raises(ValueError, match="supported only on literal input fields"):
+        _cab(
+            input_patterns=[
+                ParamPattern(
+                    segments=[
+                        ParamSegment(regex=r".+?"),
+                        ParamSegment(attrs={"destination": ParamMeta(dtype="File", write_path=True)}),
+                    ]
+                )
+            ]
+        )

@@ -20,6 +20,14 @@ def _isolate_sandboxes(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_ownership_registry(tmp_path_factory, monkeypatch):
+    # The production default is the user's shared ~/.shinobi registry. Keep
+    # cross-workflow admission real within each test without leaking claims
+    # between tests or writing outside pytest's temporary tree.
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path_factory.mktemp("ownership") / "owners.json"))
+
+
+@pytest.fixture(autouse=True)
 def _offline_digest_resolution(monkeypatch):
     # Image-digest resolution shells out to a registry/daemon. Neutralize all
     # resolvers by default so the suite never touches the network (steps run
