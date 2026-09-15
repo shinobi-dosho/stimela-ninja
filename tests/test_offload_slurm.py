@@ -7,8 +7,9 @@ from pydantic import BaseModel
 from shinobi.exceptions import BackendError
 from shinobi.graph import RecipeNotOffloadableError
 from shinobi.offload import OffloadCompileError, compile_slurm, status_slurm, submit_slurm
+from shinobi.offload.slurm import MutationOrder
 from shinobi.resources import Resources
-from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, ParamMeta, Recipe, StepRef
+from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, ParamMeta, Recipe, Scope, StepRef
 
 
 class RecipeIn(BaseModel):
@@ -129,7 +130,18 @@ def test_unsafe_cab_name_is_rejected():
 
 def test_diamond_dependencies_are_captured():
     a = Cab(name="a", command="a", inputs_model=MakeIn, outputs_model=MSOut)
-    mid = Cab(name="m", command="m", inputs_model=UseIn, outputs_model=MSOut)
+
+    class SourceIn(BaseModel):
+        source: Path | None = None
+
+    class LeftOut(BaseModel):
+        ms: Path = Path("/left.ms")
+
+    class RightOut(BaseModel):
+        ms: Path = Path("/right.ms")
+
+    left = Cab(name="left", command="m", inputs_model=SourceIn, outputs_model=LeftOut)
+    right = Cab(name="right", command="m", inputs_model=SourceIn, outputs_model=RightOut)
 
     class TwoIn(BaseModel):
         left: Path | None = None
@@ -142,8 +154,8 @@ def test_diamond_dependencies_are_captured():
         outputs_model=OkOut,
         steps=[
             StepRef(name="a", step=a, wiring={"ms": InputRef(field="ms")}),
-            StepRef(name="b", step=mid, wiring={"ms": OutputRef(step="a", field="ms")}),
-            StepRef(name="c", step=mid, wiring={"ms": OutputRef(step="a", field="ms")}),
+            StepRef(name="b", step=left, wiring={"source": OutputRef(step="a", field="ms")}),
+            StepRef(name="c", step=right, wiring={"source": OutputRef(step="a", field="ms")}),
             StepRef(name="d", step=join, wiring={"left": OutputRef(step="b", field="ms"), "right": OutputRef(step="c", field="ms")}),
         ],
     )
@@ -614,6 +626,53 @@ def test_unrelated_paths_are_not_ordered():
     )
     wf = compile_slurm(recipe, {"ms": "/scratch/unused.ms"}, workdir="/work", container_runtime=None)
     assert _deps(wf) == {"flagA": [], "flagB": []}
+
+
+def test_same_named_path_input_and_output_declares_a_mutation():
+    """The schema's other in-place spelling must feed ordering too.
+
+    A pystep uses this shape naturally and keeps Python's default IMMUTABLE
+    object policy; that policy says nothing about writes through a Path.
+    """
+    rewrite = Cab(name="rewrite", command="rewrite", inputs_model=MakeIn, outputs_model=MSOut)
+    recipe = _steps_recipe(
+        StepRef(name="rewrite", step=rewrite, params={"ms": "/scratch/obs.ms"}),
+        StepRef(name="read", step=_reader("read"), params={"ms": "/scratch/obs.ms"}),
+    )
+    wf = compile_slurm(recipe, {"ms": "/scratch/unused.ms"}, workdir="/work", container_runtime=None)
+    assert _deps(wf) == {"rewrite": [], "read": ["rewrite"]}
+
+
+def test_pystep_write_path_is_a_filesystem_write_despite_immutable_input(tmp_path):
+    """A bare Scope is how a pystep enters the frozen worker bundle.
+
+    ``write_path`` declares filesystem access; the generated Scope's default
+    IMMUTABLE setting only promises a copied Python object.
+    """
+
+    class WrittenPath(BaseModel):
+        ms: Path
+
+    writer = Scope(
+        name="python-write",
+        inputs_model=WrittenPath,
+        outputs_model=OkOut,
+        field_meta={"ms": ParamMeta(write_path=True)},
+    )
+    reader = _reader("read")
+    order = MutationOrder(tmp_path)
+    assert writer.mutability_of("ms") is Mutability.IMMUTABLE
+    assert order.order_after("python-write", writer, {"ms": Path("obs.ms")}) == set()
+    assert order.order_after("read", reader, {"ms": tmp_path / "obs.ms"}) == {"python-write"}
+
+
+def test_relative_accesses_are_anchored_to_the_declared_workdir(tmp_path):
+    recipe = _steps_recipe(
+        StepRef(name="flag", step=_mutator("flag"), params={"ms": "obs.ms"}),
+        StepRef(name="read", step=_reader("read"), params={"ms": tmp_path / "obs.ms"}),
+    )
+    wf = compile_slurm(recipe, {"ms": "/scratch/unused.ms"}, workdir=str(tmp_path), container_runtime=None)
+    assert _deps(wf)["read"] == ["flag"]
 
 
 def test_mutation_edges_merge_with_wired_edges_without_duplication():

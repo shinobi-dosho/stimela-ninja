@@ -325,9 +325,14 @@ a cluster as an unordered DAG they would run concurrently against the same
 files.
 
 ``ninja compile`` therefore derives the missing edges itself. As it resolves
-each step's inputs it records which paths that step touches and whether it
-declares them ``MUTABLE``, then orders any two steps that share a path when
-**at least one** of them mutates it:
+each step it records its schema-declared path accesses. A path is written when
+the input is ``MUTABLE``, when the same path field appears on both the input
+and output models, when ``ParamMeta.write_path`` marks it as a destination, or
+when it is a statically resolvable path output. This shared ``Scope`` analysis
+also covers image-backed and venv-backed pysteps: their default Python
+``IMMUTABLE`` policy means the input object is copied, not that the filesystem
+path is read-only. Any two steps sharing a path are ordered when **at least
+one** writes it:
 
 * mutate-then-mutate -- the second waits for the first;
 * mutate-then-read -- a reader sees the finished result;
@@ -342,6 +347,10 @@ the same file as a literal are recognised as touching one file, as are
 ``./obs.ms`` and ``/data/obs.ms``, a path neither step mentions because both
 take a schema default, and ``/data/obs.ms`` versus ``/data/obs.ms/CORRECTED``
 -- a Measurement Set is a directory, so containment counts.
+
+Relative paths are anchored to the workflow's declared workdir/workspace
+before canonicalisation, rather than to the compiler process's current
+directory.
 
 A MUTABLE input that is *not* a path is still refused: that is a live Python
 object, and no shared filesystem can carry one across a node boundary.
