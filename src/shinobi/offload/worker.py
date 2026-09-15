@@ -16,7 +16,7 @@ import sys
 import traceback
 from pathlib import Path
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from shinobi import __version__
 from shinobi.config import AppConfig
@@ -25,6 +25,7 @@ from shinobi.offload._codec import BundleError, WireModel, unpack
 from shinobi.offload.bundle import RecipeBundle, Submission, write_new
 from shinobi.offload.code import source_tree_digest
 from shinobi.offload.records import AttemptRecord
+from shinobi.ownership import WorkspaceAccess
 from shinobi.provenance import RunManifest, build_manifest
 from shinobi.results import StepResult
 from shinobi.steps.dispatch import _dispatch, _prepare_inputs
@@ -36,8 +37,19 @@ logger = logging.getLogger(__name__)
 
 
 class PlannedAttempt(WireModel):
+    """Immutable invocation-zero identity and namespace for later retries."""
+
     step_path: str
     attempt_id: UUID
+
+
+class AttemptInvocation(WireModel):
+    """The distinct identity selected for one scheduler invocation."""
+
+    schema_version: Literal[1] = 1
+    planned_attempt_id: UUID
+    attempt_id: UUID
+    restart_count: int
 
 
 class WorkerEnvironment(WireModel):
@@ -56,6 +68,10 @@ class ExecutionPlan(WireModel):
     bundle_digest: str
     worker: WorkerEnvironment
     attempts: tuple[PlannedAttempt, ...]
+    ownership_required: bool = False
+    ownership_workspace: str | None = None
+    ownership_registry: str | None = None
+    accesses: tuple[WorkspaceAccess, ...] = ()
 
     def attempt(self, step_path: str) -> PlannedAttempt:
         try:
@@ -69,8 +85,18 @@ class SubmittedJob(WireModel):
     workflow_id: UUID
     bundle_digest: str
     step_path: str
+    # The immutable planned identity. A requeued invocation publishes its
+    # derived identity below attempts/<this id>/restart-*.json.
     attempt_id: UUID
     job_id: str
+
+
+class SubmissionClaim(WireModel):
+    """One-shot proof that scheduler handoff has begun for this workflow."""
+
+    schema_version: Literal[1] = 1
+    workflow_id: UUID
+    bundle_digest: str
 
 
 class SubmittedFinalizer(WireModel):
@@ -167,15 +193,65 @@ def _record_path(submission_dir: Path, attempt_id: UUID, phase: str = "final") -
     return submission_dir / "attempts" / str(attempt_id) / f"{phase}.json"
 
 
+def _attempt_id_for_restart(planned_attempt_id: UUID, restart_count: int) -> UUID:
+    return planned_attempt_id if restart_count == 0 else uuid5(planned_attempt_id, f"slurm-restart:{restart_count}")
+
+
+def _invocation_attempt(submission_dir: Path, planned: PlannedAttempt) -> UUID:
+    """Return and publish the attempt identity for this Slurm invocation.
+
+    Slurm reuses the submitted script and job id on requeue, but increments
+    ``SLURM_RESTART_COUNT``.  Deriving a UUID from that durable generation
+    gives every invocation a fresh success oracle without mutating the frozen
+    execution plan.
+    """
+    raw = os.environ.get("SLURM_RESTART_COUNT", "0")
+    try:
+        restart_count = int(raw)
+    except ValueError as exc:
+        raise BundleError(f"invalid SLURM_RESTART_COUNT {raw!r}") from exc
+    if restart_count < 0:
+        raise BundleError(f"invalid SLURM_RESTART_COUNT {raw!r}")
+    attempt_id = _attempt_id_for_restart(planned.attempt_id, restart_count)
+    if restart_count:
+        invocation = AttemptInvocation(planned_attempt_id=planned.attempt_id, attempt_id=attempt_id, restart_count=restart_count)
+        path = submission_dir / "attempts" / str(planned.attempt_id) / f"restart-{restart_count:08d}.json"
+        try:
+            write_new(path, invocation)
+        except FileExistsError:
+            existing = AttemptInvocation.model_validate_json(path.read_text())
+            if existing != invocation:
+                raise BundleError(f"restart generation {restart_count} for {planned.step_path!r} has conflicting identity")
+    return attempt_id
+
+
+def _latest_attempt(submission_dir: Path, planned: PlannedAttempt) -> UUID:
+    """Newest published invocation for a planned step."""
+    latest = (0, planned.attempt_id)
+    root = submission_dir / "attempts" / str(planned.attempt_id)
+    for path in sorted(root.glob("restart-*.json")):
+        invocation = AttemptInvocation.model_validate_json(path.read_text())
+        if invocation.planned_attempt_id != planned.attempt_id:
+            raise BundleError(f"attempt invocation {path} does not belong to {planned.step_path!r}")
+        expected = _attempt_id_for_restart(planned.attempt_id, invocation.restart_count)
+        expected_name = f"restart-{invocation.restart_count:08d}.json"
+        if invocation.attempt_id != expected or path.name != expected_name or invocation.restart_count <= 0:
+            raise BundleError(f"attempt invocation {path} has an invalid retry identity")
+        if invocation.restart_count > latest[0]:
+            latest = (invocation.restart_count, invocation.attempt_id)
+    return latest[1]
+
+
 def _result_for(submission_dir: Path, bundle: RecipeBundle, plan: ExecutionPlan, step_path: str) -> StepResult:
     index = next((i for i, step in enumerate(bundle.steps) if step.name == step_path), None)
     if index is None:
         raise BundleError(f"unknown producing step {step_path!r}")
-    attempt = plan.attempt(step_path)
+    planned = plan.attempt(step_path)
+    attempt_id = _latest_attempt(submission_dir, planned)
     record = AttemptRecord.read(
-        _record_path(submission_dir, attempt.attempt_id),
+        _record_path(submission_dir, attempt_id),
         workflow_id=plan.workflow_id,
-        attempt_id=attempt.attempt_id,
+        attempt_id=attempt_id,
         step_path=step_path,
         bundle_digest=plan.bundle_digest,
     )
@@ -252,6 +328,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
     planned = plan.attempt(step_path)
     if planned.attempt_id != attempt_id:
         raise BundleError(f"attempt id for {step_path!r} does not match the execution plan")
+    attempt_id = _invocation_attempt(submission_dir, planned)
     index = next(i for i, step in enumerate(bundle.steps) if step.name == step_path)
     frozen = bundle.steps[index]
     job_id = os.environ.get("SLURM_JOB_ID")
@@ -288,6 +365,24 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         return str(candidates[0]) if len(candidates) == 1 else None
 
     try:
+        ownership_path = submission_dir / "ownership.json"
+        if plan.ownership_required and not ownership_path.exists():
+            raise BundleError("write-declaring detached workflow has no immutable workspace-ownership requirement")
+        if ownership_path.exists():
+            from shinobi.ownership import WorkspaceOwner, require_workspace_owner
+
+            required = WorkspaceOwner.model_validate_json(ownership_path.read_text())
+            ownership_workspace = Path(plan.ownership_workspace) if plan.ownership_workspace is not None else None
+            if (
+                required.workflow_id != str(plan.workflow_id)
+                or ownership_workspace is None
+                or Path(required.workspace) != ownership_workspace
+                or plan.ownership_registry is None
+                or Path(required.registry) != Path(plan.ownership_registry)
+                or required.accesses != plan.accesses
+            ):
+                raise BundleError("workspace-ownership requirement disagrees with the execution plan")
+            require_workspace_owner(ownership_workspace, str(plan.workflow_id))
         _verify_environment(bundle, plan)
         _verify_tool_environment(frozen)
         if Path(bundle.workspace).stat().st_dev != submission_dir.stat().st_dev:
@@ -323,9 +418,10 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                 _check_scratch_filesystems(scope, _prepare_inputs(scope, kwargs), Path(bundle.workspace))
                 config = AppConfig.model_validate({name: unpack(value) for name, value in bundle.config.items()})
                 recipe = bundle.recipe.restore()
-                # M2 deliberately does not restore mutation chains.  Until M3
-                # adds workspace ownership, a worker that can rewrite a
-                # scientific path must execute and publish no reusable key.
+                # Workspace ownership now excludes another workflow, but
+                # worker snapshot commit/recovery is still a separate M3
+                # slice. Until it lands, a worker that can rewrite a
+                # scientific path executes and publishes no reusable key.
                 cache_override = False if mutated_path_fields(scope) else bundle.cache_override
                 config.cache.snapshots.mode = "off"
                 config.sandbox.enabled = True
@@ -465,23 +561,33 @@ def finalize_submission(submission_dir: Path) -> Finalization:
     finalized: list[FinalizedStep] = []
     results: dict[str, StepResult] = {}
     all_committed = len(jobs) == len(bundle.steps)
-    settled = True
+    # A missing job record is not proof that sbatch never accepted the job:
+    # the submitter can die between scheduler acceptance and durable publish.
+    # Neither finalizer context nor terminal state for the recorded subset may
+    # turn that ambiguity into permission to release workspace ownership.
+    settled = len(jobs) == len(bundle.steps)
     for index, frozen in enumerate(bundle.steps):
-        attempt = plan.attempt(frozen.name)
-        final_path = _record_path(submission_dir, attempt.attempt_id)
-        started_path = _record_path(submission_dir, attempt.attempt_id, "started")
+        planned = plan.attempt(frozen.name)
+        attempt_id = _latest_attempt(submission_dir, planned)
+        final_path = _record_path(submission_dir, attempt_id)
+        started_path = _record_path(submission_dir, attempt_id, "started")
         diagnostic_paths = [
-            _record_path(submission_dir, attempt.attempt_id, "publication-error"),
-            _record_path(submission_dir, attempt.attempt_id, "requeue"),
+            _record_path(submission_dir, attempt_id, "publication-error"),
+            _record_path(submission_dir, attempt_id, "requeue"),
         ]
         job = jobs.get(frozen.name)
         scheduler_state = scheduler.get(frozen.name, "UNKNOWN")
         diagnostic_path = next((path for path in diagnostic_paths if path.exists()), None)
         chosen_path = diagnostic_path or (final_path if final_path.exists() else None)
         if chosen_path is not None:
-            record = AttemptRecord.read(chosen_path, workflow_id=plan.workflow_id, attempt_id=attempt.attempt_id, step_path=frozen.name, bundle_digest=plan.bundle_digest)
+            record = AttemptRecord.read(chosen_path, workflow_id=plan.workflow_id, attempt_id=attempt_id, step_path=frozen.name, bundle_digest=plan.bundle_digest)
             state = record.state
             record_path: Path | None = chosen_path
+            if diagnostic_path is not None:
+                # A duplicate/publication diagnostic can be evidence of an
+                # unrecorded concurrent invocation. Never release ownership
+                # automatically from that ambiguous state.
+                settled = False
         else:
             state, terminal = _scheduler_attempt_state(scheduler_state)
             if not terminal and terminal_context:
@@ -498,7 +604,7 @@ def finalize_submission(submission_dir: Path) -> Finalization:
         finalized.append(
             FinalizedStep(
                 step_path=frozen.name,
-                attempt_id=attempt.attempt_id,
+                attempt_id=attempt_id,
                 job_id=job.job_id if job else None,
                 scheduler_state=scheduler_state,
                 state=state,
@@ -531,6 +637,15 @@ def finalize_submission(submission_dir: Path) -> Finalization:
     # state changes and an absent final record may appear moments later. Once
     # every attempt is terminal, persist exactly one stable reconstruction.
     if settled:
+        from shinobi.ownership import inspect_workspace, release_workspace
+
+        if plan.ownership_required:
+            ownership_workspace = Path(plan.ownership_workspace or bundle.workspace)
+            owner = inspect_workspace(ownership_workspace)
+            if owner is not None and owner.workflow_id == str(plan.workflow_id):
+                release_workspace(ownership_workspace, str(plan.workflow_id))
+            elif owner is not None:
+                logger.warning("not releasing workspace ownership held by newer workflow %s", owner.workflow_id)
         _write_or_read(finalization_path, finalization)
     return finalization
 

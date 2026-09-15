@@ -181,9 +181,9 @@ override scope/config settings, while ``--cache-dir`` selects the shared store
 without enabling it by itself. These options are refused by the legacy argv
 compiler rather than silently ignored.
 
-Mutation-snapshot writes remain disabled inside workers. More importantly, a
-leaf that declares an in-place path mutation is forced uncached until M3 adds
-durable workspace ownership and retry-aware recovery. Loop pass-through still
+Mutation-snapshot writes remain disabled inside workers. A leaf that declares
+an in-place path mutation is therefore still forced uncached until worker
+snapshot commit/recovery is integrated. Loop pass-through still
 publishes a current immutable attempt record and carries the producing state's
 key and environment provenance without claiming a new result. Sandboxing is
 always enabled. Each attempt owns
@@ -194,6 +194,58 @@ staging. A successful tool must validate and harvest its declared outputs
 before its final attempt record is committed. Failed tools and harvest errors
 retain the exact shared sandbox path in their diagnostics. Harvesting several
 products is ordered, but is not a filesystem transaction across all products.
+
+Scientific-workspace ownership is deliberately coarser than the per-step
+access ordering: one workflow that declares any filesystem write owns the
+canonical workspace from before its first local step or ``sbatch`` call until
+local completion or terminal detached finalization. Independent steps inside
+that workflow still run concurrently, and different canonical workspaces do
+not conflict. Resolving the workspace before naming
+``.shinobi/workspace-owner.json`` makes symlink/relative spellings of one
+workspace share the same authority. Bind-mount aliases cannot be discovered
+portably. Shinobi derives the ownership authority from every statically known
+canonical write target (MUTABLE inputs, ``write_path`` destinations and path
+outputs) rather than from the launch directory. Two launches from different
+workdirs that point at the same absolute or symlink-aliased dataset therefore
+converge on one owner. Several targets use their common parent; a filesystem
+root is refused as too broad to be a safe authority. Claims also record
+resolved access paths, so overlapping
+claims rooted at nested authorities conflict. The short transaction lock on
+the ownership record is never held while a tool runs.
+
+Every claim is also entered in one shared access registry (by default
+``~/.shinobi/workspace-owners.json``; override with
+``SHINOBI_OWNERSHIP_REGISTRY``). The registry stores the complete canonical
+access set and permits disjoint workflows, but rejects any overlap where at
+least one side writes. This single rendezvous makes exclusion independent of
+which nested authority was acquired first and catches a workflow that writes
+one tree while reading another workflow's mutation target. For detached use,
+the resolved registry path is frozen in ``execution.json`` and must be on
+shared storage whose distributed locks have passed the same physical storage
+probe required for other shared metadata.
+
+Detached ownership persists while jobs are queued, between allocations and
+after the submitting client exits. A Slurm requeue derives a fresh attempt
+UUID from the immutable planned UUID and ``SLURM_RESTART_COUNT``, publishing
+that generation before execution. Downstream workers and finalization select
+the newest published generation, so a started/final record from an earlier
+invocation cannot validate the retry. No elapsed-time timeout steals an owner.
+
+Use ``ninja workspace inspect --workdir PATH`` for a read-only report and
+``ninja workspace reconcile --workdir PATH`` to release only an owner proven
+dead by its local liveness lock or terminal Slurm accounting. Missing or
+unavailable evidence is reported as uncertain and is not released. If even one
+planned job lacks a durable accepted-job record, the submission is likewise
+uncertain even when every recorded job is terminal: the submitter may have
+crashed after ``sbatch`` accepted the omitted job. After inspecting such a
+workflow and cancelling any remaining scheduler work, an operator may use
+``ninja workspace release --workdir PATH --workflow-id UUID --force``. The exact workflow
+identity must still match: force never releases a newer owner. The immutable
+execution plan says whether ownership is required and records its canonical
+access set; submitted workers require the matching ``ownership.json`` and
+active owner before every allocation touches data. A missing marker and an old
+queued job after operator release both fail closed. This
+storage ownership is separate from cache/snapshot metadata synchronization.
 
 Submission writes one immutable job-id record immediately after every
 successful ``sbatch`` call and writes ``handle.json`` even when a later

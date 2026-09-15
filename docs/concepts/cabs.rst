@@ -173,6 +173,10 @@ product rather than caller-owned data. ``choices`` and ``abbreviation`` are
 normally populated by loaders; choices are real pydantic ``Literal``
 validation, not help text alone.
 
+``write_path`` is limited to literal input fields. Dynamic pattern attrs are
+rejected because shinobi cannot statically tie an open-ended input name to the
+output, harvest or scratch declaration that makes its product durable.
+
 Dynamic parameter names
 -----------------------
 
