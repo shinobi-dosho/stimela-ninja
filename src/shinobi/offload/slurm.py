@@ -24,13 +24,12 @@ compiler needs is statically knowable: an inter-step `OutputRef` path is
 resolved from the producing step's same-named input or its output-field
 default, mirroring `_fill_outputs` minus the backend run.
 
-Having those resolved values is also what lets this module order **in-place
-mutation**, which the declared graph cannot express: several steps taking
-the same MS as a plain input and rewriting it are, to `build_graph`,
-independent. `MutationOrder` derives the edges they actually need from the
-resolved paths and merges them into each job's `afterok` dependencies --
-see its docstring for the rules, and `graph.check_offloadable` for why the
-whole MUTABLE class no longer has to be refused.
+Having those resolved values is also what lets this module order filesystem
+access the declared graph cannot express: in-place MUTABLE inputs,
+same-named path inputs/outputs, pystep ``write_paths`` destinations and
+statically known path outputs. `MutationOrder` derives the edges they need
+from the shared schema-level access analysis and merges them into each job's
+`afterok` dependencies.
 """
 
 from __future__ import annotations
@@ -61,7 +60,7 @@ from shinobi.backends.slurm_script import (
 from shinobi.exceptions import BackendError
 from shinobi.graph import check_offloadable
 from shinobi.policies import build_argv
-from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope, path_fields, paths_overlap
+from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope, path_accesses, path_fields, paths_overlap
 
 
 class OffloadCompileError(ValueError):
@@ -99,30 +98,6 @@ class SlurmWorkflow:
     log_dir: Path  # where each job's --output/--error land; created by submit
 
 
-def _touched_paths(cab: Scope, resolved: dict[str, Any]) -> list[tuple[Path, bool]]:
-    """Every path-typed input the step touches, as `(canonical_path,
-    mutates)` -- `mutates` being whether the cab declares that field
-    `Mutability.MUTABLE`, i.e. the tool rewrites the file in place rather
-    than only reading it.
-
-    Paths are canonicalised with `Path.resolve()` so `./obs.ms`,
-    `obs.ms` and `/data/obs.ms` are recognised as one file rather than
-    three, and so a symlink and its target don't look independent.
-    List-valued inputs (e.g. `gaintable=[a, b]`) contribute each element.
-    """
-    touched: list[tuple[Path, bool]] = []
-    for name in sorted(path_fields(cab.inputs_model)):
-        value = resolved.get(name)
-        if value is None:
-            continue
-        mutates = cab.mutability_of(name) is Mutability.MUTABLE
-        for item in value if isinstance(value, (list, tuple)) else [value]:
-            if item is None:
-                continue
-            touched.append((Path(str(item)).resolve(), mutates))
-    return touched
-
-
 @dataclass
 class _PathState:
     """Who last wrote a path, and who has read it since. Exactly what is
@@ -148,17 +123,19 @@ class MutationOrder:
     Slurm as an unordered DAG it is data corruption. This is what makes the
     mutation order the recipe already relied on explicit.
 
-    Ordering is emitted for a pair only when **at least one** of them
-    declares the shared path MUTABLE -- so read-after-write and
-    write-after-read, not just write-after-write. That breadth is the
+    Ordering is emitted for a pair only when **at least one** of them writes
+    the shared path. ``path_accesses`` is the authority for that declaration:
+    a MUTABLE input, a same-named path input/output, a ``write_path``
+    destination or a statically resolvable path output. That breadth is the
     point: `applycal` mutates the MS while `wsclean` merely reads it, so
     restricting this to mutator-vs-mutator pairs would leave exactly the
     caracal-shaped case racing. Two steps that only read the same path need
     no ordering and get none.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, workspace: Path | None = None) -> None:
         self._accesses: dict[Path, _PathState] = {}
+        self._workspace = workspace
 
     def order_after(self, name: str, cab: Scope, resolved: dict[str, Any]) -> set[str]:
         """Record `name`'s path accesses and return the already-seen steps
@@ -166,8 +143,9 @@ class MutationOrder:
 
         Args:
             name: The step's name.
-            cab: Its cab, consulted for which inputs are paths and which of
-                those are declared MUTABLE.
+            cab: Its Scope, consulted by the shared schema access analysis
+                for path reads and writes. This includes bare pystep Scopes,
+                not only Cabs.
             resolved: Its fully-resolved inputs (defaults filled in), so
                 the comparison is on real path values rather than on how
                 each step happened to spell them.
@@ -176,7 +154,7 @@ class MutationOrder:
             Names of previously-recorded steps this one must follow.
         """
         required: set[str] = set()
-        for path, mutates in _touched_paths(cab, resolved):
+        for path, mutates in path_accesses(cab, resolved, workspace=self._workspace):
             overlapping = [state for known, state in self._accesses.items() if paths_overlap(path, known)]
             for state in overlapping:
                 if mutates and state.readers_since_write:
@@ -340,7 +318,7 @@ def compile_slurm(
     # In-place mutation of a shared path is invisible to `build_graph` (it
     # only sees wiring), so the edges it implies are derived here, from
     # resolved values, and merged into each job's `depends_on`.
-    mutation_order = MutationOrder()
+    mutation_order = MutationOrder(Path(workdir))
     step_index = {n: idx for idx, n in enumerate(graph.names)}
 
     for i, name in enumerate(graph.names):
@@ -626,7 +604,7 @@ def prepare_worker_slurm(
     graph = build_graph(recipe)
     step_index = {name: i for i, name in enumerate(graph.names)}
     recipe_inputs = unpack(pinned.inputs)
-    mutation = MutationOrder()
+    mutation = MutationOrder(Path(pinned.workspace))
     resolved_outputs: dict[str, dict[str, Any]] = {}
     options = dict(sbatch_opts or {})
     options.setdefault("kill-on-invalid-dep", "yes")

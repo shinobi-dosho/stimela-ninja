@@ -546,6 +546,45 @@ def declared_output_dirs(scope: Scope, prepared: dict[str, Any]) -> list[tuple[P
     return dirs
 
 
+def path_accesses(scope: Scope, prepared: dict[str, Any], *, workspace: Path | None = None) -> list[tuple[Path, bool]]:
+    """Every statically declared filesystem access as ``(path, writes)``.
+
+    This is the shared answer used by offload ordering and workspace
+    ownership. Inputs are reads unless the schema declares an in-place
+    mutation (``mutated_path_fields``) or a destination
+    (``ParamMeta.write_path``). Statically resolvable path outputs are writes.
+
+    Python object mutability is deliberately not consulted on its own: a
+    pystep's default ``IMMUTABLE`` means its input object is copied, not that
+    the filesystem path it names is read-only. Conversely, ``write_path`` is
+    a filesystem declaration even on a bare ``Scope``.
+
+    Relative paths are resolved against ``workspace`` when supplied. This is
+    load-bearing for detached workers, whose compile process need not have the
+    same current directory as the job's declared workspace.
+    """
+
+    root = workspace.resolve() if workspace is not None else Path.cwd().resolve()
+    accesses: dict[Path, bool] = {}
+
+    def add(value: Any, writes: bool) -> None:
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            if item is None:
+                continue
+            path = Path(str(item))
+            canonical = (path if path.is_absolute() else root / path).resolve()
+            accesses[canonical] = accesses.get(canonical, False) or writes
+
+    mutated = mutated_path_fields(scope)
+    destinations = write_path_fields(scope)
+    for name in sorted(path_fields(scope.inputs_model)):
+        if name in prepared:
+            add(prepared[name], name in mutated or name in destinations)
+    for path, _source in declared_output_paths(scope, prepared):
+        add(path, True)
+    return list(accesses.items())
+
+
 class Scope(BaseModel):
     """Definition: schema, metadata, backend config. Never carries
     inputs/outputs/func fields -- those live in ExecContext/StepRef.
