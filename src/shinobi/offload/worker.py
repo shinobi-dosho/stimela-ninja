@@ -20,7 +20,7 @@ from uuid import UUID, uuid5
 
 from shinobi import __version__
 from shinobi.config import AppConfig
-from shinobi.cache import ExecutionIdentity, resolve_input_keys
+from shinobi.cache import ExecutionIdentity, get_cache_manifest, resolve_input_keys
 from shinobi.offload._codec import BundleError, WireModel, unpack
 from shinobi.offload.bundle import RecipeBundle, Submission, write_new
 from shinobi.offload.code import source_tree_digest
@@ -28,10 +28,11 @@ from shinobi.offload.records import AttemptRecord
 from shinobi.ownership import WorkspaceAccess
 from shinobi.provenance import RunManifest, build_manifest
 from shinobi.results import StepResult
+from shinobi.snapshots import faults, mutation_paths, reconcile
 from shinobi.steps.dispatch import _dispatch, _prepare_inputs
 from shinobi.steps.loops import passthrough_result, should_skip
 from shinobi.steps.pyfunc import _make_adapter
-from shinobi.steps.schema import InputRef, OutputRef, Scope, declared_output_dirs, mutated_path_fields
+from shinobi.steps.schema import InputRef, OutputRef, Scope, declared_output_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -336,6 +337,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
     # under concurrent Slurm jobs, this gives later retry work a natural
     # ownership boundary without changing the sandbox implementation.
     sandbox_root = submission_dir / "sandboxes" / str(attempt_id)
+    final_path = _record_path(submission_dir, attempt_id)
     common = {
         "workflow_id": submission.workflow_id,
         "attempt_id": attempt_id,
@@ -364,6 +366,49 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         candidates = list(sandbox_root.iterdir())
         return str(candidates[0]) if len(candidates) == 1 else None
 
+    def commit_result(result: StepResult, record_cache) -> None:
+        """Publish the worker success oracle before updating its cache index.
+
+        SnapshotGuard invokes this between journal commit and trash/marker
+        cleanup.  Once the immutable attempt record is visible, a cache-index
+        failure may cost a future rerun but cannot revoke completed scientific
+        work or turn it into an ambiguous attempt.
+        """
+        result.sandbox_path = result.sandbox_path or retained_sandbox()
+        if frozen.image_digest is not None and result.image_digest != frozen.image_digest:
+            raise BundleError(f"step {step_path!r}: executed image digest {result.image_digest!r} does not match submission pin {frozen.image_digest!r}")
+        if frozen.tool_venv_digest is not None and result.venv_digest != frozen.tool_venv_digest:
+            raise BundleError(f"step {step_path!r}: executed tool venv digest {result.venv_digest!r} does not match submission fingerprint {frozen.tool_venv_digest!r}")
+        result.code_digest = common["code_digest"]
+        result.worker_digest = common["worker_digest"]
+        result.job_id = job_id
+        terminal = AttemptRecord.from_result(result, sandbox=result.sandbox_path, **common)
+        try:
+            terminal.write(submission_dir.parent)
+        except BaseException:
+            if not final_path.exists():
+                raise
+            visible = AttemptRecord.read(
+                final_path,
+                workflow_id=plan.workflow_id,
+                attempt_id=attempt_id,
+                step_path=step_path,
+                bundle_digest=plan.bundle_digest,
+            )
+            if visible != terminal:
+                raise
+            # The atomic link is visible and contains the exact terminal
+            # record. Avoid reporting a failed Slurm job beside that commit;
+            # a later disappearance is still handled as unknown, never success.
+            logger.warning("terminal record %s is visible but its directory sync could not be confirmed", final_path)
+        if terminal.committed:
+            faults("W_RESULT")
+            try:
+                record_cache()
+            except BaseException:  # noqa: BLE001 -- the attempt already committed
+                logger.exception("step %s committed, but its reusable cache index could not be updated", step_path)
+            faults("W_CACHE")
+
     try:
         ownership_path = submission_dir / "ownership.json"
         if plan.ownership_required and not ownership_path.exists():
@@ -391,7 +436,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         publish_failure(exc)
         return 1
 
-    if _record_path(submission_dir, attempt_id).exists():
+    if final_path.exists():
         logger.error("attempt %s for step %r already has a terminal record; refusing to execute it again", attempt_id, step_path)
         return 1
     running = AttemptRecord(state="running", sandbox=str(sandbox_root), **common)
@@ -411,19 +456,33 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
             func = _callable(submission_dir, index, bundle)
             kwargs, upstream, input_keys = _resolved_inputs(submission_dir, bundle, plan, index)
             ref = frozen.declaration()
+            prepared = _prepare_inputs(scope, kwargs)
+            config = AppConfig.model_validate({name: unpack(value) for name, value in bundle.config.items()})
+            recipe = bundle.recipe.restore()
+            cache_enabled = (
+                bundle.cache_override
+                if bundle.cache_override is not None
+                else scope.cache
+                if scope.cache is not None
+                else recipe.cache
+                if recipe.cache is not None
+                else config.cache.enabled
+            )
+            cache_dir = bundle.cache_dir_override or scope.cache_dir or recipe.cache_dir or config.cache.dir
+            snapshots_active = config.cache.snapshots.mode != "off" and (cache_enabled or bool(recipe.cache) or config.cache.enabled)
+            if snapshots_active:
+                paths = {path for values in mutation_paths(scope, prepared).values() for path in values}
+                if paths:
+                    # Slurm's inferred mutation dependencies ensure no live
+                    # sibling can be writing these same paths. Reconcile
+                    # before the loop skip decision as well: pass-through
+                    # must not leave a prior interrupted rewrite unresolved.
+                    reconcile(cache_dir, get_cache_manifest(cache_dir), paths=paths)
             if should_skip(ref, upstream):
-                prepared = _prepare_inputs(scope, kwargs)
                 result = passthrough_result(ref, upstream[ref.loop.prev_step], scope.inputs_model(**prepared))
+                commit_result(result, lambda: None)
             else:
-                _check_scratch_filesystems(scope, _prepare_inputs(scope, kwargs), Path(bundle.workspace))
-                config = AppConfig.model_validate({name: unpack(value) for name, value in bundle.config.items()})
-                recipe = bundle.recipe.restore()
-                # Workspace ownership now excludes another workflow, but
-                # worker snapshot commit/recovery is still a separate M3
-                # slice. Until it lands, a worker that can rewrite a
-                # scientific path executes and publishes no reusable key.
-                cache_override = False if mutated_path_fields(scope) else bundle.cache_override
-                config.cache.snapshots.mode = "off"
+                _check_scratch_filesystems(scope, prepared, Path(bundle.workspace))
                 config.sandbox.enabled = True
                 config.sandbox.dir = str(sandbox_root)
                 config.provenance.enabled = True
@@ -431,7 +490,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                     scope,
                     func,
                     backend=frozen.backend,
-                    cache=cache_override,
+                    cache=bundle.cache_override,
                     cache_dir=bundle.cache_dir_override,
                     provenance=True,
                     sandbox=True,
@@ -440,7 +499,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                     _recipe_cache_dir=recipe.cache_dir,
                     _cache_path=f"{recipe.name}.{step_path}",
                     _config=config,
-                    _run_id=str(submission.workflow_id),
+                    _run_id=str(attempt_id),
                     _input_keys=input_keys,
                     _wired_fields=set(ref.wiring),
                     _execution_identity=ExecutionIdentity(
@@ -449,30 +508,20 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                         venv=frozen.tool_venv,
                         venv_digest=frozen.tool_venv_digest,
                     ),
+                    _snapshot_success_record=final_path,
+                    _result_commit=commit_result,
                     **kwargs,
                 )
         finally:
             os.chdir(old_cwd)
-        result.sandbox_path = result.sandbox_path or retained_sandbox()
         if result.success:
             try:
                 sandbox_root.rmdir()
             except OSError:
                 pass
-        if frozen.image_digest is not None and result.image_digest != frozen.image_digest:
-            raise BundleError(f"step {step_path!r}: executed image digest {result.image_digest!r} does not match submission pin {frozen.image_digest!r}")
-        if frozen.tool_venv_digest is not None and result.venv_digest != frozen.tool_venv_digest:
-            raise BundleError(f"step {step_path!r}: executed tool venv digest {result.venv_digest!r} does not match submission fingerprint {frozen.tool_venv_digest!r}")
-        result.code_digest = common["code_digest"]
-        result.worker_digest = common["worker_digest"]
-        result.job_id = job_id
-        terminal = AttemptRecord.from_result(result, sandbox=result.sandbox_path, **common)
-        try:
-            terminal.write(submission_dir.parent)
-        except BaseException:
-            final_path = _record_path(submission_dir, attempt_id)
-            if not final_path.exists():
-                raise
+        return 0 if result.success else max(1, abs(result.returncode))
+    except BaseException as exc:
+        if final_path.exists():
             visible = AttemptRecord.read(
                 final_path,
                 workflow_id=plan.workflow_id,
@@ -480,14 +529,13 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                 step_path=step_path,
                 bundle_digest=plan.bundle_digest,
             )
-            if visible != terminal:
-                raise
-            # The atomic link is visible and contains the exact terminal
-            # record. Avoid reporting a failed Slurm job beside that commit;
-            # a later disappearance is still handled as unknown, never success.
-            logger.warning("terminal record %s is visible but its directory sync could not be confirmed", final_path)
-        return 0 if result.success else max(1, abs(result.returncode))
-    except BaseException as exc:
+            if visible.committed:
+                # The immutable result is the success oracle. A crash or
+                # cleanup error after that point may leave a snapshot marker
+                # for reconciliation, but must not publish a contradictory
+                # failure or make Slurm discard successful dependants.
+                logger.exception("step %s raised after its terminal result committed; preserving the committed result", step_path)
+                return 0
         publish_failure(exc)
         return 1
 

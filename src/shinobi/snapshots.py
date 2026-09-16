@@ -67,15 +67,15 @@ writer usually *cache-hits* on the following run and never re-raises it --
 so the flag would be gone exactly when the restore that needs it comes
 around. A position is cumulative and never needs clearing.
 
-**The manifest is the success oracle.** Nothing here infers "the step
-finished" from journal state; only a manifest entry recorded by *this run*
-says so, which is why `CacheManifest.record` also stores the run id and
-reconciliation compares it. A manifest entry alone is not enough: it
-survives from earlier runs, so a step that re-ran (because some other
-declared output was deleted) and was then killed mid-mutation would find
-its own stale entry and conclude it had succeeded -- a durable false cache
-hit over corrupt content, which is the exact bug class this module exists
-to kill.
+**The explicit result record is the success oracle.** Nothing here infers
+"the step finished" from journal state. For local dispatch that record is a
+manifest entry stamped with this run id. For a detached worker it is the
+immutable final attempt record named by the marker; the mutable manifest is
+only a reusable index. An entry from an earlier run is never enough: a step
+that re-ran (because some other declared output was deleted) and was then
+killed mid-mutation must not find its own stale entry and conclude it had
+succeeded -- a durable false cache hit over corrupt content, which is the
+exact bug class this module exists to kill.
 
 **Never worse than shipped.** Any field this module cannot name or vouch
 for -- a keyless producer, a scattered or many-valued mutated field, a
@@ -83,10 +83,12 @@ space preflight refusal, a missing snapshot, a tainted generation -- degrades
 to precisely the shipped behaviour (proceed against live disk) plus a
 warning. It never degrades to a restore it cannot justify.
 
-Out of scope, deliberately: offloaded (`--engine slurm`) runs, where no
-shinobi process is present to see the writes; and the capacity store
-(cross-workspace reuse, column stripping, cold tiers), which is Tier 2 and
-is not approved for implementation.
+Detached workers enter the same guard through ``_dispatch``.  Their immutable
+final attempt record, rather than the mutable cache manifest, is the success
+oracle recorded in the in-flight marker; it is published at S3 before the
+cache index and before trash/marker cleanup.  The capacity store
+(cross-workspace reuse, column stripping, cold tiers) remains Tier 2 and is
+not approved for implementation.
 """
 
 from __future__ import annotations
@@ -197,7 +199,10 @@ class Marker:
     anywhere in the step or in the post-success sequence leaves it set and
     reconciliation gets to decide conservatively. `cache_key` is `None` for
     an uncached mutator, which has no name for what it is producing but
-    must still be noticed if it dies.
+    must still be noticed if it dies. ``success_record`` names the immutable
+    worker attempt record that is authoritative for detached execution.  A
+    local run leaves it unset and continues to use its cache-manifest entry
+    as the success oracle.
     """
 
     step_path: str
@@ -205,9 +210,17 @@ class Marker:
     cache_key: str | None
     run_id: str
     started_at: float
+    success_record: str | None = None
 
     def as_json(self) -> dict[str, Any]:
-        return {"step_path": self.step_path, "field": self.field, "cache_key": self.cache_key, "run_id": self.run_id, "started_at": self.started_at}
+        return {
+            "step_path": self.step_path,
+            "field": self.field,
+            "cache_key": self.cache_key,
+            "run_id": self.run_id,
+            "started_at": self.started_at,
+            "success_record": self.success_record,
+        }
 
 
 @dataclass
@@ -409,6 +422,26 @@ class Excluded:
     reason: str
 
 
+def mutation_paths(scope: Scope, prepared: dict[str, Any]) -> dict[str, tuple[Path, ...]]:
+    """Concrete paths written through every declared in-place mutation.
+
+    Eligibility may later reject a shape for snapshot naming, but recovery
+    and tainting still need the complete path set.  Keeping this extraction
+    beside :func:`eligible_fields` prevents worker recovery and local
+    dispatch from growing separate interpretations of a mutation field.
+    """
+    paths: dict[str, tuple[Path, ...]] = {}
+    for name in sorted(mutated_path_fields(scope)):
+        value = prepared.get(name)
+        if value is None:
+            continue
+        values = value if isinstance(value, (list, tuple)) else (value,)
+        concrete = tuple(Path(one) for one in values if one is not None)
+        if concrete:
+            paths[name] = concrete
+    return paths
+
+
 def _single_key(key: Any) -> ProvenanceKey | None:
     """The one `ProvenanceKey` in `key`, if there is exactly one.
 
@@ -473,18 +506,14 @@ def eligible_fields(
     protected: dict[str, Path] = {}
     excluded: list[Excluded] = []
     keys = input_keys or {}
-    for name in sorted(mutated_path_fields(scope)):
-        value = prepared.get(name)
-        if value is None:
-            continue
+    for name, paths in mutation_paths(scope, prepared).items():
         if is_scatter_slice:
             excluded.append(Excluded(name, "the step is scattered, and a scattered mutation has no single consumed state to name"))
             continue
-        if isinstance(value, (list, tuple)):
-            if len(value) != 1:
-                excluded.append(Excluded(name, f"the field holds {len(value)} paths, and one (key, field) name cannot stand for several"))
-                continue
-            value = value[0]
+        if len(paths) != 1:
+            excluded.append(Excluded(name, f"the field holds {len(paths)} paths, and one (key, field) name cannot stand for several"))
+            continue
+        value = paths[0]
         wired = name in wired_fields if wired_fields is not None else name in keys
         key = _single_key(keys.get(name))
         if wired and key is None:
@@ -533,6 +562,7 @@ class SnapshotGuard:
         wired_fields: set[str] | None,
         force_copy: bool = False,
         tainting: dict[str, tuple[Path, ...]] | None = None,
+        success_record: Path | None = None,
     ):
         self.journal = journal
         self.step_path = step_path
@@ -541,6 +571,7 @@ class SnapshotGuard:
         self.input_keys = input_keys or {}
         self.wired_fields = wired_fields
         self.force_copy = force_copy
+        self.success_record = success_record
         self.plans = [_FieldPlan(field=name, path=path) for name, path in fields.items()]
         # Mutated fields Tier 1 declined to protect. It cannot snapshot them,
         # but it must still record that they *wrote*, or a later restore
@@ -765,7 +796,14 @@ class SnapshotGuard:
         visible to whatever runs next.
         """
         assert plan.cid is not None
-        marker = Marker(step_path=self.step_path, field=plan.field, cache_key=self.cache_key, run_id=self.run_id, started_at=time.time())
+        marker = Marker(
+            step_path=self.step_path,
+            field=plan.field,
+            cache_key=self.cache_key,
+            run_id=self.run_id,
+            started_at=time.time(),
+            success_record=str(self.success_record) if self.success_record is not None else None,
+        )
         try:
             st = plan.path.stat()
         except OSError:
@@ -800,14 +838,15 @@ class SnapshotGuard:
         - **S1** Rule B: snapshot the state this step just produced.
         - **S2** journal: append the generation, move the head, mark it
           trusted, record what was consumed.
-        - **S3** `manifest.record` -- the caller's callback.
+        - **S3** publish the caller's explicit success oracle (and only then
+          any reusable cache index).
         - **S4** delete the trash.
         - **S5** clear the marker.
 
-        Two orderings are the point. S1 precedes S3, or a crash between them
-        leaves a step the skip cache hits forever with no snapshot of its
-        tip. And the marker clears *last*, so a crash anywhere in here
-        leaves the path in-flight and reconciliation decides conservatively.
+        Two orderings are the point. S1 precedes S3, or a committed result
+        could name a state with no snapshot of its tip. And the marker clears
+        *last*, so a crash anywhere in here leaves the path in-flight and
+        reconciliation decides conservatively.
         """
         for plan in self.plans:
             if not plan.skip:
@@ -1172,17 +1211,39 @@ def release_runs() -> None:
 # --- crash reconciliation -------------------------------------------------
 
 
-def reconcile(cache_dir: str, manifest) -> list[str]:
+def _marker_completed(marker: Marker, manifest) -> bool:
+    """Whether the marker's own success oracle committed this invocation.
+
+    Local dispatch has historically used the cache manifest.  A detached
+    worker instead records the absolute path of its immutable final attempt
+    record in the marker.  That record is the worker protocol's sole success
+    oracle; the mutable cache manifest is only an index and cannot turn a
+    missing attempt result into success.
+    """
+    if marker.success_record is None:
+        entry = manifest.entry(marker.step_path)
+        return entry is not None and entry.get("cache_key") == marker.cache_key and marker.cache_key is not None and entry.get("run_id") == marker.run_id
+
+    try:
+        from shinobi.offload.records import AttemptRecord
+
+        record = AttemptRecord.model_validate_json(Path(marker.success_record).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return record.committed and str(record.attempt_id) == marker.run_id and record.step_path == marker.step_path and record.cache_key == marker.cache_key
+
+
+def reconcile(cache_dir: str, manifest, *, paths: set[Path] | None = None) -> list[str]:
     """Decide what a crashed run left behind, once per cache directory per
     process.
 
     A SIGKILL, an OOM or a node eviction leaves no process to roll anything
     back, so the marker survives and this is what reads it. The decision is
-    made against the *manifest*, because a manifest entry is the only
-    durable record that a step actually finished -- and specifically
-    against an entry recorded by the same run, since an entry from an
-    earlier successful run of the same step would otherwise be read as
-    proof that the interrupted run had succeeded.
+    made against the marker's explicit success oracle: the cache manifest
+    for a local dispatch, or the immutable final attempt record for a
+    detached worker.  In either case it must belong to this exact run; an
+    earlier success with the same key cannot vouch for an interrupted
+    rewrite.
 
     That distinction is not hypothetical. Delete some unrelated declared
     output of a step that mutates an MS: the outputs-exist check misses, the
@@ -1193,13 +1254,15 @@ def reconcile(cache_dir: str, manifest) -> list[str]:
     Returns a human-readable line per decision, for `ninja cache check`.
     """
     journal = get_journal(cache_dir)
+    selected = {chain_id(path) for path in paths} if paths is not None else None
     notes: list[str] = []
     for cid, chain in journal.all_chains().items():
+        if selected is not None and cid not in selected:
+            continue
         marker = chain.marker
         if marker is None:
             continue
-        entry = manifest.entry(marker.step_path)
-        completed = entry is not None and entry.get("cache_key") == marker.cache_key and marker.cache_key is not None and entry.get("run_id") == marker.run_id
+        completed = _marker_completed(marker, manifest)
         trash = _trash_for(Path(chain.path), marker.run_id)
 
         if completed:
@@ -1217,7 +1280,17 @@ def reconcile(cache_dir: str, manifest) -> list[str]:
             journal.update_chain(cid, clear)
             continue
 
-        # No entry from this run: the step did not finish. If the crash fell
+        # No success record from this run: the step did not finish. Remove a
+        # same-key cache entry as well: it may be the stale entry that caused
+        # this invocation to re-run after another declared output vanished,
+        # and a partial rewrite may already have recreated that output.  A
+        # later cache check must not turn the interrupted invocation into a
+        # hit merely because every output path now exists again.
+        entry = manifest.entry(marker.step_path)
+        if entry is not None and entry.get("cache_key") == marker.cache_key:
+            manifest.remove({marker.step_path})
+
+        # If the crash fell
         # between S2 and S3 this re-runs a step that actually succeeded --
         # bounded waste in a narrow window, taken deliberately over the
         # alternative, which is a false hit over content nothing verified.
