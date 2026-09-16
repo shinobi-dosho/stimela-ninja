@@ -9,7 +9,7 @@ from shinobi.graph import RecipeNotOffloadableError
 from shinobi.offload import OffloadCompileError, compile_slurm, status_slurm, submit_slurm
 from shinobi.offload.slurm import MutationOrder
 from shinobi.resources import Resources
-from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, ParamMeta, Recipe, Scope, StepRef
+from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, ParamMeta, Recipe, Scope, StepRef, path_accesses
 
 
 class RecipeIn(BaseModel):
@@ -684,6 +684,38 @@ def test_pystep_write_path_is_a_filesystem_write_despite_immutable_input(tmp_pat
     assert writer.mutability_of("ms") is Mutability.IMMUTABLE
     assert order.order_after("python-write", writer, {"ms": Path("obs.ms")}) == set()
     assert order.order_after("read", reader, {"ms": tmp_path / "obs.ms"}) == {"python-write"}
+
+
+def test_string_typed_write_path_participates_in_access_ordering(tmp_path):
+    class WrittenStem(BaseModel):
+        ms: str
+
+    writer = Scope(
+        name="python-write",
+        inputs_model=WrittenStem,
+        outputs_model=OkOut,
+        field_meta={"ms": ParamMeta(write_path=True)},
+    )
+    order = MutationOrder(tmp_path)
+    assert order.order_after("python-write", writer, {"ms": "obs.ms"}) == set()
+    assert order.order_after("read", _reader("read"), {"ms": tmp_path / "obs.ms"}) == {"python-write"}
+
+
+def test_harvest_prefix_is_a_declared_write_access(tmp_path):
+    class Prefix(BaseModel):
+        prefix: str
+
+    scope = Scope(
+        name="harvest",
+        inputs_model=Prefix,
+        outputs_model=OkOut,
+        harvest=["{prefix}/images/*.fits"],
+    )
+    assert (tmp_path / "products" / "images", True) in path_accesses(
+        scope,
+        {"prefix": "products"},
+        workspace=tmp_path,
+    )
 
 
 def test_relative_accesses_are_anchored_to_the_declared_workdir(tmp_path):

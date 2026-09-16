@@ -95,6 +95,75 @@ def version() -> None:
     click.echo(shinobi.__version__)
 
 
+@main.group("workspace")
+def workspace_group() -> None:
+    """Inspect and reconcile durable scientific-workspace ownership."""
+
+
+@workspace_group.command("inspect")
+@click.option("--workdir", type=click.Path(exists=True, file_okay=False, path_type=Path), default=".", help="Workspace to inspect.")
+def workspace_inspect(workdir: Path) -> None:
+    """Read the current owner and its verified liveness without changing it."""
+    from shinobi.ownership import inspect_ownership
+
+    state = inspect_ownership(workdir)
+    if state.owner is None:
+        click.echo(f"workspace: {state.liveness} ({state.detail})")
+        return
+    click.echo(f"workspace: {state.liveness}")
+    click.echo(f"  workflow: {state.owner.workflow_id}")
+    click.echo(f"  kind: {state.owner.kind}")
+    click.echo(f"  authority: {state.owner.workspace}")
+    click.echo(f"  registry: {state.owner.registry}")
+    if state.owner.submission:
+        click.echo(f"  submission: {state.owner.submission}")
+    click.echo(f"  evidence: {state.detail}")
+
+
+@workspace_group.command("reconcile")
+@click.option("--workdir", type=click.Path(exists=True, file_okay=False, path_type=Path), default=".", help="Workspace to reconcile.")
+def workspace_reconcile(workdir: Path) -> None:
+    """Release an owner only when storage/scheduler evidence proves it dead."""
+    from shinobi.ownership import WorkspaceOwnershipError, reconcile_ownership
+
+    try:
+        state = reconcile_ownership(workdir)
+    except WorkspaceOwnershipError as exc:
+        raise click.ClickException(str(exc)) from None
+    if state.owner is None:
+        click.echo("workspace: already free")
+    else:
+        click.echo(f"workspace: released {state.owner.kind} workflow {state.owner.workflow_id} ({state.detail})")
+
+
+@workspace_group.command("release")
+@click.option("--workdir", type=click.Path(exists=True, file_okay=False, path_type=Path), default=".", help="Workspace whose owner is to be released.")
+@click.option("--workflow-id", required=True, help="Exact recorded workflow identity.")
+@click.option("--force", is_flag=True, help="Release a live or uncertain owner after verifying its exact workflow identity; may expose live data to concurrent mutation.")
+def workspace_release(workdir: Path, workflow_id: str, force: bool) -> None:
+    """Explicitly release an exact owner; live/uncertain owners need --force."""
+    from shinobi.ownership import WorkspaceOwnershipError, inspect_ownership, release_workspace
+
+    try:
+        state = inspect_ownership(workdir)
+        if state.owner is None:
+            if state.liveness != "free":
+                raise WorkspaceOwnershipError(f"refusing to release workspace ownership: ownership is {state.liveness} ({state.detail})")
+            click.echo("workspace: already free")
+            return
+        if state.owner.workflow_id != workflow_id:
+            raise WorkspaceOwnershipError(f"workspace is owned by workflow {state.owner.workflow_id}, not {workflow_id}")
+        if state.liveness != "dead" and not force:
+            raise WorkspaceOwnershipError(
+                f"refusing to release workflow {workflow_id}: ownership is {state.liveness} ({state.detail}); "
+                "use 'workspace reconcile' for a proven-dead owner or repeat with --force after cancelling live work"
+            )
+        removed = release_workspace(workdir, workflow_id)
+    except WorkspaceOwnershipError as exc:
+        raise click.ClickException(str(exc)) from None
+    click.echo("workspace: released" if removed else "workspace: already free")
+
+
 @main.command("cab")
 @click.argument("cab_file")
 @click.argument("cab_name")
@@ -1048,6 +1117,8 @@ def compile_recipe(
                 launched = submit_worker_slurm(workflow)
             except WorkerSubmissionError as exc:
                 raise click.ClickException(f"{exc}; accepted jobs remain detached and recoverable from {exc.handle.submission_dir / 'handle.json'}") from None
+            except (ShinobiError, OffloadCompileError) as exc:
+                raise click.ClickException(str(exc)) from None
             handle = workflow.submission_dir / "handle.json"
             click.echo(f"submitted {len(launched.jobs)} worker jobs (detached); handle: {handle}")
             for name, job_id in launched.jobs.items():

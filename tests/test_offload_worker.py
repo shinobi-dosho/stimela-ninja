@@ -25,9 +25,10 @@ from shinobi.offload.worker import (
     SubmittedFinalizer,
     SubmittedJob,
     WorkerHandleRecord,
-    execute_step,
+    execute_step as _execute_step_impl,
     finalize_submission,
 )
+from shinobi.ownership import WorkspaceOwnershipError, acquire_workspace, inspect_workspace, release_workspace
 from shinobi.provenance import RunManifest
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, ParamMeta, Recipe, StepRef
 
@@ -106,6 +107,36 @@ def _prepared_cached(tmp_path: Path, recipe: Recipe | None = None, config: AppCo
     return workflow, staged, plan
 
 
+def _activate_worker(submission_dir: Path) -> None:
+    """Give direct worker-unit invocations the ownership submit_slurm creates."""
+    plan = ExecutionPlan.model_validate_json((submission_dir / "execution.json").read_text())
+    marker = submission_dir / "ownership.json"
+    if not plan.ownership_required or marker.exists():
+        return
+    bundle = RecipeBundle.read(submission_dir / "bundle.json")
+    lease = acquire_workspace(
+        Path(plan.ownership_workspace or bundle.workspace),
+        str(plan.workflow_id),
+        kind="slurm",
+        submission=submission_dir,
+        accesses=((Path(access.path), access.writes) for access in plan.accesses),
+    )
+    write_new(marker, lease.owner)
+
+
+def execute_step(submission_dir: Path, step_path, attempt_id):
+    _activate_worker(submission_dir)
+    result = _execute_step_impl(submission_dir, step_path, attempt_id)
+    plan = ExecutionPlan.model_validate_json((submission_dir / "execution.json").read_text())
+    settled = all((submission_dir / "attempts" / str(attempt.attempt_id) / "final.json").exists() for attempt in plan.attempts)
+    workspace = Path(plan.ownership_workspace or RecipeBundle.read(submission_dir / "bundle.json").workspace)
+    if plan.ownership_required and settled:
+        owner = inspect_workspace(workspace)
+        if owner is not None and owner.workflow_id == str(plan.workflow_id):
+            release_workspace(workspace, owner.workflow_id)
+    return result
+
+
 def _execute_all(workflow, plan):
     records = []
     for attempt in plan.attempts:
@@ -141,11 +172,19 @@ def test_worker_executes_wiring_in_shared_sandboxes_and_finalizes(tmp_path, monk
             workflow.submission_dir / "jobs" / f"{index:04d}.json",
             SubmittedJob(workflow_id=plan.workflow_id, bundle_digest=bundle.digest, step_path=attempt.step_path, attempt_id=attempt.attempt_id, job_id=str(100 + index)),
         )
+    acquire_workspace(
+        Path(plan.ownership_workspace or tmp_path),
+        str(plan.workflow_id),
+        kind="slurm",
+        submission=workflow.submission_dir,
+        accesses=((Path(access.path), access.writes) for access in plan.accesses),
+    )
     monkeypatch.setattr("shinobi.offload.slurm.status_slurm", lambda jobs: dict.fromkeys(jobs, "COMPLETED"))
     finalized = finalize_submission(workflow.submission_dir)
     assert finalized.complete
     assert [step.step_path for step in finalized.steps] == ["write", "copy"]
     assert (workflow.submission_dir / "manifest.json").is_file()
+    assert inspect_workspace(tmp_path) is None
     assert finalize_submission(workflow.submission_dir) == finalized
 
 
@@ -213,7 +252,7 @@ def test_recipe_cache_setting_is_not_dropped_by_worker_compilation(tmp_path):
     assert [record.state for record in _execute_all(second, second_plan)] == ["cached", "cached"]
 
 
-def test_worker_mutator_remains_uncached_until_workspace_ownership_lands(tmp_path):
+def test_worker_mutator_remains_uncached_until_snapshot_recovery_lands(tmp_path):
     recipe = _recipe().model_copy(deep=True)
     recipe.steps[1].step.input_mutability["src"] = Mutability.MUTABLE
     first, _bundle, first_plan = _prepared_cached(tmp_path, recipe)
@@ -260,6 +299,7 @@ def test_staged_worker_source_is_checked_before_execution(tmp_path):
 
 def test_submission_records_each_job_and_detached_finalizer(tmp_path, monkeypatch):
     workflow, _bundle, plan = _prepared(tmp_path)
+    competing, _bundle, _plan = _prepared(tmp_path)
     calls = []
     ids = iter(("101\n", "102\n", "199\n"))
 
@@ -269,6 +309,7 @@ def test_submission_records_each_job_and_detached_finalizer(tmp_path, monkeypatc
 
     monkeypatch.setattr("shinobi.offload.slurm.subprocess.run", run)
     handle = submit_worker_slurm(workflow)
+    assert inspect_workspace(tmp_path).workflow_id == str(plan.workflow_id)
     assert handle.jobs == {"write": "101", "copy": "102"}
     assert handle.finalizer_job == "199"
     assert "--dependency=afterok:101" in calls[1]
@@ -283,10 +324,18 @@ def test_submission_records_each_job_and_detached_finalizer(tmp_path, monkeypatc
     assert handle_record.jobs == handle.jobs
     assert handle_record.finalizer == "199"
 
+    with pytest.raises(OffloadCompileError, match="already begun scheduler submission"):
+        submit_worker_slurm(workflow)
+    assert len(calls) == 3
+
+    with pytest.raises(WorkspaceOwnershipError, match=f"workflow {plan.workflow_id}"):
+        submit_worker_slurm(competing)
+
 
 def test_partial_submission_keeps_recoverable_handle(tmp_path, monkeypatch):
-    workflow, _bundle, _plan = _prepared(tmp_path)
+    workflow, _bundle, plan = _prepared(tmp_path)
     calls = 0
+    real_run = subprocess.run
 
     def run(argv, **kwargs):
         nonlocal calls
@@ -305,6 +354,15 @@ def test_partial_submission_keeps_recoverable_handle(tmp_path, monkeypatch):
     persisted = WorkerHandleRecord.model_validate_json((workflow.submission_dir / "handle.json").read_text())
     assert persisted.jobs == {"write": "101"}
     assert persisted.finalizer == "199"
+    assert inspect_workspace(Path(plan.ownership_workspace)).workflow_id == str(plan.workflow_id)
+
+    monkeypatch.setattr("shinobi.offload.slurm.subprocess.run", real_run)
+    monkeypatch.setenv("SLURM_JOB_ID", "199")
+    monkeypatch.setattr("shinobi.offload.slurm.status_slurm", lambda jobs: dict.fromkeys(jobs, "COMPLETED"))
+    observed = finalize_submission(workflow.submission_dir)
+    assert not observed.complete
+    assert not (workflow.submission_dir / "finalization.json").exists()
+    assert inspect_workspace(Path(plan.ownership_workspace)).workflow_id == str(plan.workflow_id)
 
 
 def test_worker_compile_accepts_checked_per_step_scheduler_placement(tmp_path):
@@ -879,6 +937,104 @@ def test_requeued_attempt_publishes_diagnostic_record(tmp_path):
     assert "already started" in diagnostic.error
 
 
+def test_slurm_requeue_gets_a_fresh_attempt_identity(tmp_path, monkeypatch):
+    workflow, bundle, plan = _prepared(tmp_path)
+    planned = plan.attempts[0]
+    stale = AttemptRecord(
+        workflow_id=plan.workflow_id,
+        attempt_id=planned.attempt_id,
+        step_path=planned.step_path,
+        bundle_digest=bundle.digest,
+        state="running",
+    )
+    stale.write(workflow.submission_dir.parent)
+
+    monkeypatch.setenv("SLURM_RESTART_COUNT", "1")
+    assert execute_step(workflow.submission_dir, planned.step_path, planned.attempt_id) == 0
+
+    from shinobi.offload.worker import AttemptInvocation
+
+    invocation = AttemptInvocation.model_validate_json((workflow.submission_dir / "attempts" / str(planned.attempt_id) / "restart-00000001.json").read_text())
+    assert invocation.attempt_id != planned.attempt_id
+    record = AttemptRecord.read(
+        workflow.submission_dir / "attempts" / str(invocation.attempt_id) / "final.json",
+        workflow_id=plan.workflow_id,
+        attempt_id=invocation.attempt_id,
+        step_path=planned.step_path,
+        bundle_digest=bundle.digest,
+    )
+    assert record.committed
+
+    monkeypatch.delenv("SLURM_RESTART_COUNT")
+    downstream = plan.attempts[1]
+    assert execute_step(workflow.submission_dir, downstream.step_path, downstream.attempt_id) == 0
+    for index, attempt in enumerate(plan.attempts):
+        write_new(
+            workflow.submission_dir / "jobs" / f"{index:04d}.json",
+            SubmittedJob(
+                workflow_id=plan.workflow_id,
+                bundle_digest=bundle.digest,
+                step_path=attempt.step_path,
+                attempt_id=attempt.attempt_id,
+                job_id=str(100 + index),
+            ),
+        )
+    acquire_workspace(
+        Path(plan.ownership_workspace or tmp_path),
+        str(plan.workflow_id),
+        kind="slurm",
+        submission=workflow.submission_dir,
+        accesses=((Path(access.path), access.writes) for access in plan.accesses),
+    )
+    monkeypatch.setattr("shinobi.offload.slurm.status_slurm", lambda jobs: dict.fromkeys(jobs, "COMPLETED"))
+    finalized = finalize_submission(workflow.submission_dir)
+    assert finalized.complete
+    assert finalized.steps[0].attempt_id == invocation.attempt_id
+    assert finalized.steps[0].attempt_id != planned.attempt_id
+
+
+def test_queued_worker_refuses_to_run_after_ownership_moves_to_a_new_workflow(tmp_path):
+    workflow, bundle, plan = _prepared(tmp_path)
+    lease = acquire_workspace(
+        Path(plan.ownership_workspace or tmp_path),
+        str(plan.workflow_id),
+        kind="slurm",
+        submission=workflow.submission_dir,
+        accesses=((Path(access.path), access.writes) for access in plan.accesses),
+    )
+    write_new(workflow.submission_dir / "ownership.json", lease.owner)
+    lease.release()
+    acquire_workspace(tmp_path, "new-workflow", kind="slurm", submission=tmp_path / "new-submission")
+
+    attempt = plan.attempts[0]
+    assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
+    record = AttemptRecord.read(
+        _final_record(workflow, attempt),
+        workflow_id=plan.workflow_id,
+        attempt_id=attempt.attempt_id,
+        step_path=attempt.step_path,
+        bundle_digest=bundle.digest,
+    )
+    assert record.state == "failed"
+    assert "owned by workflow new-workflow" in record.error
+
+
+def test_write_declaring_worker_refuses_a_missing_ownership_requirement(tmp_path):
+    workflow, bundle, plan = _prepared(tmp_path)
+    assert plan.ownership_required
+    attempt = plan.attempts[0]
+
+    assert _execute_step_impl(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
+    record = AttemptRecord.read(
+        _final_record(workflow, attempt),
+        workflow_id=plan.workflow_id,
+        attempt_id=attempt.attempt_id,
+        step_path=attempt.step_path,
+        bundle_digest=bundle.digest,
+    )
+    assert "no immutable workspace-ownership requirement" in record.error
+
+
 def test_visible_terminal_record_wins_if_directory_sync_reports_failure(tmp_path, monkeypatch):
     workflow, bundle, plan = _prepared(tmp_path)
     attempt = plan.attempts[0]
@@ -932,6 +1088,7 @@ def test_concurrent_attempts_own_distinct_sandbox_roots(tmp_path):
         worker_python=Path(sys.executable),
     )
     plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    _activate_worker(workflow.submission_dir)
     env = dict(os.environ)
     env["PYTHONPATH"] = str(workflow.submission_dir / "worker-src")
     processes = [
@@ -996,6 +1153,7 @@ def test_concurrent_worker_branches_retain_every_cache_update(tmp_path):
         worker_python=Path(sys.executable),
     )
     plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    _activate_worker(workflow.submission_dir)
     env = dict(os.environ)
     env["PYTHONPATH"] = str(workflow.submission_dir / "worker-src")
     processes = [
