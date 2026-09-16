@@ -1117,7 +1117,7 @@ def compile_recipe(
                 launched = submit_worker_slurm(workflow)
             except WorkerSubmissionError as exc:
                 raise click.ClickException(f"{exc}; accepted jobs remain detached and recoverable from {exc.handle.submission_dir / 'handle.json'}") from None
-            except ShinobiError as exc:
+            except (ShinobiError, OffloadCompileError) as exc:
                 raise click.ClickException(str(exc)) from None
             handle = workflow.submission_dir / "handle.json"
             click.echo(f"submitted {len(launched.jobs)} worker jobs (detached); handle: {handle}")

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import shinobi
 from click.testing import CliRunner
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from shinobi.cli import main
 from shinobi.config import AppConfig
@@ -161,6 +161,40 @@ def test_offloaded_workdirs_sharing_a_dataset_compile_to_one_authority(tmp_path)
     )
     with pytest.raises(WorkspaceOwnershipError, match=f"workflow {plans[0].workflow_id}"):
         submit_worker_slurm(workflows[1])
+
+
+def test_submission_claim_is_rolled_back_when_ownership_fails(tmp_path):
+    class Ms(BaseModel):
+        ms: Path
+
+    cab = Cab(name="rewrite", command="true", inputs_model=Ms, outputs_model=Ms)
+    recipe = Recipe(
+        name="rewrite",
+        inputs_model=Ms,
+        outputs_model=Ms,
+        steps=[StepRef(name="rewrite", step=cab, wiring={"ms": InputRef(field="ms")})],
+        output_wiring={"ms": OutputRef(step="rewrite", field="ms")},
+    )
+    shared = tmp_path / "shared.ms"
+    shared.mkdir()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    workflow = prepare_worker_slurm(
+        freeze_recipe(recipe, {"ms": shared}, config=AppConfig(), workspace=workdir),
+        submission_root=workdir / "submissions",
+        worker_python=Path(sys.executable),
+    )
+    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    acquire_workspace(
+        tmp_path,
+        "other-owner",
+        kind="slurm",
+        submission=tmp_path / "other-submission",
+        accesses=((Path(access.path), access.writes) for access in plan.accesses),
+    )
+    with pytest.raises(WorkspaceOwnershipError, match="owned by slurm workflow other-owner"):
+        submit_worker_slurm(workflow)
+    assert not (workflow.submission_dir / "submission-claim.json").exists()
 
 
 def test_local_owner_is_live_until_release(tmp_path):
@@ -488,3 +522,67 @@ def test_local_leaf_claim_includes_defaulted_write_paths_and_reuses_validation(t
     result = StepRef(name=scope.name, step=scope, func=body)(explicit=explicit)
     assert result.success
     assert calls == 1
+
+
+def test_nested_recipe_leaf_reuses_default_factory_from_claim(tmp_path, monkeypatch):
+    launch = tmp_path / "launch"
+    launch.mkdir()
+    explicit = tmp_path / "explicit.ms"
+    defaulted = tmp_path / "default.ms"
+    calls = 0
+    validations = 0
+
+    def default_target() -> Path:
+        nonlocal calls
+        calls += 1
+        return defaulted
+
+    class LeafInputs(BaseModel):
+        explicit: Path
+        defaulted: Path = Field(default_factory=default_target)
+
+        @model_validator(mode="after")
+        def count_validation(self):
+            nonlocal validations
+            validations += 1
+            return self
+
+    class RecipeInputs(BaseModel):
+        explicit: Path
+
+    scope = Scope(
+        name="leaf",
+        inputs_model=LeafInputs,
+        outputs_model=Empty,
+        field_meta={
+            "explicit": ParamMeta(write_path=True),
+            "defaulted": ParamMeta(write_path=True),
+        },
+    )
+
+    seen = {}
+
+    def body(ctx):
+        seen["owner"] = inspect_workspace(tmp_path)
+        return StepResult(name=scope.name, returncode=0, outputs=Empty(), inputs=ctx.inputs)
+
+    inner = Recipe(
+        name="inner",
+        inputs_model=RecipeInputs,
+        outputs_model=Empty,
+        steps=[StepRef(name="leaf", step=scope, func=body, wiring={"explicit": InputRef(field="explicit")})],
+    )
+    recipe = Recipe(
+        name="nested-defaults",
+        inputs_model=RecipeInputs,
+        outputs_model=Empty,
+        steps=[StepRef(name="inner", step=inner, wiring={"explicit": InputRef(field="explicit")})],
+    )
+
+    monkeypatch.chdir(launch)
+    result = recipe(explicit=explicit)
+    assert result.success
+    assert calls == 1
+    assert validations == 1
+    assert WorkspaceAccess(path=str(explicit.resolve()), writes=True) in seen["owner"].accesses
+    assert WorkspaceAccess(path=str(defaulted.resolve()), writes=True) in seen["owner"].accesses

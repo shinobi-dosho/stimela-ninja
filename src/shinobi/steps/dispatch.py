@@ -250,6 +250,7 @@ class ExecContext:
         budget: Budget | None = None,
         run_id: str = "",
         validated_inputs: BaseModel | None = None,
+        leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
     ):
         """Initialize execution state for one dispatched step.
 
@@ -286,6 +287,9 @@ class ExecContext:
             validated_inputs: An already-validated instance for this exact
                 raw input mapping. Internal callers use it to share one
                 default/default-factory evaluation with ownership discovery.
+            leaf_inputs: Claim-time validated inputs for a recipe's steps,
+                keyed by StepRef identity (see `scope_path_accesses`), plus
+                whether each model is fully knowable and can be reused as-is.
         """
         self.scope = scope
         self._raw = raw_inputs
@@ -314,6 +318,10 @@ class ExecContext:
         # against them (see shinobi.cache).
         self._input_keys = input_keys
         self._budget = budget
+        # Step-level validated inputs resolved during ownership discovery.
+        # A Recipe forwards them to `_run_recipe`; fully knowable steps reuse
+        # the exact model, while runtime-dependent ones reuse only defaults.
+        self._leaf_inputs = leaf_inputs
         # Identifies the whole top-level dispatch, threaded down like
         # `_config` so every step of one run agrees on it. Names trash
         # directories and stamps manifest entries, both of which are read
@@ -461,6 +469,7 @@ class ExecContext:
                 input_keys=self._input_keys,
                 budget=self._budget,
                 run_id=self._run_id,
+                leaf_inputs=self._leaf_inputs,
             )
         else:
             raise TypeError(
@@ -589,6 +598,7 @@ def _dispatch(
     _execution_identity: ExecutionIdentity | None = None,
     _workspace_claimed: bool = False,
     _validated_inputs: BaseModel | None = None,
+    _leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
     **kwargs: Any,
 ) -> StepResult:
     config = _config or AppConfig.load()
@@ -603,7 +613,7 @@ def _dispatch(
             # could claim one factory-produced path and execute with another.
             validated_inputs = _validated_inputs if _validated_inputs is not None else _validate_inputs(scope, kwargs)
             launch_workspace = Path.cwd()
-            accesses = scope_path_accesses(scope, validated_inputs, workspace=launch_workspace)
+            accesses, leaf_inputs = scope_path_accesses(scope, validated_inputs, workspace=launch_workspace)
             writes = [path for path, writes in accesses if writes]
             if writes:
                 workspace = ownership_workspace(launch_workspace, writes)
@@ -643,6 +653,7 @@ def _dispatch(
                     _execution_identity=_execution_identity,
                     _workspace_claimed=True,
                     _validated_inputs=validated_inputs,
+                    _leaf_inputs=leaf_inputs,
                     **kwargs,
                 )
             finally:
@@ -730,6 +741,7 @@ def _dispatch(
         budget=_budget,
         run_id=run_id,
         validated_inputs=_validated_inputs,
+        leaf_inputs=_leaf_inputs,
     )
 
     manifest = None
@@ -1224,6 +1236,7 @@ def _run_recipe(
     input_keys: dict[str, Any] | None = None,
     budget: Budget | None = None,
     run_id: str = "",
+    leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
 ) -> StepResult:
     """Topological wavefront scheduler over the recipe's declared DAG.
 
@@ -1297,7 +1310,7 @@ def _run_recipe(
     # `None` (not a slice) is stored as -1, so heap comparison never has to
     # order None against an int.
     pending: list[tuple[int, int]] = []
-    unit_payload: dict[tuple[int, int | None], tuple[dict[str, Any], dict[str, Any]]] = {}
+    unit_payload: dict[tuple[int, int | None], tuple[dict[str, Any], dict[str, Any], BaseModel | None]] = {}
     futures: dict[Future, tuple[int, int | None]] = {}
     # What each in-flight future reserved, and whether that reservation came
     # from `Budget.try_backfill`, so it can be released on every exit path --
@@ -1377,6 +1390,20 @@ def _run_recipe(
             """
             ref = recipe.steps[i]
             sub_kwargs = _resolve_wiring(ref, prepared, results)
+            # Reuse the leaf's default/default-factory evaluation that
+            # ownership discovery already performed, so a non-deterministic
+            # factory cannot claim one path and execute with another. Fields
+            # that wiring just resolved are never touched, so upstream
+            # outputs always win over a claim-time default.
+            validated_leaf = None
+            reusable_leaf = False
+            if leaf_inputs is not None and ref.scatter is None:
+                snapshot = leaf_inputs.get(id(ref))
+                if snapshot is not None:
+                    validated_leaf, reusable_leaf = snapshot
+                    for name in type(validated_leaf).model_fields:
+                        if name not in sub_kwargs:
+                            sub_kwargs[name] = getattr(validated_leaf, name)
             sub_input_keys = resolve_input_keys(ref, input_keys or {}, results)
             # An unrolled loop iteration whose predecessor already converged
             # does no work: it hands the same body step's previous outputs
@@ -1386,7 +1413,8 @@ def _run_recipe(
             if should_skip(ref, results):
                 prev = results[ref.loop.prev_step]
                 logger.info("step %s%s: skipped (loop '%s' converged)", f"{cache_path}." if cache_path else "", ref.name, ref.loop.loop)
-                _step_completed(i, passthrough_result(ref, prev, ref.step.inputs_model(**_prepare_inputs(ref.step, sub_kwargs))))
+                effective = validated_leaf if reusable_leaf else ref.step.inputs_model(**_prepare_inputs(ref.step, sub_kwargs))
+                _step_completed(i, passthrough_result(ref, prev, effective))
                 return
             if ref.scatter is not None:
                 slices = _build_scatter_slices(ref, sub_kwargs)
@@ -1401,10 +1429,10 @@ def _run_recipe(
                 scatter_sub_kwargs[i] = sub_kwargs
                 slice_results[i] = [None] * len(slices)
                 for slice_idx, slice_kwargs in enumerate(slices):
-                    unit_payload[(i, slice_idx)] = (slice_kwargs, sub_input_keys)
+                    unit_payload[(i, slice_idx)] = (slice_kwargs, sub_input_keys, None)
                     heapq.heappush(pending, (i, slice_idx))
                 return
-            unit_payload[(i, None)] = (sub_kwargs, sub_input_keys)
+            unit_payload[(i, None)] = (sub_kwargs, sub_input_keys, validated_leaf if reusable_leaf else None)
             heapq.heappush(pending, (i, _NOT_A_SLICE))
 
         def _demand_of(i: int) -> Resources:
@@ -1426,7 +1454,7 @@ def _run_recipe(
         def _submit_unit(i: int, slice_idx: int | None, demand: Resources, backfilled: bool = False) -> None:
             """Submit one admission unit that has already been granted."""
             ref = recipe.steps[i]
-            unit_kwargs, sub_input_keys = unit_payload.pop((i, slice_idx))
+            unit_kwargs, sub_input_keys, validated_inputs = unit_payload.pop((i, slice_idx))
             fut = pool.submit(
                 _dispatch,
                 ref.step,
@@ -1450,6 +1478,8 @@ def _run_recipe(
                 _wired_fields=set(ref.wiring),
                 _run_id=run_id,
                 _slice_index=slice_idx,
+                _leaf_inputs=leaf_inputs,
+                _validated_inputs=validated_inputs,
                 **unit_kwargs,
             )
             futures[fut] = (i, slice_idx)

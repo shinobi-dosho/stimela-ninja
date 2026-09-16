@@ -713,14 +713,22 @@ def submit_worker_slurm(workflow: WorkerSlurmWorkflow) -> WorkerSlurmHandle:
     from shinobi.ownership import WorkspaceOwner, acquire_workspace
 
     if plan.ownership_required:
-        lease = acquire_workspace(
-            Path(plan.ownership_workspace or bundle.workspace),
-            str(plan.workflow_id),
-            kind="slurm",
-            submission=directory,
-            accesses=((Path(access.path), access.writes) for access in plan.accesses),
-            registry=Path(plan.ownership_registry) if plan.ownership_registry is not None else None,
-        )
+        try:
+            lease = acquire_workspace(
+                Path(plan.ownership_workspace or bundle.workspace),
+                str(plan.workflow_id),
+                kind="slurm",
+                submission=directory,
+                accesses=((Path(access.path), access.writes) for access in plan.accesses),
+                registry=Path(plan.ownership_registry) if plan.ownership_registry is not None else None,
+            )
+        except BaseException:
+            # Ownership was never secured, so the one-shot claim written above
+            # must not survive: a retry of this same workflow would otherwise
+            # hit the FileExistsError guard and report "already began
+            # submission" despite no job ever being submitted.
+            (directory / "submission-claim.json").unlink(missing_ok=True)
+            raise
         try:
             write_new(directory / "ownership.json", lease.owner)
         except FileExistsError:

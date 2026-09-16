@@ -95,8 +95,23 @@ def _model_values(model: BaseModel) -> dict[str, Any]:
     return values
 
 
-def _resolved_leaf_inputs(scope: Scope, values: dict[str, Any] | BaseModel) -> Iterable[tuple[Scope, dict[str, Any]]]:
-    """Yield each leaf with the inputs knowable at a workflow boundary."""
+def _resolved_leaf_inputs(
+    scope: Scope,
+    values: dict[str, Any] | BaseModel,
+    *,
+    step_inputs: dict[int, tuple[BaseModel, bool]],
+    reusable: bool = True,
+) -> Iterable[tuple[Scope, dict[str, Any]]]:
+    """Yield each leaf with the inputs knowable at a workflow boundary.
+
+    ``step_inputs`` collects each successfully validated StepRef model. Its
+    boolean says whether every value was knowable at the ownership boundary;
+    an unresolved ``OutputRef`` makes that step and everything below a nested
+    recipe runtime-dependent. Fully knowable models are handed to dispatch
+    unchanged, so both default factories and custom validators run exactly
+    once. Runtime-dependent models still supply their already-evaluated
+    defaults, but execution validates the final upstream values normally.
+    """
     if not isinstance(scope, Recipe):
         # Top-level dispatch passes its already-validated model so defaults
         # (including default factories) are part of the claim and are not
@@ -105,7 +120,8 @@ def _resolved_leaf_inputs(scope: Scope, values: dict[str, Any] | BaseModel) -> I
             yield scope, _model_values(values)
             return
         try:
-            yield scope, _model_values(scope.inputs_model(**values))
+            validated = scope.inputs_model(**values)
+            yield scope, _model_values(validated)
         except Exception:  # input validation reports the authoritative error in dispatch
             yield scope, values
         return
@@ -120,26 +136,42 @@ def _resolved_leaf_inputs(scope: Scope, values: dict[str, Any] | BaseModel) -> I
 
     for ref in scope.steps:
         known = dict(ref.params)
+        runtime_dependent = False
         for field, source in ref.wiring.items():
             sources = source if isinstance(source, list) else [source]
             if all(isinstance(item, InputRef) and item.field in recipe_inputs for item in sources):
                 resolved = [recipe_inputs[item.field] for item in sources]
                 known[field] = resolved if isinstance(source, list) else resolved[0]
+            elif any(not isinstance(item, InputRef) for item in sources):
+                runtime_dependent = True
+        validated = None
         try:
             validated = ref.step.inputs_model(**known)
             known = {name: getattr(validated, name) for name in ref.step.inputs_model.model_fields}
+            step_inputs[id(ref)] = (validated, reusable and not runtime_dependent and ref.scatter is None)
         except Exception:
             pass
-        yield from _resolved_leaf_inputs(ref.step, known)
+        yield from _resolved_leaf_inputs(
+            ref.step,
+            validated if validated is not None else known,
+            step_inputs=step_inputs,
+            reusable=reusable and validated is not None and not runtime_dependent and ref.scatter is None,
+        )
 
 
-def scope_path_accesses(scope: Scope, values: dict[str, Any] | BaseModel, *, workspace: Path) -> list[tuple[Path, bool]]:
-    """Resolve every path access known at a workflow boundary."""
+def scope_path_accesses(scope: Scope, values: dict[str, Any] | BaseModel, *, workspace: Path) -> tuple[list[tuple[Path, bool]], dict[int, tuple[BaseModel, bool]]]:
+    """Resolve every path access known at a workflow boundary.
+
+    Also returns each StepRef's validated inputs model, keyed by StepRef
+    identity, plus whether it is safe to reuse unchanged at execution. This
+    makes claim-time validation the one validation for fully knowable steps.
+    """
     collected: dict[Path, bool] = {}
-    for leaf, known in _resolved_leaf_inputs(scope, values):
+    step_inputs: dict[int, tuple[BaseModel, bool]] = {}
+    for leaf, known in _resolved_leaf_inputs(scope, values, step_inputs=step_inputs):
         for path, writes in path_accesses(leaf, known, workspace=workspace):
             collected[path] = collected.get(path, False) or writes
-    return list(collected.items())
+    return list(collected.items()), step_inputs
 
 
 class WorkspaceOwner(BaseModel):
