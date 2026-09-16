@@ -90,22 +90,22 @@ _NOT_A_SLICE = -1
 _BACKFILL_LOOKAHEAD = 8
 
 
-def _dataset_declarations(scope: Scope, prefix: str = "") -> list[str]:
+def _scope_dataset_declarations(scope: Scope, prefix: str = "") -> list[str]:
     """Describe strict dataset fields in a scope tree without inspecting I/O."""
 
-    from shinobi.datasets import dataset_fields
+    from shinobi.datasets import dataset_declarations
 
     declarations = []
     for side, model in (("input", scope.inputs_model), ("output", scope.outputs_model)):
-        declarations.extend(f"{prefix}{scope.name} {side} '{name}' ({declaration.profile})" for name, declaration in dataset_fields(model).items())
+        declarations.extend(f"{prefix}{scope.name} {side} '{name}' ({declaration.profile})" for name, declaration in dataset_declarations(model).items())
     if isinstance(scope, Recipe):
         for ref in scope.steps:
-            declarations.extend(_dataset_declarations(ref.step, f"{prefix}{ref.name}/"))
+            declarations.extend(_scope_dataset_declarations(ref.step, f"{prefix}{ref.name}/"))
     return declarations
 
 
 def _refuse_unenforced_datasets(scope: Scope) -> None:
-    declarations = _dataset_declarations(scope)
+    declarations = _scope_dataset_declarations(scope)
     if declarations:
         raise DatasetLifecycleUnavailableError(
             "strict CASA/MSv2 dataset annotations are declarative in this release and cannot execute until "

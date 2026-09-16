@@ -72,6 +72,8 @@ Datasets
 
 .. autofunction:: shinobi.datasets.dataset_fields
 
+.. autofunction:: shinobi.datasets.dataset_declarations
+
 .. autofunction:: shinobi.datasets.inspect_dataset
 
 .. autofunction:: shinobi.datasets.inspect_casa_table

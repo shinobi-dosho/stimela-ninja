@@ -41,17 +41,33 @@ Inspection is a separate operation:
    if observed.status is not DatasetStatus.VALID:
        raise RuntimeError(observed.message)
 
+Install the optional inspector in the environment which performs inspection:
+
+.. code-block:: console
+
+   pip install "stimela-ninja[casacore]"
+
+For a source checkout managed by uv, use ``uv sync --extra casacore``.
+
 The result is a serializable :class:`~shinobi.datasets.DatasetDescriptor`.
 Statuses distinguish a missing path, a non-directory, an unavailable
 inspector, an arbitrary directory/non-CASA table, a CASA table which is not an
 MS, an incomplete MSv2, an unsupported version or metadata size, and a valid
-dataset.  Diagnostics list missing required columns and missing or unreadable
-required subtables.
+dataset.  Diagnostics distinguish unreadable required subtables from readable
+subtables whose required MSv2 columns are missing.  Optional subtables such as
+``SOURCE`` and optional or custom columns remain legal.
 
-Inspection imports ``python-casacore`` lazily and reads only bounded structural
-metadata: column names, keyword names, row count, and ``MS_VERSION``.  It never
-reads column cells or scans visibility data.  All observed column names are
-retained within the configured bounds, including optional and custom columns.
+Inspection imports ``python-casacore`` lazily and requests only structural
+metadata: column names, keyword names, row count, and ``MS_VERSION``.  Casacore
+may materialize complete name lists before Shinobi can count them; Shinobi
+retains and accepts metadata only within the configured limits, applying the
+same limits to the main table and required subtables.  Inspection never reads
+column cells or scans visibility data.  Within those limits, main-table names
+are retained including optional and custom columns.
+
+Dataset declarations nested in Pydantic models, sequences, mappings, and
+unions are discovered recursively.  Diagnostic paths use ``[]`` for a
+sequence item and ``.*`` for a mapping value.
 
 Execution status
 ----------------

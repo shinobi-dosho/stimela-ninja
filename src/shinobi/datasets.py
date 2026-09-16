@@ -8,19 +8,22 @@ serialized.
 
 Inspection is an explicit operation.  :func:`inspect_dataset` reads table
 metadata only (names, row count and the MS version keyword); it never reads a
-column cell or scans visibility data.  ``python-casacore`` is imported lazily,
-so declaring these types does not add it as a runtime dependency.
+column cell or scans visibility data.  The metadata retained by Shinobi is
+bounded, although casacore may materialize complete name lists before those
+bounds can be checked.  ``python-casacore`` is imported lazily, so declaring
+these types does not add it as a runtime dependency.
 """
 
 from __future__ import annotations
 
 import types
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any, Union, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict, WithJsonSchema
+from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema
 
 CASA_TABLE_PROFILE = "casa-table/v1"
 MSV2_STRUCTURAL_PROFILE = "msv2-structural/v1"
@@ -125,6 +128,7 @@ class DatasetDescriptor(BaseModel):
     missing_columns: tuple[str, ...] = ()
     missing_subtables: tuple[str, ...] = ()
     unreadable_subtables: tuple[str, ...] = ()
+    missing_subtable_columns: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     unsupported_features: tuple[str, ...] = ()
 
     @property
@@ -179,40 +183,133 @@ _MSV2_REQUIRED_SUBTABLES = frozenset(
     }
 )
 
+# The required columns of every mandatory subtable in the MSv2 layout.  Empty
+# row sets are legal (and useful for generated fixtures), but an empty or
+# partial schema is not.  Optional SOURCE and other standard/custom subtables
+# remain legal because the profile only validates mandatory tables.
+_MSV2_REQUIRED_SUBTABLE_COLUMNS = {
+    "ANTENNA": frozenset({"NAME", "STATION", "TYPE", "MOUNT", "POSITION", "OFFSET", "DISH_DIAMETER", "FLAG_ROW"}),
+    "DATA_DESCRIPTION": frozenset({"SPECTRAL_WINDOW_ID", "POLARIZATION_ID", "FLAG_ROW"}),
+    "FEED": frozenset(
+        {
+            "ANTENNA_ID",
+            "FEED_ID",
+            "SPECTRAL_WINDOW_ID",
+            "TIME",
+            "INTERVAL",
+            "NUM_RECEPTORS",
+            "BEAM_ID",
+            "BEAM_OFFSET",
+            "POLARIZATION_TYPE",
+            "POL_RESPONSE",
+            "POSITION",
+            "RECEPTOR_ANGLE",
+        }
+    ),
+    "FIELD": frozenset({"NAME", "CODE", "TIME", "NUM_POLY", "DELAY_DIR", "PHASE_DIR", "REFERENCE_DIR", "SOURCE_ID", "FLAG_ROW"}),
+    "FLAG_CMD": frozenset({"TIME", "INTERVAL", "TYPE", "REASON", "LEVEL", "SEVERITY", "APPLIED", "COMMAND"}),
+    "HISTORY": frozenset({"TIME", "OBSERVATION_ID", "MESSAGE", "PRIORITY", "ORIGIN", "OBJECT_ID", "APPLICATION", "CLI_COMMAND", "APP_PARAMS"}),
+    "OBSERVATION": frozenset({"TELESCOPE_NAME", "TIME_RANGE", "OBSERVER", "LOG", "SCHEDULE_TYPE", "SCHEDULE", "PROJECT", "RELEASE_DATE", "FLAG_ROW"}),
+    "POINTING": frozenset({"ANTENNA_ID", "TIME", "INTERVAL", "NAME", "NUM_POLY", "TIME_ORIGIN", "DIRECTION", "TARGET", "TRACKING"}),
+    "POLARIZATION": frozenset({"NUM_CORR", "CORR_TYPE", "CORR_PRODUCT", "FLAG_ROW"}),
+    "PROCESSOR": frozenset({"TYPE", "SUB_TYPE", "TYPE_ID", "MODE_ID", "FLAG_ROW"}),
+    "SPECTRAL_WINDOW": frozenset(
+        {
+            "NUM_CHAN",
+            "NAME",
+            "REF_FREQUENCY",
+            "CHAN_FREQ",
+            "CHAN_WIDTH",
+            "MEAS_FREQ_REF",
+            "EFFECTIVE_BW",
+            "RESOLUTION",
+            "TOTAL_BANDWIDTH",
+            "NET_SIDEBAND",
+            "IF_CONV_CHAIN",
+            "FREQ_GROUP",
+            "FREQ_GROUP_NAME",
+            "FLAG_ROW",
+        }
+    ),
+    "STATE": frozenset({"SIG", "REF", "CAL", "LOAD", "SUB_SCAN", "OBS_MODE", "FLAG_ROW"}),
+}
 
-def _dataset_types(annotation: Any, metadata: tuple[Any, ...] = ()) -> tuple[DatasetType, ...]:
-    found = [item for item in metadata if isinstance(item, DatasetType)]
-    origin = get_origin(annotation)
-    args = get_args(annotation)
-    if origin is Annotated:
-        found.extend(_dataset_types(args[0], args[1:]))
-    elif origin is Union or origin is types.UnionType or origin in (list, tuple, set, frozenset):
-        for arg in args:
-            if arg is not Ellipsis:
-                found.extend(_dataset_types(arg))
-    # A field should carry one dataset declaration.  Deduplicate the common
-    # direct-Annotated case where pydantic exposes metadata separately.
-    return tuple(dict.fromkeys(found))
+
+def _is_mapping(origin: Any) -> bool:
+    return isinstance(origin, type) and issubclass(origin, Mapping)
 
 
-def dataset_fields(model: type[BaseModel]) -> dict[str, DatasetType]:
-    """Return fields carrying a dataset declaration.
+def _is_model(annotation: Any) -> bool:
+    return isinstance(annotation, type) and issubclass(annotation, BaseModel)
 
-    Declarations inside ``Optional`` and homogeneous containers are found as
-    well as a declaration attached directly to the field.
+
+def dataset_declarations(model: type[BaseModel]) -> dict[str, DatasetType]:
+    """Find every dataset declaration reachable from a Pydantic model.
+
+    Returned keys are qualified field paths.  ``[]`` denotes a sequence item
+    and ``.*`` a mapping value, for example ``groups.*.members[].ms``.  Nested
+    models and unions are traversed recursively.  An ancestor stack prevents
+    self-referential models from recursing forever without suppressing the
+    same model used independently by two fields.
 
     Raises:
-        TypeError: If a field contains conflicting dataset declarations.
+        TypeError: If one qualified path contains conflicting declarations.
     """
 
     result: dict[str, DatasetType] = {}
-    for name, field in model.model_fields.items():
-        declarations = _dataset_types(field.annotation, tuple(field.metadata))
-        if len(declarations) > 1:
-            raise TypeError(f"field {model.__name__}.{name} has conflicting dataset declarations: {declarations!r}")
-        if declarations:
-            result[name] = declarations[0]
+
+    def record(path: str, declaration: DatasetType) -> None:
+        previous = result.get(path)
+        if previous is not None and previous != declaration:
+            raise TypeError(f"field {model.__name__}.{path} has conflicting dataset declarations: {(previous, declaration)!r}")
+        result[path] = declaration
+
+    def visit_annotation(annotation: Any, path: str, metadata: tuple[Any, ...], ancestors: frozenset[type[BaseModel]]) -> None:
+        declarations = [item for item in metadata if isinstance(item, DatasetType)]
+        while get_origin(annotation) is Annotated:
+            annotation, *annotated_metadata = get_args(annotation)
+            declarations.extend(item for item in annotated_metadata if isinstance(item, DatasetType))
+        for declaration in dict.fromkeys(declarations):
+            record(path, declaration)
+
+        origin = get_origin(annotation)
+        args = get_args(annotation)
+        if origin is Union or origin is types.UnionType:
+            for arg in args:
+                visit_annotation(arg, path, (), ancestors)
+        elif _is_mapping(origin):
+            if len(args) == 2:
+                visit_annotation(args[1], f"{path}.*", (), ancestors)
+        elif origin in (list, set, frozenset):
+            if args:
+                visit_annotation(args[0], f"{path}[]", (), ancestors)
+        elif origin is tuple:
+            for arg in args:
+                if arg is not Ellipsis:
+                    visit_annotation(arg, f"{path}[]", (), ancestors)
+        elif _is_model(annotation):
+            visit_model(annotation, path, ancestors)
+
+    def visit_model(current: type[BaseModel], prefix: str, ancestors: frozenset[type[BaseModel]]) -> None:
+        if current in ancestors:
+            return
+        nested_ancestors = ancestors | {current}
+        for name, field in current.model_fields.items():
+            path = f"{prefix}.{name}" if prefix else name
+            visit_annotation(field.annotation, path, tuple(field.metadata), nested_ancestors)
+
+    visit_model(model, "", frozenset())
     return result
+
+
+def dataset_fields(model: type[BaseModel]) -> dict[str, DatasetType]:
+    """Backward-compatible name for :func:`dataset_declarations`.
+
+    Unlike its original implementation, this returns qualified paths for
+    declarations in nested models and containers as well as top-level fields.
+    """
+
+    return dataset_declarations(model)
 
 
 def _load_table_factory() -> Any:
@@ -262,7 +359,7 @@ def inspect_dataset(
 
     try:
         table_factory = _load_table_factory()
-    except ImportError:
+    except (ImportError, OSError):
         feature = "python-casacore metadata inspection"
         return _descriptor(
             candidate,
@@ -351,6 +448,8 @@ def inspect_dataset(
         missing_subtables = tuple(sorted(_MSV2_REQUIRED_SUBTABLES.difference(keywords)))
         subtables = tuple(sorted(_MSV2_REQUIRED_SUBTABLES.intersection(keywords)))
         unreadable_subtables = []
+        missing_subtable_columns: dict[str, tuple[str, ...]] = {}
+        subtable_bounds = []
         for name in subtables:
             try:
                 subtable = table_factory(f"{candidate}::{name}", readonly=True, ack=False)
@@ -358,17 +457,37 @@ def inspect_dataset(
                 unreadable_subtables.append(name)
                 continue
             try:
-                # These are metadata-only calls.  They prove the keyword
-                # resolves to a readable CASA table without reading cells.
-                subtable.colnames()
-                subtable.keywordnames()
+                # These are metadata-only calls.  Casacore can materialize
+                # each complete name list, so enforce the acceptance/retention
+                # bounds immediately after each call and never read cells.
+                subtable_columns = tuple(str(column) for column in subtable.colnames())
+                subtable_keywords = tuple(str(keyword) for keyword in subtable.keywordnames())
                 subtable.nrows()
+                if len(subtable_columns) > limits.max_columns:
+                    subtable_bounds.append(f"{name} column count {len(subtable_columns)} exceeds limit {limits.max_columns}")
+                if len(subtable_keywords) > limits.max_keywords:
+                    subtable_bounds.append(f"{name} keyword count {len(subtable_keywords)} exceeds limit {limits.max_keywords}")
+                missing = tuple(sorted(_MSV2_REQUIRED_SUBTABLE_COLUMNS[name].difference(subtable_columns)))
+                if missing:
+                    missing_subtable_columns[name] = missing
             except Exception:
                 unreadable_subtables.append(name)
             finally:
                 subtable.close()
         unreadable_subtables_tuple = tuple(unreadable_subtables)
-        if missing_columns or missing_subtables or unreadable_subtables_tuple:
+        if subtable_bounds:
+            return _descriptor(
+                candidate,
+                expected,
+                DatasetStatus.UNSUPPORTED,
+                "; ".join(subtable_bounds),
+                nrows=nrows,
+                columns=columns,
+                keywords=keywords,
+                subtables=subtables,
+                unsupported_features=tuple(subtable_bounds),
+            )
+        if missing_columns or missing_subtables or unreadable_subtables_tuple or missing_subtable_columns:
             parts = []
             if missing_columns:
                 parts.append(f"missing required columns {list(missing_columns)!r}")
@@ -376,6 +495,8 @@ def inspect_dataset(
                 parts.append(f"missing required subtables {list(missing_subtables)!r}")
             if unreadable_subtables_tuple:
                 parts.append(f"unreadable required subtables {list(unreadable_subtables_tuple)!r}")
+            if missing_subtable_columns:
+                parts.append(f"required subtables missing columns {missing_subtable_columns!r}")
             return _descriptor(
                 candidate,
                 expected,
@@ -388,6 +509,7 @@ def inspect_dataset(
                 missing_columns=missing_columns,
                 missing_subtables=missing_subtables,
                 unreadable_subtables=unreadable_subtables_tuple,
+                missing_subtable_columns=missing_subtable_columns,
             )
         return _descriptor(
             candidate,
@@ -427,6 +549,7 @@ __all__ = [
     "DatasetType",
     "InspectionLimits",
     "MeasurementSetV2",
+    "dataset_declarations",
     "dataset_fields",
     "inspect_casa_table",
     "inspect_dataset",
