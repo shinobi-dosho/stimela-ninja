@@ -707,9 +707,7 @@ def submit_worker_slurm(workflow: WorkerSlurmWorkflow) -> WorkerSlurmHandle:
             SubmissionClaim(workflow_id=plan.workflow_id, bundle_digest=plan.bundle_digest),
         )
     except FileExistsError:
-        raise OffloadCompileError(
-            f"workflow {plan.workflow_id} has already begun scheduler submission; prepare a new workflow to retry"
-        ) from None
+        raise OffloadCompileError(f"workflow {plan.workflow_id} has already begun scheduler submission; prepare a new workflow to retry") from None
     from shinobi.ownership import WorkspaceOwner, acquire_workspace
 
     if plan.ownership_required:
