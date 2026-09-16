@@ -40,7 +40,7 @@ from shinobi.cache import (
 )
 from shinobi.snapshots import SnapshotGuard, announce_run, eligible_fields, get_journal, new_run_id, reconcile
 from shinobi.config import AppConfig
-from shinobi.exceptions import CabRunError, ParameterError, ShinobiError, StepError
+from shinobi.exceptions import CabRunError, DatasetLifecycleUnavailableError, ParameterError, ShinobiError, StepError
 from shinobi.graph import build_graph
 from shinobi.policies import build_argv
 from shinobi.resources import Budget, Resources
@@ -88,6 +88,30 @@ _NOT_A_SLICE = -1
 # every pass and the ready set is re-scanned from the front each time, so a
 # candidate beyond the window is simply reconsidered on a later pass.
 _BACKFILL_LOOKAHEAD = 8
+
+
+def _dataset_declarations(scope: Scope, prefix: str = "") -> list[str]:
+    """Describe strict dataset fields in a scope tree without inspecting I/O."""
+
+    from shinobi.datasets import dataset_fields
+
+    declarations = []
+    for side, model in (("input", scope.inputs_model), ("output", scope.outputs_model)):
+        declarations.extend(f"{prefix}{scope.name} {side} '{name}' ({declaration.profile})" for name, declaration in dataset_fields(model).items())
+    if isinstance(scope, Recipe):
+        for ref in scope.steps:
+            declarations.extend(_dataset_declarations(ref.step, f"{prefix}{ref.name}/"))
+    return declarations
+
+
+def _refuse_unenforced_datasets(scope: Scope) -> None:
+    declarations = _dataset_declarations(scope)
+    if declarations:
+        raise DatasetLifecycleUnavailableError(
+            "strict CASA/MSv2 dataset annotations are declarative in this release and cannot execute until "
+            "validation, staging and recovery enforce the same lifecycle contract; use Path or the legacy loader "
+            f"dtype 'MS' for current execution. Declared field(s): {', '.join(declarations)}"
+        )
 
 
 def _any_resources(recipe: Recipe) -> bool:
@@ -601,6 +625,7 @@ def _dispatch(
     _leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
     **kwargs: Any,
 ) -> StepResult:
+    _refuse_unenforced_datasets(scope)
     config = _config or AppConfig.load()
     run_id = _run_id or new_run_id()
     if _cache_path is None and not _workspace_claimed:

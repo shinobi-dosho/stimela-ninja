@@ -19,7 +19,7 @@ import re
 import types
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Union, get_args, get_origin
+from typing import Annotated, Any, Callable, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_serializer, model_validator
 from pydantic_core import PydanticUndefined
@@ -328,6 +328,8 @@ def _unwrap_annotation(annotation: Any) -> list[Any]:
     Optional/Union and list/tuple containers -- used by `path_fields`.
     """
     origin = get_origin(annotation)
+    if origin is Annotated:
+        return _unwrap_annotation(get_args(annotation)[0])
     if origin is Union or origin is types.UnionType:
         leaves: list[Any] = []
         for arg in get_args(annotation):

@@ -35,6 +35,16 @@ class ReplayError(ShinobiError):
     """A run manifest cannot be replayed against the current target."""
 
 
+class DatasetLifecycleUnavailableError(ShinobiError):
+    """Execution was refused for a strict dataset annotation.
+
+    Structural dataset declarations are intentionally inert until execution,
+    staging and recovery all enforce the same contract.  This exception keeps
+    an annotation from looking enforced while it is only being carried as a
+    path by the current execution stack.
+    """
+
+
 class UnsupportedFlavourError(ShinobiError):
     """A cab's flavour isn't one shinobi knows how to execute.
 

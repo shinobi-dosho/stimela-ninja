@@ -29,14 +29,17 @@ from shinobi.steps.schema import (
     StepRef,
     path_fields,
 )
+from shinobi.datasets import CasaTable, MeasurementSetV2
 
 __all__ = [
     "Cab",
+    "CasaTable",
     "ExecContext",
     "InputRef",
     "LoopIteration",
     "LoopRef",
     "Mutability",
+    "MeasurementSetV2",
     "OutputRef",
     "ParamMeta",
     "ParamPattern",
