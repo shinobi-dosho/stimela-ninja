@@ -181,12 +181,21 @@ override scope/config settings, while ``--cache-dir`` selects the shared store
 without enabling it by itself. These options are refused by the legacy argv
 compiler rather than silently ignored.
 
-Mutation-snapshot writes remain disabled inside workers. A leaf that declares
-an in-place path mutation is therefore still forced uncached until worker
-snapshot commit/recovery is integrated. Loop pass-through still
-publishes a current immutable attempt record and carries the producing state's
-key and environment provenance without claiming a new result. Sandboxing is
-always enabled. Each attempt owns
+Mutation-declaring leaves use the same snapshot eligibility, state naming,
+restore and conservative exclusion rules as local dispatch. Before a worker
+cache decision, recovery is limited to the concrete mutation paths assigned to
+that allocation; Slurm's inferred mutation dependencies ensure another live
+worker is not writing those paths. The marker names the invocation's immutable
+final attempt record as its success oracle. On success, Rule B and the journal
+commit precede that record; the cache manifest is updated only afterwards, and
+trash disposal plus marker clearing remain last. A cache-index failure can
+therefore cost reuse but cannot revoke committed work, while a missing or
+failed attempt record forces rollback and removes a same-key stale cache entry.
+This ordering also distinguishes a legitimately completed uncached mutator
+from a crash, so reconciliation does not silently discard its work. Loop
+pass-through still publishes a current immutable attempt record and carries
+the producing state's key and environment provenance without claiming a new
+result. Sandboxing is always enabled. Each attempt owns
 ``sandboxes/<attempt-id>/...`` under the unique submission directory on the
 same filesystem as the recorded workspace;
 cross-filesystem scratch is refused rather than silently becoming node-local

@@ -30,6 +30,7 @@ from shinobi.offload.worker import (
 )
 from shinobi.ownership import WorkspaceOwnershipError, acquire_workspace, inspect_workspace, release_workspace
 from shinobi.provenance import RunManifest
+from shinobi.snapshots import Chain, HeadStatus, Marker, chain_id, faults, get_journal
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, ParamMeta, Recipe, StepRef
 
 
@@ -52,6 +53,22 @@ class PathOut(BaseModel):
     out: Path
 
 
+class MutationRoot(BaseModel):
+    ms: Path
+
+
+class MutationIn(BaseModel):
+    script: str
+    ms: Path
+
+
+@pytest.fixture(autouse=True)
+def _clear_snapshot_faults():
+    faults.hooks.clear()
+    yield
+    faults.hooks.clear()
+
+
 def _cab(name: str, model: type[BaseModel]) -> Cab:
     return Cab(
         name=name,
@@ -60,6 +77,78 @@ def _cab(name: str, model: type[BaseModel]) -> Cab:
         outputs_model=PathOut,
         field_meta={field: ParamMeta(positional=True) for field in model.model_fields},
     )
+
+
+def _mutation_cab(name: str) -> Cab:
+    return Cab(
+        name=name,
+        command=f"{sys.executable} -c",
+        inputs_model=MutationIn,
+        outputs_model=MutationRoot,
+        field_meta={"script": ParamMeta(positional_head=True), "ms": ParamMeta(positional=True)},
+        input_mutability={"ms": Mutability.MUTABLE},
+    )
+
+
+def _mutation_recipe(tmp_path: Path, *, flag="default", crash_cal: bool = False, flag_cache: bool | None = None) -> Recipe:
+    split = _mutation_cab("split")
+    flag_cab = _mutation_cab("flag").model_copy(update={"cache": flag_cache}) if flag_cache is not None else _mutation_cab("flag")
+    cal = _mutation_cab("cal")
+    split_script = "from pathlib import Path;import sys;p=Path(sys.argv[1]);p.mkdir(exist_ok=True);(p/'table.dat').write_text('vis')"
+    flag_script = f"from pathlib import Path;import sys;p=Path(sys.argv[1])/'table.dat';p.write_text(p.read_text()+'|flag[{flag}]')"
+    if crash_cal:
+        sentinel = tmp_path / "crash.once"
+        cal_script = (
+            "from pathlib import Path;import sys;"
+            "p=Path(sys.argv[1])/'table.dat';"
+            f"s=Path({str(sentinel)!r});crash=s.exists();"
+            "p.write_text(p.read_text()+('|PARTIAL' if crash else '|cal'));"
+            "s.unlink() if crash else None;sys.exit(9 if crash else 0)"
+        )
+    else:
+        cal_script = "from pathlib import Path;import sys;p=Path(sys.argv[1])/'table.dat';p.write_text(p.read_text()+'|cal')"
+    return Recipe(
+        name="mutation-worker",
+        inputs_model=MutationRoot,
+        outputs_model=MutationRoot,
+        steps=[
+            StepRef(name="split", step=split, params={"script": split_script}, wiring={"ms": InputRef(field="ms")}),
+            StepRef(name="flag", step=flag_cab, params={"script": flag_script}, wiring={"ms": OutputRef(step="split", field="ms")}),
+            StepRef(name="cal", step=cal, params={"script": cal_script}, wiring={"ms": OutputRef(step="flag", field="ms")}),
+        ],
+        output_wiring={"ms": OutputRef(step="cal", field="ms")},
+        cache=True,
+        cache_dir=str(tmp_path / "cache"),
+    )
+
+
+def _prepare_mutation(tmp_path: Path, recipe: Recipe, ms: Path):
+    bundle = freeze_recipe(recipe, {"ms": ms}, config=AppConfig(), workspace=tmp_path)
+    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+    return workflow, ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+
+
+def _mixed_pystep_recipe(tmp_path: Path, mutate_ref: StepRef) -> Recipe:
+    split = _mutation_cab("split")
+    split_script = "from pathlib import Path;import sys;p=Path(sys.argv[1]);p.mkdir(exist_ok=True);(p/'table.dat').write_text('vis')"
+    return Recipe(
+        name="mixed-pystep-mutation",
+        inputs_model=MutationRoot,
+        outputs_model=MutationRoot,
+        steps=[
+            StepRef(name="split", step=split, params={"script": split_script}, wiring={"ms": InputRef(field="ms")}),
+            mutate_ref.model_copy(update={"name": "mutate", "wiring": {"ms": OutputRef(step="split", field="ms")}}),
+        ],
+        output_wiring={"ms": OutputRef(step="mutate", field="ms")},
+        cache=True,
+        cache_dir=str(tmp_path / "cache"),
+    )
+
+
+def _prepare_mixed_pystep(tmp_path: Path, recipe: Recipe, ms: Path):
+    bundle = freeze_recipe(recipe, {"ms": ms}, config=AppConfig(), workspace=tmp_path, code_roots=(Path.cwd(),))
+    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+    return workflow, ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
 
 
 def _recipe() -> Recipe:
@@ -252,7 +341,7 @@ def test_recipe_cache_setting_is_not_dropped_by_worker_compilation(tmp_path):
     assert [record.state for record in _execute_all(second, second_plan)] == ["cached", "cached"]
 
 
-def test_worker_mutator_remains_uncached_until_snapshot_recovery_lands(tmp_path):
+def test_worker_mutator_is_cacheable_once_snapshot_recovery_is_active(tmp_path):
     recipe = _recipe().model_copy(deep=True)
     recipe.steps[1].step.input_mutability["src"] = Mutability.MUTABLE
     first, _bundle, first_plan = _prepared_cached(tmp_path, recipe)
@@ -260,8 +349,84 @@ def test_worker_mutator_remains_uncached_until_snapshot_recovery_lands(tmp_path)
 
     second, _bundle, second_plan = _prepared_cached(tmp_path, recipe)
     records = _execute_all(second, second_plan)
-    assert [record.state for record in records] == ["cached", "succeeded"]
-    assert records[1].cache_key is None
+    assert [record.state for record in records] == ["cached", "cached"]
+    assert records[1].cache_key is not None
+
+
+def test_changed_midchain_worker_restores_declared_predecessor_state(tmp_path):
+    ms = tmp_path / "data.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("raw")
+
+    first, first_plan = _prepare_mutation(tmp_path, _mutation_recipe(tmp_path), ms)
+    assert [record.state for record in _execute_all(first, first_plan)] == ["succeeded", "succeeded", "succeeded"]
+    assert (ms / "table.dat").read_text() == "vis|flag[default]|cal"
+
+    changed, changed_plan = _prepare_mutation(tmp_path, _mutation_recipe(tmp_path, flag="aggressive"), ms)
+    assert [record.state for record in _execute_all(changed, changed_plan)] == ["cached", "succeeded", "succeeded"]
+    assert (ms / "table.dat").read_text() == "vis|flag[aggressive]|cal"
+
+
+def test_interrupted_worker_mutation_recovers_before_retry(tmp_path):
+    ms = tmp_path / "data.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("raw")
+    (tmp_path / "crash.once").write_text("armed")
+    recipe = _mutation_recipe(tmp_path, crash_cal=True)
+    first, first_plan = _prepare_mutation(tmp_path, recipe, ms)
+
+    assert execute_step(first.submission_dir, first_plan.attempts[0].step_path, first_plan.attempts[0].attempt_id) == 0
+    assert execute_step(first.submission_dir, first_plan.attempts[1].step_path, first_plan.attempts[1].attempt_id) == 0
+    failed = first_plan.attempts[2]
+    assert execute_step(first.submission_dir, failed.step_path, failed.attempt_id) == 9
+    assert (ms / "table.dat").read_text() == "vis|flag[default]|PARTIAL"
+    marker = get_journal(str(tmp_path / "cache")).get(chain_id(ms)).marker
+    assert marker is not None and marker.success_record is not None
+
+    retry, retry_plan = _prepare_mutation(tmp_path, recipe, ms)
+    assert [record.state for record in _execute_all(retry, retry_plan)] == ["cached", "cached", "succeeded"]
+    assert (ms / "table.dat").read_text() == "vis|flag[default]|cal"
+
+
+@pytest.mark.parametrize("stage", ["S1", "S2", "W_RESULT", "W_CACHE", "S3", "S4", "S5"])
+def test_worker_snapshot_commit_boundaries_never_create_a_corrupt_hit(tmp_path, stage):
+    ms = tmp_path / "data.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("raw")
+    recipe = _mutation_recipe(tmp_path)
+    first, first_plan = _prepare_mutation(tmp_path, recipe, ms)
+    for attempt in first_plan.attempts[:2]:
+        assert execute_step(first.submission_dir, attempt.step_path, attempt.attempt_id) == 0
+
+    faults.hooks[stage] = lambda: (_ for _ in ()).throw(RuntimeError(f"crash after {stage}"))
+    cal = first_plan.attempts[2]
+    expected = 1 if stage in {"S1", "S2"} else 0
+    assert execute_step(first.submission_dir, cal.step_path, cal.attempt_id) == expected
+    faults.hooks.clear()
+
+    retry, retry_plan = _prepare_mutation(tmp_path, recipe, ms)
+    records = _execute_all(retry, retry_plan)
+    assert records[-1].state in {"succeeded", "cached"}
+    assert (ms / "table.dat").read_text() == "vis|flag[default]|cal"
+
+
+def test_committed_uncached_worker_mutation_is_not_rolled_back(tmp_path):
+    ms = tmp_path / "data.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("raw")
+    recipe = _mutation_recipe(tmp_path, flag_cache=False)
+    workflow, plan = _prepare_mutation(tmp_path, recipe, ms)
+    assert execute_step(workflow.submission_dir, plan.attempts[0].step_path, plan.attempts[0].attempt_id) == 0
+
+    faults.hooks["S3"] = lambda: (_ for _ in ()).throw(RuntimeError("crash after attempt commit"))
+    flag = plan.attempts[1]
+    assert execute_step(workflow.submission_dir, flag.step_path, flag.attempt_id) == 0
+    faults.hooks.clear()
+    assert (ms / "table.dat").read_text() == "vis|flag[default]"
+
+    cal = plan.attempts[2]
+    assert execute_step(workflow.submission_dir, cal.step_path, cal.attempt_id) == 0
+    assert (ms / "table.dat").read_text() == "vis|flag[default]|cal"
 
 
 def test_missing_worker_result_is_unknown_not_success(tmp_path, monkeypatch):
@@ -701,6 +866,76 @@ def test_frozen_image_pystep_imports_helper_and_records_exact_pins(tmp_path, mon
     assert launches[0].endswith(digest)
 
 
+@pytest.mark.parametrize("backend", ["venv", "apptainer"])
+def test_worker_pystep_mutation_recovers_before_retry(backend, make_venv, tmp_path, monkeypatch):
+    from shinobi import pystep
+    from tests import _venv_pystep_funcs as funcs
+
+    options = {"backend": backend}
+    if backend == "venv":
+        options["venv"] = str(make_venv())
+    else:
+        digest = "sha256:" + "c" * 64
+        options["image"] = f"repo/tool@{digest}"
+
+        def fake_container_argv(runtime, scope, argv, inputs, workdir, **kwargs):
+            runner = "import os,runpy,sys;os.chdir(sys.argv[1]);runpy.run_path(sys.argv[2],run_name='__main__')"
+            return [sys.executable, "-c", runner, workdir, argv[-1]], digest
+
+        monkeypatch.setattr("shinobi.backends.container.build_container_argv", fake_container_argv)
+        monkeypatch.setattr("shinobi.backends.container.container_stopper", lambda *args: None)
+
+    ref = pystep(name="mutate", **options)(funcs.recoverable_mutation)
+    recipe = _mixed_pystep_recipe(tmp_path, ref)
+    ms = tmp_path / "pystep.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("raw")
+    (tmp_path / "crash.once").write_text("armed")
+
+    first, first_plan = _prepare_mixed_pystep(tmp_path, recipe, ms)
+    assert execute_step(first.submission_dir, first_plan.attempts[0].step_path, first_plan.attempts[0].attempt_id) == 0
+    failed = first_plan.attempts[1]
+    assert execute_step(first.submission_dir, failed.step_path, failed.attempt_id) == 1
+    assert (ms / "table.dat").read_text() == "vis|PARTIAL"
+
+    retry, retry_plan = _prepare_mixed_pystep(tmp_path, recipe, ms)
+    assert [record.state for record in _execute_all(retry, retry_plan)] == ["cached", "succeeded"]
+    assert (ms / "table.dat").read_text() == "vis|pystep"
+
+
+@pytest.mark.parametrize("backend", ["venv", "apptainer"])
+def test_changed_worker_pystep_code_restores_predecessor_state(backend, make_venv, tmp_path, monkeypatch):
+    from shinobi import pystep
+    from tests import _venv_pystep_funcs as funcs
+
+    options = {"backend": backend}
+    if backend == "venv":
+        options["venv"] = str(make_venv())
+    else:
+        digest = "sha256:" + "d" * 64
+        options["image"] = f"repo/tool@{digest}"
+
+        def fake_container_argv(runtime, scope, argv, inputs, workdir, **kwargs):
+            runner = "import os,runpy,sys;os.chdir(sys.argv[1]);runpy.run_path(sys.argv[2],run_name='__main__')"
+            return [sys.executable, "-c", runner, workdir, argv[-1]], digest
+
+        monkeypatch.setattr("shinobi.backends.container.build_container_argv", fake_container_argv)
+        monkeypatch.setattr("shinobi.backends.container.container_stopper", lambda *args: None)
+
+    ms = tmp_path / "changed-pystep.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("raw")
+    first_ref = pystep(name="mutate", **options)(funcs.mutation_v1)
+    first, first_plan = _prepare_mixed_pystep(tmp_path, _mixed_pystep_recipe(tmp_path, first_ref), ms)
+    assert [record.state for record in _execute_all(first, first_plan)] == ["succeeded", "succeeded"]
+    assert (ms / "table.dat").read_text() == "vis|v1"
+
+    changed_ref = pystep(name="mutate", **options)(funcs.mutation_v2)
+    changed, changed_plan = _prepare_mixed_pystep(tmp_path, _mixed_pystep_recipe(tmp_path, changed_ref), ms)
+    assert [record.state for record in _execute_all(changed, changed_plan)] == ["cached", "succeeded"]
+    assert (ms / "table.dat").read_text() == "vis|v2"
+
+
 def test_failed_worker_keeps_shared_sandbox_and_publishes_no_success(tmp_path):
     bad = _cab("bad", WriteIn)
     recipe = Recipe(
@@ -775,6 +1010,8 @@ def test_worker_preserves_declared_loop_short_circuit(tmp_path):
     body.set_output("converged", OutputRef(step="assess", field="flag"))
     outer = Recipe(name="loop-worker", inputs_model=WorkLoopIn, outputs_model=WorkLoopOut)
     outer.add_loop("cycle", body, max_iter=3, until="converged", carry={"ms": "ms"}, ms=InputRef(field="ms"), flag=tmp_path / "converged.flag")
+    outer.cache = True
+    outer.cache_dir = str(tmp_path / "cache")
     (tmp_path / "input.ms").write_text("input")
     workflow = prepare_worker_slurm(
         freeze_recipe(outer, {"ms": "input.ms"}, config=AppConfig(), workspace=tmp_path), submission_root=tmp_path / "runs", worker_python=Path(sys.executable)
@@ -782,7 +1019,28 @@ def test_worker_preserves_declared_loop_short_circuit(tmp_path):
     plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
     states = []
     bundle = RecipeBundle.read(workflow.submission_dir / "bundle.json")
-    for attempt in plan.attempts:
+    for index, attempt in enumerate(plan.attempts):
+        if index == 2:
+            # The converged sentinel makes this mutating work step skip. A
+            # stale marker from an interrupted earlier invocation must still
+            # be reconciled before pass-through publishes success.
+            journal = get_journal(str(tmp_path / "cache"))
+            target = tmp_path / "input.ms"
+            stat = target.stat()
+
+            def arm(chain):
+                chain = chain or Chain(dev=stat.st_dev, ino=stat.st_ino, ctime_ns=stat.st_ctime_ns, path=str(target))
+                chain.marker = Marker(
+                    step_path=f"loop-worker.{attempt.step_path}",
+                    field="ms",
+                    cache_key="stale",
+                    run_id="00000000-0000-0000-0000-000000000000",
+                    started_at=0.0,
+                    success_record=str(tmp_path / "missing-attempt.json"),
+                )
+                return chain
+
+            journal.update_chain(chain_id(target), arm)
         assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 0
         record = AttemptRecord.read(
             workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "final.json",
@@ -792,6 +1050,10 @@ def test_worker_preserves_declared_loop_short_circuit(tmp_path):
             bundle_digest=bundle.digest,
         )
         states.append(record.state)
+        if index == 2:
+            recovered = get_journal(str(tmp_path / "cache")).get(chain_id(tmp_path / "input.ms"))
+            assert recovered.marker is None
+            assert recovered.status is HeadStatus.UNTRUSTED
     assert states == ["succeeded", "succeeded", "skipped", "skipped", "skipped", "skipped"]
 
 

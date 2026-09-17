@@ -38,7 +38,7 @@ from shinobi.cache import (
     resolve_input_keys,
     set_content_sample,
 )
-from shinobi.snapshots import SnapshotGuard, announce_run, eligible_fields, get_journal, new_run_id, reconcile
+from shinobi.snapshots import SnapshotGuard, announce_run, eligible_fields, get_journal, mutation_paths, new_run_id, reconcile
 from shinobi.config import AppConfig
 from shinobi.exceptions import CabRunError, ParameterError, ShinobiError, StepError
 from shinobi.graph import build_graph
@@ -515,6 +515,7 @@ def _snapshot_guard(
     wired_fields: set[str] | None,
     slice_index: int | None,
     config: AppConfig,
+    success_record: Path | None,
 ) -> SnapshotGuard | None:
     """A `SnapshotGuard` for this step, or `None` if it mutates nothing.
 
@@ -541,7 +542,8 @@ def _snapshot_guard(
             )
     # Paths written through an excluded field: unprotectable, but not
     # unrecordable (see `SnapshotGuard._taint_excluded`).
-    tainting = {exclusion.field: paths for exclusion in excluded if (paths := _written_paths(prepared.get(exclusion.field)))}
+    all_mutations = mutation_paths(scope, prepared)
+    tainting = {exclusion.field: all_mutations[exclusion.field] for exclusion in excluded if exclusion.field in all_mutations}
     if not protected and not tainting:
         return None
     return SnapshotGuard(
@@ -554,21 +556,8 @@ def _snapshot_guard(
         wired_fields=wired_fields,
         force_copy=config.cache.snapshots.mode == "copy",
         tainting=tainting,
+        success_record=success_record,
     )
-
-
-def _written_paths(value: Any) -> tuple[Path, ...]:
-    """Every path an excluded mutated field writes to.
-
-    All of them, not one: a many-valued field is excluded precisely because
-    one name cannot stand for N paths, but it still *wrote* to all N, and
-    each of their chains has to record that. Tainting only the first would
-    leave the rest exactly as unprotected as before.
-    """
-    if value is None:
-        return ()
-    values = value if isinstance(value, (list, tuple)) else [value]
-    return tuple(Path(one) for one in values if one is not None)
 
 
 def _dispatch(
@@ -596,6 +585,8 @@ def _dispatch(
     _run_id: str | None = None,
     _slice_index: int | None = None,
     _execution_identity: ExecutionIdentity | None = None,
+    _snapshot_success_record: Path | None = None,
+    _result_commit: Callable[[StepResult, Callable[[], None]], None] | None = None,
     _workspace_claimed: bool = False,
     _validated_inputs: BaseModel | None = None,
     _leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
@@ -651,6 +642,8 @@ def _dispatch(
                     _run_id=run_id,
                     _slice_index=_slice_index,
                     _execution_identity=_execution_identity,
+                    _snapshot_success_record=_snapshot_success_record,
+                    _result_commit=_result_commit,
                     _workspace_claimed=True,
                     _validated_inputs=validated_inputs,
                     _leaf_inputs=leaf_inputs,
@@ -768,6 +761,8 @@ def _dispatch(
                 # Venv steps stay unpinned in the manifest either way.
                 hit.venv_digest = execution_identity.venv_digest
             logger.info("step %s: cache hit -- skipping run", cache_path)
+            if _result_commit is not None:
+                _result_commit(hit, lambda: None)
             if _cache_path is None and provenance_enabled:
                 _emit_run_manifest(hit, ctx, config, backend, target=_provenance_target)
             return hit
@@ -782,7 +777,23 @@ def _dispatch(
     # what is being consumed. All of it after the cache key is computed --
     # which is safe because a mutated path contributes only its path string
     # to the key, so no restore can move it (see `snapshots.before_run`).
-    guard = _snapshot_guard(scope, ctx, cache_dir_value, cache_path, cache_key, run_id, _input_keys, _wired_fields, _slice_index, config) if snapshots_enabled else None
+    guard = (
+        _snapshot_guard(
+            scope,
+            ctx,
+            cache_dir_value,
+            cache_path,
+            cache_key,
+            run_id,
+            _input_keys,
+            _wired_fields,
+            _slice_index,
+            config,
+            _snapshot_success_record,
+        )
+        if snapshots_enabled
+        else None
+    )
     if guard is not None:
         guard.before_run()
     try:
@@ -837,18 +848,27 @@ def _dispatch(
     if result.success:
         # The five-stage commit lives in the guard so its ordering
         # constraints are enforced in one place -- above all that the tip
-        # snapshot (S1) precedes `manifest.record` (S3), or a crash between
-        # them leaves a step the cache hits forever with nothing snapshotted.
+        # snapshot (S1) precedes the explicit success oracle (S3), or a
+        # committed result could name a state with nothing snapshotted.
         def _record() -> None:
             if cacheable and result.success:
                 manifest.record(cache_path, cache_key, result, run_id=run_id)
 
+        def _commit() -> None:
+            if _result_commit is None:
+                _record()
+            else:
+                _result_commit(result, _record)
+
         if guard is not None:
-            guard.after_success(_record)
+            guard.after_success(_commit)
         else:
-            _record()
-    elif guard is not None:
-        guard.after_failure()
+            _commit()
+    else:
+        if guard is not None:
+            guard.after_failure()
+        if _result_commit is not None:
+            _result_commit(result, lambda: None)
     if _cache_path is None and provenance_enabled:
         _emit_run_manifest(result, ctx, config, backend, target=_provenance_target)
     return result

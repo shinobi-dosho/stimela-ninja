@@ -38,6 +38,29 @@ def fail_after_touch(ms: Path) -> MutationOut:
     raise RuntimeError("intentional worker pystep failure")
 
 
+def recoverable_mutation(ms: Path) -> MutationOut:
+    table = Path(ms) / "table.dat"
+    sentinel = Path(ms).parent / "crash.once"
+    if sentinel.exists():
+        table.write_text(table.read_text() + "|PARTIAL")
+        sentinel.unlink()
+        raise RuntimeError("interrupted during mutation")
+    table.write_text(table.read_text() + "|pystep")
+    return MutationOut(ms=ms)
+
+
+def mutation_v1(ms: Path) -> MutationOut:
+    table = Path(ms) / "table.dat"
+    table.write_text(table.read_text() + "|v1")
+    return MutationOut(ms=ms)
+
+
+def mutation_v2(ms: Path) -> MutationOut:
+    table = Path(ms) / "table.dat"
+    table.write_text(table.read_text() + "|v2")
+    return MutationOut(ms=ms)
+
+
 class PathOut(BaseModel):
     report: Path
 
