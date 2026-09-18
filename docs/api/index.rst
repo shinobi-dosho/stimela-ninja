@@ -73,8 +73,10 @@ Datasets
 .. autoclass:: shinobi.dataset_closure.DatasetClosure
    :members:
 
-.. autoclass:: shinobi.dataset_closure.ClosureOperation
+.. autoclass:: shinobi.dataset_closure.ClosureRequirement
    :members:
+
+.. autoclass:: shinobi.dataset_closure.ClosureCapabilities
 
 .. autoclass:: shinobi.dataset_closure.ClosureResource
 

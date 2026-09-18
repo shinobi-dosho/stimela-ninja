@@ -88,9 +88,13 @@ Resolution supports bounded, ordinary directory-backed tables using known
 local storage managers.  It refuses reference tables, virtual concatenations,
 opaque managers, escaped or cyclic references, and resources which change
 while being observed, with distinct diagnostics.  The serializable result
-records the managers and resources needed by copy, mount, stage, materialize,
-and restore operations.  It contains structural metadata only and retains no
-table handles.
+records the managers, exact table-member files, and explicit requirements for
+copy, mount, stage, materialize, and restore operations.  It contains
+structural metadata only and retains no table handles.  Resolution rechecks
+identities and metadata observations around its reads, but ordinary filesystem
+inspection is not an atomic snapshot: a consumer must provide a cooperative
+immutable or snapshot boundary and revalidate the observation before acting
+on it.
 
 Execution status
 ----------------

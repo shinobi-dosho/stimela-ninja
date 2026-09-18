@@ -8,12 +8,12 @@ from shinobi.datasets import DatasetDescriptor, DatasetStatus, MSV2_STRUCTURAL_V
 
 
 class FakeTable:
-    def __init__(self, path, *, keywords=(), references=None, managers=("StandardStMan",), info=None):
+    def __init__(self, path, *, keywords=(), references=None, managers=("StandardStMan",), parts=None):
         self.path = Path(path)
         self.keywords = keywords
         self.references = references or {}
         self.managers = managers
-        self._info = info or {}
+        self.parts = parts
         self.closed = False
 
     def keywordnames(self):
@@ -25,14 +25,17 @@ class FakeTable:
     def getdminfo(self):
         return {str(index): {"TYPE": name} for index, name in enumerate(self.managers)}
 
-    def info(self):
-        return self._info
+    def name(self):
+        return str(self.path)
+
+    def partnames(self):
+        return [str(self.path)] if self.parts is None else self.parts
 
     def close(self):
         self.closed = True
 
 
-def install_tables(monkeypatch, root, references, *, managers=None, info=None):
+def install_tables(monkeypatch, root, references, *, managers=None, parts=None, inspector=None):
     opened = []
 
     def factory(name, **kwargs):
@@ -42,7 +45,7 @@ def install_tables(monkeypatch, root, references, *, managers=None, info=None):
             keywords=tuple(references) if path == root.resolve() else (),
             references=references if path == root.resolve() else {},
             managers=(managers or {}).get(path, ("StandardStMan",)),
-            info=(info or {}).get(path),
+            parts=(parts or {}).get(path),
         )
         opened.append(table)
         return table
@@ -51,7 +54,7 @@ def install_tables(monkeypatch, root, references, *, managers=None, info=None):
     monkeypatch.setattr(
         closure_module,
         "inspect_measurement_set_v2",
-        lambda path: DatasetDescriptor(path=path, expected=MSV2_STRUCTURAL_V1, status=DatasetStatus.VALID, message="valid"),
+        inspector or (lambda path: DatasetDescriptor(path=path, expected=MSV2_STRUCTURAL_V1, status=DatasetStatus.VALID, message="valid")),
     )
     return opened
 
@@ -105,33 +108,162 @@ def test_reference_failures_have_distinct_statuses(tmp_path, monkeypatch, kind, 
     assert resolve_dataset_closure(root, storage_namespace=namespace).status is status
 
 
-@pytest.mark.parametrize(
-    "managers,info", [(("OpaqueExternalStMan",), None), (("StandardStMan",), {"type": "Reference Table"}), (("StandardStMan",), {"subType": "virtual concatenation"})]
-)
-def test_unsupported_table_features_are_refused(tmp_path, monkeypatch, managers, info):
+def test_broken_actual_reference_precedes_structural_preflight(tmp_path, monkeypatch):
     root = tmp_path / "target.ms"
     root.mkdir()
-    install_tables(monkeypatch, root, {}, managers={root.resolve(): managers}, info={root.resolve(): info} if info else {})
+
+    def should_not_inspect(path):
+        pytest.fail(f"structural inspection blurred broken reference {path}")
+
+    install_tables(monkeypatch, root, {"ANTENNA": root / "missing"}, inspector=should_not_inspect)
+    assert resolve_dataset_closure(root, storage_namespace=tmp_path).status is ClosureStatus.DANGLING_REFERENCE
+
+
+def test_genuine_schema_failure_is_invalid_root(tmp_path, monkeypatch):
+    root = tmp_path / "target.ms"
+    root.mkdir()
+
+    def invalid(path):
+        return DatasetDescriptor(path=path, expected=MSV2_STRUCTURAL_V1, status=DatasetStatus.INCOMPLETE_MEASUREMENT_SET_V2, message="missing columns")
+
+    install_tables(monkeypatch, root, {}, inspector=invalid)
+    assert resolve_dataset_closure(root, storage_namespace=tmp_path).status is ClosureStatus.INVALID_ROOT
+
+
+def test_unsupported_storage_manager_is_refused(tmp_path, monkeypatch):
+    root = tmp_path / "target.ms"
+    root.mkdir()
+    opened = install_tables(monkeypatch, root, {}, managers={root.resolve(): ("OpaqueExternalStMan",)})
     result = resolve_dataset_closure(root, storage_namespace=tmp_path)
     assert result.status is ClosureStatus.UNSUPPORTED
     assert result.unsupported_features
+    assert all(table.closed for table in opened)
 
 
-def test_changed_during_resolution_is_detected(tmp_path, monkeypatch):
+def test_reference_parts_are_authoritative(tmp_path, monkeypatch):
+    root = tmp_path / "target.ms"
+    source = tmp_path / "source.ms"
+    root.mkdir()
+    source.mkdir()
+    install_tables(monkeypatch, root, {}, parts={root.resolve(): [str(source)]})
+    assert resolve_dataset_closure(root, storage_namespace=tmp_path).status is ClosureStatus.UNSUPPORTED
+
+
+def test_backing_symlink_escape_dangling_and_cycle_are_distinct(tmp_path, monkeypatch):
+    root = tmp_path / "store" / "target.ms"
+    outside = tmp_path / "outside"
+    root.mkdir(parents=True)
+    outside.write_text("backing")
+    install_tables(monkeypatch, root, {})
+    link = root / "table.f0"
+    link.symlink_to(outside)
+    assert resolve_dataset_closure(root, storage_namespace=root.parent).status is ClosureStatus.ESCAPED_NAMESPACE
+    link.unlink()
+    link.symlink_to(root / "missing")
+    assert resolve_dataset_closure(root, storage_namespace=root.parent).status is ClosureStatus.DANGLING_REFERENCE
+    link.unlink()
+    link.symlink_to(link)
+    assert resolve_dataset_closure(root, storage_namespace=root.parent).status is ClosureStatus.CYCLIC_REFERENCE
+
+
+def test_alias_deduplication_precedes_resource_limit(tmp_path, monkeypatch):
+    root = tmp_path / "target.ms"
+    shared = root / "shared"
+    shared.mkdir(parents=True)
+    alias = root / "alias"
+    alias.symlink_to(shared, target_is_directory=True)
+    install_tables(monkeypatch, root, {"ANTENNA": shared, "SOURCE": alias})
+    result = resolve_dataset_closure(root, storage_namespace=tmp_path, max_resources=2)
+    assert result.valid
+    assert len(result.resources) == 2
+
+
+def test_two_roots_have_actual_shared_resource_intersection(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    closures = []
+    for name in ("one.ms", "two.ms"):
+        root = tmp_path / name
+        root.mkdir()
+        install_tables(monkeypatch, root, {"SOURCE": shared})
+        closures.append(resolve_dataset_closure(root, storage_namespace=tmp_path))
+    left = {resource.path for resource in closures[0].resources}
+    right = {resource.path for resource in closures[1].resources}
+    assert left & right == {shared.resolve()}
+
+
+def test_limits_must_be_positive(tmp_path):
+    with pytest.raises(ValueError, match="positive"):
+        resolve_dataset_closure(tmp_path, storage_namespace=tmp_path, max_resources=0)
+
+
+def test_late_root_change_is_detected(tmp_path, monkeypatch):
     root = tmp_path / "target.ms"
     subtable = root / "ANTENNA"
     subtable.mkdir(parents=True)
-    install_tables(monkeypatch, root, {"ANTENNA": subtable})
-    real_signature = closure_module._signature
-    calls = 0
 
-    def changing_signature(path, **kwargs):
-        nonlocal calls
-        calls += 1
-        value = real_signature(path, **kwargs)
-        if calls == 3:
-            (subtable / "changed").write_text("changed")
-        return value
+    def mutating_inspector(path):
+        (root / "late-change").write_text("changed")
+        return DatasetDescriptor(path=path, expected=MSV2_STRUCTURAL_V1, status=DatasetStatus.VALID, message="valid")
 
-    monkeypatch.setattr(closure_module, "_signature", changing_signature)
+    install_tables(monkeypatch, root, {"ANTENNA": subtable}, inspector=mutating_inspector)
     assert resolve_dataset_closure(root, storage_namespace=tmp_path).status is ClosureStatus.CHANGED_DURING_RESOLUTION
+
+
+def _real_valid_ms(tables, path):
+    ms = tables.default_ms(str(path))
+    ms.addcols(tables.maketabdesc([tables.makearrcoldesc("DATA", 0j, ndim=2)]))
+    return ms
+
+
+def test_real_casacore_plain_reference_and_readme(tmp_path):
+    tables = pytest.importorskip("casacore.tables")
+    ms_path = tmp_path / "plain.ms"
+    ms = _real_valid_ms(tables, ms_path)
+    ms.putinfo({"type": "Measurement Set", "subType": "", "readme": "reference concat words are arbitrary prose"})
+    ms.close()
+
+    plain = resolve_dataset_closure(ms_path, storage_namespace=tmp_path)
+    assert plain.valid
+    assert plain.capabilities is not None
+
+    source = tables.table(str(ms_path), ack=False)
+    reference_path = tmp_path / "reference.ms"
+    reference = source.query(query="True", name=str(reference_path))
+    reference.close()
+    source.close()
+    refused = resolve_dataset_closure(reference_path, storage_namespace=tmp_path)
+    assert refused.status is ClosureStatus.UNSUPPORTED
+    assert "reference or virtual-concatenation" in refused.message
+
+
+def test_real_casacore_virtual_concatenation_parts_are_refused(tmp_path):
+    tables = pytest.importorskip("casacore.tables")
+    left_path = tmp_path / "left.ms"
+    right_path = tmp_path / "right.ms"
+    left = _real_valid_ms(tables, left_path)
+    right = _real_valid_ms(tables, right_path)
+    left.close()
+    right.close()
+    concatenated = tables.table([str(left_path), str(right_path)], ack=False)
+    try:
+        with pytest.raises(ValueError, match="virtual-concatenation"):
+            closure_module._plain_table_metadata(concatenated)
+    finally:
+        concatenated.close()
+
+
+def test_real_casacore_escaped_backing_file_is_refused(tmp_path):
+    tables = pytest.importorskip("casacore.tables")
+    namespace = tmp_path / "store"
+    namespace.mkdir()
+    ms_path = namespace / "plain.ms"
+    ms = _real_valid_ms(tables, ms_path)
+    ms.close()
+    backing = ms_path / "table.f0"
+    external = tmp_path / "external-table.f0"
+    backing.rename(external)
+    backing.symlink_to(external)
+
+    result = resolve_dataset_closure(ms_path, storage_namespace=namespace)
+    assert result.status is ClosureStatus.ESCAPED_NAMESPACE
