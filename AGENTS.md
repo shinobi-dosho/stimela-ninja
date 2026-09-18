@@ -107,6 +107,8 @@ src/shinobi/
                          # ProvenanceKey (str subclass carrying .producer_field),
                          # CacheManifest (backed by storage.JsonFileStore),
                          # optional bounded content sample
+  dataset_closure.py   # explicit bounded MSv2 physical-resource observation;
+                         # canonical tables/managers only, no execution lifecycle
   storage.py           # cross-process JSON transactions: Linux OFD lock +
                          # checksummed log, then fsynced temp + atomic materialized
                          # view; directory durability shared with worker publication

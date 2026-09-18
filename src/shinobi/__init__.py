@@ -40,10 +40,12 @@ from shinobi.steps import (  # noqa: E402
     pystep,
     step,
 )
+from shinobi.dataset_closure import DatasetClosure, resolve_dataset_closure  # noqa: E402
 
 __all__ = [
     "Cab",
     "CasaTable",
+    "DatasetClosure",
     "ExecContext",
     "InputRef",
     "LoopIteration",
@@ -56,6 +58,7 @@ __all__ = [
     "Scope",
     "StepRef",
     "pystep",
+    "resolve_dataset_closure",
     "step",
     "__version__",
 ]
