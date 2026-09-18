@@ -55,7 +55,10 @@ inspector, an arbitrary directory/non-CASA table, a CASA table which is not an
 MS, an incomplete MSv2, an unsupported version or metadata size, and a valid
 dataset.  Diagnostics distinguish unreadable required subtables from readable
 subtables whose required MSv2 columns are missing.  Optional subtables such as
-``SOURCE`` and optional or custom columns remain legal.
+``SOURCE`` and optional or custom columns remain legal.  The structural MSv2
+profile also requires at least one primary visibility-data column: ``DATA``,
+``FLOAT_DATA``, or ``LAG_DATA``.  Derived columns such as ``CORRECTED_DATA``
+do not replace that collective requirement.
 
 Inspection imports ``python-casacore`` lazily and requests only structural
 metadata: column names, keyword names, row count, and ``MS_VERSION``.  Casacore

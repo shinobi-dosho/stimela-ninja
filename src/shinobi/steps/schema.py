@@ -16,14 +16,14 @@ first execution.
 from __future__ import annotations
 
 import re
-import types
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, Callable, Union, get_args, get_origin
+from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_serializer, model_validator
 from pydantic_core import PydanticUndefined
 
+from shinobi._annotations import walk_annotation
 from shinobi.resources import Resources
 
 
@@ -324,28 +324,24 @@ class ParamPattern(BaseModel):
 
 
 def _unwrap_annotation(annotation: Any) -> list[Any]:
-    """Flatten an annotation into its concrete leaf types, unwrapping
-    Optional/Union and list/tuple containers -- used by `path_fields`.
+    """Flatten direct-value annotation leaves for schema consumers.
+
+    This unwraps ``Annotated``, unions, tuples, and concrete or abstract
+    sequence/set containers.  Mappings and nested models remain leaves: their
+    values are structured objects, not the direct path value represented by
+    the model field.  Full declaration discovery uses the same neutral walker
+    with those descents enabled.
     """
-    origin = get_origin(annotation)
-    if origin is Annotated:
-        return _unwrap_annotation(get_args(annotation)[0])
-    if origin is Union or origin is types.UnionType:
-        leaves: list[Any] = []
-        for arg in get_args(annotation):
-            leaves.extend(_unwrap_annotation(arg))
-        return leaves
-    if origin in (list, tuple, set, frozenset):
-        args = get_args(annotation)
-        return _unwrap_annotation(args[0]) if args else [annotation]
-    return [annotation]
+
+    return [node.annotation for node in walk_annotation(annotation, descend_mappings=False, descend_models=False) if node.leaf]
 
 
 def path_fields(model: type[BaseModel]) -> set[str]:
-    """Names of every field of `model` whose (Optional/list-unwrapped) type
-    is a filesystem path (``pathlib.Path``). File-like cab dtypes
+    """Names of every field of `model` whose direct-value leaf type is a
+    filesystem path (``pathlib.Path``). File-like cab dtypes
     (File/MS/Directory/URI) map to Path, so this drives both container
-    bind-mounting and the CLI's ``click.Path()`` mapping.
+    bind-mounting and the CLI's ``click.Path()`` mapping.  Direct-value
+    containers include concrete and abstract sequences and sets plus tuples.
     """
     result: set[str] = set()
     for name, field in model.model_fields.items():

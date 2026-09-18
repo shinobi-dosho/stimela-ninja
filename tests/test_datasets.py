@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence, Set
 from pathlib import Path
 
 import pytest
@@ -25,6 +25,7 @@ from shinobi.exceptions import DatasetLifecycleUnavailableError
 from shinobi.graph import RecipeNotOffloadableError, check_offloadable
 from shinobi.loaders._modelgen import dtype_to_type
 from shinobi.steps import InputRef, OutputRef, Recipe
+from shinobi.steps.schema import path_fields
 
 
 class DatasetInputs(BaseModel):
@@ -46,9 +47,13 @@ class NestedDataset(BaseModel):
 
 class RecursiveDatasets(BaseModel):
     tables: Mapping[str, MeasurementSetV2]
-    nested: list[NestedDataset]
+    nested: Sequence[NestedDataset]
     nested_by_name: dict[str, NestedDataset | None]
     child: RecursiveDatasets | None = None
+
+
+class SequenceDatasetInputs(BaseModel):
+    datasets: Sequence[MeasurementSetV2]
 
 
 class _FakeTable:
@@ -87,6 +92,10 @@ def _valid_subtables(**overrides):
     subtables = {name: _FakeTable(columns=tuple(columns)) for name, columns in datasets._MSV2_REQUIRED_SUBTABLE_COLUMNS.items()}
     subtables.update(overrides)
     return subtables
+
+
+def _valid_main_columns(*extra):
+    return tuple(datasets._MSV2_REQUIRED_COLUMNS) + ("DATA", *extra)
 
 
 def _patch_msv2_tables(monkeypatch, main, *, subtables=None):
@@ -130,6 +139,25 @@ def test_dataset_declarations_walks_mappings_nested_models_and_cycles():
     assert set(found) == {"tables.*", "nested[].ms", "nested_by_name.*.ms"}
     assert {declaration.profile for declaration in found.values()} == {MSV2_STRUCTURAL_PROFILE}
     assert dataset_fields(RecursiveDatasets) == found
+
+
+def test_abstract_sequence_dataset_declaration_is_a_path_field():
+    found = dataset_declarations(SequenceDatasetInputs)
+
+    assert set(found) == {"datasets[]"}
+    assert found["datasets[]"].profile == MSV2_STRUCTURAL_PROFILE
+    assert path_fields(SequenceDatasetInputs) == {"datasets"}
+
+
+def test_path_fields_uses_shared_direct_container_walk():
+    class ContainerPaths(BaseModel):
+        concrete: list[Path]
+        abstract_sequence: Sequence[Path]
+        abstract_set: Set[Path]
+        heterogeneous_tuple: tuple[int, Path]
+        structured_mapping: Mapping[str, Path]
+
+    assert path_fields(ContainerPaths) == {"concrete", "abstract_sequence", "abstract_set", "heterogeneous_tuple"}
 
 
 def test_legacy_ms_loader_dtype_remains_a_plain_path():
@@ -216,7 +244,7 @@ def test_incomplete_msv2_reports_unreadable_required_subtable(tmp_path, monkeypa
     candidate = tmp_path / "broken.ms"
     candidate.mkdir()
     main = _FakeTable(
-        columns=tuple(datasets._MSV2_REQUIRED_COLUMNS),
+        columns=_valid_main_columns(),
         keywords=tuple(datasets._MSV2_REQUIRED_SUBTABLES) + ("MS_VERSION",),
     )
 
@@ -241,7 +269,7 @@ def test_incomplete_msv2_reports_required_subtable_columns(tmp_path, monkeypatch
     candidate = tmp_path / "partial.ms"
     candidate.mkdir()
     main = _FakeTable(
-        columns=tuple(datasets._MSV2_REQUIRED_COLUMNS),
+        columns=_valid_main_columns(),
         keywords=tuple(datasets._MSV2_REQUIRED_SUBTABLES) + ("MS_VERSION", "SOURCE", "CUSTOM_SUBTABLE"),
     )
     subtables = _valid_subtables(ANTENNA=_FakeTable(columns=("NAME",)))
@@ -258,10 +286,7 @@ def test_incomplete_msv2_reports_required_subtable_columns(tmp_path, monkeypatch
 def test_valid_msv2_retains_custom_columns_and_serializes(tmp_path, monkeypatch):
     candidate = tmp_path / "valid.ms"
     candidate.mkdir()
-    columns = tuple(datasets._MSV2_REQUIRED_COLUMNS) + (
-        "CORRECTED_DATA",
-        "PIPELINE_CUSTOM",
-    )
+    columns = _valid_main_columns("CORRECTED_DATA", "PIPELINE_CUSTOM")
     keywords = tuple(datasets._MSV2_REQUIRED_SUBTABLES) + ("MS_VERSION", "CUSTOM_KEYWORD")
     table = _FakeTable(columns=columns, keywords=keywords, nrows=7)
     _patch_msv2_tables(monkeypatch, table)
@@ -272,6 +297,37 @@ def test_valid_msv2_retains_custom_columns_and_serializes(tmp_path, monkeypatch)
     assert descriptor.valid
     assert "PIPELINE_CUSTOM" in descriptor.columns
     assert '"status":"valid"' in descriptor.model_dump_json()
+
+
+def test_corrected_data_alone_does_not_satisfy_primary_data_requirement(tmp_path, monkeypatch):
+    candidate = tmp_path / "derived-only.ms"
+    candidate.mkdir()
+    columns = tuple(datasets._MSV2_REQUIRED_COLUMNS) + ("CORRECTED_DATA", "PIPELINE_CUSTOM")
+    keywords = tuple(datasets._MSV2_REQUIRED_SUBTABLES) + ("MS_VERSION",)
+    table = _FakeTable(columns=columns, keywords=keywords)
+    _patch_msv2_tables(monkeypatch, table)
+
+    descriptor = inspect_measurement_set_v2(candidate)
+
+    assert descriptor.status is DatasetStatus.INCOMPLETE_MEASUREMENT_SET_V2
+    assert descriptor.missing_primary_data_columns == ("DATA", "FLOAT_DATA", "LAG_DATA")
+    assert "at least one" in descriptor.message
+    assert "CORRECTED_DATA" in descriptor.columns
+
+
+@pytest.mark.parametrize("primary", ["DATA", "FLOAT_DATA", "LAG_DATA"])
+def test_each_primary_data_column_satisfies_collective_requirement(tmp_path, monkeypatch, primary):
+    candidate = tmp_path / f"{primary.lower()}.ms"
+    candidate.mkdir()
+    columns = tuple(datasets._MSV2_REQUIRED_COLUMNS) + (primary,)
+    keywords = tuple(datasets._MSV2_REQUIRED_SUBTABLES) + ("MS_VERSION",)
+    table = _FakeTable(columns=columns, keywords=keywords)
+    _patch_msv2_tables(monkeypatch, table)
+
+    descriptor = inspect_measurement_set_v2(candidate)
+
+    assert descriptor.status is DatasetStatus.VALID
+    assert descriptor.missing_primary_data_columns == ()
 
 
 def test_wrong_ms_version_and_metadata_bounds_are_unsupported(tmp_path, monkeypatch):
@@ -294,10 +350,10 @@ def test_subtable_metadata_bounds_are_enforced(tmp_path, monkeypatch):
     candidate = tmp_path / "too-wide.ms"
     candidate.mkdir()
     main = _FakeTable(
-        columns=tuple(datasets._MSV2_REQUIRED_COLUMNS),
+        columns=_valid_main_columns(),
         keywords=tuple(datasets._MSV2_REQUIRED_SUBTABLES) + ("MS_VERSION",),
     )
-    limit = len(datasets._MSV2_REQUIRED_COLUMNS)
+    limit = len(_valid_main_columns())
     too_many_columns = tuple(datasets._MSV2_REQUIRED_SUBTABLE_COLUMNS["ANTENNA"]) + tuple(f"CUSTOM_{index}" for index in range(limit))
     subtables = _valid_subtables(ANTENNA=_FakeTable(columns=too_many_columns))
     _patch_msv2_tables(monkeypatch, main, subtables=subtables)
@@ -339,6 +395,13 @@ def test_nested_strict_annotation_refuses_local_execution():
         cab(payload={"target": [{"ms": "future.ms"}]})
 
 
+def test_abstract_sequence_strict_annotation_refuses_local_execution():
+    cab = Cab(name="strict-sequence", command="true", inputs_model=SequenceDatasetInputs, outputs_model=EmptyOutputs)
+
+    with pytest.raises(DatasetLifecycleUnavailableError, match=r"datasets\[\]"):
+        cab(datasets=["future.ms"])
+
+
 def test_strict_annotation_is_not_offloadable():
     cab = Cab(name="strict", command="true", inputs_model=DatasetInputs, outputs_model=DatasetOutputs)
     recipe = Recipe(name="r", inputs_model=DatasetInputs, outputs_model=DatasetOutputs)
@@ -361,6 +424,15 @@ def test_nested_strict_annotation_is_not_offloadable():
         check_offloadable(recipe)
 
 
+def test_abstract_sequence_strict_annotation_is_not_offloadable():
+    cab = Cab(name="strict-sequence", command="true", inputs_model=SequenceDatasetInputs, outputs_model=EmptyOutputs)
+    recipe = Recipe(name="r", inputs_model=SequenceDatasetInputs, outputs_model=EmptyOutputs)
+    recipe.add_step("strict", cab, datasets=InputRef(field="datasets"))
+
+    with pytest.raises(RecipeNotOffloadableError, match=r"datasets\[\]"):
+        check_offloadable(recipe)
+
+
 def test_generated_tiny_casacore_tables_when_available(tmp_path):
     tables = pytest.importorskip("casacore.tables")
     if not hasattr(tables, "default_ms"):
@@ -375,6 +447,11 @@ def test_generated_tiny_casacore_tables_when_available(tmp_path):
 
     ms_path = tmp_path / "tiny.ms"
     ms = tables.default_ms(str(ms_path))
+    # default_ms creates the mandatory table structure but deliberately no
+    # primary visibility data column; add the smallest schema-only DATA column
+    # so this fixture exercises the complete structural profile without cells.
+    ms.addcols(tables.maketabdesc([tables.makearrcoldesc("DATA", 0j, ndim=2)]))
     ms.close()
     descriptor = inspect_measurement_set_v2(ms_path)
     assert descriptor.status is DatasetStatus.VALID
+    assert "DATA" in descriptor.columns

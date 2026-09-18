@@ -16,14 +16,14 @@ these types does not add it as a runtime dependency.
 
 from __future__ import annotations
 
-import types
-from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, Union, get_args, get_origin
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema
+
+from shinobi._annotations import walk_model_annotations
 
 CASA_TABLE_PROFILE = "casa-table/v1"
 MSV2_STRUCTURAL_PROFILE = "msv2-structural/v1"
@@ -126,6 +126,7 @@ class DatasetDescriptor(BaseModel):
     keywords: tuple[str, ...] = ()
     subtables: tuple[str, ...] = ()
     missing_columns: tuple[str, ...] = ()
+    missing_primary_data_columns: tuple[str, ...] = ()
     missing_subtables: tuple[str, ...] = ()
     unreadable_subtables: tuple[str, ...] = ()
     missing_subtable_columns: dict[str, tuple[str, ...]] = Field(default_factory=dict)
@@ -139,8 +140,9 @@ class DatasetDescriptor(BaseModel):
 
 
 # Required predefined columns and subtables from the MeasurementSet v2 main
-# table.  DATA/FLOAT_DATA/CORRECTED_DATA are data products, not required
-# structural columns; SOURCE and the calibration/weather tables are optional.
+# table.  DATA/FLOAT_DATA/LAG_DATA are alternatives governed by the collective
+# requirement below rather than individually required columns;
+# CORRECTED_DATA is derived. SOURCE and calibration/weather tables are optional.
 _MSV2_REQUIRED_COLUMNS = frozenset(
     {
         "ANTENNA1",
@@ -166,6 +168,7 @@ _MSV2_REQUIRED_COLUMNS = frozenset(
         "WEIGHT",
     }
 )
+_MSV2_PRIMARY_DATA_COLUMNS = frozenset({"DATA", "FLOAT_DATA", "LAG_DATA"})
 _MSV2_REQUIRED_SUBTABLES = frozenset(
     {
         "ANTENNA",
@@ -235,14 +238,6 @@ _MSV2_REQUIRED_SUBTABLE_COLUMNS = {
 }
 
 
-def _is_mapping(origin: Any) -> bool:
-    return isinstance(origin, type) and issubclass(origin, Mapping)
-
-
-def _is_model(annotation: Any) -> bool:
-    return isinstance(annotation, type) and issubclass(annotation, BaseModel)
-
-
 def dataset_declarations(model: type[BaseModel]) -> dict[str, DatasetType]:
     """Find every dataset declaration reachable from a Pydantic model.
 
@@ -264,41 +259,9 @@ def dataset_declarations(model: type[BaseModel]) -> dict[str, DatasetType]:
             raise TypeError(f"field {model.__name__}.{path} has conflicting dataset declarations: {(previous, declaration)!r}")
         result[path] = declaration
 
-    def visit_annotation(annotation: Any, path: str, metadata: tuple[Any, ...], ancestors: frozenset[type[BaseModel]]) -> None:
-        declarations = [item for item in metadata if isinstance(item, DatasetType)]
-        while get_origin(annotation) is Annotated:
-            annotation, *annotated_metadata = get_args(annotation)
-            declarations.extend(item for item in annotated_metadata if isinstance(item, DatasetType))
-        for declaration in dict.fromkeys(declarations):
-            record(path, declaration)
-
-        origin = get_origin(annotation)
-        args = get_args(annotation)
-        if origin is Union or origin is types.UnionType:
-            for arg in args:
-                visit_annotation(arg, path, (), ancestors)
-        elif _is_mapping(origin):
-            if len(args) == 2:
-                visit_annotation(args[1], f"{path}.*", (), ancestors)
-        elif origin in (list, set, frozenset):
-            if args:
-                visit_annotation(args[0], f"{path}[]", (), ancestors)
-        elif origin is tuple:
-            for arg in args:
-                if arg is not Ellipsis:
-                    visit_annotation(arg, f"{path}[]", (), ancestors)
-        elif _is_model(annotation):
-            visit_model(annotation, path, ancestors)
-
-    def visit_model(current: type[BaseModel], prefix: str, ancestors: frozenset[type[BaseModel]]) -> None:
-        if current in ancestors:
-            return
-        nested_ancestors = ancestors | {current}
-        for name, field in current.model_fields.items():
-            path = f"{prefix}.{name}" if prefix else name
-            visit_annotation(field.annotation, path, tuple(field.metadata), nested_ancestors)
-
-    visit_model(model, "", frozenset())
+    for node in walk_model_annotations(model):
+        for declaration in dict.fromkeys(item for item in node.metadata if isinstance(item, DatasetType)):
+            record(node.path, declaration)
     return result
 
 
@@ -445,6 +408,7 @@ def inspect_dataset(
             )
 
         missing_columns = tuple(sorted(_MSV2_REQUIRED_COLUMNS.difference(columns)))
+        missing_primary_data_columns = () if _MSV2_PRIMARY_DATA_COLUMNS.intersection(columns) else tuple(sorted(_MSV2_PRIMARY_DATA_COLUMNS))
         missing_subtables = tuple(sorted(_MSV2_REQUIRED_SUBTABLES.difference(keywords)))
         subtables = tuple(sorted(_MSV2_REQUIRED_SUBTABLES.intersection(keywords)))
         unreadable_subtables = []
@@ -487,10 +451,12 @@ def inspect_dataset(
                 subtables=subtables,
                 unsupported_features=tuple(subtable_bounds),
             )
-        if missing_columns or missing_subtables or unreadable_subtables_tuple or missing_subtable_columns:
+        if missing_columns or missing_primary_data_columns or missing_subtables or unreadable_subtables_tuple or missing_subtable_columns:
             parts = []
             if missing_columns:
                 parts.append(f"missing required columns {list(missing_columns)!r}")
+            if missing_primary_data_columns:
+                parts.append(f"missing primary data column; at least one of {list(missing_primary_data_columns)!r} is required")
             if missing_subtables:
                 parts.append(f"missing required subtables {list(missing_subtables)!r}")
             if unreadable_subtables_tuple:
@@ -507,6 +473,7 @@ def inspect_dataset(
                 keywords=keywords,
                 subtables=subtables,
                 missing_columns=missing_columns,
+                missing_primary_data_columns=missing_primary_data_columns,
                 missing_subtables=missing_subtables,
                 unreadable_subtables=unreadable_subtables_tuple,
                 missing_subtable_columns=missing_subtable_columns,
