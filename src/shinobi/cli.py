@@ -1111,7 +1111,7 @@ def compile_recipe(
                     cache_dir=cache_dir,
                 )
                 workflow = prepare_worker_slurm(bundle, submission_root=root, worker_python=worker_python)
-            except (BundleError, RecipeNotOffloadableError, OffloadCompileError, RecipeGraphError) as exc:
+            except (BundleError, ShinobiError, RecipeNotOffloadableError, OffloadCompileError, RecipeGraphError) as exc:
                 raise click.ClickException(str(exc)) from None
             try:
                 launched = submit_worker_slurm(workflow)

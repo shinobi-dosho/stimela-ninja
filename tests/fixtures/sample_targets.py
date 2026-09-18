@@ -9,6 +9,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from shinobi import pystep
 from shinobi.steps import Cab, InputRef, OutputRef, Recipe, StepRef, step
 
 
@@ -40,6 +41,14 @@ greet_image = Cab(
 
 class NoInputs(BaseModel):
     pass
+
+
+@pystep(name="missing_venv", backend="venv", venv="/__shinobi_test_missing_tool_venv__")
+def missing_venv_step() -> None:
+    raise AssertionError("a missing tool venv must be rejected before execution")
+
+
+missing_venv_pipe = Recipe(name="missing_venv_pipe", inputs_model=NoInputs, outputs_model=NoInputs, steps=[missing_venv_step])
 
 
 fail = Cab(name="fail", command="/bin/false", info="Always fails.", inputs_model=NoInputs, outputs_model=CommandOutputs)

@@ -57,6 +57,26 @@ def test_compile_rejects_unknown_engine():
     assert "unknown engine" in result.output
 
 
+def test_worker_compile_reports_missing_tool_venv_without_a_traceback(tmp_path):
+    result = CliRunner().invoke(
+        main,
+        [
+            "compile",
+            f"{FIXTURES}:missing_venv_pipe",
+            "--worker",
+            "--submit",
+            "--workdir",
+            str(tmp_path),
+            "--submission-root",
+            str(tmp_path / "submissions"),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "Error: venv '/__shinobi_test_missing_tool_venv__'" in result.output
+    assert "does not exist" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_run_cab_target():
     result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet", "--text", "hello there"])
     assert result.exit_code == 0, result.output
