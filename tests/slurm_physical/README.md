@@ -88,3 +88,48 @@ pystep on ``n2`` in every phase. The unchanged phase retained image/code and
 venv/code provenance on its cache hits, and its manifest remained unpinned
 because the venv fingerprint establishes version parity rather than an exact
 OS/binary pin.
+
+## Physical M3 mutation-recovery probe
+
+``run_m3.py`` is the supported-release gate. It runs a compact reduction-shaped
+chain across all three nodes: a native binary split on ``k1``, a CASA-shaped
+image pystep on ``n1`` (including ``ctx.import_callable`` and a bundled local
+helper), and a shared-tool-venv pystep on ``n2``. Two independent report jobs
+meet at a shared barrier on ``n1`` and ``n2`` so their cache/provenance commits
+genuinely overlap.
+
+The phases prove a clean run, a fully cached rerun, selective invalidation from
+an upstream parameter change, captured-code invalidation, tool-environment
+invalidation, and a deleted-product rerun. A delayed image job also proves that
+editing its original helper after submission cannot change the captured source;
+its detached finalizer is cancelled and reconstructed from durable records.
+One-shot worker-process exits at ``S2`` and ``W_RESULT`` cover the pre- and
+post-success-oracle mutation boundaries. Real Slurm requeues then interrupt
+both pystep mutation modes after the target has written ``PARTIAL-*`` into the
+MS. Each restarted invocation must use its new attempt identity, restore the
+predecessor snapshot, and publish content containing no partial write. A
+missing tool venv is rejected before submission. The fresh-process checker
+rereads every immutable finalization/manifest, restart record and the actual
+final MS/report contents::
+
+    python /data/src/stimela-ninja-m3-145/tests/slurm_physical/run_m3.py run \
+      --root /data/physical-m3-001
+    python /data/src/stimela-ninja-m3-145/tests/slurm_physical/run_m3.py check \
+      --root /data/physical-m3-001
+
+The defaults target Kudu/Nyala and require the M1 tool venv plus the Python
+Alpine SIF described above. The run creates a same-content tool-venv copy at
+``/data/m3-tool-venv-alt`` when absent; its distinct resolved environment path
+must invalidate only the venv step. For another site, pass ``--nodes``,
+``--partition``, ``--source-root``, ``--image``, ``--tool-venv``,
+``--alt-tool-venv`` and ``--worker-python`` explicitly. Run the M2 metadata
+probe on that site's exact shared mount first.
+
+The complete gate passed on Kudu/Nyala on 2026-09-18 as jobs 344--421. Native
+steps ran on ``k1``, image pysteps on ``n1`` and venv pysteps on ``n2``. Job
+385 was deliberately cancelled to prove fresh-process finalization; image jobs
+389 and 401 exited 86 at ``S2`` and ``W_RESULT`` and their retries (395 and
+407) recovered exact content. Jobs 413 and 420 were genuinely requeued once;
+their published restart-generation records were the attempts selected by
+finalization. The checker passed every state vector and the final MS was
+exactly ``vis[two]|image[requeued]|venv-requeued[4242]``.

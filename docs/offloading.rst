@@ -5,11 +5,12 @@ A recipe that is *purely declarative* can be compiled to a cluster workflow and
 handed off, so the pipeline runs without a live ``ninja`` process babysitting
 it. This is what ``ninja compile`` does.
 
-Worker bundles (M1, experimental)
-----------------------------------
+Shared-storage worker bundles
+-----------------------------
 
-M1 provides a **plan and result protocol** through ``shinobi.offload.bundle``
-and ``shinobi.offload.records``, plus an opt-in short-lived compute worker.
+The supported shared-storage path provides a **plan and result protocol**
+through ``shinobi.offload.bundle`` and ``shinobi.offload.records``, plus an
+opt-in short-lived compute worker.
 The legacy argv compiler remains the default. ``ninja compile --worker
 --submit`` stages and submits the worker lifecycle; ``--worker`` without
 ``--submit`` is refused because immutable source and environment staging is a
@@ -34,7 +35,7 @@ never against the submission directory. The initial deployment assumes that
 workspace, cache and snapshot paths are visible identically on all nodes;
 node-local staging is separate work.
 
-The experimental worker eligibility check explicitly recognizes the generated
+The worker eligibility check explicitly recognizes the generated
 ``PystepCallable`` adapter, not arbitrary functions with a ``__wrapped__``
 attribute. Binary cabs and image-/venv-backed pysteps have distinct execution
 specifications. Arbitrary orchestration functions, nested recipes, scatter,
@@ -271,6 +272,80 @@ written once; a successful workflow additionally publishes ``manifest.json``.
 Repeating finalization returns that stable record without depending on later
 ``sacct`` availability.
 
+Supported deployment workflow
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Support is conditional on the storage and runtime being proved at the site;
+it is not a claim that every NFS-like mount has the required semantics. Before
+running scientific data, an operator must:
+
+#. Mount the workspace, submission root, cache, snapshot store, ownership
+   registry, container images, worker environment and tool venvs at the same
+   absolute paths on the submission host and every selected compute node.
+#. Run ``tests/slurm_physical/run_m2.py`` against that exact shared mount.
+   The probe must demonstrate cross-node OFD-lock exclusion and lossless
+   concurrent cache/journal transactions in every holder direction.
+#. Provision the worker environment on the login host, either with
+   ``provision_worker_venv`` from the project's locked dependencies or by
+   installing a fixed interpreter at the absolute path passed to
+   ``--worker-python``. Compute allocations never install dependencies.
+#. Provision every declared tool venv separately and verify that its Python and
+   installed packages work on each eligible node. A missing or unreadable tool
+   venv is a preparation error; a worker pystep never falls back in-process.
+   A venv distribution digest provides version parity, not an OS/binary pin,
+   so a manifest containing one remains unpinned.
+#. Pre-stage immutable ``.sif`` images where compute nodes cannot pull them.
+   Submission resolves and records their content digest before any ``sbatch``.
+   Image pysteps may use ``ctx.import_callable`` and ``ctx.import_module`` for
+   environment-only packages such as ``casatasks``; local helpers reached by
+   literal imports are captured from ``--code-root``. Name dynamic local
+   helpers explicitly with ``include_modules`` when using the Python API.
+
+Then compile and detach from a shared checkout, for example::
+
+  export SHINOBI_OWNERSHIP_REGISTRY=/data/project/.shinobi/workspace-owners.json
+  ninja compile recipe.py:pipeline --worker --submit --cache \
+      --workdir /data/project \
+      --submission-root /data/project/.shinobi/submissions \
+      --cache-dir /data/project/.shinobi/cache \
+      --worker-python /data/envs/shinobi-worker/bin/python \
+      --code-root /data/src
+
+The resulting handle is sufficient after the submitting shell exits. Use
+``ninja status HANDLE`` for a fresh scheduler view. The detached ``afterany``
+finalizer writes ``finalization.json`` and, only when every immutable attempt
+record committed, ``manifest.json``. Re-running finalization is idempotent. A
+missing result remains ``unknown`` even if Slurm reports ``COMPLETED``.
+
+With caching enabled, an unchanged submission consumes allocations but skips
+valid work inside them. A parameter, captured-code, image or tool-environment
+change invalidates that step and only its data dependants. Deleted products
+invalidate their producer. Mutation-declaring steps additionally use the
+shared snapshot journal: a killed or requeued allocation restores the named
+predecessor state before retrying, while a committed attempt survives an
+interrupted cache update or final cleanup. Inspect ownership with
+``ninja workspace inspect --workdir PATH``. Reconcile only when Slurm and the
+durable job records prove the owner dead; uncertainty is deliberately not
+permission to release it.
+
+The initial supported boundary is a declared flat DAG of binary cabs and
+image-backed or pre-provisioned venv-backed ``@pystep`` computations on shared
+storage. It excludes node-local staging, dynamically sized scatter, nested
+recipes and arbitrary ``@step`` orchestration functions. Those recipes remain
+valid for local execution or ``ninja run --remote``; they are not silently
+weakened for worker offload.
+
+``tests/slurm_physical/run_m3.py`` is the release gate for this workflow. It
+must pass from a fresh checker process after the M2 storage probe on any mount
+claimed as supported. It exercises a native/image/venv mutation chain on
+different nodes, overlapping independent commits, selective cache
+invalidation, missing products and environments, immutable staged source, a
+cancelled finalizer, representative pre-/post-oracle crashes, and real Slurm
+requeues of both pystep modes. The ordinary test suite exhaustively injects the
+remaining S1--S5 publication boundaries; the physical gate verifies that the
+same recovery protocol works through the scheduler, subprocess/container
+boundaries and the site's actual shared filesystem.
+
 When a recipe can be offloaded
 ------------------------------
 
@@ -290,7 +365,7 @@ Anything relying on live Python is rejected with an explanation. That is not
 the end of the road for a cluster: see :ref:`offload-remote` below, which runs
 any recipe on a remote host and has none of these restrictions.
 
-The experimental ``ninja compile --worker --submit`` path admits a wider but
+The shared-storage ``ninja compile --worker --submit`` path admits a wider but
 still declared subset: binary cabs plus image-backed or pre-provisioned
 venv-backed ``@pystep`` nodes with explicitly bundled, transportable source and
 typed data. It retains declared loops, but rejects arbitrary orchestration
