@@ -72,6 +72,26 @@ Dataset declarations nested in Pydantic models, sequences, mappings, and
 unions are discovered recursively.  Diagnostic paths use ``[]`` for a
 sequence item and ``.*`` for a mapping value.
 
+Physical dataset closure
+------------------------
+
+After structural validation, :func:`~shinobi.dataset_closure.resolve_dataset_closure`
+can produce a separate, serializable observation of the physical tables that
+must travel together.  Its versioned ``msv2-dataset-closure/v1`` profile
+contains the canonical main table plus the actual keyword-referenced mandatory
+and supported optional subtables.  Symlink aliases and duplicate member
+references collapse to one resource.  A subtable may be outside the MS
+directory and shared by several MS roots, but every resource must remain in
+the explicit storage namespace.
+
+Resolution supports bounded, ordinary directory-backed tables using known
+local storage managers.  It refuses reference tables, virtual concatenations,
+opaque managers, escaped or cyclic references, and resources which change
+while being observed, with distinct diagnostics.  The serializable result
+records the managers and resources needed by copy, mount, stage, materialize,
+and restore operations.  It contains structural metadata only and retains no
+table handles.
+
 Execution status
 ----------------
 

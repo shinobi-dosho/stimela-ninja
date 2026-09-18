@@ -70,6 +70,19 @@ Datasets
 .. autoclass:: shinobi.datasets.DatasetStatus
    :members:
 
+.. autoclass:: shinobi.dataset_closure.DatasetClosure
+   :members:
+
+.. autoclass:: shinobi.dataset_closure.ClosureOperation
+   :members:
+
+.. autoclass:: shinobi.dataset_closure.ClosureResource
+
+.. autoclass:: shinobi.dataset_closure.ClosureStatus
+   :members:
+
+.. autofunction:: shinobi.dataset_closure.resolve_dataset_closure
+
 .. autofunction:: shinobi.datasets.dataset_fields
 
 .. autofunction:: shinobi.datasets.dataset_declarations
