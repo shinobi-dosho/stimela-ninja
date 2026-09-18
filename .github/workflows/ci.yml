@@ -49,6 +49,28 @@ jobs:
       - name: Run tests
         run: uv run --python ${{ matrix.python-version }} --locked --group dev pytest -q
 
+  casacore:
+    name: CASA structural inspection
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Verify optional inspector installation
+        run: uv run --python 3.12 --locked --group dev --extra casacore python -c "import casacore.tables"
+
+      - name: Run real CASA-table fixture test
+        run: uv run --python 3.12 --locked --group dev --extra casacore pytest -q tests/test_datasets.py::test_generated_tiny_casacore_tables_when_available
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest

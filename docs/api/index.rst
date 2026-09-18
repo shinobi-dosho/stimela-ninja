@@ -44,6 +44,42 @@ Supporting types used when defining cabs, not re-exported at the top level.
 
 .. autofunction:: shinobi.steps.schema.paths_overlap
 
+Datasets
+--------
+
+.. currentmodule:: shinobi.datasets
+
+.. py:data:: CasaTable
+
+   A path annotated with the versioned ``casa-table/v1`` declaration.
+
+.. py:data:: MeasurementSetV2
+
+   A path annotated with the versioned ``msv2-structural/v1`` declaration.
+
+.. autoclass:: shinobi.datasets.DatasetType
+
+.. autoclass:: shinobi.datasets.InspectionLimits
+
+.. autoclass:: shinobi.datasets.DatasetDescriptor
+   :members:
+
+.. autoclass:: shinobi.datasets.DatasetKind
+   :members:
+
+.. autoclass:: shinobi.datasets.DatasetStatus
+   :members:
+
+.. autofunction:: shinobi.datasets.dataset_fields
+
+.. autofunction:: shinobi.datasets.dataset_declarations
+
+.. autofunction:: shinobi.datasets.inspect_dataset
+
+.. autofunction:: shinobi.datasets.inspect_casa_table
+
+.. autofunction:: shinobi.datasets.inspect_measurement_set_v2
+
 Execution
 ---------
 

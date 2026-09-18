@@ -22,6 +22,11 @@ dependencies = [
     "packaging>=23",
 ]
 
+[project.optional-dependencies]
+# Structural CASA/MS inspection is explicit and lazy; keep its comparatively
+# specialised binary dependency out of default workflow installations.
+casacore = ["python-casacore>=3.7,<4"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",

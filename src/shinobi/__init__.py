@@ -25,11 +25,13 @@ logging.getLogger("shinobi").addHandler(logging.NullHandler())
 
 from shinobi.steps import (  # noqa: E402
     Cab,
+    CasaTable,
     ExecContext,
     InputRef,
     LoopIteration,
     LoopRef,
     Mutability,
+    MeasurementSetV2,
     OutputRef,
     Recipe,
     ScatterSpec,
@@ -41,11 +43,13 @@ from shinobi.steps import (  # noqa: E402
 
 __all__ = [
     "Cab",
+    "CasaTable",
     "ExecContext",
     "InputRef",
     "LoopIteration",
     "LoopRef",
     "Mutability",
+    "MeasurementSetV2",
     "OutputRef",
     "Recipe",
     "ScatterSpec",

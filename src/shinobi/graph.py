@@ -24,6 +24,7 @@ import graphlib
 from dataclasses import dataclass
 
 from shinobi.policies import EXECUTABLE_FLAVOURS
+from shinobi.datasets import dataset_declarations
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, path_fields
 from shinobi.wranglers import parse_output_action
 
@@ -260,8 +261,15 @@ def check_offloadable(recipe: "Recipe", *, worker: bool = False) -> RecipeGraph:
     reasons: list[str] = []
     by_name = {ref.name: ref for ref in recipe.steps}
 
+    root_datasets = sorted(dataset_declarations(recipe.inputs_model) | dataset_declarations(recipe.outputs_model))
+    if root_datasets:
+        reasons.append(f"recipe '{recipe.name}' declares strict dataset field(s) {root_datasets} -- dataset lifecycle enforcement is not available in offloaded engines yet")
+
     for ref in recipe.steps:
         scope = ref.step
+        strict_datasets = sorted(dataset_declarations(scope.inputs_model) | dataset_declarations(scope.outputs_model))
+        if strict_datasets:
+            reasons.append(f"step '{ref.name}' declares strict dataset field(s) {strict_datasets} -- dataset lifecycle enforcement is not available in offloaded engines yet")
         if ref.scatter is not None:
             reasons.append(f"step '{ref.name}' declares scatter over {ref.scatter.fields} -- scatter is not supported by offloaded engines in this version")
         pystep = worker and isinstance(ref.func, PystepCallable)
