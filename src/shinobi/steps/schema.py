@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_serializer, model_validator
 from pydantic_core import PydanticUndefined
@@ -409,6 +409,48 @@ def write_path_fields(scope: Scope) -> set[str]:
     return {name for name, meta in scope.field_meta.items() if meta.write_path}
 
 
+def _resolved_output_path_values(scope: Scope, prepared: dict[str, Any]) -> Iterator[tuple[str, Any, bool]]:
+    """Yield ``(field, value, resolved)`` for path-typed outputs.
+
+    Keep the declaration priority in one place: callers that need concrete
+    paths and callers that need to distinguish an absent optional product
+    from an unresolved declaration must not drift apart.
+    """
+    declared = path_fields(scope.outputs_model)
+    for name in scope.outputs_model.model_fields:
+        if name not in declared:
+            continue
+        # Same priority as `_fill_outputs`: a same-named input beats
+        # `implicit`, which beats the field default. Membership, not
+        # truthiness, is what decides -- a *present* input wins even when its
+        # value is None, so it suppresses the template rather than falling
+        # through to it.
+        if name in prepared:
+            yield name, prepared[name], True
+            continue
+        meta = scope.field_meta.get(name)
+        if meta is not None and isinstance(meta.implicit, str):
+            try:
+                yield name, meta.implicit.format(**prepared), True
+            except Exception:  # noqa: BLE001 -- best-effort; output filling reports the real error
+                yield name, None, False
+            continue
+        field = scope.outputs_model.model_fields[name]
+        if field.is_required():
+            yield name, None, False
+        else:
+            yield name, field.get_default(call_default_factory=True), True
+
+
+def unresolved_output_path_fields(scope: Scope, prepared: dict[str, Any]) -> set[str]:
+    """Path-output fields whose declaration cannot be resolved pre-run.
+
+    A resolved ``None`` or empty collection is deliberately not unresolved:
+    those are valid declarations of no product for optional/list outputs.
+    """
+    return {name for name, _value, resolved in _resolved_output_path_values(scope, prepared) if not resolved}
+
+
 def declared_output_paths(scope: Scope, prepared: dict[str, Any]) -> list[tuple[Path, str]]:
     """``(path, source)`` for every path-typed output field the step is
     *declared* to produce, resolved before the run from the declarations
@@ -433,30 +475,8 @@ def declared_output_paths(scope: Scope, prepared: dict[str, Any]) -> list[tuple[
     here, not raised; output filling reports those errors with full context.
     """
     paths: list[tuple[Path, str]] = []
-    declared = path_fields(scope.outputs_model)
-    for name in scope.outputs_model.model_fields:
-        if name not in declared:
-            continue
-        # Same priority as `_fill_outputs`: a same-named input beats
-        # `implicit`, which beats the field default. Membership, not
-        # truthiness, is what decides -- a *present* input wins even when its
-        # value is None, so the `continue` below is that input suppressing
-        # the template, not a fallthrough to it.
-        value = None
-        if name in prepared:
-            value = prepared[name]
-        else:
-            meta = scope.field_meta.get(name)
-            if meta is not None and isinstance(meta.implicit, str):
-                try:
-                    value = meta.implicit.format(**prepared)
-                except Exception:  # noqa: BLE001 -- best-effort; output filling reports the real error
-                    pass
-            else:
-                field = scope.outputs_model.model_fields[name]
-                if not field.is_required():
-                    value = field.get_default(call_default_factory=True)
-        if value is None:
+    for name, value, resolved in _resolved_output_path_values(scope, prepared):
+        if not resolved or value is None:
             continue
         for item in value if isinstance(value, (list, tuple)) else [value]:
             paths.append((Path(str(item)), f"output {name!r}"))

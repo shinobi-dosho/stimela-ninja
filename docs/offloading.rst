@@ -66,7 +66,9 @@ the declaration. ``bundle.stage(shared_root)`` creates a UUID-named submission
 directory containing ``bundle.json`` and ``submission.json``. Source contents
 are embedded in the bundle and can be materialized with ``CodeBundle.write``
 into a fresh directory; subsequent edits/removal of the original files cannot
-change them. Staging records bundle/worker protocol and software versions,
+change them. Before import, a worker verifies both every captured file and the
+complete materialized tree, so an added unlisted module cannot shadow an
+environment import. Staging records bundle/worker protocol and software versions,
 but does not yet provision a worker or pin an image. Those are submission
 preparation responsibilities, not compilation side effects.
 
@@ -370,10 +372,12 @@ still declared subset: binary cabs plus image-backed or pre-provisioned
 venv-backed ``@pystep`` nodes with explicitly bundled, transportable source and
 typed data. It retains declared loops, but rejects arbitrary orchestration
 functions, nested recipes and scatter. Ordinary non-path outputs may cross
-between worker steps through committed attempt records. A path mutated in place
-must remain statically resolvable so submission can derive the same mutation
-ordering as the legacy compiler; an unresolved wired ``MUTABLE`` path is
-refused before any job is submitted.
+between worker steps through committed attempt records. Every filesystem write
+target must remain statically resolvable so submission can freeze a complete
+ownership access set and derive the same mutation ordering as the legacy
+compiler. This includes ``MUTABLE`` inputs, same-named path inputs/outputs,
+``write_path`` destinations, path outputs and templated harvest/scratch roots;
+an unresolved declaration is refused before any job is submitted.
 
 .. _offload-remote:
 

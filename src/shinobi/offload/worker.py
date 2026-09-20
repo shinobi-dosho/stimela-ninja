@@ -134,10 +134,15 @@ class Finalization(WireModel):
     manifest: str | None = None
 
 
-def worker_platform() -> str:
+def worker_platform(
+    *,
+    platform_name: str | None = None,
+    machine: str | None = None,
+    libc: tuple[str, str] | None = None,
+) -> str:
     """Stable compatibility tag that does not include the host kernel name."""
-    libc, version = platform.libc_ver()
-    return f"{sys.platform}-{platform.machine()}-{libc}-{version}"
+    libc_name, libc_version = libc or platform.libc_ver()
+    return f"{platform_name or sys.platform}-{machine or platform.machine()}-{libc_name}-{libc_version}"
 
 
 def _load_identity(submission_dir: Path) -> tuple[Submission, RecipeBundle, ExecutionPlan]:
@@ -269,6 +274,8 @@ def _callable(submission_dir: Path, index: int, bundle: RecipeBundle):
     for file in frozen.code.files:
         if (source_root / file.path).read_text(encoding="utf-8") != file.source:
             raise BundleError(f"staged pystep source {file.path!r} no longer matches the frozen bundle")
+    if source_tree_digest(source_root) != frozen.code.source_digest:
+        raise BundleError("staged pystep source tree contains files outside the frozen bundle")
     sys.path.insert(0, str(source_root))
     importlib.invalidate_caches()
     module = importlib.import_module(frozen.code.module)
@@ -509,6 +516,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                         venv_digest=frozen.tool_venv_digest,
                     ),
                     _snapshot_success_record=final_path,
+                    _snapshot_success_step_path=step_path,
                     _result_commit=commit_result,
                     **kwargs,
                 )
@@ -540,12 +548,17 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         return 1
 
 
-def _write_or_read(path: Path, model: WireModel):
+def _write_or_read(
+    path: Path,
+    model: WireModel | RunManifest,
+    *,
+    compare_exclude: frozenset[str] = frozenset(),
+):
     try:
         return write_new(path, model)
     except FileExistsError:
         existing = type(model).model_validate_json(path.read_text())
-        if existing != model:
+        if existing.model_dump(mode="json", exclude=compare_exclude) != model.model_dump(mode="json", exclude=compare_exclude):
             raise BundleError(f"existing {path.name} disagrees with reconstructed finalization") from None
         return path
 
@@ -625,6 +638,10 @@ def finalize_submission(submission_dir: Path) -> Finalization:
         ]
         job = jobs.get(frozen.name)
         scheduler_state = scheduler.get(frozen.name, "UNKNOWN")
+        _scheduler_outcome, terminal = _scheduler_attempt_state(scheduler_state)
+        if not terminal and terminal_context:
+            terminal = True
+        settled = settled and terminal
         diagnostic_path = next((path for path in diagnostic_paths if path.exists()), None)
         chosen_path = diagnostic_path or (final_path if final_path.exists() else None)
         if chosen_path is not None:
@@ -637,10 +654,7 @@ def finalize_submission(submission_dir: Path) -> Finalization:
                 # automatically from that ambiguous state.
                 settled = False
         else:
-            state, terminal = _scheduler_attempt_state(scheduler_state)
-            if not terminal and terminal_context:
-                terminal = True
-            settled = settled and terminal
+            state = _scheduler_outcome
             record = None
             record_path = started_path if started_path.exists() else None
         all_committed = all_committed and record is not None and record.committed
@@ -661,7 +675,7 @@ def finalize_submission(submission_dir: Path) -> Finalization:
         )
 
     manifest_name = None
-    if all_committed:
+    if all_committed and settled:
         recipe = bundle.declaration()
         output_values = {name: getattr(results[binding.step].outputs, binding.field) for name, binding in recipe.output_wiring.items()}
         root = StepResult(
@@ -675,12 +689,12 @@ def finalize_submission(submission_dir: Path) -> Finalization:
         )
         manifest = build_manifest(root, backend="slurm-worker")
         manifest_path = submission_dir / "manifest.json"
-        if not manifest_path.exists():
-            write_new(manifest_path, manifest)  # type: ignore[arg-type]
-        else:
-            RunManifest.model_validate_json(manifest_path.read_text())
+        # ``generated_at`` is publication time, not run identity. Independent
+        # finalizers reconstruct identical run content at different instants;
+        # whichever atomically publishes first supplies the canonical time.
+        _write_or_read(manifest_path, manifest, compare_exclude=frozenset({"generated_at"}))
         manifest_name = manifest_path.name
-    finalization = Finalization(workflow_id=submission.workflow_id, bundle_digest=bundle.digest, complete=all_committed, steps=tuple(finalized), manifest=manifest_name)
+    finalization = Finalization(workflow_id=submission.workflow_id, bundle_digest=bundle.digest, complete=all_committed and settled, steps=tuple(finalized), manifest=manifest_name)
     # An early status observation is deliberately not canonical: scheduler
     # state changes and an absent final record may appear moments later. Once
     # every attempt is terminal, persist exactly one stable reconstruction.

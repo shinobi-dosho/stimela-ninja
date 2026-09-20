@@ -55,6 +55,16 @@ def test_compiles_to_topologically_ordered_dependency_chain():
     assert wf.jobs[1].depends_on == ["make"]
 
 
+def test_forward_reference_compiles_in_stable_topological_order():
+    recipe = _linear_recipe()
+    recipe.steps.reverse()
+
+    wf = compile_slurm(recipe, {"ms": "/scratch/x.ms"}, workdir="/work", container_runtime=None)
+
+    assert [job.name for job in wf.jobs] == ["make", "use"]
+    assert wf.jobs[1].depends_on == ["make"]
+
+
 def test_inter_step_path_flows_through_statically():
     wf = compile_slurm(_linear_recipe(), {"ms": "/scratch/x.ms"}, workdir="/work", container_runtime=None)
     # make writes /scratch/x.ms; use must receive that same path, resolved at

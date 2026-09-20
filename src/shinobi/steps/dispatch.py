@@ -540,6 +540,7 @@ def _snapshot_guard(
     slice_index: int | None,
     config: AppConfig,
     success_record: Path | None,
+    success_step_path: str | None,
 ) -> SnapshotGuard | None:
     """A `SnapshotGuard` for this step, or `None` if it mutates nothing.
 
@@ -581,6 +582,7 @@ def _snapshot_guard(
         force_copy=config.cache.snapshots.mode == "copy",
         tainting=tainting,
         success_record=success_record,
+        success_step_path=success_step_path,
     )
 
 
@@ -610,6 +612,7 @@ def _dispatch(
     _slice_index: int | None = None,
     _execution_identity: ExecutionIdentity | None = None,
     _snapshot_success_record: Path | None = None,
+    _snapshot_success_step_path: str | None = None,
     _result_commit: Callable[[StepResult, Callable[[], None]], None] | None = None,
     _workspace_claimed: bool = False,
     _validated_inputs: BaseModel | None = None,
@@ -668,6 +671,7 @@ def _dispatch(
                     _slice_index=_slice_index,
                     _execution_identity=_execution_identity,
                     _snapshot_success_record=_snapshot_success_record,
+                    _snapshot_success_step_path=_snapshot_success_step_path,
                     _result_commit=_result_commit,
                     _workspace_claimed=True,
                     _validated_inputs=validated_inputs,
@@ -815,6 +819,7 @@ def _dispatch(
             _slice_index,
             config,
             _snapshot_success_record,
+            _snapshot_success_step_path,
         )
         if snapshots_enabled
         else None

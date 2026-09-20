@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import platform
 import subprocess
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from shinobi.offload.records import AttemptRecord
 from shinobi.offload.slurm import (
     OffloadCompileError,
     WorkerSubmissionError,
+    _worker_python_identity,
     compile_slurm,
     prepare_worker_slurm,
     submit_worker_slurm,
@@ -30,7 +33,7 @@ from shinobi.offload.worker import (
 )
 from shinobi.ownership import WorkspaceOwnershipError, acquire_workspace, inspect_workspace, release_workspace
 from shinobi.provenance import RunManifest
-from shinobi.snapshots import Chain, HeadStatus, Marker, chain_id, faults, get_journal
+from shinobi.snapshots import Chain, HeadStatus, Marker, chain_id, faults, get_journal, reconcile
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, ParamMeta, Recipe, StepRef
 
 
@@ -277,6 +280,72 @@ def test_worker_executes_wiring_in_shared_sandboxes_and_finalizes(tmp_path, monk
     assert finalize_submission(workflow.submission_dir) == finalized
 
 
+def test_worker_preparation_topologically_orders_forward_references(tmp_path):
+    recipe = _recipe()
+    recipe.steps.reverse()
+    bundle = freeze_recipe(recipe, {}, config=AppConfig(), workspace=tmp_path)
+
+    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+
+    assert [job.name for job in workflow.jobs] == ["write", "copy"]
+    assert workflow.jobs[1].depends_on == ["write"]
+
+
+def test_worker_refuses_runtime_resolved_write_path(tmp_path):
+    class StemOut(BaseModel):
+        stem: str
+
+    class StemIn(BaseModel):
+        stem: str
+
+    class Done(BaseModel):
+        pass
+
+    class ProductOut(BaseModel):
+        product: Path | None = None
+
+    produce = Cab(name="produce", command="produce", inputs_model=RootIn, outputs_model=StemOut)
+    consume = Cab(
+        name="consume",
+        command="consume",
+        inputs_model=StemIn,
+        outputs_model=ProductOut,
+        field_meta={"stem": ParamMeta(write_path=True), "product": ParamMeta(implicit="{stem}.dat")},
+    )
+    recipe = Recipe(
+        name="runtime-write",
+        inputs_model=RootIn,
+        outputs_model=Done,
+        steps=[
+            StepRef(name="produce", step=produce),
+            StepRef(name="consume", step=consume, wiring={"stem": OutputRef(step="produce", field="stem")}),
+        ],
+    )
+    bundle = freeze_recipe(recipe, {}, config=AppConfig(), workspace=tmp_path)
+
+    with pytest.raises(OffloadCompileError, match="write path isn't statically known"):
+        prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+
+
+def test_worker_allows_unset_optional_path_output(tmp_path):
+    class ProductOut(BaseModel):
+        product: Path | None = None
+
+    cab = Cab(name="optional-product", command="true", inputs_model=RootIn, outputs_model=ProductOut)
+    recipe = Recipe(
+        name="optional-product",
+        inputs_model=RootIn,
+        outputs_model=ProductOut,
+        steps=[StepRef(name="optional-product", step=cab)],
+        output_wiring={"product": OutputRef(step="optional-product", field="product")},
+    )
+    bundle = freeze_recipe(recipe, {}, config=AppConfig(), workspace=tmp_path)
+
+    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+
+    assert [job.name for job in workflow.jobs] == ["optional-product"]
+
+
 def test_second_detached_run_uses_runtime_cache_and_committed_upstream_keys(tmp_path):
     first, _bundle, first_plan = _prepared_cached(tmp_path)
     assert [record.state for record in _execute_all(first, first_plan)] == ["succeeded", "succeeded"]
@@ -424,6 +493,10 @@ def test_committed_uncached_worker_mutation_is_not_rolled_back(tmp_path):
     faults.hooks.clear()
     assert (ms / "table.dat").read_text() == "vis|flag[default]"
 
+    notes = reconcile(str(tmp_path / "cache"), get_cache_manifest(str(tmp_path / "cache")), paths={ms})
+    assert any("completed and recorded" in note for note in notes)
+    assert get_journal(str(tmp_path / "cache")).get(chain_id(ms)).marker is None
+
     cal = plan.attempts[2]
     assert execute_step(workflow.submission_dir, cal.step_path, cal.attempt_id) == 0
     assert (ms / "table.dat").read_text() == "vis|flag[default]|cal"
@@ -460,6 +533,13 @@ def test_staged_worker_source_is_checked_before_execution(tmp_path):
     )
     assert record.state == "failed"
     assert "no longer matches" in record.error
+
+
+def test_selected_worker_python_supplies_its_own_compatibility_identity():
+    version, platform_tag = _worker_python_identity(Path(sys.executable))
+
+    assert version == platform.python_version()
+    assert platform_tag
 
 
 def test_submission_records_each_job_and_detached_finalizer(tmp_path, monkeypatch):
@@ -795,6 +875,44 @@ def test_frozen_venv_pystep_imports_bundled_helper(make_venv, tmp_path):
         _final_record(workflow, attempt), workflow_id=plan.workflow_id, attempt_id=attempt.attempt_id, step_path=attempt.step_path, bundle_digest=bundle.digest
     )
     assert record.result(bundle.steps[0].scope.restore()).outputs.value == 9
+
+
+def test_frozen_pystep_refuses_an_added_staged_module(make_venv, tmp_path):
+    from shinobi import pystep
+    from tests import _venv_pystep_funcs as funcs
+
+    venv = make_venv()
+
+    class NumberIn(BaseModel):
+        n: int
+
+    ref = pystep(venv=str(venv), backend="venv")(funcs.use_bundled_helper)
+    recipe = Recipe(
+        name="venv-helper-tamper",
+        inputs_model=NumberIn,
+        outputs_model=funcs.MagicOut,
+        steps=[ref.model_copy(update={"wiring": {"n": InputRef(field="n")}})],
+        output_wiring={"value": OutputRef(step=ref.name, field="value")},
+    )
+    workflow = prepare_worker_slurm(
+        freeze_recipe(recipe, {"n": 8}, config=AppConfig(), workspace=tmp_path, code_roots=(Path.cwd(),)),
+        submission_root=tmp_path / "runs",
+        worker_python=Path(sys.executable),
+    )
+    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    (workflow.submission_dir / "code" / "0" / "injected.py").write_text("raise RuntimeError('injected')\n")
+
+    attempt = plan.attempts[0]
+    assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
+    bundle = RecipeBundle.read(workflow.submission_dir / "bundle.json")
+    record = AttemptRecord.read(
+        _final_record(workflow, attempt),
+        workflow_id=plan.workflow_id,
+        attempt_id=attempt.attempt_id,
+        step_path=attempt.step_path,
+        bundle_digest=bundle.digest,
+    )
+    assert "outside the frozen bundle" in record.error
 
 
 def test_frozen_image_pystep_imports_helper_and_records_exact_pins(tmp_path, monkeypatch):
@@ -1133,6 +1251,11 @@ def test_early_finalization_is_superseded_and_completed_result_survives_accounti
 
     for attempt in plan.attempts:
         assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 0
+    records_while_running = finalize_submission(workflow.submission_dir)
+    assert not records_while_running.complete
+    assert [step.state for step in records_while_running.steps] == ["succeeded", "succeeded"]
+    assert not (workflow.submission_dir / "manifest.json").exists()
+    assert not (workflow.submission_dir / "finalization.json").exists()
     monkeypatch.setattr("shinobi.offload.slurm.status_slurm", lambda jobs: dict.fromkeys(jobs, "COMPLETED"))
     complete = finalize_submission(workflow.submission_dir)
     assert complete.complete
@@ -1143,6 +1266,44 @@ def test_early_finalization_is_superseded_and_completed_result_survives_accounti
 
     monkeypatch.setattr("shinobi.offload.slurm.status_slurm", accounting_was_purged)
     assert finalize_submission(workflow.submission_dir) == complete
+
+
+def test_concurrent_manifest_publication_does_not_abort_finalization(tmp_path, monkeypatch):
+    workflow, bundle, plan = _prepared(tmp_path)
+    (workflow.submission_dir / "jobs").mkdir()
+    for index, attempt in enumerate(plan.attempts):
+        write_new(
+            workflow.submission_dir / "jobs" / f"{index:04d}.json",
+            SubmittedJob(
+                workflow_id=plan.workflow_id,
+                bundle_digest=bundle.digest,
+                step_path=attempt.step_path,
+                attempt_id=attempt.attempt_id,
+                job_id=str(300 + index),
+            ),
+        )
+        assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 0
+
+    monkeypatch.setattr("shinobi.offload.slurm.status_slurm", lambda jobs: dict.fromkeys(jobs, "COMPLETED"))
+    original_write_new = write_new
+    competing_generated_at = None
+
+    def publish_manifest_first(path, model):
+        nonlocal competing_generated_at
+        if path.name == "manifest.json" and not path.exists():
+            competing_generated_at = model.generated_at - timedelta(seconds=1)
+            original_write_new(path, model.model_copy(update={"generated_at": competing_generated_at}))
+            raise FileExistsError(path)
+        return original_write_new(path, model)
+
+    monkeypatch.setattr("shinobi.offload.worker.write_new", publish_manifest_first)
+    finalized = finalize_submission(workflow.submission_dir)
+
+    assert finalized.complete
+    assert finalized.manifest == "manifest.json"
+    assert (workflow.submission_dir / "finalization.json").is_file()
+    manifest = RunManifest.model_validate_json((workflow.submission_dir / "manifest.json").read_text())
+    assert manifest.generated_at == competing_generated_at
 
 
 def test_unavailable_accounting_does_not_freeze_early_unknown_status(tmp_path, monkeypatch):

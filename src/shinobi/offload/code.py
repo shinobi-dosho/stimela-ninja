@@ -208,6 +208,18 @@ class CodeBundle(WireModel):
         return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
 
     @property
+    def source_digest(self) -> str:
+        """Exact materialized-tree identity, including its complete file set."""
+
+        digest = hashlib.sha256()
+        for file in sorted(self.files, key=lambda item: item.path):
+            digest.update(file.path.encode())
+            digest.update(b"\0")
+            digest.update(file.source.encode())
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    @property
     def execution_digest(self) -> str:
         """Identity of the selected callable and its bundled dependencies.
 
