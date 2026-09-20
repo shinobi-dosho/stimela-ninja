@@ -30,7 +30,7 @@ from shinobi.offload.worker import (
 )
 from shinobi.ownership import WorkspaceOwnershipError, acquire_workspace, inspect_workspace, release_workspace
 from shinobi.provenance import RunManifest
-from shinobi.snapshots import Chain, HeadStatus, Marker, chain_id, faults, get_journal
+from shinobi.snapshots import Chain, HeadStatus, Marker, chain_id, faults, get_journal, reconcile
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, ParamMeta, Recipe, StepRef
 
 
@@ -423,6 +423,10 @@ def test_committed_uncached_worker_mutation_is_not_rolled_back(tmp_path):
     assert execute_step(workflow.submission_dir, flag.step_path, flag.attempt_id) == 0
     faults.hooks.clear()
     assert (ms / "table.dat").read_text() == "vis|flag[default]"
+
+    notes = reconcile(str(tmp_path / "cache"), get_cache_manifest(str(tmp_path / "cache")), paths={ms})
+    assert any("completed and recorded" in note for note in notes)
+    assert get_journal(str(tmp_path / "cache")).get(chain_id(ms)).marker is None
 
     cal = plan.attempts[2]
     assert execute_step(workflow.submission_dir, cal.step_path, cal.attempt_id) == 0

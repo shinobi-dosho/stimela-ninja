@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from shinobi.cache import get_cache_manifest
 from shinobi.config import AppConfig
-from shinobi.snapshots import HeadStatus, Marker, chain_id, faults, get_journal, orphan_trash, reconcile, state_name
+from shinobi.snapshots import HeadStatus, Marker, SnapshotGuard, chain_id, faults, get_journal, orphan_trash, reconcile, state_name
 from shinobi.steps import InputRef, OutputRef, Recipe
 
 
@@ -52,6 +52,32 @@ def _write(ms: Path, text: str) -> None:
 
 def _chain_of(cache_dir, ms: Path):
     return get_journal(str(cache_dir)).get(chain_id(ms))
+
+
+def test_first_mutation_of_absent_path_rolls_back_partial_creation_and_starts_chain(tmp_path):
+    cache_dir = tmp_path / "cache"
+    ms = tmp_path / "new.ms"
+    journal = get_journal(str(cache_dir))
+
+    interrupted = SnapshotGuard(journal, "pipe.create", "create-key", "dead-run", {"ms": ms}, {}, set(), force_copy=True)
+    interrupted.before_run()
+    _write(ms, "partial")
+
+    notes = reconcile(str(cache_dir), get_cache_manifest(str(cache_dir)), paths={ms})
+    assert any("restored its pre-run absence" in note for note in notes)
+    assert not ms.exists()
+    assert journal.get(chain_id(ms)) is None
+
+    completed = SnapshotGuard(journal, "pipe.create", "create-key", "good-run", {"ms": ms}, {}, set(), force_copy=True)
+    completed.before_run()
+    _write(ms, "complete")
+    completed.after_success(lambda: None)
+
+    chain = journal.get(chain_id(ms))
+    assert chain is not None
+    assert chain.head == state_name("create-key", "ms")
+    assert chain.marker is None
+    assert (journal.snapshot_dir(chain.head) / "table.dat").read_text() == "complete"
 
 
 def _pipeline(ms: Path, calls: dict, fail: dict | None = None, flag_cache=None, cal_cache=None, strategy: str = "default", solver: str = "default"):

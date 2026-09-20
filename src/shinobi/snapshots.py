@@ -211,6 +211,8 @@ class Marker:
     run_id: str
     started_at: float
     success_record: str | None = None
+    success_step_path: str | None = None
+    path_was_absent: bool = False
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -220,6 +222,8 @@ class Marker:
             "run_id": self.run_id,
             "started_at": self.started_at,
             "success_record": self.success_record,
+            "success_step_path": self.success_step_path,
+            "path_was_absent": self.path_was_absent,
         }
 
 
@@ -540,6 +544,7 @@ class _FieldPlan:
     trash: Path | None = None
     restored: bool = False
     skip: bool = False
+    path_was_absent: bool = False
 
 
 class SnapshotGuard:
@@ -563,6 +568,7 @@ class SnapshotGuard:
         force_copy: bool = False,
         tainting: dict[str, tuple[Path, ...]] | None = None,
         success_record: Path | None = None,
+        success_step_path: str | None = None,
     ):
         self.journal = journal
         self.step_path = step_path
@@ -572,6 +578,7 @@ class SnapshotGuard:
         self.wired_fields = wired_fields
         self.force_copy = force_copy
         self.success_record = success_record
+        self.success_step_path = success_step_path
         self.plans = [_FieldPlan(field=name, path=path) for name, path in fields.items()]
         # Mutated fields Tier 1 declined to protect. It cannot snapshot them,
         # but it must still record that they *wrote*, or a later restore
@@ -613,15 +620,24 @@ class SnapshotGuard:
 
     def _prepare(self, plan: _FieldPlan) -> None:
         """Resolve the chain and compute R, the state name this step needs."""
+        plan.cid = chain_id(plan.path)
         try:
             st = plan.path.stat()
         except OSError:
             # Acquire-and-mutate: the path does not exist yet, so there is
             # nothing to stat, nothing to restore and no generation 0. The
-            # chain starts at Rule B when the step succeeds.
-            plan.skip = True
+            # chain starts at Rule B when the step succeeds.  A placeholder
+            # marker still has to be written before execution: if the creator
+            # dies halfway through, recovery must restore the pre-run absence
+            # rather than accepting the partial tree as a new generation 0.
+            if self.journal.get(plan.cid) is None:
+                plan.path_was_absent = True
+            else:
+                # Preserve the established missing-path behaviour for an
+                # existing chain.  That is a missing durable product, not an
+                # acquire-and-mutate first generation.
+                plan.skip = True
             return
-        plan.cid = chain_id(plan.path)
         chains = self.journal.all_chains()
         chain = chains.get(plan.cid)
 
@@ -803,7 +819,19 @@ class SnapshotGuard:
             run_id=self.run_id,
             started_at=time.time(),
             success_record=str(self.success_record) if self.success_record is not None else None,
+            success_step_path=self.success_step_path,
+            path_was_absent=plan.path_was_absent,
         )
+        if plan.path_was_absent:
+
+            def mark_absent(chain: Chain | None) -> Chain:
+                if chain is None:
+                    chain = Chain(dev=0, ino=0, ctime_ns=0, path=str(plan.path))
+                chain.marker = marker
+                return chain
+
+            self.journal.update_chain(plan.cid, mark_absent)
+            return
         try:
             st = plan.path.stat()
         except OSError:
@@ -956,7 +984,7 @@ class SnapshotGuard:
         def mutate(chain: Chain | None) -> Chain:
             if chain is None:
                 chain = Chain(dev=st.st_dev, ino=st.st_ino, ctime_ns=st.st_ctime_ns, path=str(plan.path))
-            chain.ctime_ns = st.st_ctime_ns
+            chain.dev, chain.ino, chain.ctime_ns = st.st_dev, st.st_ino, st.st_ctime_ns
             if produced is None:
                 # An uncached mutator: it just advanced the disk to a state
                 # it cannot name, so every generation up to here is missing
@@ -1010,6 +1038,19 @@ class SnapshotGuard:
         honest about it.
         """
         for plan in self.plans:
+            if plan.path_was_absent:
+                try:
+                    if plan.path.is_symlink() or plan.path.is_file():
+                        plan.path.unlink(missing_ok=True)
+                    elif plan.path.exists():
+                        shutil.rmtree(plan.path)
+                except OSError:
+                    logger.exception("step %s: could not restore the pre-run absence of %s", self.step_path, plan.path)
+                else:
+                    if plan.cid is not None:
+                        self.journal.update_chain(plan.cid, lambda _chain: None)
+                    logger.info("step %s: removed newly-created '%s' at %s after failure", self.step_path, plan.field, plan.path)
+                continue
             if plan.trash is None:
                 continue
             try:
@@ -1230,7 +1271,8 @@ def _marker_completed(marker: Marker, manifest) -> bool:
         record = AttemptRecord.model_validate_json(Path(marker.success_record).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return record.committed and str(record.attempt_id) == marker.run_id and record.step_path == marker.step_path and record.cache_key == marker.cache_key
+    expected_step_path = marker.success_step_path or marker.step_path
+    return record.committed and str(record.attempt_id) == marker.run_id and record.step_path == expected_step_path and record.cache_key == marker.cache_key
 
 
 def reconcile(cache_dir: str, manifest, *, paths: set[Path] | None = None) -> list[str]:
@@ -1294,6 +1336,18 @@ def reconcile(cache_dir: str, manifest, *, paths: set[Path] | None = None) -> li
         # between S2 and S3 this re-runs a step that actually succeeded --
         # bounded waste in a narrow window, taken deliberately over the
         # alternative, which is a false hit over content nothing verified.
+        if marker.path_was_absent:
+            path = Path(chain.path)
+            try:
+                if path.is_symlink() or path.is_file():
+                    path.unlink(missing_ok=True)
+                elif path.exists():
+                    shutil.rmtree(path)
+                notes.append(f"{chain.path}: run {marker.run_id} of '{marker.step_path}' did not complete; restored its pre-run absence")
+                journal.update_chain(cid, lambda _chain: None)
+            except OSError:
+                notes.append(f"{chain.path}: could not restore its pre-run absence -- left the partial path in place for inspection")
+            continue
         if trash is not None:
             try:
                 if Path(chain.path).exists():

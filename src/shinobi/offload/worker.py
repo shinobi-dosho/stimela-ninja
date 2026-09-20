@@ -509,6 +509,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                         venv_digest=frozen.tool_venv_digest,
                     ),
                     _snapshot_success_record=final_path,
+                    _snapshot_success_step_path=step_path,
                     _result_commit=commit_result,
                     **kwargs,
                 )
