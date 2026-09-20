@@ -66,7 +66,9 @@ the declaration. ``bundle.stage(shared_root)`` creates a UUID-named submission
 directory containing ``bundle.json`` and ``submission.json``. Source contents
 are embedded in the bundle and can be materialized with ``CodeBundle.write``
 into a fresh directory; subsequent edits/removal of the original files cannot
-change them. Staging records bundle/worker protocol and software versions,
+change them. Before import, a worker verifies both every captured file and the
+complete materialized tree, so an added unlisted module cannot shadow an
+environment import. Staging records bundle/worker protocol and software versions,
 but does not yet provision a worker or pin an image. Those are submission
 preparation responsibilities, not compilation side effects.
 

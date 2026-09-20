@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ from shinobi.offload.records import AttemptRecord
 from shinobi.offload.slurm import (
     OffloadCompileError,
     WorkerSubmissionError,
+    _worker_python_identity,
     compile_slurm,
     prepare_worker_slurm,
     submit_worker_slurm,
@@ -513,6 +515,13 @@ def test_staged_worker_source_is_checked_before_execution(tmp_path):
     assert "no longer matches" in record.error
 
 
+def test_selected_worker_python_supplies_its_own_compatibility_identity():
+    version, platform_tag = _worker_python_identity(Path(sys.executable))
+
+    assert version == platform.python_version()
+    assert platform_tag
+
+
 def test_submission_records_each_job_and_detached_finalizer(tmp_path, monkeypatch):
     workflow, _bundle, plan = _prepared(tmp_path)
     competing, _bundle, _plan = _prepared(tmp_path)
@@ -846,6 +855,44 @@ def test_frozen_venv_pystep_imports_bundled_helper(make_venv, tmp_path):
         _final_record(workflow, attempt), workflow_id=plan.workflow_id, attempt_id=attempt.attempt_id, step_path=attempt.step_path, bundle_digest=bundle.digest
     )
     assert record.result(bundle.steps[0].scope.restore()).outputs.value == 9
+
+
+def test_frozen_pystep_refuses_an_added_staged_module(make_venv, tmp_path):
+    from shinobi import pystep
+    from tests import _venv_pystep_funcs as funcs
+
+    venv = make_venv()
+
+    class NumberIn(BaseModel):
+        n: int
+
+    ref = pystep(venv=str(venv), backend="venv")(funcs.use_bundled_helper)
+    recipe = Recipe(
+        name="venv-helper-tamper",
+        inputs_model=NumberIn,
+        outputs_model=funcs.MagicOut,
+        steps=[ref.model_copy(update={"wiring": {"n": InputRef(field="n")}})],
+        output_wiring={"value": OutputRef(step=ref.name, field="value")},
+    )
+    workflow = prepare_worker_slurm(
+        freeze_recipe(recipe, {"n": 8}, config=AppConfig(), workspace=tmp_path, code_roots=(Path.cwd(),)),
+        submission_root=tmp_path / "runs",
+        worker_python=Path(sys.executable),
+    )
+    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    (workflow.submission_dir / "code" / "0" / "injected.py").write_text("raise RuntimeError('injected')\n")
+
+    attempt = plan.attempts[0]
+    assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
+    bundle = RecipeBundle.read(workflow.submission_dir / "bundle.json")
+    record = AttemptRecord.read(
+        _final_record(workflow, attempt),
+        workflow_id=plan.workflow_id,
+        attempt_id=attempt.attempt_id,
+        step_path=attempt.step_path,
+        bundle_digest=bundle.digest,
+    )
+    assert "outside the frozen bundle" in record.error
 
 
 def test_frozen_image_pystep_imports_helper_and_records_exact_pins(tmp_path, monkeypatch):

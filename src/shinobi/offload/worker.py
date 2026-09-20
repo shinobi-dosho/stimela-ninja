@@ -134,10 +134,15 @@ class Finalization(WireModel):
     manifest: str | None = None
 
 
-def worker_platform() -> str:
+def worker_platform(
+    *,
+    platform_name: str | None = None,
+    machine: str | None = None,
+    libc: tuple[str, str] | None = None,
+) -> str:
     """Stable compatibility tag that does not include the host kernel name."""
-    libc, version = platform.libc_ver()
-    return f"{sys.platform}-{platform.machine()}-{libc}-{version}"
+    libc_name, libc_version = libc or platform.libc_ver()
+    return f"{platform_name or sys.platform}-{machine or platform.machine()}-{libc_name}-{libc_version}"
 
 
 def _load_identity(submission_dir: Path) -> tuple[Submission, RecipeBundle, ExecutionPlan]:
@@ -269,6 +274,8 @@ def _callable(submission_dir: Path, index: int, bundle: RecipeBundle):
     for file in frozen.code.files:
         if (source_root / file.path).read_text(encoding="utf-8") != file.source:
             raise BundleError(f"staged pystep source {file.path!r} no longer matches the frozen bundle")
+    if source_tree_digest(source_root) != frozen.code.source_digest:
+        raise BundleError("staged pystep source tree contains files outside the frozen bundle")
     sys.path.insert(0, str(source_root))
     importlib.invalidate_caches()
     module = importlib.import_module(frozen.code.module)

@@ -508,7 +508,7 @@ def _stage_worker(submission_dir: Path, worker_python: Path):
 
     from shinobi.backends.venv import digest_of_dists, freeze_dists
     from shinobi.offload.code import source_tree_digest
-    from shinobi.offload.worker import WorkerEnvironment, worker_platform
+    from shinobi.offload.worker import WorkerEnvironment
 
     if not worker_python.is_absolute() or not worker_python.is_file() or not os.access(worker_python, os.X_OK):
         raise OffloadCompileError(f"worker Python must be an existing executable absolute path, got {worker_python}")
@@ -516,14 +516,33 @@ def _stage_worker(submission_dir: Path, worker_python: Path):
     source_root = submission_dir / "worker-src"
     shutil.copytree(package, source_root / "shinobi", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     distributions = freeze_dists(worker_python)
+    python_version, platform_tag = _worker_python_identity(worker_python)
     return WorkerEnvironment(
         python=str(worker_python),
         source=str(source_root),
         source_digest=source_tree_digest(source_root),
-        python_version=platform.python_version(),
-        platform=worker_platform(),
+        python_version=python_version,
+        platform=platform_tag,
         distributions_digest=digest_of_dists(distributions) if distributions is not None else None,
     )
+
+
+def _worker_python_identity(worker_python: Path) -> tuple[str, str]:
+    """Version/platform reported by the interpreter that allocations run."""
+
+    from shinobi.offload.worker import worker_platform
+
+    probe = "import json,platform,sys;print(json.dumps([platform.python_version(),sys.platform,platform.machine(),*platform.libc_ver()]))"
+    proc = subprocess.run([str(worker_python), "-c", probe], capture_output=True, text=True)
+    if proc.returncode:
+        raise OffloadCompileError(f"worker Python {worker_python} could not report its compatibility identity: {proc.stderr.strip()}")
+    try:
+        python_version, platform_name, machine, libc_name, libc_version = json.loads(proc.stdout)
+        if not all(isinstance(value, str) for value in (python_version, platform_name, machine, libc_name, libc_version)):
+            raise ValueError("identity fields are not strings")
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise OffloadCompileError(f"worker Python {worker_python} returned an invalid compatibility identity") from exc
+    return python_version, worker_platform(platform_name=platform_name, machine=machine, libc=(libc_name, libc_version))
 
 
 def provision_worker_venv(shared_root: Path, *, project_root: Path | None = None, python: Path | None = None) -> Path:
