@@ -5,6 +5,7 @@ import os
 import platform
 import subprocess
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -324,6 +325,25 @@ def test_worker_refuses_runtime_resolved_write_path(tmp_path):
 
     with pytest.raises(OffloadCompileError, match="write path isn't statically known"):
         prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+
+
+def test_worker_allows_unset_optional_path_output(tmp_path):
+    class ProductOut(BaseModel):
+        product: Path | None = None
+
+    cab = Cab(name="optional-product", command="true", inputs_model=RootIn, outputs_model=ProductOut)
+    recipe = Recipe(
+        name="optional-product",
+        inputs_model=RootIn,
+        outputs_model=ProductOut,
+        steps=[StepRef(name="optional-product", step=cab)],
+        output_wiring={"product": OutputRef(step="optional-product", field="product")},
+    )
+    bundle = freeze_recipe(recipe, {}, config=AppConfig(), workspace=tmp_path)
+
+    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+
+    assert [job.name for job in workflow.jobs] == ["optional-product"]
 
 
 def test_second_detached_run_uses_runtime_cache_and_committed_upstream_keys(tmp_path):
@@ -1266,10 +1286,13 @@ def test_concurrent_manifest_publication_does_not_abort_finalization(tmp_path, m
 
     monkeypatch.setattr("shinobi.offload.slurm.status_slurm", lambda jobs: dict.fromkeys(jobs, "COMPLETED"))
     original_write_new = write_new
+    competing_generated_at = None
 
     def publish_manifest_first(path, model):
+        nonlocal competing_generated_at
         if path.name == "manifest.json" and not path.exists():
-            original_write_new(path, model)
+            competing_generated_at = model.generated_at - timedelta(seconds=1)
+            original_write_new(path, model.model_copy(update={"generated_at": competing_generated_at}))
             raise FileExistsError(path)
         return original_write_new(path, model)
 
@@ -1279,6 +1302,8 @@ def test_concurrent_manifest_publication_does_not_abort_finalization(tmp_path, m
     assert finalized.complete
     assert finalized.manifest == "manifest.json"
     assert (workflow.submission_dir / "finalization.json").is_file()
+    manifest = RunManifest.model_validate_json((workflow.submission_dir / "manifest.json").read_text())
+    assert manifest.generated_at == competing_generated_at
 
 
 def test_unavailable_accounting_does_not_freeze_early_unknown_status(tmp_path, monkeypatch):

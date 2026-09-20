@@ -548,12 +548,17 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         return 1
 
 
-def _write_or_read(path: Path, model: WireModel):
+def _write_or_read(
+    path: Path,
+    model: WireModel | RunManifest,
+    *,
+    compare_exclude: frozenset[str] = frozenset(),
+):
     try:
         return write_new(path, model)
     except FileExistsError:
         existing = type(model).model_validate_json(path.read_text())
-        if existing != model:
+        if existing.model_dump(mode="json", exclude=compare_exclude) != model.model_dump(mode="json", exclude=compare_exclude):
             raise BundleError(f"existing {path.name} disagrees with reconstructed finalization") from None
         return path
 
@@ -684,7 +689,10 @@ def finalize_submission(submission_dir: Path) -> Finalization:
         )
         manifest = build_manifest(root, backend="slurm-worker")
         manifest_path = submission_dir / "manifest.json"
-        _write_or_read(manifest_path, manifest)  # type: ignore[arg-type]
+        # ``generated_at`` is publication time, not run identity. Independent
+        # finalizers reconstruct identical run content at different instants;
+        # whichever atomically publishes first supplies the canonical time.
+        _write_or_read(manifest_path, manifest, compare_exclude=frozenset({"generated_at"}))
         manifest_name = manifest_path.name
     finalization = Finalization(workflow_id=submission.workflow_id, bundle_digest=bundle.digest, complete=all_committed and settled, steps=tuple(finalized), manifest=manifest_name)
     # An early status observation is deliberately not canonical: scheduler

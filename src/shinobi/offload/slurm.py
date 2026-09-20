@@ -66,11 +66,10 @@ from shinobi.steps.schema import (
     OutputRef,
     Recipe,
     Scope,
-    declared_output_paths,
     mutated_path_fields,
     path_accesses,
-    path_fields,
     paths_overlap,
+    unresolved_output_path_fields,
     write_path_fields,
 )
 
@@ -272,8 +271,7 @@ def _require_static_write_declarations(name: str, scope: Scope, prepared: dict[s
     """Refuse write targets absent from the frozen ownership/access plan."""
 
     missing = sorted(field for field in mutated_path_fields(scope) | write_path_fields(scope) if prepared.get(field) is None)
-    declared_sources = {source for _path, source in declared_output_paths(scope, prepared)}
-    missing.extend(f"output {field!r}" for field in sorted(path_fields(scope.outputs_model)) if f"output {field!r}" not in declared_sources)
+    missing.extend(f"output {field!r}" for field in sorted(unresolved_output_path_fields(scope, prepared)))
 
     present = {field: value for field, value in prepared.items() if value is not None}
     for kind, patterns in (("harvest", scope.harvest), ("scratch", scope.scratch)):
