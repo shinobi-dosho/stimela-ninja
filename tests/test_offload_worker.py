@@ -1184,6 +1184,11 @@ def test_early_finalization_is_superseded_and_completed_result_survives_accounti
 
     for attempt in plan.attempts:
         assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 0
+    records_while_running = finalize_submission(workflow.submission_dir)
+    assert not records_while_running.complete
+    assert [step.state for step in records_while_running.steps] == ["succeeded", "succeeded"]
+    assert not (workflow.submission_dir / "manifest.json").exists()
+    assert not (workflow.submission_dir / "finalization.json").exists()
     monkeypatch.setattr("shinobi.offload.slurm.status_slurm", lambda jobs: dict.fromkeys(jobs, "COMPLETED"))
     complete = finalize_submission(workflow.submission_dir)
     assert complete.complete
@@ -1194,6 +1199,39 @@ def test_early_finalization_is_superseded_and_completed_result_survives_accounti
 
     monkeypatch.setattr("shinobi.offload.slurm.status_slurm", accounting_was_purged)
     assert finalize_submission(workflow.submission_dir) == complete
+
+
+def test_concurrent_manifest_publication_does_not_abort_finalization(tmp_path, monkeypatch):
+    workflow, bundle, plan = _prepared(tmp_path)
+    (workflow.submission_dir / "jobs").mkdir()
+    for index, attempt in enumerate(plan.attempts):
+        write_new(
+            workflow.submission_dir / "jobs" / f"{index:04d}.json",
+            SubmittedJob(
+                workflow_id=plan.workflow_id,
+                bundle_digest=bundle.digest,
+                step_path=attempt.step_path,
+                attempt_id=attempt.attempt_id,
+                job_id=str(300 + index),
+            ),
+        )
+        assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 0
+
+    monkeypatch.setattr("shinobi.offload.slurm.status_slurm", lambda jobs: dict.fromkeys(jobs, "COMPLETED"))
+    original_write_new = write_new
+
+    def publish_manifest_first(path, model):
+        if path.name == "manifest.json" and not path.exists():
+            original_write_new(path, model)
+            raise FileExistsError(path)
+        return original_write_new(path, model)
+
+    monkeypatch.setattr("shinobi.offload.worker.write_new", publish_manifest_first)
+    finalized = finalize_submission(workflow.submission_dir)
+
+    assert finalized.complete
+    assert finalized.manifest == "manifest.json"
+    assert (workflow.submission_dir / "finalization.json").is_file()
 
 
 def test_unavailable_accounting_does_not_freeze_early_unknown_status(tmp_path, monkeypatch):

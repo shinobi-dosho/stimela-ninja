@@ -626,6 +626,10 @@ def finalize_submission(submission_dir: Path) -> Finalization:
         ]
         job = jobs.get(frozen.name)
         scheduler_state = scheduler.get(frozen.name, "UNKNOWN")
+        _scheduler_outcome, terminal = _scheduler_attempt_state(scheduler_state)
+        if not terminal and terminal_context:
+            terminal = True
+        settled = settled and terminal
         diagnostic_path = next((path for path in diagnostic_paths if path.exists()), None)
         chosen_path = diagnostic_path or (final_path if final_path.exists() else None)
         if chosen_path is not None:
@@ -638,10 +642,7 @@ def finalize_submission(submission_dir: Path) -> Finalization:
                 # automatically from that ambiguous state.
                 settled = False
         else:
-            state, terminal = _scheduler_attempt_state(scheduler_state)
-            if not terminal and terminal_context:
-                terminal = True
-            settled = settled and terminal
+            state = _scheduler_outcome
             record = None
             record_path = started_path if started_path.exists() else None
         all_committed = all_committed and record is not None and record.committed
@@ -662,7 +663,7 @@ def finalize_submission(submission_dir: Path) -> Finalization:
         )
 
     manifest_name = None
-    if all_committed:
+    if all_committed and settled:
         recipe = bundle.declaration()
         output_values = {name: getattr(results[binding.step].outputs, binding.field) for name, binding in recipe.output_wiring.items()}
         root = StepResult(
@@ -676,12 +677,9 @@ def finalize_submission(submission_dir: Path) -> Finalization:
         )
         manifest = build_manifest(root, backend="slurm-worker")
         manifest_path = submission_dir / "manifest.json"
-        if not manifest_path.exists():
-            write_new(manifest_path, manifest)  # type: ignore[arg-type]
-        else:
-            RunManifest.model_validate_json(manifest_path.read_text())
+        _write_or_read(manifest_path, manifest)  # type: ignore[arg-type]
         manifest_name = manifest_path.name
-    finalization = Finalization(workflow_id=submission.workflow_id, bundle_digest=bundle.digest, complete=all_committed, steps=tuple(finalized), manifest=manifest_name)
+    finalization = Finalization(workflow_id=submission.workflow_id, bundle_digest=bundle.digest, complete=all_committed and settled, steps=tuple(finalized), manifest=manifest_name)
     # An early status observation is deliberately not canonical: scheduler
     # state changes and an absent final record may appear moments later. Once
     # every attempt is terminal, persist exactly one stable reconstruction.
