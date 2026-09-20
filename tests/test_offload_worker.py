@@ -277,6 +277,53 @@ def test_worker_executes_wiring_in_shared_sandboxes_and_finalizes(tmp_path, monk
     assert finalize_submission(workflow.submission_dir) == finalized
 
 
+def test_worker_preparation_topologically_orders_forward_references(tmp_path):
+    recipe = _recipe()
+    recipe.steps.reverse()
+    bundle = freeze_recipe(recipe, {}, config=AppConfig(), workspace=tmp_path)
+
+    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+
+    assert [job.name for job in workflow.jobs] == ["write", "copy"]
+    assert workflow.jobs[1].depends_on == ["write"]
+
+
+def test_worker_refuses_runtime_resolved_write_path(tmp_path):
+    class StemOut(BaseModel):
+        stem: str
+
+    class StemIn(BaseModel):
+        stem: str
+
+    class Done(BaseModel):
+        pass
+
+    class ProductOut(BaseModel):
+        product: Path | None = None
+
+    produce = Cab(name="produce", command="produce", inputs_model=RootIn, outputs_model=StemOut)
+    consume = Cab(
+        name="consume",
+        command="consume",
+        inputs_model=StemIn,
+        outputs_model=ProductOut,
+        field_meta={"stem": ParamMeta(write_path=True), "product": ParamMeta(implicit="{stem}.dat")},
+    )
+    recipe = Recipe(
+        name="runtime-write",
+        inputs_model=RootIn,
+        outputs_model=Done,
+        steps=[
+            StepRef(name="produce", step=produce),
+            StepRef(name="consume", step=consume, wiring={"stem": OutputRef(step="produce", field="stem")}),
+        ],
+    )
+    bundle = freeze_recipe(recipe, {}, config=AppConfig(), workspace=tmp_path)
+
+    with pytest.raises(OffloadCompileError, match="write path isn't statically known"):
+        prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+
+
 def test_second_detached_run_uses_runtime_cache_and_committed_upstream_keys(tmp_path):
     first, _bundle, first_plan = _prepared_cached(tmp_path)
     assert [record.state for record in _execute_all(first, first_plan)] == ["succeeded", "succeeded"]

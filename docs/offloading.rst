@@ -370,10 +370,12 @@ still declared subset: binary cabs plus image-backed or pre-provisioned
 venv-backed ``@pystep`` nodes with explicitly bundled, transportable source and
 typed data. It retains declared loops, but rejects arbitrary orchestration
 functions, nested recipes and scatter. Ordinary non-path outputs may cross
-between worker steps through committed attempt records. A path mutated in place
-must remain statically resolvable so submission can derive the same mutation
-ordering as the legacy compiler; an unresolved wired ``MUTABLE`` path is
-refused before any job is submitted.
+between worker steps through committed attempt records. Every filesystem write
+target must remain statically resolvable so submission can freeze a complete
+ownership access set and derive the same mutation ordering as the legacy
+compiler. This includes ``MUTABLE`` inputs, same-named path inputs/outputs,
+``write_path`` destinations, path outputs and templated harvest/scratch roots;
+an unresolved declaration is refused before any job is submitted.
 
 .. _offload-remote:
 

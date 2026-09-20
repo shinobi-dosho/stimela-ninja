@@ -60,7 +60,19 @@ from shinobi.backends.slurm_script import (
 from shinobi.exceptions import BackendError
 from shinobi.graph import check_offloadable
 from shinobi.policies import build_argv
-from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope, path_accesses, path_fields, paths_overlap
+from shinobi.steps.schema import (
+    Cab,
+    InputRef,
+    OutputRef,
+    Recipe,
+    Scope,
+    declared_output_paths,
+    mutated_path_fields,
+    path_accesses,
+    path_fields,
+    paths_overlap,
+    write_path_fields,
+)
 
 
 class OffloadCompileError(ValueError):
@@ -211,20 +223,23 @@ def _static_inputs(
     """Resolve the compile-time subset of one step's effective inputs.
 
     The legacy argv compiler needs every value. The worker compiler permits
-    ordinary runtime data flow, but a MUTABLE path still has to be known so
-    the same in-place ordering edges can be derived before submission.
+    ordinary runtime data flow, but every filesystem-write input still has to
+    be known so mutation ordering and workspace ownership are complete before
+    submission. Python object mutability is only one way to declare such a
+    write; same-named input/output paths and ``write_path`` count too.
     """
     unresolved: set[str] = set()
+    write_inputs = mutated_path_fields(scope) | write_path_fields(scope)
 
     def one(step_field: str, source: InputRef | OutputRef) -> Any:
         if isinstance(source, InputRef):
             return recipe_inputs[source.field]
         value = resolved_outputs.get(source.step, {}).get(source.field)
         if value is None:
-            if not allow_runtime_values or (step_field in path_fields(scope.inputs_model) and scope.mutability_of(step_field) is Mutability.MUTABLE):
+            if not allow_runtime_values or step_field in write_inputs:
                 raise OffloadCompileError(
                     f"step '{name}' input '{step_field}' reads '{source.step}.{source.field}', "
-                    "whose path isn't statically known at compile time -- supply it as an "
+                    "whose write path isn't statically known at compile time -- supply it as an "
                     "input to the producing step"
                 )
             unresolved.add(step_field)
@@ -251,6 +266,25 @@ def _static_inputs(
         if field_name not in kwargs and field_name not in unresolved and model_field.default is not PydanticUndefined:
             kwargs[field_name] = model_field.default
     return kwargs
+
+
+def _require_static_write_declarations(name: str, scope: Scope, prepared: dict[str, Any]) -> None:
+    """Refuse write targets absent from the frozen ownership/access plan."""
+
+    missing = sorted(field for field in mutated_path_fields(scope) | write_path_fields(scope) if prepared.get(field) is None)
+    declared_sources = {source for _path, source in declared_output_paths(scope, prepared)}
+    missing.extend(f"output {field!r}" for field in sorted(path_fields(scope.outputs_model)) if f"output {field!r}" not in declared_sources)
+
+    present = {field: value for field, value in prepared.items() if value is not None}
+    for kind, patterns in (("harvest", scope.harvest), ("scratch", scope.scratch)):
+        for pattern in patterns:
+            try:
+                pattern.format(**present)
+            except Exception:  # noqa: BLE001 -- the authoritative error names the declaration below
+                missing.append(f"{kind} pattern {pattern!r}")
+
+    if missing:
+        raise OffloadCompileError(f"step '{name}' has a filesystem write declaration that isn't statically known at compile time: {', '.join(missing)}")
 
 
 def _script(
@@ -321,7 +355,10 @@ def compile_slurm(
     mutation_order = MutationOrder(Path(workdir))
     step_index = {n: idx for idx, n in enumerate(graph.names)}
 
-    for i, name in enumerate(graph.names):
+    topological = graph.topological_indices()
+    order_rank = {index: rank for rank, index in enumerate(topological)}
+    for i in topological:
+        name = graph.names[i]
         ref = recipe.steps[i]
         cab = ref.step
         assert isinstance(cab, Cab)  # guaranteed by check_offloadable
@@ -329,6 +366,7 @@ def compile_slurm(
         # Validate + fill defaults exactly as dispatch would, so the argv
         # matches a local run (and bad inputs fail here, before submission).
         resolved = _static_inputs(name, cab, ref, recipe_inputs, resolved_outputs)
+        _require_static_write_declarations(name, cab, resolved)
 
         argv = build_argv(cab, resolved)  # inherits the non-"binary" flavour guard
         if cab.image and container_runtime:
@@ -361,19 +399,13 @@ def compile_slurm(
         # Wiring edges from the declared graph, plus the ones implied by
         # steps sharing a path at least one of them mutates. Both are by
         # step name, and both become `--dependency=afterok` links below.
-        # Kept in declaration order (not name order) so the emitted
-        # dependency list stays stable and readable.
+        # Kept in stable topological order (not name order) so forward
+        # declarations are admitted while the emitted list remains readable.
         #
-        # `order_after` only ever returns steps it has already recorded, so
-        # every edge it adds points backwards -- which is what lets
-        # `submit_slurm` resolve each parent to a job id it has already
-        # submitted. Checked rather than assumed, since a forward edge would
-        # otherwise surface as a confusing KeyError at submission time.
+        # `order_after` only ever returns steps already visited in the stable
+        # topological walk, so every inferred edge points at a submitted job.
         mutation_deps = mutation_order.order_after(name, cab, resolved)
-        forward = [dep for dep in mutation_deps if step_index[dep] >= i]
-        if forward:
-            raise OffloadCompileError(f"internal: step '{name}' derived a forward mutation dependency on {forward} -- offloaded dependencies must point at earlier steps")
-        depends_on = sorted({graph.names[d] for d in graph.deps[i]} | mutation_deps, key=lambda dep: step_index[dep])
+        depends_on = sorted({graph.names[d] for d in graph.deps[i]} | mutation_deps, key=lambda dep: order_rank[step_index[dep]])
         jobs.append(
             SlurmJob(
                 name=name,
@@ -614,7 +646,11 @@ def prepare_worker_slurm(
     log_dir = submission_dir / "logs"
     jobs: list[SlurmJob] = []
     workflow_accesses: dict[Path, bool] = {}
-    for index, (frozen, attempt) in enumerate(zip(pinned.steps, attempts)):
+    topological = graph.topological_indices()
+    order_rank = {index: rank for rank, index in enumerate(topological)}
+    for index in topological:
+        frozen = pinned.steps[index]
+        attempt = attempts[index]
         scope = frozen.scope.restore()
         known = _static_inputs(
             frozen.name,
@@ -624,10 +660,11 @@ def prepare_worker_slurm(
             resolved_outputs,
             allow_runtime_values=True,
         )
+        _require_static_write_declarations(frozen.name, scope, known)
         for path, writes in path_accesses(scope, known, workspace=Path(pinned.workspace)):
             workflow_accesses[path] = workflow_accesses.get(path, False) or writes
         mutation_deps = mutation.order_after(frozen.name, scope, known)
-        depends_on = sorted({graph.names[item] for item in graph.deps[index]} | mutation_deps, key=step_index.get)
+        depends_on = sorted({graph.names[item] for item in graph.deps[index]} | mutation_deps, key=lambda name: order_rank[step_index[name]])
         argv = [
             "env",
             f"PYTHONPATH={worker.source}",

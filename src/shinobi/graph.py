@@ -21,6 +21,7 @@ is legitimate mid-construction.
 from __future__ import annotations
 
 import graphlib
+import heapq
 from dataclasses import dataclass
 
 from shinobi.policies import EXECUTABLE_FLAVOURS
@@ -60,6 +61,28 @@ class RecipeGraph:
     names: list[str]
     deps: list[set[int]]
     dependents: list[set[int]]
+
+    def topological_indices(self) -> list[int]:
+        """A stable topological order, preferring declaration order.
+
+        ``build_graph`` has already established acyclicity.  The heap makes a
+        newly-ready lower declaration index outrank an unrelated later node,
+        matching the local scheduler's ``max_workers=1`` order rather than
+        batching whole topological generations.
+        """
+
+        indegree = [len(deps) for deps in self.deps]
+        ready = [index for index, count in enumerate(indegree) if count == 0]
+        heapq.heapify(ready)
+        ordered: list[int] = []
+        while ready:
+            index = heapq.heappop(ready)
+            ordered.append(index)
+            for dependent in self.dependents[index]:
+                indegree[dependent] -= 1
+                if indegree[dependent] == 0:
+                    heapq.heappush(ready, dependent)
+        return ordered
 
 
 def build_graph(recipe: "Recipe") -> RecipeGraph:
