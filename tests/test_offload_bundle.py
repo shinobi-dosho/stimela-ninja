@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel, Field, ValidationError, create_model, field_validator
 
+import shinobi.offload.bundle as bundle_module
 from shinobi import pystep
 from shinobi.cache import ProvenanceKey
 from shinobi.config import AppConfig
@@ -104,6 +105,25 @@ def test_unique_submission_directories_and_no_original_source_dependency(tmp_pat
     assert len(set(directories)) == 12
     assert all(RecipeBundle.read(d / "bundle.json").digest == bundle.digest for d in directories)
     assert all((d / "submission.json").is_file() for d in directories)
+
+
+def test_stage_removes_its_uuid_directory_when_record_publication_fails(monkeypatch, tmp_path):
+    bundle = freeze(recipe(), tmp_path)
+    root = tmp_path / "runs"
+    real_write_new = bundle_module.write_new
+
+    def fail_submission(path, model):
+        if path.name == "submission.json":
+            raise OSError("injected publication failure")
+        return real_write_new(path, model)
+
+    monkeypatch.setattr(bundle_module, "write_new", fail_submission)
+
+    with pytest.raises(OSError, match="injected publication failure"):
+        bundle.stage(root)
+
+    assert root.is_dir()
+    assert list(root.iterdir()) == []
 
 
 @pytest.mark.parametrize("field,value", [("schema_version", 2), ("worker_protocol", 2), ("unknown", True)])

@@ -175,6 +175,18 @@ class MutationOrder:
         return set(self.last_decision.dependencies)
 
 
+_UNRESOLVED_OUTPUT = object()
+
+
+def _static_output_ref_value(source: OutputRef, resolved_outputs: dict[str, dict[str, Any]]) -> Any:
+    """Return a present static output value, preserving a known ``None``."""
+
+    outputs = resolved_outputs.get(source.step)
+    if outputs is None or source.field not in outputs:
+        return _UNRESOLVED_OUTPUT
+    return outputs[source.field]
+
+
 def _static_inputs(
     name: str,
     scope: Scope,
@@ -198,8 +210,8 @@ def _static_inputs(
     def one(step_field: str, source: InputRef | OutputRef) -> Any:
         if isinstance(source, InputRef):
             return recipe_inputs[source.field]
-        value = resolved_outputs.get(source.step, {}).get(source.field)
-        if value is None:
+        value = _static_output_ref_value(source, resolved_outputs)
+        if value is _UNRESOLVED_OUTPUT:
             if not allow_runtime_values or step_field in write_inputs:
                 raise OffloadCompileError(
                     f"step '{name}' input '{step_field}' reads '{source.step}.{source.field}', "
@@ -207,6 +219,7 @@ def _static_inputs(
                     "input to the producing step"
                 )
             unresolved.add(step_field)
+            return None
         return value
 
     kwargs: dict[str, Any] = dict(ref.params)
@@ -650,7 +663,10 @@ def _prepare_worker_slurm(
         unresolved_inputs = {
             field
             for field, source in frozen.declaration().wiring.items()
-            if any(isinstance(item, OutputRef) and resolved_outputs.get(item.step, {}).get(item.field) is None for item in (source if isinstance(source, list) else [source]))
+            if any(
+                isinstance(item, OutputRef) and _static_output_ref_value(item, resolved_outputs) is _UNRESOLVED_OUTPUT
+                for item in (source if isinstance(source, list) else [source])
+            )
         }
         _require_static_write_declarations(frozen.name, scope, known)
         generic_accesses = path_accesses(scope, known, workspace=Path(pinned.workspace))
@@ -751,13 +767,13 @@ def prepare_worker_slurm(
 
     This is the side-effecting submission-preparation half: image pins and the
     worker source/environment are resolved here, never during ``freeze_recipe``
-    and never on a compute node.  A preparation refusal removes the unique
+    and never on a compute node. A preparation refusal removes the unique
     staging directory before propagating the domain error, so a failed plan
-    cannot look like a resumable detached workflow.
+    cannot look like a resumable detached workflow. The shared submission
+    root is retained and may be empty; deleting it would race another writer.
     """
 
     staged: list[Path] = []
-    root_existed = submission_root.exists()
     try:
         return _prepare_worker_slurm(
             bundle,
@@ -769,12 +785,7 @@ def prepare_worker_slurm(
         )
     except Exception:
         for directory in staged:
-            shutil.rmtree(directory, ignore_errors=True)
-        if not root_existed:
-            try:
-                submission_root.rmdir()
-            except OSError:
-                pass
+            shutil.rmtree(directory)
         raise
 
 

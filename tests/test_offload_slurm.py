@@ -118,7 +118,10 @@ def test_unresolvable_inter_step_path_raises_compile_error():
     class WhereIn(BaseModel):
         where: Path = Path("out.ms")
 
-    make = Cab(name="make", command="mk", inputs_model=WhereIn, outputs_model=MSOut)
+    class RequiredMSOut(BaseModel):
+        ms: Path
+
+    make = Cab(name="make", command="mk", inputs_model=WhereIn, outputs_model=RequiredMSOut)
     recipe = Recipe(
         name="pipe",
         inputs_model=RecipeIn,

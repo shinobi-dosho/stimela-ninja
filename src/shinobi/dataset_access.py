@@ -342,18 +342,21 @@ def resolve_scope_dataset_accesses(
     resolved: list[ResolvedDatasetAccess] = []
     for declaration, fallback in declarations:
         value_known = declaration.field not in unresolved_inputs
+        value_present = declaration.field in values
         value = values.get(declaration.field)
         if value is None:
-            field = scope.inputs_model.model_fields.get(declaration.field) or scope.outputs_model.model_fields.get(declaration.field)
+            input_field = scope.inputs_model.model_fields.get(declaration.field)
+            field = input_field if input_field is not None else scope.outputs_model.model_fields.get(declaration.field)
             nullable = field is not None and any(
                 node.leaf and node.annotation is type(None)
                 for node in walk_annotation(field.annotation, metadata=tuple(field.metadata), descend_mappings=False, descend_models=False)
             )
-            if value_known and nullable:
+            input_default_none = input_field is not None and not input_field.is_required() and input_field.default is None
+            if value_known and nullable and (value_present or input_default_none):
                 # An explicitly/defaulted None on an optional field declares
-                # no dataset.  This is distinct from a wired producer value
-                # which is not knowable until runtime: unresolved inputs must
-                # still reserve a conservative envelope below.
+                # no dataset. A required nullable field that is merely absent,
+                # or an output whose implicit template could not resolve, is
+                # still unknown and must reserve an envelope below.
                 continue
             if declaration.reservation is None:
                 raise DatasetAccessError(f"scope {scope.name!r} dataset field {declaration.field!r} has an unknown path and no reservation envelope")

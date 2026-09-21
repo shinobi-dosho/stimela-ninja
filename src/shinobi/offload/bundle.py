@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Literal
@@ -203,7 +204,9 @@ class RecipeBundle(WireModel):
         """Create a unique submission directory; never name it from user steps.
 
         No runtime or image is resolved here yet. Submission preparation
-        must provision the matching worker and verify tool environments.
+        must provision the matching worker and verify tool environments. The
+        newly allocated UUID directory is transactional: any staging failure
+        removes it. The shared ``root`` may remain as an empty directory.
         """
         # Revalidate after any accidental edits to nested Python dictionaries.
         snapshot = type(self).model_validate_json(self.model_dump_json())
@@ -212,11 +215,15 @@ class RecipeBundle(WireModel):
         workflow_id = uuid4()
         directory = root / str(workflow_id)
         directory.mkdir()
-        for index, step in enumerate(snapshot.steps):
-            if step.code is not None:
-                step.code.write(directory / "code" / str(index))
-        write_new(directory / "bundle.json", snapshot)
-        write_new(directory / "submission.json", Submission(workflow_id=workflow_id, bundle_digest=digest))
+        try:
+            for index, step in enumerate(snapshot.steps):
+                if step.code is not None:
+                    step.code.write(directory / "code" / str(index))
+            write_new(directory / "bundle.json", snapshot)
+            write_new(directory / "submission.json", Submission(workflow_id=workflow_id, bundle_digest=digest))
+        except BaseException:
+            shutil.rmtree(directory)
+            raise
         return directory
 
 

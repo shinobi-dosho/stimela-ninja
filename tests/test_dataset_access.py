@@ -285,6 +285,47 @@ def test_unset_optional_dataset_field_declares_no_access(tmp_path):
     assert resolve_scope_dataset_accesses(scope, {}, workspace=tmp_path) == ()
 
 
+def test_missing_required_nullable_output_still_needs_a_reservation(tmp_path):
+    class RequiredNullableMS(BaseModel):
+        ms: MeasurementSetV2 | None
+
+    def scope_with(reservation: Path | None) -> Scope:
+        return Scope(
+            name="required-nullable-output",
+            inputs_model=Empty,
+            outputs_model=RequiredNullableMS,
+            dataset_accesses=[DatasetAccess(field="ms", mode="create", reservation=reservation)],
+        )
+
+    with pytest.raises(DatasetAccessError, match="unknown path and no reservation"):
+        resolve_scope_dataset_accesses(scope_with(None), {}, workspace=tmp_path)
+
+    reservation = tmp_path / "reserved.ms"
+    resolved = resolve_scope_dataset_accesses(scope_with(reservation), {}, workspace=tmp_path)
+    assert not resolved[0].path_known
+    assert resolved[0].resources == (reservation.resolve(),)
+    assert resolve_scope_dataset_accesses(scope_with(None), {"ms": None}, workspace=tmp_path) == ()
+
+
+def test_unresolved_implicit_optional_output_is_not_treated_as_absent(tmp_path):
+    class Stem(BaseModel):
+        stem: str
+
+    class OptionalMS(BaseModel):
+        ms: MeasurementSetV2 | None = None
+
+    scope = Scope(
+        name="implicit-output",
+        inputs_model=Stem,
+        outputs_model=OptionalMS,
+        field_meta={"ms": ParamMeta(implicit="{stem}.ms")},
+        dataset_accesses=[DatasetAccess(field="ms", mode="create")],
+    )
+
+    with pytest.raises(DatasetAccessError, match="unknown path and no reservation"):
+        resolve_scope_dataset_accesses(scope, {}, workspace=tmp_path)
+
+
 def test_resolved_access_rejects_cross_field_inconsistency(tmp_path):
     root = (tmp_path / "observation.ms").resolve()
     declaration = DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("DATA",)))
@@ -582,6 +623,36 @@ def test_worker_dataset_planning_is_marked_blocked_before_submission(monkeypatch
     assert not (workflow.submission_dir / "submission-claim.json").exists()
 
 
+def test_worker_preserves_wired_optional_none_as_a_known_absence(monkeypatch, tmp_path):
+    class OptionalMS(BaseModel):
+        ms: MeasurementSetV2 | None = None
+
+    producer = Cab(name="producer", command="produce", inputs_model=Empty, outputs_model=OptionalMS)
+    consumer = Cab(
+        name="consumer",
+        command="consume",
+        inputs_model=OptionalMS,
+        outputs_model=Empty,
+        dataset_accesses=[DatasetAccess(field="ms", mode="read")],
+    )
+    recipe = Recipe(
+        name="optional-none",
+        inputs_model=Empty,
+        outputs_model=Empty,
+        steps=[
+            StepRef(name="produce", step=producer),
+            StepRef(name="consume", step=consumer, wiring={"ms": OutputRef(step="produce", field="ms")}),
+        ],
+    )
+    monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda *args, **kwargs: pytest.fail("absent optional dataset was inspected"))
+    bundle = freeze_recipe(recipe, {}, config=AppConfig(), workspace=tmp_path)
+
+    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+
+    assert [job.name for job in workflow.jobs] == ["produce", "consume"]
+    assert workflow.jobs[1].depends_on == ["produce"]
+
+
 def test_worker_dataset_refusal_removes_staged_submission(monkeypatch, tmp_path):
     ms = tmp_path / "observation.ms"
     ms.mkdir()
@@ -605,7 +676,8 @@ def test_worker_dataset_refusal_removes_staged_submission(monkeypatch, tmp_path)
     with pytest.raises(DatasetAccessError, match="schema also declares a filesystem write"):
         prepare_worker_slurm(bundle, submission_root=submission_root, worker_python=Path(sys.executable))
 
-    assert not submission_root.exists()
+    assert submission_root.is_dir()
+    assert list(submission_root.iterdir()) == []
 
 
 def test_read_only_dataset_plan_registers_claim_that_excludes_writer(monkeypatch, tmp_path):
