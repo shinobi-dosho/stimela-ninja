@@ -323,8 +323,10 @@ def test_worker_refuses_runtime_resolved_write_path(tmp_path):
     )
     bundle = freeze_recipe(recipe, {}, config=AppConfig(), workspace=tmp_path)
 
+    submission_root = tmp_path / "runs"
     with pytest.raises(OffloadCompileError, match="write path isn't statically known"):
-        prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+        prepare_worker_slurm(bundle, submission_root=submission_root, worker_python=Path(sys.executable))
+    assert not submission_root.exists()
 
 
 def test_worker_allows_unset_optional_path_output(tmp_path):

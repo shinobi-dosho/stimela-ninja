@@ -19,13 +19,14 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from shinobi._annotations import walk_annotation
 from shinobi.dataset_closure import ClosureStatus, resolve_dataset_closure
 from shinobi.datasets import DatasetKind, dataset_declarations
+from shinobi.exceptions import ShinobiError
 
 
 _COLUMN_NAME = r"^[A-Za-z_][A-Za-z0-9_]*$"
 _MAX_SELECTION_VALUES = 4096
 
 
-class DatasetAccessError(ValueError):
+class DatasetAccessError(ShinobiError, ValueError):
     """A dataset access declaration cannot be resolved safely."""
 
 
@@ -340,8 +341,20 @@ def resolve_scope_dataset_accesses(
 
     resolved: list[ResolvedDatasetAccess] = []
     for declaration, fallback in declarations:
+        value_known = declaration.field not in unresolved_inputs
         value = values.get(declaration.field)
         if value is None:
+            field = scope.inputs_model.model_fields.get(declaration.field) or scope.outputs_model.model_fields.get(declaration.field)
+            nullable = field is not None and any(
+                node.leaf and node.annotation is type(None)
+                for node in walk_annotation(field.annotation, metadata=tuple(field.metadata), descend_mappings=False, descend_models=False)
+            )
+            if value_known and nullable:
+                # An explicitly/defaulted None on an optional field declares
+                # no dataset.  This is distinct from a wired producer value
+                # which is not knowable until runtime: unresolved inputs must
+                # still reserve a conservative envelope below.
+                continue
             if declaration.reservation is None:
                 raise DatasetAccessError(f"scope {scope.name!r} dataset field {declaration.field!r} has an unknown path and no reservation envelope")
             envelope = _canonical(declaration.reservation, workspace)
@@ -485,7 +498,9 @@ class ResolvedAccessPlanner:
         )
         generic = resolved_path_accesses if resolved_path_accesses is not None else path_accesses(scope, values, workspace=self._workspace)
         for access in datasets:
-            if access.mode is DatasetMode.READ and any(writes and any(paths_overlap(path, resource) for resource in access.resources) for path, writes in generic):
+            if access.mode is DatasetMode.READ and any(
+                writes and any(path == resource or path.is_relative_to(resource) for resource in access.resources) for path, writes in generic
+            ):
                 raise DatasetAccessError(f"scope {scope.name!r} declares READ access for {access.field!r}, but its schema also declares a filesystem write to the same dataset")
         for access in datasets:
             if access.mode is DatasetMode.CREATE and access.root is not None:
@@ -496,7 +511,11 @@ class ResolvedAccessPlanner:
             label = _access_label(access)
             accesses.extend((resource, access.writes, label) for resource in access.resources)
         for path, writes in generic:
-            if any(paths_overlap(path, resource) for resource in declared_resources):
+            # The dataset declaration is authoritative for its closure and
+            # descendants.  A generic access to a parent, however, covers
+            # sibling resources too and must remain visible to the hazard
+            # planner; symmetric overlap would incorrectly erase it.
+            if any(path == resource or path.is_relative_to(resource) for resource in declared_resources):
                 continue
             accesses.append((path, writes, str(path)))
 

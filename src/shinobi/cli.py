@@ -1128,7 +1128,7 @@ def compile_recipe(
             return
         try:
             workflow = compile_slurm(recipe, inputs, workdir=workdir, container_runtime=runtime)
-        except (RecipeNotOffloadableError, OffloadCompileError, RecipeGraphError) as exc:
+        except (ShinobiError, RecipeNotOffloadableError, OffloadCompileError, RecipeGraphError) as exc:
             raise click.ClickException(str(exc)) from None
 
         if not submit:

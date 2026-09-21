@@ -594,20 +594,15 @@ def _pin_worker_bundle(bundle):
     return bundle.model_copy(update={"steps": tuple(steps)})
 
 
-def prepare_worker_slurm(
+def _prepare_worker_slurm(
     bundle,
     *,
     submission_root: Path,
     worker_python: Path | None = None,
     sbatch_opts: dict[str, str] | None = None,
     step_sbatch_opts: dict[str, dict[str, str]] | None = None,
+    staged: list[Path],
 ) -> WorkerSlurmWorkflow:
-    """Stage a frozen bundle and compile one short-lived worker job per step.
-
-    This is the side-effecting submission-preparation half: image pins and the
-    worker source/environment are resolved here, never during ``freeze_recipe``
-    and never on a compute node.
-    """
     from shinobi.graph import build_graph
     from shinobi.offload._codec import unpack
     from shinobi.offload.bundle import RecipeBundle, write_new
@@ -618,6 +613,7 @@ def prepare_worker_slurm(
         raise TypeError("prepare_worker_slurm expects a RecipeBundle")
     pinned = _pin_worker_bundle(bundle)
     submission_dir = pinned.stage(submission_root)
+    staged.append(submission_dir)
     worker = _stage_worker(submission_dir, (worker_python or Path(sys.executable)).absolute())
     submission = json.loads((submission_dir / "submission.json").read_text())
     attempts = tuple(PlannedAttempt(step_path=step.name, attempt_id=uuid4()) for step in pinned.steps)
@@ -741,6 +737,45 @@ def prepare_worker_slurm(
         finalizer=finalizer,
         execution_blocked_reason=pinned.execution_blocked_reason,
     )
+
+
+def prepare_worker_slurm(
+    bundle,
+    *,
+    submission_root: Path,
+    worker_python: Path | None = None,
+    sbatch_opts: dict[str, str] | None = None,
+    step_sbatch_opts: dict[str, dict[str, str]] | None = None,
+) -> WorkerSlurmWorkflow:
+    """Stage a frozen bundle and compile one short-lived worker job per step.
+
+    This is the side-effecting submission-preparation half: image pins and the
+    worker source/environment are resolved here, never during ``freeze_recipe``
+    and never on a compute node.  A preparation refusal removes the unique
+    staging directory before propagating the domain error, so a failed plan
+    cannot look like a resumable detached workflow.
+    """
+
+    staged: list[Path] = []
+    root_existed = submission_root.exists()
+    try:
+        return _prepare_worker_slurm(
+            bundle,
+            submission_root=submission_root,
+            worker_python=worker_python,
+            sbatch_opts=sbatch_opts,
+            step_sbatch_opts=step_sbatch_opts,
+            staged=staged,
+        )
+    except Exception:
+        for directory in staged:
+            shutil.rmtree(directory, ignore_errors=True)
+        if not root_existed:
+            try:
+                submission_root.rmdir()
+            except OSError:
+                pass
+        raise
 
 
 def submit_worker_slurm(workflow: WorkerSlurmWorkflow) -> WorkerSlurmHandle:

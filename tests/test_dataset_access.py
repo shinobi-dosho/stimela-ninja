@@ -171,6 +171,53 @@ def test_read_contract_cannot_hide_schema_declared_writes(kind, monkeypatch, tmp
         ResolvedAccessPlanner(tmp_path).order_after(kind, scope, {"ms": ms})
 
 
+def test_dataset_contract_keeps_generic_parent_write_for_sibling_ordering(monkeypatch, tmp_path):
+    ms = tmp_path / "observation.ms"
+    sibling = tmp_path / "other.txt"
+    ms.mkdir()
+    monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda root, **kwargs: _closure(Path(root), tmp_path))
+
+    class DatasetAndParent(BaseModel):
+        ms: MeasurementSetV2
+        parent: Path
+
+    class GenericPath(BaseModel):
+        path: Path
+
+    hybrid = Scope(
+        name="hybrid",
+        inputs_model=DatasetAndParent,
+        outputs_model=Empty,
+        field_meta={"parent": ParamMeta(write_path=True)},
+        dataset_accesses=[DatasetAccess(field="ms", mode="write", columns=DatasetColumns(write=("FLAG",)))],
+    )
+    reader = Scope(name="reader", inputs_model=GenericPath, outputs_model=Empty)
+
+    planner = ResolvedAccessPlanner(tmp_path)
+    assert not planner.order_after("hybrid", hybrid, {"ms": ms, "parent": tmp_path}).dependencies
+    assert planner.order_after("sibling", reader, {"path": sibling}).dependencies == {"hybrid"}
+
+
+def test_read_contract_allows_generic_write_to_dataset_parent(monkeypatch, tmp_path):
+    ms = tmp_path / "observation.ms"
+    ms.mkdir()
+    monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda root, **kwargs: _closure(Path(root), tmp_path))
+
+    class DatasetAndParent(BaseModel):
+        ms: MeasurementSetV2
+        parent: Path
+
+    scope = Scope(
+        name="read-with-parent-output",
+        inputs_model=DatasetAndParent,
+        outputs_model=Empty,
+        field_meta={"parent": ParamMeta(write_path=True)},
+        dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("DATA",)))],
+    )
+
+    assert not ResolvedAccessPlanner(tmp_path).order_after("read", scope, {"ms": ms, "parent": tmp_path}).dependencies
+
+
 def test_alias_parent_subtable_and_shared_external_resource_conflict(monkeypatch, tmp_path):
     left = tmp_path / "left.ms"
     right = tmp_path / "right.ms"
@@ -221,6 +268,21 @@ def test_unknown_columns_fall_back_and_unknown_path_needs_reservation(monkeypatc
     assert not result[0].path_known
     assert result[0].fallback is DatasetFallback.UNKNOWN_PATH
     assert result[0].resources == ((tmp_path / "reserved").resolve(),)
+
+
+def test_unset_optional_dataset_field_declares_no_access(tmp_path):
+    class OptionalMS(BaseModel):
+        ms: MeasurementSetV2 | None = None
+
+    scope = Scope(
+        name="optional",
+        inputs_model=OptionalMS,
+        outputs_model=Empty,
+        dataset_accesses=[DatasetAccess(field="ms", mode="read")],
+    )
+
+    assert resolve_scope_dataset_accesses(scope, {"ms": None}, workspace=tmp_path) == ()
+    assert resolve_scope_dataset_accesses(scope, {}, workspace=tmp_path) == ()
 
 
 def test_resolved_access_rejects_cross_field_inconsistency(tmp_path):
@@ -419,7 +481,7 @@ def test_unresolved_output_ref_does_not_fall_back_to_consumer_default(tmp_path):
         ms: Path
 
     class DefaultMS(BaseModel):
-        ms: MeasurementSetV2 = Path("wrong-default.ms")
+        ms: MeasurementSetV2 | None = None
 
     producer = Scope(name="producer", inputs_model=Empty, outputs_model=ProducedPath)
 
@@ -518,6 +580,32 @@ def test_worker_dataset_planning_is_marked_blocked_before_submission(monkeypatch
         submit_worker_slurm(workflow)
     assert not (workflow.submission_dir / "logs").exists()
     assert not (workflow.submission_dir / "submission-claim.json").exists()
+
+
+def test_worker_dataset_refusal_removes_staged_submission(monkeypatch, tmp_path):
+    ms = tmp_path / "observation.ms"
+    ms.mkdir()
+    monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda root, **kwargs: _closure(Path(root), tmp_path))
+    contradictory = Cab(
+        name="contradictory",
+        command="read-ms",
+        inputs_model=MSIn,
+        outputs_model=MSIn,
+        dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("DATA",)))],
+    )
+    recipe = Recipe(
+        name="contradictory",
+        inputs_model=MSIn,
+        outputs_model=Empty,
+        steps=[StepRef(name="read", step=contradictory, wiring={"ms": InputRef(field="ms")})],
+    )
+    bundle = freeze_recipe(recipe, {"ms": ms}, config=AppConfig(), workspace=tmp_path)
+    submission_root = tmp_path / "runs"
+
+    with pytest.raises(DatasetAccessError, match="schema also declares a filesystem write"):
+        prepare_worker_slurm(bundle, submission_root=submission_root, worker_python=Path(sys.executable))
+
+    assert not submission_root.exists()
 
 
 def test_read_only_dataset_plan_registers_claim_that_excludes_writer(monkeypatch, tmp_path):

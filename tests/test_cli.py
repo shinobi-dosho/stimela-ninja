@@ -4,6 +4,7 @@ import pytest
 from click.testing import CliRunner
 
 from shinobi.cli import main
+from shinobi.dataset_access import DatasetAccessError
 
 FIXTURES = "tests/fixtures/sample_targets.py"
 FIXTURES_ABS = Path(FIXTURES).resolve()
@@ -74,6 +75,32 @@ def test_worker_compile_reports_missing_tool_venv_without_a_traceback(tmp_path):
     assert result.exit_code != 0
     assert "Error: venv '/__shinobi_test_missing_tool_venv__'" in result.output
     assert "does not exist" in result.output
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize("worker", [False, True])
+def test_compile_reports_dataset_access_refusal_without_a_traceback(monkeypatch, tmp_path, worker):
+    def refuse(*args, **kwargs):
+        raise DatasetAccessError("dataset access cannot be planned safely")
+
+    monkeypatch.setattr("shinobi.cli.prepare_worker_slurm" if worker else "shinobi.cli.compile_slurm", refuse)
+    args = [
+        "compile",
+        f"{FIXTURES}:path_pipe",
+        "--ms",
+        "/scratch/obs.ms",
+        "--workdir",
+        str(tmp_path),
+        "--container-runtime",
+        "none",
+    ]
+    if worker:
+        args.extend(["--worker", "--submit", "--submission-root", str(tmp_path / "submissions")])
+
+    result = CliRunner().invoke(main, args)
+
+    assert result.exit_code != 0
+    assert "Error: dataset access cannot be planned safely" in result.output
     assert "Traceback" not in result.output
 
 
