@@ -253,6 +253,13 @@ crashed after ``sbatch`` accepted the omitted job. After inspecting such a
 workflow and cancelling any remaining scheduler work, an operator may use
 ``ninja workspace release --workdir PATH --workflow-id UUID --force``. The exact workflow
 identity must still match: force never releases a newer owner. The immutable
+ownership format may contain several compatible read-only workflows. In that
+case the unqualified report is deliberately uncertain; use ``--workflow-id
+UUID`` with ``workspace inspect`` or ``workspace reconcile`` to inspect or
+release one proven-dead reader while its siblings remain claimed. Metadata
+release removes the authority record before the shared registry entry and
+restores it if registry cleanup fails, so a retry remains exact and
+fail-closed. The immutable
 execution plan says whether ownership is required and records its canonical
 access set; submitted workers require the matching ``ownership.json`` and
 active owner before every allocation touches data. A missing marker and an old

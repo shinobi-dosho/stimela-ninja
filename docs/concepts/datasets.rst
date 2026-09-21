@@ -165,28 +165,80 @@ Resolved records validate their redundant public fields on deserialization:
 the declaration, mode, known-path state, root/resources, column state and
 fallback must agree.  Dataset read claims are retained by the shared ownership
 registry as reads, so a separately planned writer conflicts with them even
-though read/read workflows remain compatible.  Current strict execution is
-refused before acquiring such a claim; no unclaimed reader is dispatched.
+though read/read workflows remain compatible.  The contained execution route
+described below holds that claim across backend execution; unsupported routes
+are refused and never dispatch an unclaimed reader.
 
 The first planner is deliberately bounded: dataset-bearing scatter and nested
 recipes are refused with a diagnostic rather than partially planned.  Flatten
 those steps (including bounded loop expansions) so every access has one
 declared graph node.
 
-Execution status
-----------------
+Contained local read execution
+------------------------------
 
-Strict dataset annotations and access contracts are currently declaration,
-inspection and planning APIs, not an execution-lifecycle contract.  A scope
-carrying either is refused before local execution or Slurm submission.
-Dry-run, the planning API, pure legacy Slurm compilation, and worker-bundle
-freezing/preparation may resolve closures and show inferred order, but do not
-dispatch.  Dataset-bearing legacy and worker workflows are marked
-planning-only; both submission functions refuse before creating scheduler
-records, ownership claims, logs, or calling ``sbatch``.  This guard is
-deliberate: accepting the field as a plain path would suggest that validation,
-staging, ownership, recovery, and provenance all enforce the structural
-contract when they do not yet.
+``contained-native-msv2-read/v1`` is the first executable strict-dataset
+capability.  It accepts one ordinary, directory-backed MSv2 closure read by a
+direct atomic ``Cab`` or ``@pystep``, or by atomic leaves in one flat recipe,
+on the local ``native`` route.  Recipe boundary models may carry the same
+annotation; access declarations still belong on their leaves.
 
-Use ``Path`` or the legacy loader dtype ``MS`` for executable cabs until that
-lifecycle support ships.
+Before dispatch, Shinobi resolves the complete access plan and structural
+closure observation, acquires a shared read claim for every canonical closure
+resource, then resolves and observes again under that claim.  A changed plan
+or observation is a refusal before the backend starts.  Pure readers may hold
+compatible claims concurrently.  A reader may still produce ordinary
+non-dataset reports or images through the existing output lifecycle, but a
+generic write overlapping the MSv2 closure is refused.  Every generic path
+must be concrete at the ownership boundary and covered by the claim; runtime
+``Path`` returns, path-valued ``OutputRef`` inputs, output default factories,
+glob-selected products, and generic in-place mutation are bounded refusals.
+An unannotated generic path may not alias the strict closure.  Mixed
+read/output claims retain the conservative exclusive workspace authority. Any
+overlapping writer remains excluded through the same workspace ownership and
+shared registry protocol; there is no second dataset lock.
+
+The boundary covers the complete flat recipe.  Every leaf, including leaves
+without a dataset annotation, must use the local ``native`` route.  This stops
+an ordinary sibling from receiving the claimed MS through an unannotated
+``Path`` while executing in a container, venv, or scheduler route that the
+outer lifecycle cannot observe.
+
+After the backend returns or raises, Shinobi observes again while the claim is
+still held.  A changed dataset, or an observation which can no longer be
+established, raises
+:class:`~shinobi.exceptions.DatasetLifecycleViolationError`.  A backend
+failure is re-raised unchanged only when the read-only postcondition still
+matches the baseline.  Cache entries, snapshot success transitions, and the
+top-level run manifest are held until this postcondition succeeds, including
+for recipe leaves without dataset annotations.  A failed postcondition cannot
+publish a reusable success.  Cleanup or lifecycle-store failures are attached
+to the primary backend exception rather than replacing it.  The lease is
+released on every path; a partial metadata release restores the root claim so
+an operator can inspect and retry it without opening an overlap window.
+
+Snapshot crash recovery is mutation and therefore never runs over the MSv2
+under a shared read claim.  The lifecycle may reconcile only explicitly
+claimed writable non-dataset paths.  If the closure itself has a pending
+mutation marker, execution is refused until a writer or operator with
+exclusive authority performs recovery.
+
+Every attempt durably records its versioned capability, resolved accesses,
+claim, pre/post observations, phase events, reason and terminal outcome below
+``.shinobi/dataset-attempts`` in the launch workspace.  The public
+:class:`shinobi.DatasetLifecycleAttempt` and
+:class:`shinobi.DatasetLifecyclePhase` models describe those records; use
+:func:`shinobi.read_dataset_attempt` to read and validate one file.
+Successful runs end in ``committed``; pre-execution policy/claim failures in
+``refused``; execution or postcondition failures in ``failed``.
+
+The boundary is intentionally narrow.  Write/create access, unresolved or
+runtime-selected generic products, generic in-place mutation, multiple roots,
+external closure members, unsupported/opaque closure shapes, nested dataset
+recipes, dataset scatter, orchestration functions, manual ``Scope`` routes,
+non-native backends, and detached/offloaded execution remain strict refusals.
+Dry-run and compilation may still plan dataset-bearing workflows, but legacy
+and worker submission retain their planning-only marker and refuse before
+scheduler records, ownership claims, logs, or ``sbatch``.  Use ``Path`` or the
+legacy loader dtype ``MS`` when one of those unsupported execution routes is
+required.

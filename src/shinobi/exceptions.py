@@ -38,11 +38,14 @@ class ReplayError(ShinobiError):
 class DatasetLifecycleUnavailableError(ShinobiError):
     """Execution was refused for a strict dataset annotation.
 
-    Structural dataset declarations are intentionally inert until execution,
-    staging and recovery all enforce the same contract.  This exception keeps
-    an annotation from looking enforced while it is only being carried as a
-    path by the current execution stack.
+    Only the contained native MSv2 read lifecycle is executable.  This
+    exception keeps every unsupported route from looking enforced while an
+    annotation is only being carried as a path by that execution stack.
     """
+
+
+class DatasetLifecycleViolationError(ShinobiError):
+    """A read-only dataset changed while a strict lifecycle held its claim."""
 
 
 class UnsupportedFlavourError(ShinobiError):

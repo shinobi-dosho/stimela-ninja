@@ -19,6 +19,7 @@ from shinobi.ownership import (
     WorkspaceRegistryStore,
     WorkspaceOwnershipStore,
     acquire_workspace,
+    contained_access_issues,
     inspect_ownership,
     inspect_workspace,
     ownership_workspace,
@@ -26,6 +27,7 @@ from shinobi.ownership import (
     reconcile_ownership,
     release_workspace,
     scope_declares_writes,
+    scope_path_accesses,
 )
 from shinobi.storage import SharedStorageError
 from shinobi.steps.schema import Cab, InputRef, OutputRef, ParamMeta, Recipe, Scope, StepRef
@@ -44,6 +46,59 @@ def test_second_workflow_is_refused_without_replacing_first(tmp_path):
     with pytest.raises(WorkspaceOwnershipError, match="owned by slurm workflow first"):
         acquire_workspace(tmp_path, "second", kind="local")
     assert inspect_workspace(tmp_path) == first.owner
+
+
+def test_read_only_workflows_share_one_workspace_and_release_exactly_their_claim(tmp_path):
+    shared = tmp_path / "shared.ms"
+    shared.mkdir()
+    first = acquire_workspace(tmp_path, "first", kind="slurm", accesses=[(shared, False)])
+    second = acquire_workspace(tmp_path, "second", kind="slurm", accesses=[(shared, False)])
+
+    store = WorkspaceOwnershipStore(tmp_path)
+    assert store.owner("first") == first.owner
+    assert store.owner("second") == second.owner
+    with pytest.raises(WorkspaceOwnershipError, match="compatible owners"):
+        inspect_workspace(tmp_path)
+
+    first.release()
+    assert store.owner("first") is None
+    assert store.owner("second") == second.owner
+    second.release()
+    assert inspect_workspace(tmp_path) is None
+
+
+def test_writer_claims_keep_legacy_workspace_exclusion_even_when_paths_are_disjoint(tmp_path):
+    first_path = tmp_path / "first.ms"
+    second_path = tmp_path / "second.ms"
+    first_path.mkdir()
+    second_path.mkdir()
+    first = acquire_workspace(tmp_path, "first", kind="slurm", accesses=[(first_path, True)])
+
+    with pytest.raises(WorkspaceOwnershipError, match="owned by slurm workflow first"):
+        acquire_workspace(tmp_path, "second", kind="slurm", accesses=[(second_path, True)])
+    assert inspect_workspace(tmp_path) == first.owner
+
+
+def test_legacy_singular_read_claim_migrates_when_a_compatible_reader_arrives(tmp_path):
+    shared = tmp_path / "shared.ms"
+    shared.mkdir()
+    store = WorkspaceOwnershipStore(tmp_path)
+    legacy_lease = acquire_workspace(tmp_path, "legacy", kind="local", accesses=[(shared, False)])
+    legacy = legacy_lease.owner
+
+    def downgrade(data):
+        data.clear()
+        data["owner"] = legacy.model_dump(mode="json")
+
+    store.update(downgrade)
+
+    current = acquire_workspace(tmp_path, "current", kind="slurm", accesses=[(shared, False)])
+
+    persisted = store.read()
+    assert "owner" not in persisted
+    assert set(persisted["owners"]) == {"legacy", "current"}
+    current.release()
+    legacy_lease.release()
 
 
 def test_independent_workspaces_can_be_owned_concurrently(tmp_path):
@@ -291,6 +346,67 @@ def test_explicit_reconcile_releases_a_demonstrably_dead_local_owner(tmp_path):
     assert inspect_workspace(tmp_path) is None
 
 
+def test_two_dead_readers_can_be_inspected_and_reconciled_exactly(tmp_path, monkeypatch):
+    registry = tmp_path / "registry.json"
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(registry))
+    shared = tmp_path / "shared.ms"
+    shared.mkdir()
+    store = WorkspaceOwnershipStore(tmp_path)
+    owners = []
+    for workflow_id in ("dead-a", "dead-b"):
+        owner = WorkspaceOwner(
+            workflow_id=workflow_id,
+            kind="local",
+            workspace=str(tmp_path.resolve()),
+            acquired_at=0,
+            accesses=(WorkspaceAccess(path=str(shared.resolve()), writes=False),),
+            registry=str(registry.resolve()),
+        )
+        store.acquire(owner)
+        WorkspaceRegistryStore(registry).acquire(owner)
+        store.path.with_name(f"workspace-owner.{workflow_id}.live").touch()
+        owners.append(owner)
+
+    assert inspect_ownership(tmp_path).liveness == "uncertain"
+    assert inspect_ownership(tmp_path, "dead-a").liveness == "dead"
+    released = reconcile_ownership(tmp_path, "dead-a")
+    assert released.owner == owners[0]
+    assert store.owner("dead-a") is None
+    assert store.owner("dead-b") == owners[1]
+
+    runner = CliRunner()
+    inspected = runner.invoke(main, ["workspace", "inspect", "--workdir", str(tmp_path), "--workflow-id", "dead-b"])
+    assert inspected.exit_code == 0
+    assert "workspace: dead" in inspected.output
+    reconciled = runner.invoke(main, ["workspace", "reconcile", "--workdir", str(tmp_path), "--workflow-id", "dead-b"])
+    assert reconciled.exit_code == 0
+    assert "released local workflow dead-b" in reconciled.output
+    assert inspect_workspace(tmp_path) is None
+
+
+def test_registry_cleanup_failure_restores_root_claim_for_retry(tmp_path, monkeypatch):
+    registry = tmp_path / "registry.json"
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(registry))
+    shared = tmp_path / "shared.ms"
+    shared.mkdir()
+    lease = acquire_workspace(tmp_path, "reader", kind="local", accesses=[(shared, False)])
+    original_release = WorkspaceRegistryStore.release
+
+    def fail_release(self, workflow_id):
+        raise SharedStorageError("registry cleanup failed")
+
+    monkeypatch.setattr(WorkspaceRegistryStore, "release", fail_release)
+    with pytest.raises(SharedStorageError, match="registry cleanup failed"):
+        lease.release()
+    assert WorkspaceOwnershipStore(tmp_path).owner("reader") == lease.owner
+    assert WorkspaceRegistryStore(registry).owner("reader") == lease.owner
+    assert inspect_ownership(tmp_path, "reader").liveness == "live"
+
+    monkeypatch.setattr(WorkspaceRegistryStore, "release", original_release)
+    lease.release()
+    assert inspect_workspace(tmp_path) is None
+
+
 def test_slurm_reconcile_refuses_uncertain_and_live_then_releases_terminal(tmp_path, monkeypatch):
     class FixedPathOut(BaseModel):
         out: Path = Path("product")
@@ -392,6 +508,39 @@ def test_unresolved_output_with_known_reads_takes_a_conservative_write_claim(tmp
 
     monkeypatch.chdir(tmp_path)
     assert produce(src=source).success
+
+
+def test_contained_access_check_reuses_claim_time_default_factory(tmp_path):
+    calls = 0
+
+    def destination() -> Path:
+        nonlocal calls
+        calls += 1
+        return tmp_path / f"report-{calls}.txt"
+
+    class Inputs(BaseModel):
+        report: Path = Field(default_factory=destination)
+
+    leaf = Scope(
+        name="report",
+        inputs_model=Inputs,
+        outputs_model=Empty,
+        field_meta={"report": ParamMeta(write_path=True)},
+    )
+    recipe = Recipe(name="factory", inputs_model=Empty, outputs_model=Empty, steps=[StepRef(name="report", step=leaf)])
+    validated = recipe.inputs_model()
+    accesses, leaf_inputs = scope_path_accesses(recipe, validated, workspace=tmp_path)
+    issues = contained_access_issues(
+        recipe,
+        validated,
+        workspace=tmp_path,
+        dataset_resources={tmp_path / "observation.ms"},
+        validated_steps=leaf_inputs,
+    )
+
+    assert calls == 1
+    assert accesses == [(tmp_path / "report-1.txt", True)]
+    assert issues == ()
 
 
 def test_immutable_pystep_rewriting_same_named_path_still_needs_ownership():

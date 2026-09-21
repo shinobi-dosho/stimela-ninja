@@ -1,10 +1,11 @@
-"""Durable ownership of a scientific workspace across whole workflows.
+"""Durable ownership of scientific paths across whole workflows.
 
 The short locks used by :mod:`shinobi.storage` serialize metadata updates;
 they do not own the data a tool may be rewriting.  This module records one
-workflow owner under the canonical workspace and holds a separate liveness
-lock for local processes.  Detached owners remain recorded between Slurm
-jobs and after the submitter exits.
+exclusive workflow owner, or a set of compatible read-only owners, under the
+canonical workspace and holds a separate liveness lock for each local
+process.  Detached owners remain recorded between Slurm jobs and after the
+submitter exits.
 """
 
 from __future__ import annotations
@@ -22,7 +23,19 @@ from pydantic import BaseModel, ConfigDict
 
 from shinobi.exceptions import ShinobiError
 from shinobi.storage import JsonFileStore, SharedStorageError, ofd_lock
-from shinobi.steps.schema import InputRef, Recipe, Scope, declares_path_writes, path_accesses, paths_overlap
+from shinobi.steps.schema import (
+    Cab,
+    InputRef,
+    Recipe,
+    Scope,
+    declares_path_writes,
+    mutated_path_fields,
+    path_accesses,
+    path_fields,
+    paths_overlap,
+    unresolved_output_path_fields,
+    write_path_fields,
+)
 
 
 class WorkspaceOwnershipError(ShinobiError):
@@ -114,6 +127,7 @@ def _resolved_leaf_inputs(
     step_inputs: dict[int, tuple[BaseModel, bool]],
     reusable: bool = True,
     unresolved_inputs: set[str] | None = None,
+    validated_steps: dict[int, tuple[BaseModel, bool]] | None = None,
 ) -> Iterable[tuple[Scope, dict[str, Any], set[str]]]:
     """Yield each leaf with the inputs knowable at a workflow boundary.
 
@@ -162,12 +176,14 @@ def _resolved_leaf_inputs(
                 known.pop(field, None)
                 unresolved_fields.add(field)
         validated = None
+        prior = validated_steps.get(id(ref)) if validated_steps is not None else None
         try:
-            validated = ref.step.inputs_model(**known)
+            validated = prior[0] if prior is not None else ref.step.inputs_model(**known)
             known = {name: getattr(validated, name) for name in ref.step.inputs_model.model_fields}
             for name in unresolved_fields:
                 known.pop(name, None)
-            step_inputs[id(ref)] = (validated, reusable and not runtime_dependent and ref.scatter is None)
+            reuse_model = reusable and not runtime_dependent and ref.scatter is None
+            step_inputs[id(ref)] = (validated, reuse_model)
         except Exception:
             pass
         yield from _resolved_leaf_inputs(
@@ -176,6 +192,7 @@ def _resolved_leaf_inputs(
             step_inputs=step_inputs,
             reusable=reusable and validated is not None and not runtime_dependent and ref.scatter is None,
             unresolved_inputs=unresolved_fields,
+            validated_steps=validated_steps,
         )
 
 
@@ -205,6 +222,87 @@ def scope_path_accesses(scope: Scope, values: dict[str, Any] | BaseModel, *, wor
         for path, writes in dataset_workspace_accesses(decision.datasets):
             collected[path] = collected.get(path, False) or writes
     return list(collected.items()), step_inputs
+
+
+def contained_access_issues(
+    scope: Scope,
+    values: dict[str, Any] | BaseModel,
+    *,
+    workspace: Path,
+    dataset_resources: set[Path],
+    validated_steps: dict[int, tuple[BaseModel, bool]] | None = None,
+) -> tuple[str, ...]:
+    """Return generic filesystem declarations a contained read cannot prove.
+
+    The contained lifecycle permits ordinary products only when their paths
+    are fixed at the ownership boundary and do not overlap the claimed MSv2
+    closure.  Runtime-returned ``Path`` outputs, path-valued ``OutputRef``
+    inputs, default factories, and glob-selected products cannot meet that
+    proof.  This is deliberately stricter than ordinary dispatch: refusing a
+    shape is safe, while guessing a reservation can let a nominal reader
+    choose the dataset itself after the shared read claim has been acquired.
+    """
+
+    from shinobi.datasets import dataset_declarations
+
+    root = workspace.resolve()
+    issues: list[str] = []
+    step_inputs: dict[int, tuple[BaseModel, bool]] = {}
+
+    def concrete_paths(value: Any) -> tuple[Path, ...]:
+        values = value if isinstance(value, (list, tuple)) else (value,)
+        paths = []
+        for item in values:
+            if item is None:
+                continue
+            path = Path(str(item))
+            paths.append((path if path.is_absolute() else root / path).resolve())
+        return tuple(paths)
+
+    for leaf, known, unresolved in _resolved_leaf_inputs(
+        scope,
+        values,
+        step_inputs=step_inputs,
+        validated_steps=validated_steps,
+    ):
+        dataset_inputs = set(dataset_declarations(leaf.inputs_model))
+        generic_inputs = (path_fields(leaf.inputs_model) | write_path_fields(leaf)) - dataset_inputs
+        unknown_inputs = sorted(generic_inputs & unresolved)
+        if unknown_inputs:
+            issues.append(f"scope {leaf.name!r} has runtime-dependent generic path input(s): {', '.join(unknown_inputs)}")
+
+        generic_mutations = sorted(mutated_path_fields(leaf) - dataset_inputs)
+        if generic_mutations:
+            issues.append(f"scope {leaf.name!r} declares unsupported in-place generic mutation(s): {', '.join(generic_mutations)}")
+
+        for name in sorted(generic_inputs):
+            if name not in known:
+                continue
+            overlaps = sorted(
+                {path for path in concrete_paths(known[name]) if any(paths_overlap(path, resource) for resource in dataset_resources)},
+                key=str,
+            )
+            if overlaps:
+                qualifier = "generic write overlaps" if name in write_path_fields(leaf) else f"generic path input {name!r} overlaps"
+                issues.append(f"scope {leaf.name!r} {qualifier} the MSv2 closure: " + ", ".join(map(str, overlaps)))
+
+        output_paths = path_fields(leaf.outputs_model)
+        unresolved_outputs = sorted(unresolved_output_path_fields(leaf, known))
+        if unresolved_outputs:
+            issues.append(f"scope {leaf.name!r} has unresolved generic path output(s): {', '.join(unresolved_outputs)}")
+        for name in sorted(output_paths):
+            field = leaf.outputs_model.model_fields[name]
+            if field.default_factory is not None and name not in known:
+                issues.append(f"scope {leaf.name!r} path output {name!r} uses a runtime default factory")
+            # A Cab's output filling is declaration-driven.  A plain Scope is
+            # a Python step whose returned model may replace a schema default,
+            # so only a same-named, already-claimed input is a fixed target.
+            if not isinstance(leaf, Cab) and name not in known:
+                issues.append(f"scope {leaf.name!r} path output {name!r} is selected by runtime Python output")
+        if leaf.harvest or leaf.scratch:
+            issues.append(f"scope {leaf.name!r} uses runtime glob-selected generic products")
+
+    return tuple(dict.fromkeys(issues))
 
 
 class WorkspaceOwner(BaseModel):
@@ -240,33 +338,75 @@ def _same_claim(left: WorkspaceOwner, right: WorkspaceOwner) -> bool:
 
 
 class WorkspaceOwnershipStore(JsonFileStore):
-    """The one ownership record below a canonical workspace."""
+    """The versioned ownership set below a canonical workspace.
+
+    Version 1 stored one ``owner``.  Version 2 stores an ``owners`` mapping so
+    compatible read-only workflows can share an authority.  Write-capable
+    and old opaque claims retain the version-1 exclusive-root behaviour.  The
+    shared registry remains the cross-authority arbiter for path overlap.
+    """
 
     def __init__(self, workspace: Path):
         self.workspace = _workspace(workspace)
         super().__init__(self.workspace / ".shinobi" / "workspace-owner.json")
 
-    def owner(self) -> WorkspaceOwner | None:
-        data = self.read().get("owner")
-        return WorkspaceOwner.model_validate(data) if data is not None else None
+    @staticmethod
+    def _owners(data: dict) -> dict[str, WorkspaceOwner]:
+        version = data.get("schema_version")
+        if version not in {None, 2}:
+            raise WorkspaceOwnershipError(f"unsupported workspace ownership schema version {version!r}")
+        if "owners" in data and version != 2:
+            raise WorkspaceOwnershipError("versioned workspace ownership set is missing schema_version 2")
+        owners = {}
+        for workflow_id, value in data.get("owners", {}).items():
+            owner = WorkspaceOwner.model_validate(value)
+            if workflow_id != owner.workflow_id:
+                raise WorkspaceOwnershipError(f"workspace ownership key {workflow_id!r} disagrees with recorded workflow {owner.workflow_id!r}")
+            owners[workflow_id] = owner
+        legacy = data.get("owner")
+        if legacy is not None:
+            owner = WorkspaceOwner.model_validate(legacy)
+            previous = owners.setdefault(owner.workflow_id, owner)
+            if previous != owner:
+                raise WorkspaceOwnershipError(f"conflicting legacy and versioned ownership metadata for workflow {owner.workflow_id}")
+        return owners
+
+    def owner(self, workflow_id: str | None = None) -> WorkspaceOwner | None:
+        owners = {owner.workflow_id: owner for owner in self.owners()}
+        if workflow_id is not None:
+            return owners.get(workflow_id)
+        if not owners:
+            return None
+        if len(owners) > 1:
+            raise WorkspaceOwnershipError(f"workspace {self.workspace} has {len(owners)} compatible owners; specify an exact workflow identity")
+        return next(iter(owners.values()))
+
+    def owners(self) -> tuple[WorkspaceOwner, ...]:
+        """Return every exact owner in stable workflow-id order."""
+
+        return tuple(owner for _workflow_id, owner in sorted(self._owners(self.read()).items()))
 
     def acquire(self, owner: WorkspaceOwner) -> tuple[WorkspaceOwner, bool]:
         """Return the persisted owner and whether this transaction inserted it."""
 
         def update(data: dict) -> tuple[WorkspaceOwner, bool]:
-            current = data.get("owner")
+            owners = self._owners(data)
+            current = owners.get(owner.workflow_id)
             if current is not None:
-                held = WorkspaceOwner.model_validate(current)
-                if held.workflow_id == owner.workflow_id:
-                    if not _same_claim(held, owner):
-                        raise WorkspaceOwnershipError(f"workspace {self.workspace} has conflicting metadata for workflow {owner.workflow_id}")
-                    return held, False
-                raise WorkspaceOwnershipError(
-                    f"workspace {self.workspace} is owned by {held.kind} workflow {held.workflow_id}"
-                    + (f" ({held.submission})" if held.submission else "")
-                    + "; inspect or reconcile the recorded owner before retrying"
-                )
-            data["owner"] = owner.model_dump(mode="json")
+                if not _same_claim(current, owner):
+                    raise WorkspaceOwnershipError(f"workspace {self.workspace} has conflicting metadata for workflow {owner.workflow_id}")
+                return current, False
+            for held in owners.values():
+                if not _read_claim(owner) or not _read_claim(held):
+                    raise WorkspaceOwnershipError(
+                        f"workspace {self.workspace} is owned by {held.kind} workflow {held.workflow_id}"
+                        + (f" ({held.submission})" if held.submission else "")
+                        + "; inspect or reconcile the recorded owner before retrying"
+                    )
+            owners[owner.workflow_id] = owner
+            data.pop("owner", None)
+            data["schema_version"] = 2
+            data["owners"] = {workflow_id: held.model_dump(mode="json") for workflow_id, held in sorted(owners.items())}
             return owner, True
 
         return self.update(update)
@@ -276,13 +416,16 @@ class WorkspaceOwnershipStore(JsonFileStore):
 
         def update(data: dict) -> None:
             nonlocal removed
-            current = data.get("owner")
-            if current is None:
+            owners = self._owners(data)
+            if not owners:
                 return
-            held = WorkspaceOwner.model_validate(current)
-            if held.workflow_id != workflow_id:
-                raise WorkspaceOwnershipError(f"workspace {self.workspace} is owned by workflow {held.workflow_id}, not {workflow_id}")
+            held = owners.pop(workflow_id, None)
+            if held is None:
+                names = ", ".join(sorted(owners))
+                raise WorkspaceOwnershipError(f"workspace {self.workspace} is owned by workflow {names}, not {workflow_id}")
             data.pop("owner", None)
+            data["schema_version"] = 2
+            data["owners"] = {name: value.model_dump(mode="json") for name, value in sorted(owners.items())}
             removed = True
 
         self.update(update)
@@ -344,6 +487,12 @@ def _owners_conflict(left: WorkspaceOwner, right: WorkspaceOwner) -> bool:
     return any((a.writes or b.writes) and paths_overlap(Path(a.path), Path(b.path)) for a in left.accesses for b in right.accesses)
 
 
+def _read_claim(owner: WorkspaceOwner) -> bool:
+    """Whether a claim proves that every covered path is read-only."""
+
+    return bool(owner.accesses) and not any(access.writes for access in owner.accesses)
+
+
 def ownership_registry() -> Path:
     """Canonical shared registry path, overridable for site storage."""
     return Path(os.environ.get("SHINOBI_OWNERSHIP_REGISTRY", "~/.shinobi/workspace-owners.json")).expanduser().resolve()
@@ -362,20 +511,43 @@ class WorkspaceLease:
     _fd: int | None = None
 
     def release(self) -> None:
-        """Release only this workflow's record, then its liveness lock."""
+        """Release only this workflow's records, then its liveness lock.
+
+        The authority record is removed before the shared registry entry.
+        If registry cleanup fails, the authority record is restored before
+        the error is exposed.  Thus a partial release remains fail-closed and
+        the same exact lease can be retried; the old registry-first ordering
+        could leave an apparently live root claim with no cross-authority
+        exclusion.
+        """
+        _release_owner_records(self.store, self.owner)
+        if self._fd is not None:
+            try:
+                ofd_lock(self._fd, fcntl.F_UNLCK, blocking=False)
+            finally:
+                os.close(self._fd)
+                self._fd = None
+        self.store.path.with_name(f"workspace-owner.{self.owner.workflow_id}.live").unlink(missing_ok=True)
+        with _leases_lock:
+            _leases.pop((self.owner.workspace, self.owner.workflow_id), None)
+
+
+def _release_owner_records(store: WorkspaceOwnershipStore, owner: WorkspaceOwner) -> None:
+    """Remove one root/registry pair without exposing a half-release."""
+
+    if not store.release(owner.workflow_id):
+        return
+    try:
+        # ``False`` means the registry side was already absent, so both
+        # records are now clear.  This is the recovery path for an older
+        # registry-first partial release, not a reason to resurrect it.
+        WorkspaceRegistryStore(Path(owner.registry)).release(owner.workflow_id)
+    except BaseException as exc:
         try:
-            WorkspaceRegistryStore(Path(self.owner.registry)).release(self.owner.workflow_id)
-            self.store.release(self.owner.workflow_id)
-        finally:
-            if self._fd is not None:
-                try:
-                    ofd_lock(self._fd, fcntl.F_UNLCK, blocking=False)
-                finally:
-                    os.close(self._fd)
-                    self._fd = None
-            self.store.path.with_name(f"workspace-owner.{self.owner.workflow_id}.live").unlink(missing_ok=True)
-            with _leases_lock:
-                _leases.pop((self.owner.workspace, self.owner.workflow_id), None)
+            store.acquire(owner)
+        except BaseException as restore_exc:
+            exc.add_note(f"also failed to restore workspace ownership after partial release: {type(restore_exc).__name__}: {restore_exc}")
+        raise
 
 
 def acquire_workspace(
@@ -430,19 +602,29 @@ def acquire_workspace(
         persisted, root_added = store.acquire(owner)
         owner = persisted
         registry_added = registered.acquire(owner)
-    except BaseException:
+    except BaseException as exc:
+        cleanup_errors: list[str] = []
         if registry_added:
             try:
                 registered.release(workflow_id)
-            except BaseException:
-                pass
+            except BaseException as cleanup_exc:
+                cleanup_errors.append(f"registry rollback failed: {type(cleanup_exc).__name__}: {cleanup_exc}")
         try:
             if root_added:
                 store.release(workflow_id)
-        except BaseException:
-            pass
+        except BaseException as cleanup_exc:
+            cleanup_errors.append(f"workspace rollback failed: {type(cleanup_exc).__name__}: {cleanup_exc}")
+            # Re-establish the registry side when the root could not be
+            # removed.  A complete stale claim is recoverable and excludes
+            # overlap; a root-only claim is neither.
+            try:
+                registered.acquire(owner)
+            except BaseException as restore_exc:
+                cleanup_errors.append(f"registry claim restoration failed: {type(restore_exc).__name__}: {restore_exc}")
         if fd is not None:
             os.close(fd)
+        for detail in cleanup_errors:
+            exc.add_note(detail)
         raise
     lease = WorkspaceLease(store, owner, fd)
     with _leases_lock:
@@ -450,9 +632,9 @@ def acquire_workspace(
     return lease
 
 
-def inspect_workspace(workspace: Path) -> WorkspaceOwner | None:
+def inspect_workspace(workspace: Path, workflow_id: str | None = None) -> WorkspaceOwner | None:
     """Read the current owner without changing it."""
-    return WorkspaceOwnershipStore(workspace).owner()
+    return WorkspaceOwnershipStore(workspace).owner(workflow_id)
 
 
 def local_owner_live(owner: WorkspaceOwner) -> bool | None:
@@ -483,10 +665,13 @@ def local_owner_live(owner: WorkspaceOwner) -> bool | None:
 def release_workspace(workspace: Path, workflow_id: str) -> bool:
     """Remove exactly one workflow's ownership record, never another's."""
     store = WorkspaceOwnershipStore(workspace)
-    current = store.owner()
-    if current is not None and current.workflow_id == workflow_id:
-        WorkspaceRegistryStore(Path(current.registry)).release(workflow_id)
-    removed = store.release(workflow_id)
+    current = store.owner(workflow_id)
+    if current is None:
+        # Preserve the existing exact-identity diagnostic when siblings are
+        # present instead of turning an absent requested id into a no-op.
+        return store.release(workflow_id)
+    _release_owner_records(store, current)
+    removed = True
     if removed and current is not None:
         with _leases_lock:
             lease = _leases.pop((current.workspace, current.workflow_id), None)
@@ -502,11 +687,17 @@ def release_workspace(workspace: Path, workflow_id: str) -> bool:
 
 def require_workspace_owner(workspace: Path, workflow_id: str) -> WorkspaceOwner:
     """Fail unless ``workflow_id`` is still the durable workspace owner."""
-    owner = inspect_workspace(workspace)
+    store = WorkspaceOwnershipStore(workspace)
+    owner = store.owner(workflow_id)
     if owner is None:
+        held = store.owners()
+        if held:
+            if len(held) == 1:
+                detail = f"workflow {held[0].workflow_id}"
+            else:
+                detail = "workflows " + ", ".join(owner.workflow_id for owner in held)
+            raise WorkspaceOwnershipError(f"workspace {_workspace(workspace)} is now owned by {detail}; refusing stale detached workflow {workflow_id}")
         raise WorkspaceOwnershipError(f"workspace {_workspace(workspace)} has no owner; refusing detached workflow {workflow_id}")
-    if owner.workflow_id != workflow_id:
-        raise WorkspaceOwnershipError(f"workspace {_workspace(workspace)} is now owned by workflow {owner.workflow_id}; refusing stale detached workflow {workflow_id}")
     _require_registry(owner)
     return owner
 
@@ -518,11 +709,28 @@ class OwnershipInspection:
     detail: str
 
 
-def inspect_ownership(workspace: Path) -> OwnershipInspection:
+def inspect_ownership(workspace: Path, workflow_id: str | None = None) -> OwnershipInspection:
     """Inspect storage and scheduler/liveness evidence without changing it."""
     try:
-        owner = inspect_workspace(workspace)
-    except (OSError, ValueError, SharedStorageError, json.JSONDecodeError) as exc:
+        store = WorkspaceOwnershipStore(workspace)
+        if workflow_id is None:
+            try:
+                owner = store.owner()
+            except WorkspaceOwnershipError as exc:
+                owners = store.owners()
+                if len(owners) <= 1:
+                    raise
+                names = ", ".join(owner.workflow_id for owner in owners)
+                return OwnershipInspection(None, "uncertain", f"{exc}; compatible workflows are {names}; specify an exact workflow identity")
+        else:
+            owner = store.owner(workflow_id)
+            if owner is None:
+                siblings = store.owners()
+                if siblings:
+                    names = ", ".join(item.workflow_id for item in siblings)
+                    noun = "workflow" if len(siblings) == 1 else "workflows"
+                    return OwnershipInspection(None, "uncertain", f"workspace is owned by {noun} {names}, not {workflow_id}")
+    except (OSError, TypeError, ValueError, WorkspaceOwnershipError, SharedStorageError, json.JSONDecodeError) as exc:
         return OwnershipInspection(None, "uncertain", f"workspace-owner evidence cannot be read: {exc}")
     if owner is None:
         return OwnershipInspection(None, "free", "workspace has no recorded owner")
@@ -596,9 +804,9 @@ def inspect_ownership(workspace: Path) -> OwnershipInspection:
     return OwnershipInspection(owner, "dead", "every planned Slurm job has a durable record and is terminal")
 
 
-def reconcile_ownership(workspace: Path) -> OwnershipInspection:
+def reconcile_ownership(workspace: Path, workflow_id: str | None = None) -> OwnershipInspection:
     """Release a demonstrably dead owner; refuse live or uncertain owners."""
-    inspection = inspect_ownership(workspace)
+    inspection = inspect_ownership(workspace, workflow_id)
     if inspection.owner is None:
         if inspection.liveness != "free":
             raise WorkspaceOwnershipError(f"refusing to release workspace ownership: ownership is {inspection.liveness} ({inspection.detail})")

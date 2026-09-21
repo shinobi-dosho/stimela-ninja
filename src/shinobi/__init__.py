@@ -49,6 +49,15 @@ from shinobi.steps import (  # noqa: E402
 )
 from shinobi.dataset_closure import DatasetClosure, resolve_dataset_closure  # noqa: E402
 from shinobi.dataset_access import DatasetAccessError, RecipeAccessPlan, plan_recipe_accesses  # noqa: E402
+from shinobi.dataset_lifecycle import (  # noqa: E402
+    DATASET_READ_CAPABILITY,
+    DatasetLifecycleAttempt,
+    DatasetLifecyclePhase,
+    DatasetLifecycleSnapshot,
+    dataset_attempt_path,
+    read_dataset_attempt,
+)
+from shinobi.exceptions import DatasetLifecycleUnavailableError, DatasetLifecycleViolationError  # noqa: E402
 
 __all__ = [
     "Cab",
@@ -58,6 +67,11 @@ __all__ = [
     "DatasetAccessError",
     "DatasetColumns",
     "DatasetFallback",
+    "DatasetLifecycleAttempt",
+    "DatasetLifecyclePhase",
+    "DatasetLifecycleSnapshot",
+    "DatasetLifecycleUnavailableError",
+    "DatasetLifecycleViolationError",
     "DatasetMode",
     "DatasetSelection",
     "DatasetTable",
@@ -74,9 +88,12 @@ __all__ = [
     "ScatterSpec",
     "Scope",
     "StepRef",
+    "DATASET_READ_CAPABILITY",
+    "dataset_attempt_path",
     "pystep",
     "plan_recipe_accesses",
     "resolve_dataset_closure",
+    "read_dataset_attempt",
     "step",
     "__version__",
 ]
