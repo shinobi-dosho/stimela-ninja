@@ -102,11 +102,12 @@ def workspace_group() -> None:
 
 @workspace_group.command("inspect")
 @click.option("--workdir", type=click.Path(exists=True, file_okay=False, path_type=Path), default=".", help="Workspace to inspect.")
-def workspace_inspect(workdir: Path) -> None:
+@click.option("--workflow-id", help="Inspect one exact workflow when compatible readers share the workspace.")
+def workspace_inspect(workdir: Path, workflow_id: str | None) -> None:
     """Read the current owner and its verified liveness without changing it."""
     from shinobi.ownership import inspect_ownership
 
-    state = inspect_ownership(workdir)
+    state = inspect_ownership(workdir, workflow_id)
     if state.owner is None:
         click.echo(f"workspace: {state.liveness} ({state.detail})")
         return
@@ -122,12 +123,13 @@ def workspace_inspect(workdir: Path) -> None:
 
 @workspace_group.command("reconcile")
 @click.option("--workdir", type=click.Path(exists=True, file_okay=False, path_type=Path), default=".", help="Workspace to reconcile.")
-def workspace_reconcile(workdir: Path) -> None:
+@click.option("--workflow-id", help="Reconcile one exact workflow when compatible readers share the workspace.")
+def workspace_reconcile(workdir: Path, workflow_id: str | None) -> None:
     """Release an owner only when storage/scheduler evidence proves it dead."""
     from shinobi.ownership import WorkspaceOwnershipError, reconcile_ownership
 
     try:
-        state = reconcile_ownership(workdir)
+        state = reconcile_ownership(workdir, workflow_id)
     except WorkspaceOwnershipError as exc:
         raise click.ClickException(str(exc)) from None
     if state.owner is None:
@@ -145,7 +147,7 @@ def workspace_release(workdir: Path, workflow_id: str, force: bool) -> None:
     from shinobi.ownership import WorkspaceOwnershipError, inspect_ownership, release_workspace
 
     try:
-        state = inspect_ownership(workdir)
+        state = inspect_ownership(workdir, workflow_id)
         if state.owner is None:
             if state.liveness != "free":
                 raise WorkspaceOwnershipError(f"refusing to release workspace ownership: ownership is {state.liveness} ({state.detail})")

@@ -18,6 +18,7 @@ import copy
 import heapq
 import importlib
 import logging
+import threading
 import warnings
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack
@@ -40,7 +41,7 @@ from shinobi.cache import (
 )
 from shinobi.snapshots import SnapshotGuard, announce_run, eligible_fields, get_journal, mutation_paths, new_run_id, reconcile
 from shinobi.config import AppConfig
-from shinobi.exceptions import CabRunError, DatasetLifecycleUnavailableError, ParameterError, ShinobiError, StepError
+from shinobi.exceptions import CabRunError, DatasetLifecycleUnavailableError, DatasetLifecycleViolationError, ParameterError, ShinobiError, StepError
 from shinobi.graph import build_graph
 from shinobi.policies import build_argv
 from shinobi.resources import Budget, Resources
@@ -113,6 +114,83 @@ def _refuse_unenforced_datasets(scope: Scope) -> None:
             "validation, staging and recovery enforce the same lifecycle contract; use Path or the legacy loader "
             f"dtype 'MS' for current execution. Declared field(s): {', '.join(declarations)}"
         )
+
+
+def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: str) -> tuple[str, ...]:
+    """Validate the deliberately small contained-read execution shape."""
+
+    from shinobi.dataset_access import DatasetMode, scope_has_dataset_contract, scope_tree_has_dataset_contract
+    from shinobi.datasets import DatasetKind, dataset_declarations
+    from shinobi.steps.pyfunc import PystepCallable
+    from shinobi.steps.schema import mutated_path_fields, write_path_fields
+
+    backends: set[str] = set()
+
+    def visit(current: Scope, current_func: Callable | None, backend_name: str, *, nested: bool = False, scattered: bool = False) -> None:
+        has_contract = scope_has_dataset_contract(current)
+        if isinstance(current, Recipe):
+            # Recipe boundary annotations describe values crossing the
+            # boundary; access contracts still belong to the atomic leaves.
+            # ``Recipe`` validation already rejects recipe-level accesses.
+            if current_func is not None and scope_tree_has_dataset_contract(current):
+                raise DatasetLifecycleUnavailableError("contained MSv2 read refused: recipe orchestration functions are not an ordinary read route")
+            for ref in current.steps:
+                child_has_contract = scope_tree_has_dataset_contract(ref.step)
+                if isinstance(ref.step, Recipe) and child_has_contract:
+                    raise DatasetLifecycleUnavailableError(f"contained MSv2 read refused: step {ref.name!r} is a nested dataset recipe; flatten it")
+                if ref.scatter is not None and child_has_contract:
+                    raise DatasetLifecycleUnavailableError(f"contained MSv2 read refused: step {ref.name!r} scatters a dataset contract")
+                visit(ref.step, ref.func, ref.step.backend or backend_name, nested=True, scattered=ref.scatter is not None)
+            return
+        # One outer lifecycle claim covers the whole flat recipe, not merely
+        # the annotated leaves.  Letting an unannotated sibling select a
+        # container, venv or scheduler would put an unobserved route inside
+        # that claim and could hand it the MS through an ordinary Path.
+        if backend_name != "native":
+            raise DatasetLifecycleUnavailableError(
+                f"contained MSv2 read refused: backend {backend_name!r} is not the supported native local route for leaf {current.name!r}; every leaf under the lifecycle must use native"
+            )
+        if not has_contract:
+            return
+        if nested and isinstance(current, Recipe):
+            raise DatasetLifecycleUnavailableError("contained MSv2 read refused: nested dataset recipes are not supported")
+        if scattered:
+            raise DatasetLifecycleUnavailableError("contained MSv2 read refused: scattered dataset access is not supported")
+        if isinstance(current, Cab):
+            if current_func is not None:
+                raise DatasetLifecycleUnavailableError("contained MSv2 read refused: cab orchestration functions are not an ordinary read route")
+            if current.flavour != "binary":
+                raise DatasetLifecycleUnavailableError(f"contained MSv2 read refused: cab flavour {current.flavour!r} is not the supported binary route")
+        elif not isinstance(current_func, PystepCallable):
+            raise DatasetLifecycleUnavailableError(
+                "strict dataset annotations remain declarative for manual Scope execution; use a Cab or @pystep for the contained native read lifecycle"
+            )
+        declarations = {
+            **dataset_declarations(current.inputs_model),
+            **dataset_declarations(current.outputs_model),
+        }
+        if any(token in name for name in declarations for token in (".", "[]", ".*")):
+            names = ", ".join(sorted(declarations))
+            raise DatasetLifecycleUnavailableError(f"contained MSv2 read refused: nested dataset fields are not direct: {names}")
+        unsupported = sorted(name for name, declaration in declarations.items() if declaration.kind is not DatasetKind.MEASUREMENT_SET_V2)
+        if unsupported:
+            raise DatasetLifecycleUnavailableError(
+                "strict dataset contract cannot execute until validation, staging and recovery support this route; "
+                "the contained lifecycle accepts only MeasurementSetV2 fields, not " + ", ".join(unsupported)
+            )
+        if any(access.mode is not DatasetMode.READ for access in current.dataset_accesses):
+            raise DatasetLifecycleUnavailableError("contained MSv2 read refused: write/create access requires mutation recovery, which is not available")
+        inputs = dataset_declarations(current.inputs_model)
+        outputs = dataset_declarations(current.outputs_model)
+        implicit_writes = (set(outputs) - set(inputs)) | ((mutated_path_fields(current) | write_path_fields(current)) & set(declarations))
+        if implicit_writes:
+            raise DatasetLifecycleUnavailableError(
+                "contained MSv2 read refused: inferred write/create dataset field(s) require mutation recovery: " + ", ".join(sorted(implicit_writes))
+            )
+        backends.add(backend_name)
+
+    visit(scope, func, inherited)
+    return tuple(sorted(backends))
 
 
 def _any_resources(recipe: Recipe) -> bool:
@@ -276,6 +354,8 @@ class ExecContext:
         run_id: str = "",
         validated_inputs: BaseModel | None = None,
         leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
+        dataset_lifecycle: Any | None = None,
+        publication_gate: Callable[[Callable[[], None]], None] | None = None,
     ):
         """Initialize execution state for one dispatched step.
 
@@ -347,6 +427,12 @@ class ExecContext:
         # A Recipe forwards them to `_run_recipe`; fully knowable steps reuse
         # the exact model, while runtime-dependent ones reuse only defaults.
         self._leaf_inputs = leaf_inputs
+        # Non-None only for leaves executing under the top-level contained
+        # MSv2 read lifecycle and its already-acquired shared claim.
+        self._dataset_lifecycle = dataset_lifecycle
+        # The strict dataset wrapper queues every leaf's cache/snapshot and
+        # run-manifest publication here until its outer postcondition passes.
+        self._publication_gate = publication_gate
         # Identifies the whole top-level dispatch, threaded down like
         # `_config` so every step of one run agrees on it. Names trash
         # directories and stamps manifest entries, both of which are read
@@ -496,6 +582,8 @@ class ExecContext:
                 run_id=self._run_id,
                 leaf_inputs=self._leaf_inputs,
                 validated_inputs=validated,
+                dataset_lifecycle=self._dataset_lifecycle,
+                publication_gate=self._publication_gate,
             )
         else:
             raise TypeError(
@@ -616,14 +704,285 @@ def _dispatch(
     _snapshot_success_record: Path | None = None,
     _snapshot_success_step_path: str | None = None,
     _result_commit: Callable[[StepResult, Callable[[], None]], None] | None = None,
+    _publication_gate: Callable[[Callable[[], None]], None] | None = None,
     _workspace_claimed: bool = False,
+    _dataset_lifecycle: Any | None = None,
     _validated_inputs: BaseModel | None = None,
     _leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
     **kwargs: Any,
 ) -> StepResult:
-    _refuse_unenforced_datasets(scope)
     config = _config or AppConfig.load()
     run_id = _run_id or new_run_id()
+    dataset_declarations = _scope_dataset_declarations(scope)
+    if dataset_declarations and _dataset_lifecycle is None:
+        # Strict execution enters only through this top-level wrapper.  A
+        # nested invocation without its parent's lifecycle token would be an
+        # unclaimed reader and remains refused.
+        if _cache_path is not None or _workspace_claimed:
+            _refuse_unenforced_datasets(scope)
+        from shinobi.dataset_lifecycle import (
+            DatasetLifecycle,
+            DatasetLifecyclePhase,
+            claim_covers_snapshot,
+            pending_dataset_recovery,
+            resolve_lifecycle_snapshot,
+        )
+        from shinobi.ownership import (
+            WorkspaceOwnershipError,
+            acquire_workspace,
+            contained_access_issues,
+            ownership_workspace,
+            scope_path_accesses,
+        )
+        from shinobi.steps.schema import paths_overlap
+
+        launch_workspace = Path.cwd().resolve()
+        root_backend = backend or scope.backend or _recipe_backend or config.backend.default
+        lifecycle = DatasetLifecycle.start(
+            workspace=launch_workspace,
+            attempt_id=run_id,
+            scope=scope.name,
+            backends=(root_backend,),
+        )
+        lease = None
+        executing = False
+        primary_error: BaseException | None = None
+        validated_inputs = None
+        leaf_inputs = None
+        planned = None
+        pending_publications: list[Callable[[], None]] = []
+        publication_lock = threading.Lock()
+
+        def hold_publication(action: Callable[[], None]) -> None:
+            with publication_lock:
+                pending_publications.append(action)
+
+        def publish_validated_result() -> None:
+            with publication_lock:
+                actions = tuple(pending_publications)
+                pending_publications.clear()
+            for action in actions:
+                action()
+
+        def transition_preserving(
+            phase: DatasetLifecyclePhase,
+            reason: str,
+            primary: BaseException,
+            **changes: Any,
+        ) -> None:
+            try:
+                lifecycle.transition(phase, reason, **changes)
+            except BaseException as transition_exc:
+                primary.add_note(
+                    f"dataset lifecycle record update also failed: {type(transition_exc).__name__}: {transition_exc}; inspect the pending attempt record before recovery"
+                )
+                logger.exception("contained MSv2 read failed and its lifecycle record update also failed")
+
+        try:
+            backends = _dataset_execution_backends(scope, func, root_backend)
+            validated_inputs = _validated_inputs if _validated_inputs is not None else _validate_inputs(scope, kwargs)
+            accesses, leaf_inputs = scope_path_accesses(scope, validated_inputs, workspace=launch_workspace)
+            planned = resolve_lifecycle_snapshot(
+                scope,
+                validated_inputs,
+                workspace=launch_workspace,
+                validated_steps=leaf_inputs,
+            )
+            lifecycle.transition(
+                DatasetLifecyclePhase.PLANNED,
+                "resolved one contained ordinary MSv2 read closure",
+                backends=backends,
+                capability_supported=True,
+                planned_accesses=planned.accesses,
+                pre_observations=planned.observations,
+            )
+            resources = {resource for access in planned.accesses for resource in access.resources}
+            access_issues = contained_access_issues(
+                scope,
+                validated_inputs,
+                workspace=launch_workspace,
+                dataset_resources=resources,
+                validated_steps=leaf_inputs,
+            )
+            if access_issues:
+                raise DatasetLifecycleUnavailableError("contained MSv2 read refused: " + "; ".join(access_issues))
+            overlapping_writes = sorted(
+                {path for path, writes in accesses if writes and any(paths_overlap(path, resource) for resource in resources)},
+                key=str,
+            )
+            if overlapping_writes:
+                raise DatasetLifecycleUnavailableError("contained MSv2 read refused: a generic write overlaps the read-only closure: " + ", ".join(map(str, overlapping_writes)))
+            writable_paths = [path for path, writes in accesses if writes]
+            claim_workspace = ownership_workspace(launch_workspace, writable_paths) if writable_paths else launch_workspace
+            lease = acquire_workspace(
+                claim_workspace,
+                run_id,
+                kind="local",
+                accesses=accesses,
+            )
+            lifecycle.transition(
+                DatasetLifecyclePhase.CLAIMED,
+                "acquired ownership covering every read-only closure resource",
+                claim=lease.owner,
+            )
+            revalidated = resolve_lifecycle_snapshot(
+                scope,
+                validated_inputs,
+                workspace=launch_workspace,
+                validated_steps=leaf_inputs,
+            )
+            if revalidated != planned or not claim_covers_snapshot(lease.owner, revalidated):
+                raise DatasetLifecycleUnavailableError("contained MSv2 read refused before backend execution: the access plan or observation changed after claim")
+            effective_cache_dir = cache_dir or scope.cache_dir or _recipe_cache_dir or config.cache.dir
+            # An interrupted writer may have left a journal while snapshots were
+            # enabled previously.  The current snapshot policy cannot make that
+            # pending mutation safe to recover under a shared read claim.
+            pending = pending_dataset_recovery(effective_cache_dir, revalidated)
+            if pending:
+                raise DatasetLifecycleUnavailableError(
+                    "contained MSv2 read refused before backend execution: pending mutation recovery requires an exclusive writer claim: " + ", ".join(map(str, pending))
+                )
+            lifecycle.transition(
+                DatasetLifecyclePhase.REVALIDATED,
+                "post-claim access plan and observation match the claimed baseline",
+            )
+            lifecycle.transition(
+                DatasetLifecyclePhase.EXECUTING,
+                "entering native local dispatch under the shared read claim",
+            )
+            executing = True
+            try:
+                result = _dispatch(
+                    scope,
+                    func,
+                    backend=backend,
+                    cache=cache,
+                    cache_dir=cache_dir,
+                    stream=stream,
+                    provenance=provenance,
+                    sandbox=sandbox,
+                    _recipe_backend=_recipe_backend,
+                    _recipe_cache=_recipe_cache,
+                    _recipe_cache_dir=_recipe_cache_dir,
+                    _recipe_stream=_recipe_stream,
+                    _recipe_provenance=_recipe_provenance,
+                    _recipe_sandbox=_recipe_sandbox,
+                    _cache_path=_cache_path,
+                    _config=config,
+                    _provenance_target=_provenance_target,
+                    _input_keys=_input_keys,
+                    _wired_fields=_wired_fields,
+                    _budget=_budget,
+                    _run_id=run_id,
+                    _slice_index=_slice_index,
+                    _execution_identity=_execution_identity,
+                    _snapshot_success_record=_snapshot_success_record,
+                    _snapshot_success_step_path=_snapshot_success_step_path,
+                    _result_commit=_result_commit,
+                    _publication_gate=hold_publication,
+                    _workspace_claimed=True,
+                    _dataset_lifecycle=lifecycle,
+                    _validated_inputs=validated_inputs,
+                    _leaf_inputs=leaf_inputs,
+                    **kwargs,
+                )
+            except BaseException as exc:
+                try:
+                    post = resolve_lifecycle_snapshot(
+                        scope,
+                        validated_inputs,
+                        workspace=launch_workspace,
+                        validated_steps=leaf_inputs,
+                    )
+                except BaseException as observe_exc:
+                    violation = DatasetLifecycleViolationError("strict MSv2 reader failed and its read-only postcondition could not be established")
+                    transition_preserving(
+                        DatasetLifecyclePhase.FAILED,
+                        f"execution raised {type(exc).__name__}; post-execution observation failed: {type(observe_exc).__name__}: {observe_exc}",
+                        violation,
+                    )
+                    raise violation from exc
+                if post != planned:
+                    violation = DatasetLifecycleViolationError("strict MSv2 reader changed its dataset before failing")
+                    transition_preserving(
+                        DatasetLifecyclePhase.FAILED,
+                        f"execution raised {type(exc).__name__} and the MSv2 changed",
+                        violation,
+                        post_observations=post.observations,
+                    )
+                    raise violation from exc
+                transition_preserving(
+                    DatasetLifecyclePhase.FAILED,
+                    f"execution raised {type(exc).__name__}: {exc}",
+                    exc,
+                    post_observations=post.observations,
+                )
+                raise
+            try:
+                post = resolve_lifecycle_snapshot(
+                    scope,
+                    validated_inputs,
+                    workspace=launch_workspace,
+                    validated_steps=leaf_inputs,
+                )
+            except BaseException as exc:
+                violation = DatasetLifecycleViolationError("strict MSv2 reader completed but its read-only postcondition could not be established")
+                transition_preserving(
+                    DatasetLifecyclePhase.FAILED,
+                    f"post-execution observation failed: {type(exc).__name__}: {exc}",
+                    violation,
+                )
+                raise violation from exc
+            if post != planned:
+                violation = DatasetLifecycleViolationError("strict MSv2 reader changed its dataset")
+                transition_preserving(
+                    DatasetLifecyclePhase.FAILED,
+                    "read-only postcondition failed: the MSv2 access plan or observation changed during execution",
+                    violation,
+                    post_observations=post.observations,
+                )
+                raise violation
+            lifecycle.transition(
+                DatasetLifecyclePhase.VALIDATED,
+                "read-only postcondition matches the claimed baseline",
+                post_observations=post.observations,
+            )
+            publish_validated_result()
+            if result.success:
+                lifecycle.transition(DatasetLifecyclePhase.COMMITTED, "native contained MSv2 read committed")
+            else:
+                lifecycle.transition(
+                    DatasetLifecyclePhase.FAILED,
+                    f"native reader returned non-zero status {result.returncode}",
+                )
+            return result
+        except BaseException as exc:
+            primary_error = exc
+            if lifecycle.record.phase not in {
+                DatasetLifecyclePhase.COMMITTED,
+                DatasetLifecyclePhase.REFUSED,
+                DatasetLifecyclePhase.FAILED,
+            }:
+                phase = DatasetLifecyclePhase.FAILED if executing else DatasetLifecyclePhase.REFUSED
+                transition_preserving(phase, f"{type(exc).__name__}: {exc}", exc)
+            if isinstance(exc, WorkspaceOwnershipError):
+                wrapped = DatasetLifecycleUnavailableError(f"contained MSv2 read claim refused: {exc}")
+                primary_error = wrapped
+                raise wrapped from exc
+            raise
+        finally:
+            if lease is not None:
+                try:
+                    lease.release()
+                except BaseException as cleanup_exc:
+                    if primary_error is None:
+                        raise
+                    primary_error.add_note(
+                        f"workspace lease cleanup also failed: {type(cleanup_exc).__name__}: {cleanup_exc}; the exact claim remains for inspection/reconciliation"
+                    )
+                    logger.exception("contained MSv2 read failed and its workspace lease cleanup also failed")
+    if dataset_declarations and _dataset_lifecycle is None:
+        _refuse_unenforced_datasets(scope)
     if _cache_path is None and not _workspace_claimed:
         from shinobi.ownership import acquire_workspace, ownership_workspace, scope_declares_writes, scope_path_accesses, scope_requires_ownership
 
@@ -677,7 +1036,9 @@ def _dispatch(
                     _snapshot_success_record=_snapshot_success_record,
                     _snapshot_success_step_path=_snapshot_success_step_path,
                     _result_commit=_result_commit,
+                    _publication_gate=_publication_gate,
                     _workspace_claimed=True,
+                    _dataset_lifecycle=_dataset_lifecycle,
                     _validated_inputs=validated_inputs,
                     _leaf_inputs=leaf_inputs,
                     **kwargs,
@@ -740,11 +1101,16 @@ def _dispatch(
         # establish we are alone we skip, which is safe: the marker stays
         # set, so the next restore still forces a rollback (branch 1), and
         # only the tidying waits.
+        reconcile_paths = None
+        if _dataset_lifecycle is not None:
+            claim = _dataset_lifecycle.record.claim
+            reconcile_paths = {Path(access.path) for access in claim.accesses if access.writes} if claim is not None else set()
         presence = announce_run(cache_dir_value, run_id)
-        if presence.alone():
-            for note in reconcile(cache_dir_value, get_cache_manifest(cache_dir_value)):
+        alone = presence.alone()
+        if alone and (reconcile_paths is None or reconcile_paths):
+            for note in reconcile(cache_dir_value, get_cache_manifest(cache_dir_value), paths=reconcile_paths):
                 logger.warning("cache: %s", note)
-        else:
+        elif not alone:
             logger.warning(
                 "cache: not reconciling %s -- another shinobi process appears to be using it (or this filesystem does not support locking). Interrupted steps still recover on their own; run 'ninja cache check' when the other run has finished.",
                 cache_dir_value,
@@ -768,10 +1134,19 @@ def _dispatch(
         run_id=run_id,
         validated_inputs=_validated_inputs,
         leaf_inputs=_leaf_inputs,
+        dataset_lifecycle=_dataset_lifecycle,
+        publication_gate=_publication_gate,
     )
 
     manifest = None
     cache_key = None
+
+    def publish(action: Callable[[], None]) -> None:
+        if _publication_gate is None:
+            action()
+        else:
+            _publication_gate(action)
+
     if cacheable:
         execution_identity = _execution_identity or _local_execution_identity(scope, ctx, pinned=provenance_enabled)
         if execution_identity is None:
@@ -794,10 +1169,14 @@ def _dispatch(
                 # Venv steps stay unpinned in the manifest either way.
                 hit.venv_digest = execution_identity.venv_digest
             logger.info("step %s: cache hit -- skipping run", cache_path)
-            if _result_commit is not None:
-                _result_commit(hit, lambda: None)
-            if _cache_path is None and provenance_enabled:
-                _emit_run_manifest(hit, ctx, config, backend, target=_provenance_target)
+
+            def publish_hit() -> None:
+                if _result_commit is not None:
+                    _result_commit(hit, lambda: None)
+                if _cache_path is None and provenance_enabled:
+                    _emit_run_manifest(hit, ctx, config, backend, target=_provenance_target)
+
+            publish(publish_hit)
             return hit
 
     logger.info(
@@ -828,6 +1207,8 @@ def _dispatch(
         if snapshots_enabled
         else None
     )
+    if guard is not None and _publication_gate is not None:
+        raise DatasetLifecycleUnavailableError("contained MSv2 read refused: a lifecycle leaf requires mutation recovery; mutation support is not available")
     if guard is not None:
         guard.before_run()
     try:
@@ -879,32 +1260,36 @@ def _dispatch(
 
     if cacheable:
         result.cache_key = cache_key
-    if result.success:
-        # The five-stage commit lives in the guard so its ordering
-        # constraints are enforced in one place -- above all that the tip
-        # snapshot (S1) precedes the explicit success oracle (S3), or a
-        # committed result could name a state with nothing snapshotted.
-        def _record() -> None:
-            if cacheable and result.success:
-                manifest.record(cache_path, cache_key, result, run_id=run_id)
 
-        def _commit() -> None:
-            if _result_commit is None:
-                _record()
+    def publish_result() -> None:
+        if result.success:
+            # The five-stage commit lives in the guard so its ordering
+            # constraints are enforced in one place -- above all that the tip
+            # snapshot (S1) precedes the explicit success oracle (S3), or a
+            # committed result could name a state with nothing snapshotted.
+            def _record() -> None:
+                if cacheable:
+                    manifest.record(cache_path, cache_key, result, run_id=run_id)
+
+            def _commit() -> None:
+                if _result_commit is None:
+                    _record()
+                else:
+                    _result_commit(result, _record)
+
+            if guard is not None:
+                guard.after_success(_commit)
             else:
-                _result_commit(result, _record)
-
-        if guard is not None:
-            guard.after_success(_commit)
+                _commit()
         else:
-            _commit()
-    else:
-        if guard is not None:
-            guard.after_failure()
-        if _result_commit is not None:
-            _result_commit(result, lambda: None)
-    if _cache_path is None and provenance_enabled:
-        _emit_run_manifest(result, ctx, config, backend, target=_provenance_target)
+            if guard is not None:
+                guard.after_failure()
+            if _result_commit is not None:
+                _result_commit(result, lambda: None)
+        if _cache_path is None and provenance_enabled:
+            _emit_run_manifest(result, ctx, config, backend, target=_provenance_target)
+
+    publish(publish_result)
     return result
 
 
@@ -1294,6 +1679,8 @@ def _run_recipe(
     run_id: str = "",
     leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
     validated_inputs: BaseModel | None = None,
+    dataset_lifecycle: Any | None = None,
+    publication_gate: Callable[[Callable[[], None]], None] | None = None,
 ) -> StepResult:
     """Topological wavefront scheduler over the recipe's declared DAG.
 
@@ -1547,6 +1934,8 @@ def _run_recipe(
                 _slice_index=slice_idx,
                 _leaf_inputs=leaf_inputs,
                 _validated_inputs=validated_inputs,
+                _dataset_lifecycle=dataset_lifecycle,
+                _publication_gate=publication_gate,
                 **unit_kwargs,
             )
             futures[fut] = (i, slice_idx)
