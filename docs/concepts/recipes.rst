@@ -120,10 +120,11 @@ declaration order, and raising it lets independent branches run concurrently.
     Recipe(name="pipe", inputs_model=..., outputs_model=..., max_workers=4)
 
 ``max_workers`` defaults to ``1`` (per recipe, falling back to
-``AppConfig.execution.max_workers``); concurrency is opt-in. The reason is data
-safety: at ``1`` no ``MUTABLE`` input can be shared between two steps running
-at once. With ``max_workers > 1`` you must ensure two concurrently-running
-steps never share a mutable object -- see :doc:`config`.
+``AppConfig.execution.max_workers``); concurrency is opt-in.  Before dispatch,
+the shared access planner adds ordering edges for statically resolved
+filesystem conflicts, including MSv2 closure resources.  MUTABLE non-path
+Python objects still cannot be made safe by filesystem planning; do not share
+one between parallel steps.  See :doc:`config` and :doc:`datasets`.
 
 Declaring what a step costs
 ---------------------------

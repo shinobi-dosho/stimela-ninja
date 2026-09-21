@@ -227,7 +227,7 @@ def _wrangler_output_fields(cab: Cab) -> set[str]:
     return fields
 
 
-def check_offloadable(recipe: "Recipe", *, worker: bool = False) -> RecipeGraph:
+def check_offloadable(recipe: "Recipe", *, worker: bool = False, allow_dataset_planning: bool = False) -> RecipeGraph:
     """Raise `RecipeNotOffloadableError` (with *all* disqualifying reasons)
     unless `recipe` is a purely declarative DAG that can be compiled to an
     external engine and detached. A valid graph is a precondition, so this
@@ -241,6 +241,10 @@ def check_offloadable(recipe: "Recipe", *, worker: bool = False) -> RecipeGraph:
     outputs can cross nodes in result records. The bundle compiler must
     additionally validate the serializable schema, code and environment.
     It does not enable worker submission in the legacy Slurm compiler.
+
+    ``allow_dataset_planning=True`` is reserved for a compiler that resolves
+    and records dataset hazards but marks the resulting workflow as
+    non-submittable. It never enables dataset execution.
 
     The default rules follow directly from "the cluster runs the graph, shinobi is
     not in the loop per step" (see AGENTS.md / the design note):
@@ -285,14 +289,18 @@ def check_offloadable(recipe: "Recipe", *, worker: bool = False) -> RecipeGraph:
     by_name = {ref.name: ref for ref in recipe.steps}
 
     root_datasets = sorted(dataset_declarations(recipe.inputs_model) | dataset_declarations(recipe.outputs_model))
-    if root_datasets:
+    if root_datasets and not allow_dataset_planning:
         reasons.append(f"recipe '{recipe.name}' declares strict dataset field(s) {root_datasets} -- dataset lifecycle enforcement is not available in offloaded engines yet")
+    if recipe.dataset_accesses:
+        reasons.append(f"recipe '{recipe.name}' declares dataset access contracts -- attach access to the atomic steps that touch the dataset")
 
     for ref in recipe.steps:
         scope = ref.step
         strict_datasets = sorted(dataset_declarations(scope.inputs_model) | dataset_declarations(scope.outputs_model))
-        if strict_datasets:
+        if strict_datasets and not allow_dataset_planning:
             reasons.append(f"step '{ref.name}' declares strict dataset field(s) {strict_datasets} -- dataset lifecycle enforcement is not available in offloaded engines yet")
+        if scope.dataset_accesses and not allow_dataset_planning:
+            reasons.append(f"step '{ref.name}' declares dataset access contracts -- dataset lifecycle enforcement is not available in offloaded engines yet")
         if ref.scatter is not None:
             reasons.append(f"step '{ref.name}' declares scatter over {ref.scatter.fields} -- scatter is not supported by offloaded engines in this version")
         pystep = worker and isinstance(ref.func, PystepCallable)

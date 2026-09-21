@@ -85,6 +85,30 @@ Datasets
 
 .. autofunction:: shinobi.dataset_closure.resolve_dataset_closure
 
+.. autoclass:: shinobi.dataset_access.DatasetAccess
+
+.. autoclass:: shinobi.dataset_access.DatasetMode
+   :members:
+
+.. autoclass:: shinobi.dataset_access.DatasetFallback
+   :members:
+
+.. autoclass:: shinobi.dataset_access.DatasetTable
+   :members:
+
+.. autoclass:: shinobi.dataset_access.DatasetColumns
+
+.. autoclass:: shinobi.dataset_access.DatasetSelection
+
+.. autoclass:: shinobi.dataset_access.ResolvedDatasetAccess
+   :members:
+
+.. autoclass:: shinobi.dataset_access.RecipeAccessPlan
+
+.. autofunction:: shinobi.dataset_access.resolve_scope_dataset_accesses
+
+.. autofunction:: shinobi.dataset_access.plan_recipe_accesses
+
 .. autofunction:: shinobi.datasets.dataset_fields
 
 .. autofunction:: shinobi.datasets.dataset_declarations

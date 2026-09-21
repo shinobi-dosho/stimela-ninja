@@ -96,14 +96,74 @@ inspection is not an atomic snapshot: a consumer must provide a cooperative
 immutable or snapshot boundary and revalidate the observation before acting
 on it.
 
+Declarative task access
+-----------------------
+
+An atomic scope can state how a field is used with a serializable access
+contract.  The same declaration works for binary cabs and Python steps:
+
+.. code-block:: python
+
+   from shinobi import Cab, DatasetAccess, DatasetColumns, DatasetMode
+
+   flagger = Cab(
+       name="flag",
+       command="flag-tool",
+       inputs_model=Inputs,
+       outputs_model=Outputs,
+       dataset_accesses=[
+           DatasetAccess(
+               field="ms",
+               mode=DatasetMode.WRITE,
+               columns=DatasetColumns(read=("DATA",), write=("FLAG",)),
+           )
+       ],
+   )
+
+Modes are ``read``, ``write`` and ``create``.  A declaration targets ``MAIN``
+or one supported keyword-referenced MSv2 subtable and can record columns read,
+written, created or removed.  Column creation/removal requires
+``allow_schema_change=True``; row-count and keyword changes likewise require
+their explicit ``allow_row_count_change`` and ``allow_keyword_change`` flags.
+Selections are bounded data (half-open row ranges and finite standard ID
+sets), not TaQL or executable expressions.
+
+Resolution is explicit.  :func:`shinobi.dataset_access.plan_recipe_accesses`
+links each declaration to the canonical root and every physical resource in
+its :class:`~shinobi.dataset_closure.DatasetClosure`.  The serializable
+:class:`~shinobi.dataset_access.ResolvedDatasetAccess` contains paths and
+reasons only, never casacore handles.  Aliases therefore converge, a subtable
+and its parent MS share one association, and two MS roots which reference one
+external subtable conflict through that shared closure resource.
+
+Unknown columns and omitted access metadata conservatively mean the whole
+dataset.  The resolved record distinguishes ``unknown-columns``,
+``undeclared`` and ``unknown-path`` fallbacks.  A path which is not statically
+known must provide a ``reservation`` path envelope or planning refuses it.
+Column detail is currently validation and provenance only: it does **not**
+permit concurrent writers, even when they name different columns.  Read/read
+access may overlap; every write or create is ordered against all overlapping
+access.  Inferred edges carry inspectable reasons such as
+``write-after-read: observation.ms, MAIN.FLAG`` and never invent ``OutputRef``
+lineage.
+
+The first planner is deliberately bounded: dataset-bearing scatter and nested
+recipes are refused with a diagnostic rather than partially planned.  Flatten
+those steps (including bounded loop expansions) so every access has one
+declared graph node.
+
 Execution status
 ----------------
 
-Strict dataset annotations are currently a declaration and inspection API,
-not an execution-lifecycle contract.  A scope carrying one is refused before
-local or offloaded execution.  This guard is deliberate: accepting the field
-as a plain path would suggest that validation, staging, ownership, recovery,
-and provenance all enforce the structural contract when they do not yet.
+Strict dataset annotations and access contracts are currently declaration,
+inspection and planning APIs, not an execution-lifecycle contract.  A scope
+carrying either is refused before local execution or Slurm submission.  Dry-run,
+the planning API and pure Slurm compilation may resolve closures and show
+inferred order, but do not dispatch.  A dataset-bearing compiled workflow is
+marked planning-only and ``submit_slurm`` refuses it before creating logs or
+calling ``sbatch``.  This guard is deliberate: accepting the field as a plain
+path would suggest that validation, staging, ownership, recovery, and
+provenance all enforce the structural contract when they do not yet.
 
 Use ``Path`` or the legacy loader dtype ``MS`` for executable cabs until that
 lifecycle support ships.

@@ -98,6 +98,7 @@ def _scope_dataset_declarations(scope: Scope, prefix: str = "") -> list[str]:
     declarations = []
     for side, model in (("input", scope.inputs_model), ("output", scope.outputs_model)):
         declarations.extend(f"{prefix}{scope.name} {side} '{name}' ({declaration.profile})" for name, declaration in dataset_declarations(model).items())
+    declarations.extend(f"{prefix}{scope.name} access '{access.field}' ({access.mode.value} {access.table.value})" for access in scope.dataset_accesses)
     if isinstance(scope, Recipe):
         for ref in scope.steps:
             declarations.extend(_scope_dataset_declarations(ref.step, f"{prefix}{ref.name}/"))
@@ -1322,7 +1323,13 @@ def _run_recipe(
     exactly as it always did.
     """
     config = config or AppConfig.load()  # resolve once; workers never call load()
-    graph = build_graph(recipe)
+    # Access planning is a pre-dispatch operation over the same declared
+    # graph. Strict MSv2 execution is still refused by `_dispatch`; this
+    # shared path is ready for that lifecycle boundary without teaching the
+    # scheduler a second conflict model.
+    from shinobi.dataset_access import plan_recipe_accesses
+
+    graph = plan_recipe_accesses(recipe, prepared, workspace=Path.cwd(), validated_steps=leaf_inputs).graph if leaf_inputs is not None else build_graph(recipe)
     max_workers = recipe.max_workers or config.execution.max_workers
 
     # Built lazily, and only by the outermost recipe that needs one: nothing

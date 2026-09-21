@@ -481,6 +481,16 @@ one** writes it:
 Two steps that only *read* the same path are left parallel, which is the
 whole point of offloading them.
 
+The same planner understands :doc:`concepts/datasets` access contracts.  It
+compares canonical physical closure resources rather than only the spelling
+of the MS root, so an alias, a parent-versus-subtable spelling, or two roots
+sharing an external subtable are ordered consistently in local, dry-run and
+Slurm planning.  The compiled job records retain deterministic reasons such
+as ``write-after-read: observation.ms, MAIN.FLAG``.  Columns remain
+provenance detail: different columns do not authorize parallel writers yet.
+Strict dataset execution and submission remain refused until the lifecycle
+backend is available; this issue only makes their planning contract explicit.
+
 Because this works on **resolved values**, it does not care how each step
 spells the path. A step wiring the MS from a recipe input and a step naming
 the same file as a literal are recognised as touching one file, as are

@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_serializer
 from pydantic_core import PydanticUndefined
 
 from shinobi._annotations import walk_annotation
+from shinobi.dataset_access import DatasetAccess, validate_scope_dataset_accesses
 from shinobi.resources import Resources
 
 
@@ -663,6 +664,10 @@ class Scope(BaseModel):
     # shared between an input and a same-named output field, which is why
     # `implicit` on such a name also changes what `build_argv` passes in.
     field_meta: dict[str, ParamMeta] = Field(default_factory=dict)
+    # Declarative MSv2 access contracts, each tied to one input/output field.
+    # Resolution is an explicit planning operation; constructing a Scope
+    # performs validation only and never imports casacore or touches a path.
+    dataset_accesses: list[DatasetAccess] = Field(default_factory=list)
     # Step-level skip-if-unchanged caching (shinobi.cache), same precedence
     # shape as `backend`: explicit call-time `cache=`/`cache_dir=` kwarg >
     # this Scope's own value > the enclosing recipe's > `AppConfig.cache`'s
@@ -706,6 +711,11 @@ class Scope(BaseModel):
     # since a recipe is not a unit of execution and reserving for both it
     # and its leaves would double-count.
     resources: Resources | None = None
+
+    @model_validator(mode="after")
+    def _dataset_access_fields_exist(self) -> "Scope":
+        validate_scope_dataset_accesses(self)
+        return self
 
     @field_serializer("inputs_model", "outputs_model")
     def _serialize_param_model(self, model: type[BaseModel]) -> dict[str, Any]:
@@ -1261,6 +1271,12 @@ class Recipe(Scope):
     # detect. IMMUTABLE inputs (the default) are deep-copied per step and
     # are safe.
     max_workers: int | None = None
+
+    @model_validator(mode="after")
+    def _dataset_accesses_belong_on_leaves(self) -> "Recipe":
+        if self.dataset_accesses:
+            raise ValueError("recipe dataset access metadata must be attached to the atomic steps that touch the dataset")
+        return self
 
     @property
     def inputs(self) -> _InputsProxy:

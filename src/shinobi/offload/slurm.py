@@ -10,7 +10,8 @@ Two halves, deliberately split by testability:
 
 - `compile_slurm(...)` is **pure** -- recipe + inputs in, a `SlurmWorkflow`
   (scripts + declared dependencies) out. No cluster, no side effects; the
-  golden-testable core.
+  golden-testable core. MSv2 contracts may be resolved here, but mark the
+  result planning-only.
 - `submit_slurm(...)` shells out to `sbatch` and returns the job ids. It is
   **live-verified**: `tests/test_slurm_live.py` submits a dependency-chained
   workflow to a real `sbatch`/`sacct` on a disposable single-node cluster
@@ -57,7 +58,8 @@ from shinobi.backends.slurm_script import (
     safe_slurm_name,
     sbatch_resource_opts,
 )
-from shinobi.exceptions import BackendError
+from shinobi.dataset_access import ResolvedAccessPlanner, scope_tree_has_dataset_contract
+from shinobi.exceptions import BackendError, DatasetLifecycleUnavailableError
 from shinobi.graph import check_offloadable
 from shinobi.policies import build_argv
 from shinobi.steps.schema import (
@@ -68,7 +70,6 @@ from shinobi.steps.schema import (
     Scope,
     mutated_path_fields,
     path_accesses,
-    paths_overlap,
     unresolved_output_path_fields,
     write_path_fields,
 )
@@ -91,34 +92,26 @@ class SlurmJob:
     name: str
     script: str
     depends_on: list[str] = field(default_factory=list)
+    access_reasons: list[str] = field(default_factory=list)
 
 
 @dataclass
 class SlurmWorkflow:
-    """A recipe compiled to a set of dependent sbatch jobs, ready to submit.
+    """A recipe compiled to a set of dependent sbatch jobs.
 
     Attributes:
         recipe: Name of the source recipe.
         jobs: Compiled `SlurmJob`s, in topological order.
         log_dir: Directory where each job's `--output`/`--error` land;
             created by `submit_slurm`.
+        execution_blocked_reason: Why this planning-only workflow cannot be
+            submitted. Currently set for every MSv2 dataset contract.
     """
 
     recipe: str
     jobs: list[SlurmJob]  # in topological order
     log_dir: Path  # where each job's --output/--error land; created by submit
-
-
-@dataclass
-class _PathState:
-    """Who last wrote a path, and who has read it since. Exactly what is
-    needed to emit the *minimal* ordering edges rather than linking every
-    pair that touches it: a chain of four steps mutating one MS becomes
-    1->2->3->4, not all six pairwise edges.
-    """
-
-    last_writer: str | None = None
-    readers_since_write: list[str] = field(default_factory=list)
+    execution_blocked_reason: str | None = None
 
 
 class MutationOrder:
@@ -135,18 +128,17 @@ class MutationOrder:
     mutation order the recipe already relied on explicit.
 
     Ordering is emitted for a pair only when **at least one** of them writes
-    the shared path. ``path_accesses`` is the authority for that declaration:
-    a MUTABLE input, a same-named path input/output, a ``write_path``
-    destination or a statically resolvable path output. That breadth is the
-    point: `applycal` mutates the MS while `wsclean` merely reads it, so
-    restricting this to mutator-vs-mutator pairs would leave exactly the
-    caracal-shaped case racing. Two steps that only read the same path need
-    no ordering and get none.
+    the shared identity. The shared access planner combines ``path_accesses``
+    with resolved dataset-closure resources. That breadth is the point:
+    `applycal` mutates the MS while `wsclean` merely reads it, so restricting
+    this to mutator-vs-mutator pairs would leave exactly the caracal-shaped
+    case racing. Two steps that only read the same identity need no ordering
+    and get none.
     """
 
     def __init__(self, workspace: Path | None = None) -> None:
-        self._accesses: dict[Path, _PathState] = {}
-        self._workspace = workspace
+        self._planner = ResolvedAccessPlanner(workspace)
+        self.last_decision = None
 
     def order_after(self, name: str, cab: Scope, resolved: dict[str, Any]) -> set[str]:
         """Record `name`'s path accesses and return the already-seen steps
@@ -164,35 +156,8 @@ class MutationOrder:
         Returns:
             Names of previously-recorded steps this one must follow.
         """
-        required: set[str] = set()
-        for path, mutates in path_accesses(cab, resolved, workspace=self._workspace):
-            overlapping = [state for known, state in self._accesses.items() if paths_overlap(path, known)]
-            for state in overlapping:
-                if mutates and state.readers_since_write:
-                    # Write-after-read: follow everyone who read the current
-                    # contents, or this rewrites the file out from under a
-                    # reader that is still running. Those readers already
-                    # order after `last_writer` (that is how they were
-                    # recorded), so depending on them covers it transitively
-                    # -- naming the writer too would only add a redundant
-                    # edge to every job's `--dependency` list.
-                    required |= set(state.readers_since_write)
-                elif state.last_writer is not None:
-                    required.add(state.last_writer)
-
-            state = self._accesses.setdefault(path, _PathState())
-            if mutates:
-                # This step is now the last writer of `path` *and* of every
-                # overlapping path, so a later toucher of either orders
-                # after it. Reads recorded before the write are satisfied.
-                for s in [*overlapping, state]:
-                    s.last_writer = name
-                    s.readers_since_write = []
-            else:
-                state.readers_since_write.append(name)
-
-        required.discard(name)  # a step reading and mutating the same path
-        return required
+        self.last_decision = self._planner.order_after(name, cab, resolved)
+        return set(self.last_decision.dependencies)
 
 
 def _static_outputs(cab: Scope, resolved_inputs: dict[str, Any]) -> dict[str, Any]:
@@ -337,7 +302,8 @@ def compile_slurm(
     step inputs) don't validate, and `OffloadCompileError` if an inter-step
     path can't be resolved statically.
     """
-    graph = check_offloadable(recipe)  # raises RecipeNotOffloadableError / RecipeGraphError
+    planning_only = scope_tree_has_dataset_contract(recipe)
+    graph = check_offloadable(recipe, allow_dataset_planning=True)  # raises RecipeNotOffloadableError / RecipeGraphError
     workdir = workdir or os.getcwd()
     log_dir = Path(workdir) / ".shinobi" / safe_slurm_name(recipe.name, "recipe name", error=OffloadCompileError)
     sbatch_opts = sbatch_opts or {}
@@ -404,16 +370,21 @@ def compile_slurm(
         # topological walk, so every inferred edge points at a submitted job.
         mutation_deps = mutation_order.order_after(name, cab, resolved)
         depends_on = sorted({graph.names[d] for d in graph.deps[i]} | mutation_deps, key=lambda dep: order_rank[step_index[dep]])
+        access_reasons = [
+            reason for parent in depends_on for reason in ((mutation_order.last_decision.reasons.get(parent, ())) if mutation_order.last_decision is not None else ())
+        ]
         jobs.append(
             SlurmJob(
                 name=name,
                 script=_script(cab, name, argv, workdir, sbatch_opts, log_dir, skip_if_exists=skip_if_exists),
                 depends_on=depends_on,
+                access_reasons=access_reasons,
             )
         )
         resolved_outputs[name] = own_outputs
 
-    return SlurmWorkflow(recipe=recipe.name, jobs=jobs, log_dir=log_dir)
+    blocked = "MSv2 dataset contracts are planning-only until lifecycle enforcement is available" if planning_only else None
+    return SlurmWorkflow(recipe=recipe.name, jobs=jobs, log_dir=log_dir, execution_blocked_reason=blocked)
 
 
 def submit_slurm(workflow: SlurmWorkflow, *, workdir: str | None = None) -> dict[str, str]:
@@ -424,6 +395,8 @@ def submit_slurm(workflow: SlurmWorkflow, *, workdir: str | None = None) -> dict
     Live-verified against a real cluster by `tests/test_slurm_live.py`
     (see module docstring).
     """
+    if workflow.execution_blocked_reason is not None:
+        raise DatasetLifecycleUnavailableError(workflow.execution_blocked_reason)
     workdir = workdir or os.getcwd()
     # The compiled scripts write stdout/stderr into log_dir; Slurm fails a
     # job outright if it can't open those files, so the directory must exist
@@ -681,7 +654,13 @@ def prepare_worker_slurm(
         for path, writes in path_accesses(scope, known, workspace=Path(pinned.workspace)):
             workflow_accesses[path] = workflow_accesses.get(path, False) or writes
         mutation_deps = mutation.order_after(frozen.name, scope, known)
+        if mutation.last_decision is not None:
+            from shinobi.dataset_access import dataset_workspace_accesses
+
+            for path, writes in dataset_workspace_accesses(mutation.last_decision.datasets):
+                workflow_accesses[path] = workflow_accesses.get(path, False) or writes
         depends_on = sorted({graph.names[item] for item in graph.deps[index]} | mutation_deps, key=lambda name: order_rank[step_index[name]])
+        access_reasons = [reason for parent in depends_on for reason in ((mutation.last_decision.reasons.get(parent, ())) if mutation.last_decision is not None else ())]
         argv = [
             "env",
             f"PYTHONPATH={worker.source}",
@@ -705,7 +684,7 @@ def prepare_worker_slurm(
             argv=argv,
             error=OffloadCompileError,
         )
-        jobs.append(SlurmJob(name=frozen.name, script=script, depends_on=depends_on))
+        jobs.append(SlurmJob(name=frozen.name, script=script, depends_on=depends_on, access_reasons=access_reasons))
         resolved_outputs[frozen.name] = _static_outputs(scope, known)
 
     ownership_required = scope_declares_writes(recipe)

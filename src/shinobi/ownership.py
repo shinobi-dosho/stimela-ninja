@@ -33,7 +33,9 @@ def scope_declares_writes(scope: Scope) -> bool:
     """Whether a scope can write any statically declared filesystem path."""
     if isinstance(scope, Recipe):
         return any(scope_declares_writes(step.step) for step in scope.steps)
-    return declares_path_writes(scope)
+    from shinobi.dataset_access import DatasetMode
+
+    return declares_path_writes(scope) or any(access.mode is not DatasetMode.READ for access in scope.dataset_accesses)
 
 
 def _workspace(path: Path) -> Path:
@@ -170,6 +172,10 @@ def scope_path_accesses(scope: Scope, values: dict[str, Any] | BaseModel, *, wor
     step_inputs: dict[int, tuple[BaseModel, bool]] = {}
     for leaf, known in _resolved_leaf_inputs(scope, values, step_inputs=step_inputs):
         for path, writes in path_accesses(leaf, known, workspace=workspace):
+            collected[path] = collected.get(path, False) or writes
+        from shinobi.dataset_access import dataset_workspace_accesses, resolve_scope_dataset_accesses
+
+        for path, writes in dataset_workspace_accesses(resolve_scope_dataset_accesses(leaf, known, workspace=workspace)):
             collected[path] = collected.get(path, False) or writes
     return list(collected.items()), step_inputs
 

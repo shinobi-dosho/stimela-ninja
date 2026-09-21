@@ -598,8 +598,8 @@ def run(
         if dryrun:
             if isinstance(scope, Recipe):
                 try:
-                    click.echo(render_dag(graph_nodes(scope)))
-                except RecipeGraphError as exc:
+                    click.echo(render_dag(graph_nodes(scope, call_kwargs, workspace=Path.cwd())))
+                except (RecipeGraphError, ValueError) as exc:
                     raise click.ClickException(str(exc)) from None
             else:
                 prepared = _prepare_inputs(scope, {**call_kwargs})
@@ -1132,13 +1132,20 @@ def compile_recipe(
             raise click.ClickException(str(exc)) from None
 
         if not submit:
+            if workflow.execution_blocked_reason is not None:
+                click.echo(f"# planning only: {workflow.execution_blocked_reason}")
             for job in workflow.jobs:
                 dep = f"  (afterok: {', '.join(job.depends_on)})" if job.depends_on else ""
                 click.echo(f"# ===== {job.name}{dep} =====")
+                for reason in job.access_reasons:
+                    click.echo(f"# access: {reason}")
                 click.echo(job.script)
             return
 
-        job_ids = submit_slurm(workflow, workdir=workdir)
+        try:
+            job_ids = submit_slurm(workflow, workdir=workdir)
+        except ShinobiError as exc:
+            raise click.ClickException(str(exc)) from None
         handle = _handle_path(workdir, workflow.recipe)
         handle.parent.mkdir(parents=True, exist_ok=True)
         handle.write_text(json.dumps({"engine": engine, "recipe": workflow.recipe, "jobs": job_ids}, indent=2))
