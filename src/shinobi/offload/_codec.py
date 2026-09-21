@@ -15,9 +15,11 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 import annotated_types
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, Strict, create_model, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, Strict, WithJsonSchema, create_model, model_validator
 from pydantic_core import PydanticUndefined
 
+from shinobi.dataset_access import DatasetAccess
+from shinobi.datasets import DatasetType
 from shinobi.steps.schema import Mutability, ParamMeta
 
 
@@ -43,6 +45,8 @@ def pack(value: Any) -> JsonValue:
         return ["param_meta", pack(value.model_dump(mode="python"))]
     if type(value) is Mutability:
         return ["mutability", value.value]
+    if type(value) is DatasetAccess:
+        return ["dataset_access", value.model_dump(mode="json")]
     if isinstance(value, BaseModel):
         return ["dict", pack_model(value)]
     if type(value) in (list, tuple):
@@ -65,6 +69,8 @@ def unpack(value: JsonValue) -> Any:
         return ParamMeta.model_validate(unpack(data))
     if kind == "mutability" and isinstance(data, str):
         return Mutability(data)
+    if kind == "dataset_access" and isinstance(data, dict):
+        return DatasetAccess.model_validate(data)
     if kind in ("list", "tuple") and isinstance(data, list):
         items = [unpack(v) for v in data]
         return tuple(items) if kind == "tuple" else items
@@ -146,11 +152,19 @@ class Constraint(WireModel):
 
     @classmethod
     def capture(cls, value: Any) -> Constraint:
+        if type(value) is DatasetType:
+            return cls(name="DatasetType", attributes={"kind": pack(value.kind.value), "profile": pack(value.profile)})
+        if type(value) is WithJsonSchema:
+            return cls(name="WithJsonSchema", attributes={"json_schema": pack(value.json_schema), "mode": pack(value.mode)})
         if type(value) not in _CONSTRAINTS.values():
             raise BundleError(f"unsupported field constraint {type(value).__name__}")
         return cls(name=type(value).__name__, attributes={k: pack(v) for k, v in dataclasses.asdict(value).items()})
 
     def restore(self) -> Any:
+        if self.name == "DatasetType":
+            return DatasetType(kind=unpack(self.attributes["kind"]), profile=unpack(self.attributes["profile"]))
+        if self.name == "WithJsonSchema":
+            return WithJsonSchema(json_schema=unpack(self.attributes["json_schema"]), mode=unpack(self.attributes["mode"]))
         constructor = _CONSTRAINTS.get(self.name)
         if constructor is None:
             raise BundleError(f"unknown field constraint {self.name!r}")

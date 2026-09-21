@@ -30,10 +30,25 @@ from shinobi.steps.schema import (
     path_fields,
 )
 from shinobi.datasets import CasaTable, MeasurementSetV2
+from shinobi.dataset_access import (
+    DatasetAccess,
+    DatasetColumns,
+    DatasetFallback,
+    DatasetMode,
+    DatasetSelection,
+    DatasetTable,
+    ResolvedDatasetAccess,
+)
 
 __all__ = [
     "Cab",
     "CasaTable",
+    "DatasetAccess",
+    "DatasetColumns",
+    "DatasetFallback",
+    "DatasetMode",
+    "DatasetSelection",
+    "DatasetTable",
     "ExecContext",
     "InputRef",
     "LoopIteration",
@@ -46,6 +61,7 @@ __all__ = [
     "ParamSegment",
     "Policies",
     "Recipe",
+    "ResolvedDatasetAccess",
     "ScatterSpec",
     "Scope",
     "StepRef",

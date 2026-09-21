@@ -80,6 +80,7 @@ from pydantic.fields import FieldInfo
 
 from shinobi.backends._stream import TeardownIncomplete, display_label, run_streaming
 from shinobi.config import AppConfig
+from shinobi.dataset_access import DatasetAccess
 from shinobi.exceptions import CabRunError
 from shinobi.loaders._modelgen import narrow_choices
 from shinobi.results import StepResult, explain_returncode
@@ -853,6 +854,7 @@ def pystep(
     sandbox: bool | None = None,
     harvest: list[str] | None = None,
     write_paths: Sequence[str] | None = None,
+    dataset_accesses: Sequence[DatasetAccess] | None = None,
     **params: Any,
 ) -> Callable[[Callable], StepRef]:
     """Decorate (or directly call on an existing function, matching
@@ -889,6 +891,10 @@ def pystep(
     a named parameter has its stale product cleared before a re-run
     (`sandbox.clear_stale_outputs`); everything else is treated as the
     caller's data and left alone.
+
+    `dataset_accesses` attaches the same serializable MSv2 access contracts a
+    binary `Cab` carries on `Scope`; it does not inspect a path while the
+    function is decorated.
 
     `**params` are per-call constants, same as `@shinobi.step`.
     """
@@ -940,6 +946,7 @@ def pystep(
             sandbox=sandbox,
             harvest=harvest or [],
             field_meta=dict(input_meta),
+            dataset_accesses=list(dataset_accesses or ()),
         )
         return StepRef(name=step_name, step=scope, func=adapter, params=params)
 

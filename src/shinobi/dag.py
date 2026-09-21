@@ -14,6 +14,8 @@ still render in declaration order rather than as a meaningless flat list.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -42,9 +44,10 @@ class TraceStep:
     # running, rather than inferring it from timings afterwards, is the
     # whole point of the dry run.
     resources: str = ""
+    access_reasons: tuple[str, ...] = ()
 
 
-def graph_nodes(recipe: "Recipe") -> list[TraceStep]:
+def graph_nodes(recipe: "Recipe", inputs: dict[str, Any] | None = None, *, workspace: Path | None = None) -> list[TraceStep]:
     """Build the display graph from a Recipe's validated dependency graph.
 
     Uses the shared `build_graph` (so a cyclic/mis-wired recipe raises here
@@ -52,16 +55,31 @@ def graph_nodes(recipe: "Recipe") -> list[TraceStep]:
     edge: a step with no real output-dependency is chained after the
     immediately preceding step so ordering stays visible.
     """
+    from shinobi.dataset_access import plan_recipe_accesses
     from shinobi.graph import build_graph
 
-    graph = build_graph(recipe)
+    plan = plan_recipe_accesses(recipe, inputs, workspace=workspace) if inputs is not None else None
+    graph = plan.graph if plan is not None else build_graph(recipe)
     nodes: list[TraceStep] = []
     for i, name in enumerate(graph.names):
         depends_on = set(graph.deps[i])
         if not depends_on and nodes:
             depends_on = {nodes[-1].id}
         declared = recipe.steps[i].step.resources
-        nodes.append(TraceStep(id=i, name=name, depends_on=depends_on, resources=declared.describe() if declared else ""))
+        access_reasons = ()
+        if plan is not None:
+            access_reasons = tuple(
+                reason for parent in sorted((graph.names[item] for item in graph.deps[i]), key=graph.names.index) for reason in plan.reasons.get((name, parent), ())
+            )
+        nodes.append(
+            TraceStep(
+                id=i,
+                name=name,
+                depends_on=depends_on,
+                resources=declared.describe() if declared else "",
+                access_reasons=access_reasons,
+            )
+        )
     return nodes
 
 
@@ -82,7 +100,8 @@ def _box(step: TraceStep) -> str:
     """A step's box. A declared footprint rides along in the label, since it
     is what decides whether two boxes on the same row actually run at the
     same time."""
-    return f"[ {step.name} ]" if not step.resources else f"[ {step.name} ({step.resources}) ]"
+    details = [item for item in (step.resources, *step.access_reasons) if item]
+    return f"[ {step.name} ]" if not details else f"[ {step.name} ({'; '.join(details)}) ]"
 
 
 def _row_layout(batch: list[TraceStep], gap: int = 3) -> tuple[str, list[int]]:
