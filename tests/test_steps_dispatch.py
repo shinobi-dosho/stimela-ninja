@@ -288,6 +288,33 @@ def test_wrangled_and_prepared_values_still_take_priority_over_implicit():
     assert result.outputs.image == "explicit.fits"
 
 
+def test_wrangled_value_suppresses_unused_invalid_implicit_template():
+    from shinobi.steps.schema import ParamMeta
+
+    class In(BaseModel):
+        pass
+
+    class Out(BaseModel):
+        image: str
+
+    class FixedBackend:
+        def run(self, cab, argv, inputs, **kwargs):
+            return BackendRun(0, "image=actual.fits\n", "")
+
+    register_step_backend("wrangler-before-implicit", FixedBackend())
+    cab = Cab(
+        name="tool",
+        command="tool",
+        inputs_model=In,
+        outputs_model=Out,
+        backend="wrangler-before-implicit",
+        wranglers={r"image=(?P<image>\S+)": ["PARSE_OUTPUT:image:str"]},
+        field_meta={"image": ParamMeta(implicit="{missing}-fallback.fits")},
+    )
+    result = _dispatch(cab, None)
+    assert result.outputs.image == "actual.fits"
+
+
 # -- standalone StepRef call --
 
 

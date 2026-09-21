@@ -73,6 +73,7 @@ class ExecutionPlan(WireModel):
     ownership_workspace: str | None = None
     ownership_registry: str | None = None
     accesses: tuple[WorkspaceAccess, ...] = ()
+    execution_blocked_reason: str | None = None
 
     def attempt(self, step_path: str) -> PlannedAttempt:
         try:
@@ -191,6 +192,8 @@ def _verify_tool_environment(frozen) -> None:
 
 def _load(submission_dir: Path) -> tuple[Submission, RecipeBundle, ExecutionPlan]:
     submission, bundle, plan = _load_identity(submission_dir)
+    if plan.execution_blocked_reason is not None:
+        raise BundleError(plan.execution_blocked_reason)
     _verify_environment(bundle, plan)
     return submission, bundle, plan
 

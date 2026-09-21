@@ -490,6 +490,11 @@ as ``write-after-read: observation.ms, MAIN.FLAG``.  Columns remain
 provenance detail: different columns do not authorize parallel writers yet.
 Strict dataset execution and submission remain refused until the lifecycle
 backend is available; this issue only makes their planning contract explicit.
+Legacy compilation and worker-bundle preparation carry a planning-only marker,
+and both submission paths check it before scheduler, log or ownership side
+effects.  A planned ``create`` root can feed downstream readers without being
+materialized during compilation, while an existing ``create`` target is
+refused rather than treated as an implicit replacement.
 
 Because this works on **resolved values**, it does not care how each step
 spells the path. A step wiring the MS from a recipe input and a step naming

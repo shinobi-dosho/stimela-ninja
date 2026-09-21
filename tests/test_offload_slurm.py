@@ -331,11 +331,9 @@ class ImageOut(BaseModel):
     image: Path | None = None
 
 
-def test_per_cycle_output_naming_is_rejected_not_silently_wrong():
-    """A body naming outputs per cycle (`index_input` feeding an `implicit`
-    template) cannot be resolved statically, so it is rejected with the
-    existing clear error rather than compiled into a path that no job writes.
-    This is why a skipped job never has to materialise anything.
+def test_per_cycle_implicit_output_naming_resolves_statically():
+    """The shared static-output resolver sees each unrolled index value, so
+    downstream jobs consume the exact per-cycle implicit output path.
     """
     work = Cab(name="work", command="wk", inputs_model=MakeIn, outputs_model=MSOut)
     image = Cab(
@@ -378,8 +376,10 @@ def test_per_cycle_output_naming_is_rejected_not_silently_wrong():
     )
     recipe.add_step("pub", Cab(name="pub", command="pb", inputs_model=ImageOut, outputs_model=OkOut), image=OutputRef(step="sc.3.image", field="image"))
 
-    with pytest.raises(OffloadCompileError, match="isn't statically known"):
-        compile_slurm(recipe, {"ms": "/scratch/x.ms"}, workdir="/work", container_runtime=None)
+    workflow = compile_slurm(recipe, {"ms": "/scratch/x.ms"}, workdir="/work", container_runtime=None)
+    publish = next(job for job in workflow.jobs if job.name == "pub")
+    assert "pb --image /scratch/img-cycle3.fits" in publish.script
+    assert publish.depends_on == ["sc.3.image"]
 
 
 def test_index_input_varies_per_iteration_locally():

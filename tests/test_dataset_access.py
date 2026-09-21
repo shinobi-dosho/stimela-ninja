@@ -1,7 +1,9 @@
+import sys
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 import shinobi.dataset_access as access_module
 from shinobi import (
@@ -12,15 +14,20 @@ from shinobi import (
     DatasetSelection,
     DatasetTable,
     MeasurementSetV2,
+    ResolvedDatasetAccess,
 )
+from shinobi.config import AppConfig
 from shinobi.dataset_access import DatasetAccessError, ResolvedAccessPlanner, plan_recipe_accesses, resolve_scope_dataset_accesses
 from shinobi.dataset_closure import ClosureCapabilities, ClosureRequirement, ClosureResource, ClosureStatus, DatasetClosure
 from shinobi.dag import graph_nodes, render_dag
 from shinobi.exceptions import DatasetLifecycleUnavailableError
 from shinobi.graph import RecipeNotOffloadableError, check_offloadable
-from shinobi.offload.slurm import MutationOrder, compile_slurm, submit_slurm
+from shinobi.offload.bundle import freeze_recipe
+from shinobi.offload.slurm import MutationOrder, compile_slurm, prepare_worker_slurm, submit_slurm, submit_worker_slurm
+from shinobi.offload.worker import ExecutionPlan
+from shinobi.ownership import WorkspaceOwnershipError, acquire_workspace, scope_path_accesses, scope_requires_ownership
 from shinobi.steps.pyfunc import pystep
-from shinobi.steps.schema import Cab, InputRef, Recipe, ScatterSpec, Scope, StepRef
+from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, ParamMeta, Recipe, ScatterSpec, Scope, StepRef
 
 
 class MSIn(BaseModel):
@@ -123,8 +130,6 @@ def test_hazards_and_read_read_are_deterministic(monkeypatch, tmp_path):
 
     reader = _scope("reader", DatasetMode.READ, columns=DatasetColumns(read=("FLAG",)))
     writer = _scope("writer", DatasetMode.WRITE, columns=DatasetColumns(write=("FLAG",)))
-    creator = _scope("creator", DatasetMode.CREATE, columns=DatasetColumns(write=("FLAG",)))
-
     order = ResolvedAccessPlanner(tmp_path)
     assert not order.order_after("read-1", reader, {"ms": ms}).dependencies
     assert not order.order_after("read-2", reader, {"ms": ms}).dependencies
@@ -134,15 +139,36 @@ def test_hazards_and_read_read_are_deterministic(monkeypatch, tmp_path):
     read = order.order_after("read-3", reader, {"ms": ms})
     assert read.dependencies == {"write"}
     assert read.reasons["write"] == ("read-after-write: observation.ms, MAIN.FLAG",)
-    create = order.order_after("create", creator, {"ms": ms})
-    assert create.dependencies == {"read-3"}
-    assert create.reasons["read-3"] == ("write-after-read: observation.ms, MAIN.FLAG",)
-
     writes = ResolvedAccessPlanner(tmp_path)
     assert not writes.order_after("write-1", writer, {"ms": ms}).dependencies
     second = writes.order_after("write-2", writer, {"ms": ms})
     assert second.dependencies == {"write-1"}
     assert second.reasons["write-1"] == ("write-after-write: observation.ms, MAIN.FLAG",)
+
+
+@pytest.mark.parametrize("kind", ["same-output", "mutable", "write-path"])
+def test_read_contract_cannot_hide_schema_declared_writes(kind, monkeypatch, tmp_path):
+    ms = tmp_path / "observation.ms"
+    ms.mkdir()
+    monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda root, **kwargs: _closure(Path(root), tmp_path))
+    kwargs = {}
+    outputs = Empty
+    if kind == "same-output":
+        outputs = MSIn
+    elif kind == "mutable":
+        kwargs["input_mutability"] = {"ms": Mutability.MUTABLE}
+    else:
+        kwargs["field_meta"] = {"ms": ParamMeta(write_path=True)}
+    scope = Scope(
+        name=kind,
+        inputs_model=MSIn,
+        outputs_model=outputs,
+        dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("DATA",)))],
+        **kwargs,
+    )
+
+    with pytest.raises(DatasetAccessError, match="schema also declares a filesystem write"):
+        ResolvedAccessPlanner(tmp_path).order_after(kind, scope, {"ms": ms})
 
 
 def test_alias_parent_subtable_and_shared_external_resource_conflict(monkeypatch, tmp_path):
@@ -195,6 +221,68 @@ def test_unknown_columns_fall_back_and_unknown_path_needs_reservation(monkeypatc
     assert not result[0].path_known
     assert result[0].fallback is DatasetFallback.UNKNOWN_PATH
     assert result[0].resources == ((tmp_path / "reserved").resolve(),)
+
+
+def test_resolved_access_rejects_cross_field_inconsistency(tmp_path):
+    root = (tmp_path / "observation.ms").resolve()
+    declaration = DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("DATA",)))
+    valid = {
+        "field": "ms",
+        "declaration": declaration,
+        "requested_path": root,
+        "root": root,
+        "resources": (root,),
+        "mode": "read",
+        "whole_dataset": False,
+        "path_known": True,
+        "columns_known": True,
+        "closure_status": "valid",
+        "reason": "read observation.ms, MAIN.DATA",
+    }
+    assert ResolvedDatasetAccess.model_validate(valid).resources == (root,)
+    for update, message in (
+        ({"mode": "write"}, "field/mode"),
+        ({"resources": ()}, "at least one resource"),
+        ({"resources": ((tmp_path / "other").resolve(),)}, "root must be one"),
+        ({"path_known": False}, "unknown dataset path"),
+        ({"columns_known": False}, "columns_known"),
+        ({"whole_dataset": True}, "fallback reason"),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            ResolvedDatasetAccess.model_validate({**valid, **update})
+
+
+def test_dataset_access_fields_must_be_direct_paths():
+    class Nested(BaseModel):
+        value: Path
+
+    class Invalid(BaseModel):
+        integer: int
+        nested: Nested
+        paths: list[Path]
+        mixed: Path | int
+        ms: Path
+
+    for field in ("integer", "nested", "paths", "mixed"):
+        with pytest.raises(ValidationError, match="direct Path or MS-compatible"):
+            Scope(name="invalid", inputs_model=Invalid, outputs_model=Empty, dataset_accesses=[DatasetAccess(field=field, mode="read")])
+    with pytest.raises(ValidationError, match="root_field.*direct Path"):
+        Scope(
+            name="invalid-root",
+            inputs_model=Invalid,
+            outputs_model=Empty,
+            dataset_accesses=[DatasetAccess(field="ms", root_field="integer", table="ANTENNA", mode="read")],
+        )
+    assert Scope(name="valid", inputs_model=MSIn, outputs_model=Empty, dataset_accesses=[DatasetAccess(field="ms", mode="read")])
+    with pytest.raises(DatasetAccessError, match="path-compatible"):
+        resolve_scope_dataset_accesses(_scope("bad-value", DatasetMode.READ), {"ms": 7}, workspace=Path.cwd())
+
+
+def test_create_refuses_an_existing_target(tmp_path):
+    existing = tmp_path / "existing.ms"
+    existing.mkdir()
+    with pytest.raises(DatasetAccessError, match="already exists.*replacement requires"):
+        resolve_scope_dataset_accesses(_scope("create", DatasetMode.CREATE), {"ms": existing}, workspace=tmp_path)
 
 
 def test_dataset_scatter_and_nested_recipe_are_bounded_refusals(tmp_path):
@@ -261,6 +349,197 @@ def test_recipe_plan_adds_no_lineage_and_renders_reason(monkeypatch, tmp_path):
     assert not offload.order_after("read", recipe.steps[0].step, {"ms": ms})
     assert offload.order_after("write", recipe.steps[1].step, {"ms": ms}) == {"read"}
     assert offload.last_decision.reasons["read"] == plan.reasons[("write", "read")]
+
+
+def test_reusable_validated_step_snapshots_are_authoritative(tmp_path):
+    shared = tmp_path / "normalized.ms"
+
+    class RootPaths(BaseModel):
+        left: Path
+        right: Path
+
+    class NormalizedPath(BaseModel):
+        target: ClassVar[Path] = shared
+        path: Path
+
+        @field_validator("path")
+        @classmethod
+        def normalize(cls, _value):
+            return cls.target
+
+    writer = Scope(name="writer", inputs_model=NormalizedPath, outputs_model=NormalizedPath)
+    recipe = Recipe(
+        name="normalized",
+        inputs_model=RootPaths,
+        outputs_model=Empty,
+        steps=[
+            StepRef(name="left", step=writer, wiring={"path": InputRef(field="left")}),
+            StepRef(name="right", step=writer, wiring={"path": InputRef(field="right")}),
+        ],
+    )
+    raw = {"left": tmp_path / "raw-left.ms", "right": tmp_path / "raw-right.ms"}
+    validated = RootPaths(**raw)
+    _accesses, snapshots = scope_path_accesses(recipe, validated, workspace=tmp_path)
+
+    local = plan_recipe_accesses(recipe, raw, workspace=tmp_path, validated_inputs=validated, validated_steps=snapshots)
+    dryrun = plan_recipe_accesses(recipe, raw, workspace=tmp_path)
+    assert local.graph.deps == dryrun.graph.deps == [set(), {0}]
+    assert local.reasons == dryrun.reasons
+
+
+def test_prevalidated_recipe_inputs_are_not_validated_twice(tmp_path):
+    calls = 0
+
+    def target_factory():
+        nonlocal calls
+        calls += 1
+        return tmp_path / "generated.ms"
+
+    class GeneratedRoot(BaseModel):
+        target: Path = Field(default_factory=target_factory)
+
+    class OnePath(BaseModel):
+        target: Path
+
+    reader = Scope(name="reader", inputs_model=OnePath, outputs_model=Empty)
+    recipe = Recipe(
+        name="single-validation",
+        inputs_model=GeneratedRoot,
+        outputs_model=Empty,
+        steps=[StepRef(name="read", step=reader, wiring={"target": InputRef(field="target")})],
+    )
+    validated = GeneratedRoot()
+    _accesses, snapshots = scope_path_accesses(recipe, validated, workspace=tmp_path)
+    plan_recipe_accesses(recipe, validated, workspace=tmp_path, validated_inputs=validated, validated_steps=snapshots)
+    assert calls == 1
+
+
+def test_unresolved_output_ref_does_not_fall_back_to_consumer_default(tmp_path):
+    class ProducedPath(BaseModel):
+        ms: Path
+
+    class DefaultMS(BaseModel):
+        ms: MeasurementSetV2 = Path("wrong-default.ms")
+
+    producer = Scope(name="producer", inputs_model=Empty, outputs_model=ProducedPath)
+
+    def recipe_with(reservation: Path | None):
+        consumer = Scope(
+            name="consumer",
+            inputs_model=DefaultMS,
+            outputs_model=Empty,
+            dataset_accesses=[DatasetAccess(field="ms", mode="read", reservation=reservation)],
+        )
+        return Recipe(
+            name="dynamic",
+            inputs_model=Empty,
+            outputs_model=Empty,
+            steps=[
+                StepRef(name="produce", step=producer),
+                StepRef(name="consume", step=consumer, wiring={"ms": OutputRef(step="produce", field="ms")}),
+            ],
+        )
+
+    reservation = tmp_path / "reserved.ms"
+    plan = plan_recipe_accesses(recipe_with(reservation), {}, workspace=tmp_path)
+    access = plan.accesses["consume"][0]
+    assert not access.path_known
+    assert access.resources == (reservation.resolve(),)
+    assert access.requested_path is None
+    with pytest.raises(DatasetAccessError, match="unknown path and no reservation"):
+        plan_recipe_accesses(recipe_with(None), {}, workspace=tmp_path)
+
+
+def _create_then_read_recipe() -> Recipe:
+    class Target(BaseModel):
+        target: Path
+
+    class CreatedMS(BaseModel):
+        ms: MeasurementSetV2
+
+    creator = Cab(
+        name="creator",
+        command="create-ms",
+        inputs_model=Target,
+        outputs_model=CreatedMS,
+        field_meta={"ms": ParamMeta(implicit="{target}")},
+        dataset_accesses=[DatasetAccess(field="ms", mode="create", columns=DatasetColumns(create=("DATA",)), allow_schema_change=True)],
+    )
+    reader = Cab(
+        name="reader",
+        command="read-ms",
+        inputs_model=MSIn,
+        outputs_model=Empty,
+        dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("DATA",)))],
+    )
+    return Recipe(
+        name="create-read",
+        inputs_model=Target,
+        outputs_model=Empty,
+        steps=[
+            StepRef(name="create", step=creator, wiring={"target": InputRef(field="target")}),
+            StepRef(name="read", step=reader, wiring={"ms": OutputRef(step="create", field="ms")}),
+        ],
+    )
+
+
+def test_planned_create_identity_flows_to_reader_and_all_planners(monkeypatch, tmp_path):
+    target = tmp_path / "future.ms"
+    recipe = _create_then_read_recipe()
+    monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda *args, **kwargs: pytest.fail("planned dataset was inspected before creation"))
+
+    plan = plan_recipe_accesses(recipe, {"target": target}, workspace=tmp_path)
+    read = plan.accesses["read"][0]
+    assert read.root == target.resolve()
+    assert read.resources == (target.resolve(),)
+    assert read.closure_status is None
+    assert plan.reasons[("read", "create")] == ("read-after-write: future.ms, MAIN.DATA",)
+    assert "read-after-write: future.ms, MAIN.DATA" in render_dag(graph_nodes(recipe, {"target": target}, workspace=tmp_path))
+
+    legacy = compile_slurm(recipe, {"target": target}, workdir=str(tmp_path), container_runtime=None)
+    assert legacy.jobs[1].depends_on == ["create"]
+    assert legacy.jobs[1].access_reasons == ["read-after-write: future.ms, MAIN.DATA"]
+
+
+def test_worker_dataset_planning_is_marked_blocked_before_submission(monkeypatch, tmp_path):
+    target = tmp_path / "future.ms"
+    recipe = _create_then_read_recipe()
+    monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda *args, **kwargs: pytest.fail("planned dataset was inspected before creation"))
+    bundle = freeze_recipe(recipe, {"target": target}, config=AppConfig(), workspace=tmp_path)
+    assert bundle.execution_blocked_reason is not None
+    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+    assert workflow.execution_blocked_reason == bundle.execution_blocked_reason
+    assert workflow.jobs[1].depends_on == ["create"]
+    assert workflow.jobs[1].access_reasons == ["read-after-write: future.ms, MAIN.DATA"]
+    execution = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    assert execution.execution_blocked_reason == bundle.execution_blocked_reason
+
+    with pytest.raises(DatasetLifecycleUnavailableError, match="planning-only"):
+        submit_worker_slurm(workflow)
+    assert not (workflow.submission_dir / "logs").exists()
+    assert not (workflow.submission_dir / "submission-claim.json").exists()
+
+
+def test_read_only_dataset_plan_registers_claim_that_excludes_writer(monkeypatch, tmp_path):
+    ms = tmp_path / "observation.ms"
+    ms.mkdir()
+    monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda root, **kwargs: _closure(Path(root), tmp_path))
+    reader = _scope("reader", DatasetMode.READ, columns=DatasetColumns(read=("DATA",)))
+    assert scope_requires_ownership(reader)
+    accesses, _snapshots = scope_path_accesses(reader, {"ms": ms}, workspace=tmp_path)
+    assert accesses and all(not writes for _path, writes in accesses)
+
+    reader_root = tmp_path / "reader-workspace"
+    writer_root = tmp_path / "writer-workspace"
+    reader_root.mkdir()
+    writer_root.mkdir()
+    registry = tmp_path / "registry.json"
+    lease = acquire_workspace(reader_root, "reader", kind="local", accesses=accesses, registry=registry)
+    try:
+        with pytest.raises(WorkspaceOwnershipError, match="conflicts"):
+            acquire_workspace(writer_root, "writer", kind="slurm", accesses=[(ms, True)], registry=registry)
+    finally:
+        lease.release()
 
 
 def test_slurm_compilation_uses_same_plan_but_submission_stays_refused(monkeypatch, tmp_path):

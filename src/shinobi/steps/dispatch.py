@@ -495,6 +495,7 @@ class ExecContext:
                 budget=self._budget,
                 run_id=self._run_id,
                 leaf_inputs=self._leaf_inputs,
+                validated_inputs=validated,
             )
         else:
             raise TypeError(
@@ -624,9 +625,9 @@ def _dispatch(
     config = _config or AppConfig.load()
     run_id = _run_id or new_run_id()
     if _cache_path is None and not _workspace_claimed:
-        from shinobi.ownership import acquire_workspace, ownership_workspace, scope_declares_writes, scope_path_accesses
+        from shinobi.ownership import acquire_workspace, ownership_workspace, scope_declares_writes, scope_path_accesses, scope_requires_ownership
 
-        if scope_declares_writes(scope):
+        if scope_requires_ownership(scope):
             # Ownership must see exactly the values execution will see,
             # including defaults and default factories. Validate once and
             # thread that instance into ExecContext: validating separately
@@ -637,9 +638,11 @@ def _dispatch(
             writes = [path for path, writes in accesses if writes]
             if writes:
                 workspace = ownership_workspace(launch_workspace, writes)
-            else:
+            elif scope_declares_writes(scope):
                 workspace = launch_workspace.resolve()
                 accesses.append((workspace, True))
+            else:
+                workspace = launch_workspace.resolve()
             lease = acquire_workspace(
                 workspace,
                 run_id,
@@ -916,30 +919,32 @@ def _fill_outputs(cab: Cab, prepared: dict[str, Any], run, wrangled: dict[str, A
     derives its output path from the `prefix` input. A plain string with
     no placeholders is used as-is, same as an input field's `implicit`.
     """
+    from shinobi.steps.schema import StaticOutputResolutionError, static_output_values
+
     reserved = {"returncode": run.returncode, "stdout": run.stdout, "stderr": run.stderr}
+    # Higher-priority runtime sources must also suppress evaluation of a
+    # lower-priority implicit template.  A wrangler (or reserved backend
+    # result without a same-named input) is sufficient even when that unused
+    # template cannot be formatted from the prepared inputs.
+    skip_static = set(wrangled) | {name for name in reserved if name not in prepared}
+    try:
+        static = static_output_values(cab, prepared, skip_outputs=skip_static, strict_templates=True)
+    except StaticOutputResolutionError as exc:
+        raise ParameterError(str(exc)) from exc
     values: dict[str, Any] = {}
     for name in cab.outputs_model.model_fields:
         if name in wrangled:
             values[name] = wrangled[name]
         elif name in prepared:
-            values[name] = prepared[name]
+            values[name] = static[name]
         elif name in reserved:
             values[name] = reserved[name]
-        else:
-            meta = cab.field_meta.get(name)
-            if meta is not None and isinstance(meta.implicit, str):
-                values[name] = _resolve_implicit_template(cab, name, meta.implicit, prepared)
+        elif name in static:
+            values[name] = static[name]
     try:
         return cab.outputs_model(**values)
     except ValidationError as exc:
         raise ParameterError(f"{cab.name}: output validation failed:\n{exc}") from exc
-
-
-def _resolve_implicit_template(cab: Cab, field: str, template: str, prepared: dict[str, Any]) -> str:
-    try:
-        return template.format(**prepared)
-    except KeyError as exc:
-        raise ParameterError(f"cab {cab.name!r} output {field!r} implicit template {template!r} references unknown input {exc}") from exc
 
 
 def _report_elision(run: BackendRun, label: str, *, wrangled: bool) -> None:
@@ -1288,6 +1293,7 @@ def _run_recipe(
     budget: Budget | None = None,
     run_id: str = "",
     leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
+    validated_inputs: BaseModel | None = None,
 ) -> StepResult:
     """Topological wavefront scheduler over the recipe's declared DAG.
 
@@ -1329,7 +1335,11 @@ def _run_recipe(
     # scheduler a second conflict model.
     from shinobi.dataset_access import plan_recipe_accesses
 
-    graph = plan_recipe_accesses(recipe, prepared, workspace=Path.cwd(), validated_steps=leaf_inputs).graph if leaf_inputs is not None else build_graph(recipe)
+    graph = (
+        plan_recipe_accesses(recipe, prepared, workspace=Path.cwd(), validated_steps=leaf_inputs, validated_inputs=validated_inputs).graph
+        if leaf_inputs is not None
+        else build_graph(recipe)
+    )
     max_workers = recipe.max_workers or config.execution.max_workers
 
     # Built lazily, and only by the outermost recipe that needs one: nothing

@@ -38,6 +38,16 @@ def scope_declares_writes(scope: Scope) -> bool:
     return declares_path_writes(scope) or any(access.mode is not DatasetMode.READ for access in scope.dataset_accesses)
 
 
+def scope_requires_ownership(scope: Scope) -> bool:
+    """Whether a workflow must register reads or writes before execution."""
+
+    if isinstance(scope, Recipe):
+        return any(scope_requires_ownership(step.step) for step in scope.steps)
+    from shinobi.dataset_access import scope_has_dataset_contract
+
+    return declares_path_writes(scope) or scope_has_dataset_contract(scope)
+
+
 def _workspace(path: Path) -> Path:
     resolved = path.resolve()
     if not resolved.is_dir():
@@ -103,7 +113,8 @@ def _resolved_leaf_inputs(
     *,
     step_inputs: dict[int, tuple[BaseModel, bool]],
     reusable: bool = True,
-) -> Iterable[tuple[Scope, dict[str, Any]]]:
+    unresolved_inputs: set[str] | None = None,
+) -> Iterable[tuple[Scope, dict[str, Any], set[str]]]:
     """Yield each leaf with the inputs knowable at a workflow boundary.
 
     ``step_inputs`` collects each successfully validated StepRef model. Its
@@ -114,18 +125,19 @@ def _resolved_leaf_inputs(
     once. Runtime-dependent models still supply their already-evaluated
     defaults, but execution validates the final upstream values normally.
     """
+    unresolved_inputs = set(unresolved_inputs or ())
     if not isinstance(scope, Recipe):
         # Top-level dispatch passes its already-validated model so defaults
         # (including default factories) are part of the claim and are not
         # evaluated a second time before execution.
         if isinstance(values, BaseModel):
-            yield scope, _model_values(values)
+            yield scope, _model_values(values), unresolved_inputs
             return
         try:
             validated = scope.inputs_model(**values)
-            yield scope, _model_values(validated)
+            yield scope, _model_values(validated), unresolved_inputs
         except Exception:  # input validation reports the authoritative error in dispatch
-            yield scope, values
+            yield scope, values, unresolved_inputs
         return
 
     if isinstance(values, BaseModel):
@@ -139,6 +151,7 @@ def _resolved_leaf_inputs(
     for ref in scope.steps:
         known = dict(ref.params)
         runtime_dependent = False
+        unresolved_fields: set[str] = set()
         for field, source in ref.wiring.items():
             sources = source if isinstance(source, list) else [source]
             if all(isinstance(item, InputRef) and item.field in recipe_inputs for item in sources):
@@ -146,18 +159,23 @@ def _resolved_leaf_inputs(
                 known[field] = resolved if isinstance(source, list) else resolved[0]
             elif any(not isinstance(item, InputRef) for item in sources):
                 runtime_dependent = True
+                known.pop(field, None)
+                unresolved_fields.add(field)
         validated = None
         try:
             validated = ref.step.inputs_model(**known)
             known = {name: getattr(validated, name) for name in ref.step.inputs_model.model_fields}
+            for name in unresolved_fields:
+                known.pop(name, None)
             step_inputs[id(ref)] = (validated, reusable and not runtime_dependent and ref.scatter is None)
         except Exception:
             pass
         yield from _resolved_leaf_inputs(
             ref.step,
-            validated if validated is not None else known,
+            validated if validated is not None and not runtime_dependent else known,
             step_inputs=step_inputs,
             reusable=reusable and validated is not None and not runtime_dependent and ref.scatter is None,
+            unresolved_inputs=unresolved_fields,
         )
 
 
@@ -170,12 +188,21 @@ def scope_path_accesses(scope: Scope, values: dict[str, Any] | BaseModel, *, wor
     """
     collected: dict[Path, bool] = {}
     step_inputs: dict[int, tuple[BaseModel, bool]] = {}
-    for leaf, known in _resolved_leaf_inputs(scope, values, step_inputs=step_inputs):
-        for path, writes in path_accesses(leaf, known, workspace=workspace):
-            collected[path] = collected.get(path, False) or writes
-        from shinobi.dataset_access import dataset_workspace_accesses, resolve_scope_dataset_accesses
+    from shinobi.dataset_access import ResolvedAccessPlanner, dataset_workspace_accesses
 
-        for path, writes in dataset_workspace_accesses(resolve_scope_dataset_accesses(leaf, known, workspace=workspace)):
+    planner = ResolvedAccessPlanner(workspace)
+    for index, (leaf, known, unresolved) in enumerate(_resolved_leaf_inputs(scope, values, step_inputs=step_inputs)):
+        generic_accesses = path_accesses(leaf, known, workspace=workspace)
+        for path, writes in generic_accesses:
+            collected[path] = collected.get(path, False) or writes
+        decision = planner.order_after(
+            f"ownership[{index}]",
+            leaf,
+            known,
+            unresolved_inputs=unresolved,
+            resolved_path_accesses=generic_accesses,
+        )
+        for path, writes in dataset_workspace_accesses(decision.datasets):
             collected[path] = collected.get(path, False) or writes
     return list(collected.items()), step_inputs
 

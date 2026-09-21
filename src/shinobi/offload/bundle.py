@@ -20,6 +20,7 @@ from pydantic import JsonValue, ValidationError, model_validator
 from shinobi import __version__
 from shinobi.backends.venv import resolve_venv
 from shinobi.config import AppConfig
+from shinobi.dataset_access import scope_tree_has_dataset_contract
 from shinobi.graph import check_offloadable
 from shinobi.offload._codec import BundleError, ModelSpec, WireModel, pack, unpack
 from shinobi.offload.code import CodeBundle, capture_code
@@ -69,11 +70,17 @@ class ScopeSpec(WireModel):
         kinds = {Cab: "cab", Scope: "pyfunc", Recipe: "recipe"}
         if type(scope) not in kinds:
             raise BundleError(f"custom scope {type(scope).__name__!r} cannot be frozen")
+        settings = scope.model_dump(mode="python", exclude={"inputs_model", "outputs_model", "steps", "output_wiring", "max_workers"})
+        # ``model_dump`` recursively turns these public contract models into
+        # plain dictionaries. Preserve their type at the closed codec boundary
+        # so restore can validate them as DatasetAccess rather than transport
+        # their Enum values as arbitrary Python objects.
+        settings["dataset_accesses"] = scope.dataset_accesses
         return cls(
             kind=kinds[type(scope)],
             inputs=ModelSpec.capture(scope.inputs_model),
             outputs=ModelSpec.capture(scope.outputs_model),
-            settings={k: pack(v) for k, v in scope.model_dump(mode="python", exclude={"inputs_model", "outputs_model", "steps", "output_wiring", "max_workers"}).items()},
+            settings={k: pack(v) for k, v in settings.items()},
         )
 
     def restore(self) -> Scope:
@@ -139,12 +146,16 @@ class RecipeBundle(WireModel):
     steps: tuple[FrozenStep, ...]
     output_wiring: dict[str, Binding]
     max_workers: int | None = None
+    execution_blocked_reason: str | None = None
 
     @model_validator(mode="after")
     def _validate_plan(self) -> RecipeBundle:
         if not Path(self.workspace).is_absolute() or self.recipe.kind != "recipe":
             raise BundleError("a bundle needs an absolute shared workspace and a recipe root")
         recipe = self.declaration()
+        has_datasets = scope_tree_has_dataset_contract(recipe)
+        if has_datasets != (self.execution_blocked_reason is not None):
+            raise BundleError("dataset-bearing bundles must carry their planning-only execution refusal")
         for value in self.config.values():
             unpack(value)  # also validate tagged/finite configuration on read
         # Do not apply legacy eligibility: declarations intentionally have
@@ -235,7 +246,7 @@ def freeze_recipe(
     validator or default factory. Wired values are fully validated later,
     when their producers have committed; known inputs are validated here.
     """
-    check_offloadable(recipe, worker=True)
+    check_offloadable(recipe, worker=True, allow_dataset_planning=True)
     root = ScopeSpec.capture(recipe)
     scopes = [ScopeSpec.capture(ref.step) for ref in recipe.steps]
     prepared = _prepare_inputs(recipe, inputs)
@@ -282,6 +293,7 @@ def freeze_recipe(
                 pystep_wants_ctx=pystep.wants_ctx if pystep else None,
             )
         )
+    blocked = "MSv2 dataset contracts are planning-only until lifecycle enforcement is available" if scope_tree_has_dataset_contract(recipe) else None
     return RecipeBundle(
         workspace=str(workspace.resolve()),
         recipe=root,
@@ -292,4 +304,5 @@ def freeze_recipe(
         steps=tuple(steps),
         output_wiring={k: Binding.capture(v) for k, v in recipe.output_wiring.items()},
         max_workers=recipe.max_workers,
+        execution_blocked_reason=blocked,
     )

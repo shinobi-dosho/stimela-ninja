@@ -70,6 +70,7 @@ from shinobi.steps.schema import (
     Scope,
     mutated_path_fields,
     path_accesses,
+    static_output_values,
     unresolved_output_path_fields,
     write_path_fields,
 )
@@ -140,7 +141,15 @@ class MutationOrder:
         self._planner = ResolvedAccessPlanner(workspace)
         self.last_decision = None
 
-    def order_after(self, name: str, cab: Scope, resolved: dict[str, Any]) -> set[str]:
+    def order_after(
+        self,
+        name: str,
+        cab: Scope,
+        resolved: dict[str, Any],
+        *,
+        unresolved_inputs: set[str] | frozenset[str] = frozenset(),
+        resolved_path_accesses: list[tuple[Path, bool]] | None = None,
+    ) -> set[str]:
         """Record `name`'s path accesses and return the already-seen steps
         it must run after.
 
@@ -156,23 +165,14 @@ class MutationOrder:
         Returns:
             Names of previously-recorded steps this one must follow.
         """
-        self.last_decision = self._planner.order_after(name, cab, resolved)
+        self.last_decision = self._planner.order_after(
+            name,
+            cab,
+            resolved,
+            unresolved_inputs=unresolved_inputs,
+            resolved_path_accesses=resolved_path_accesses,
+        )
         return set(self.last_decision.dependencies)
-
-
-def _static_outputs(cab: Scope, resolved_inputs: dict[str, Any]) -> dict[str, Any]:
-    """The cab's output values knowable without running it: a same-named
-    input passthrough, else the output field's declared default. (Wrangler-
-    derived outputs are excluded by `check_offloadable`, so they never need
-    to be resolved here.)
-    """
-    out: dict[str, Any] = {}
-    for name, model_field in cab.outputs_model.model_fields.items():
-        if name in resolved_inputs:
-            out[name] = resolved_inputs[name]
-        else:
-            out[name] = None if model_field.default is PydanticUndefined else model_field.default
-    return out
 
 
 def _static_inputs(
@@ -339,7 +339,7 @@ def compile_slurm(
             # cgroup delegation this host cannot see (see `_resource_flags`).
             argv, _ = build_container_argv(container_runtime, cab, argv, resolved, workdir, runs_here=False)
 
-        own_outputs = _static_outputs(cab, resolved)
+        own_outputs = static_output_values(cab, resolved)
 
         # An unrolled loop iteration (Recipe.add_loop) short-circuits on the
         # previous iteration's sentinel, which is statically resolved above --
@@ -456,6 +456,7 @@ class WorkerSlurmWorkflow:
     submission_dir: Path
     jobs: list[SlurmJob]
     finalizer: SlurmJob
+    execution_blocked_reason: str | None = None
 
 
 @dataclass
@@ -611,7 +612,7 @@ def prepare_worker_slurm(
     from shinobi.offload._codec import unpack
     from shinobi.offload.bundle import RecipeBundle, write_new
     from shinobi.offload.worker import ExecutionPlan, PlannedAttempt
-    from shinobi.ownership import WorkspaceAccess, ownership_registry, ownership_workspace, scope_declares_writes
+    from shinobi.ownership import WorkspaceAccess, ownership_registry, ownership_workspace, scope_declares_writes, scope_requires_ownership
 
     if not isinstance(bundle, RecipeBundle):
         raise TypeError("prepare_worker_slurm expects a RecipeBundle")
@@ -650,10 +651,22 @@ def prepare_worker_slurm(
             resolved_outputs,
             allow_runtime_values=True,
         )
+        unresolved_inputs = {
+            field
+            for field, source in frozen.declaration().wiring.items()
+            if any(isinstance(item, OutputRef) and resolved_outputs.get(item.step, {}).get(item.field) is None for item in (source if isinstance(source, list) else [source]))
+        }
         _require_static_write_declarations(frozen.name, scope, known)
-        for path, writes in path_accesses(scope, known, workspace=Path(pinned.workspace)):
+        generic_accesses = path_accesses(scope, known, workspace=Path(pinned.workspace))
+        for path, writes in generic_accesses:
             workflow_accesses[path] = workflow_accesses.get(path, False) or writes
-        mutation_deps = mutation.order_after(frozen.name, scope, known)
+        mutation_deps = mutation.order_after(
+            frozen.name,
+            scope,
+            known,
+            unresolved_inputs=unresolved_inputs,
+            resolved_path_accesses=generic_accesses,
+        )
         if mutation.last_decision is not None:
             from shinobi.dataset_access import dataset_workspace_accesses
 
@@ -685,11 +698,12 @@ def prepare_worker_slurm(
             error=OffloadCompileError,
         )
         jobs.append(SlurmJob(name=frozen.name, script=script, depends_on=depends_on, access_reasons=access_reasons))
-        resolved_outputs[frozen.name] = _static_outputs(scope, known)
+        resolved_outputs[frozen.name] = static_output_values(scope, known, unresolved_inputs=unresolved_inputs)
 
-    ownership_required = scope_declares_writes(recipe)
+    ownership_required = scope_requires_ownership(recipe)
+    declares_writes = scope_declares_writes(recipe)
     writes = [path for path, writes in workflow_accesses.items() if writes]
-    if ownership_required and not writes:
+    if declares_writes and not writes:
         workflow_accesses[Path(pinned.workspace).resolve()] = True
         owner_root = Path(pinned.workspace).resolve()
     else:
@@ -703,6 +717,7 @@ def prepare_worker_slurm(
         ownership_workspace=str(owner_root),
         ownership_registry=str(ownership_registry()),
         accesses=tuple(WorkspaceAccess(path=str(path), writes=writes) for path, writes in sorted(workflow_accesses.items(), key=lambda item: str(item[0]))),
+        execution_blocked_reason=pinned.execution_blocked_reason,
     )
     write_new(submission_dir / "execution.json", plan)
 
@@ -720,11 +735,18 @@ def prepare_worker_slurm(
         ),
         depends_on=[step.name for step in pinned.steps],
     )
-    return WorkerSlurmWorkflow(submission_dir=submission_dir, jobs=jobs, finalizer=finalizer)
+    return WorkerSlurmWorkflow(
+        submission_dir=submission_dir,
+        jobs=jobs,
+        finalizer=finalizer,
+        execution_blocked_reason=pinned.execution_blocked_reason,
+    )
 
 
 def submit_worker_slurm(workflow: WorkerSlurmWorkflow) -> WorkerSlurmHandle:
     """Submit a worker workflow, durably recording every accepted job id."""
+    if workflow.execution_blocked_reason is not None:
+        raise DatasetLifecycleUnavailableError(workflow.execution_blocked_reason)
     from shinobi.offload.bundle import RecipeBundle, Submission, write_new
     from shinobi.offload.worker import ExecutionPlan, SubmissionClaim, SubmittedFinalizer, SubmittedJob, WorkerHandleRecord
 

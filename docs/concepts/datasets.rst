@@ -128,6 +128,14 @@ their explicit ``allow_row_count_change`` and ``allow_keyword_change`` flags.
 Selections are bounded data (half-open row ranges and finite standard ID
 sets), not TaQL or executable expressions.
 
+``field`` and ``root_field`` must name direct path/MS-compatible fields.
+Containers, nested models and scalar fields are rejected at definition time;
+scatter and nested dataset recipes have their separate bounded refusals below.
+An explicit ``read`` declaration must also agree with the ordinary filesystem
+schema.  A same-named input/output, ``MUTABLE`` path or ``write_path`` marker
+on the same resolved dataset is a write and makes a contradictory ``read``
+contract fail closed.
+
 Resolution is explicit.  :func:`shinobi.dataset_access.plan_recipe_accesses`
 links each declaration to the canonical root and every physical resource in
 its :class:`~shinobi.dataset_closure.DatasetClosure`.  The serializable
@@ -140,12 +148,25 @@ Unknown columns and omitted access metadata conservatively mean the whole
 dataset.  The resolved record distinguishes ``unknown-columns``,
 ``undeclared`` and ``unknown-path`` fallbacks.  A path which is not statically
 known must provide a ``reservation`` path envelope or planning refuses it.
+An unresolved ``OutputRef`` remains unknown even when the consumer input has a
+default; only its reservation may cover that interval.  A statically named
+``create`` followed by a wired reader is planned through one provisional root
+identity before the product exists.  ``create`` means a new dataset: an
+existing target is refused because replacement needs a separate lifecycle
+policy.
 Column detail is currently validation and provenance only: it does **not**
 permit concurrent writers, even when they name different columns.  Read/read
 access may overlap; every write or create is ordered against all overlapping
 access.  Inferred edges carry inspectable reasons such as
 ``write-after-read: observation.ms, MAIN.FLAG`` and never invent ``OutputRef``
 lineage.
+
+Resolved records validate their redundant public fields on deserialization:
+the declaration, mode, known-path state, root/resources, column state and
+fallback must agree.  Dataset read claims are retained by the shared ownership
+registry as reads, so a separately planned writer conflicts with them even
+though read/read workflows remain compatible.  Current strict execution is
+refused before acquiring such a claim; no unclaimed reader is dispatched.
 
 The first planner is deliberately bounded: dataset-bearing scatter and nested
 recipes are refused with a diagnostic rather than partially planned.  Flatten
@@ -157,13 +178,15 @@ Execution status
 
 Strict dataset annotations and access contracts are currently declaration,
 inspection and planning APIs, not an execution-lifecycle contract.  A scope
-carrying either is refused before local execution or Slurm submission.  Dry-run,
-the planning API and pure Slurm compilation may resolve closures and show
-inferred order, but do not dispatch.  A dataset-bearing compiled workflow is
-marked planning-only and ``submit_slurm`` refuses it before creating logs or
-calling ``sbatch``.  This guard is deliberate: accepting the field as a plain
-path would suggest that validation, staging, ownership, recovery, and
-provenance all enforce the structural contract when they do not yet.
+carrying either is refused before local execution or Slurm submission.
+Dry-run, the planning API, pure legacy Slurm compilation, and worker-bundle
+freezing/preparation may resolve closures and show inferred order, but do not
+dispatch.  Dataset-bearing legacy and worker workflows are marked
+planning-only; both submission functions refuse before creating scheduler
+records, ownership claims, logs, or calling ``sbatch``.  This guard is
+deliberate: accepting the field as a plain path would suggest that validation,
+staging, ownership, recovery, and provenance all enforce the structural
+contract when they do not yet.
 
 Use ``Path`` or the legacy loader dtype ``MS`` for executable cabs until that
 lifecycle support ships.

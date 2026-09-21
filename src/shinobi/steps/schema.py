@@ -410,6 +410,56 @@ def write_path_fields(scope: Scope) -> set[str]:
     return {name for name, meta in scope.field_meta.items() if meta.write_path}
 
 
+class StaticOutputResolutionError(ValueError):
+    """A declared implicit output cannot be resolved from known inputs."""
+
+    def __init__(self, scope: str, field: str, template: str, cause: Exception):
+        super().__init__(f"scope {scope!r} output {field!r} implicit template {template!r} cannot be resolved: {cause}")
+        self.scope = scope
+        self.field = field
+        self.template = template
+
+
+def static_output_values(
+    scope: Scope,
+    prepared: dict[str, Any],
+    *,
+    unresolved_inputs: set[str] | frozenset[str] = frozenset(),
+    skip_outputs: set[str] | frozenset[str] = frozenset(),
+    strict_templates: bool = False,
+    call_default_factories: bool = False,
+) -> dict[str, Any]:
+    """Return output values knowable without executing a step.
+
+    The priority is the runtime output priority: same-named input, implicit
+    template, then declared default.  Inputs wired from unresolved producer
+    outputs stay unknown and are never replaced by a consumer default.
+    Planning does not execute output default factories; the older declared
+    output-path API opts in where its existing lifecycle already does so.
+    """
+
+    values: dict[str, Any] = {}
+    for name, model_field in scope.outputs_model.model_fields.items():
+        if name in unresolved_inputs or name in skip_outputs:
+            continue
+        if name in prepared:
+            values[name] = prepared[name]
+            continue
+        meta = scope.field_meta.get(name)
+        if meta is not None and isinstance(meta.implicit, str):
+            try:
+                values[name] = meta.implicit.format(**prepared)
+            except Exception as exc:  # noqa: BLE001 - caller selects strict or unknown semantics
+                if strict_templates:
+                    raise StaticOutputResolutionError(scope.name, name, meta.implicit, exc) from exc
+            continue
+        if model_field.default is not PydanticUndefined:
+            values[name] = model_field.default
+        elif call_default_factories and model_field.default_factory is not None:
+            values[name] = model_field.get_default(call_default_factory=True)
+    return values
+
+
 def _resolved_output_path_values(scope: Scope, prepared: dict[str, Any]) -> Iterator[tuple[str, Any, bool]]:
     """Yield ``(field, value, resolved)`` for path-typed outputs.
 
@@ -418,29 +468,11 @@ def _resolved_output_path_values(scope: Scope, prepared: dict[str, Any]) -> Iter
     from an unresolved declaration must not drift apart.
     """
     declared = path_fields(scope.outputs_model)
+    values = static_output_values(scope, prepared, call_default_factories=True)
     for name in scope.outputs_model.model_fields:
         if name not in declared:
             continue
-        # Same priority as `_fill_outputs`: a same-named input beats
-        # `implicit`, which beats the field default. Membership, not
-        # truthiness, is what decides -- a *present* input wins even when its
-        # value is None, so it suppresses the template rather than falling
-        # through to it.
-        if name in prepared:
-            yield name, prepared[name], True
-            continue
-        meta = scope.field_meta.get(name)
-        if meta is not None and isinstance(meta.implicit, str):
-            try:
-                yield name, meta.implicit.format(**prepared), True
-            except Exception:  # noqa: BLE001 -- best-effort; output filling reports the real error
-                yield name, None, False
-            continue
-        field = scope.outputs_model.model_fields[name]
-        if field.is_required():
-            yield name, None, False
-        else:
-            yield name, field.get_default(call_default_factory=True), True
+        yield name, values.get(name), name in values
 
 
 def unresolved_output_path_fields(scope: Scope, prepared: dict[str, Any]) -> set[str]:

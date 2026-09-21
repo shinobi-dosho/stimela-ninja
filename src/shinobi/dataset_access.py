@@ -10,11 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
 from enum import Enum
+import os
 from pathlib import Path
 from typing import Any, Iterable
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from shinobi._annotations import walk_annotation
 from shinobi.dataset_closure import ClosureStatus, resolve_dataset_closure
 from shinobi.datasets import DatasetKind, dataset_declarations
 
@@ -184,6 +186,41 @@ class ResolvedDatasetAccess(BaseModel):
     closure_status: ClosureStatus | None = None
     reason: str
 
+    @model_validator(mode="after")
+    def _consistent(self) -> "ResolvedDatasetAccess":
+        if self.field != self.declaration.field or self.mode is not self.declaration.mode:
+            raise ValueError("resolved field/mode must agree with its dataset declaration")
+        if not self.resources:
+            raise ValueError("resolved dataset access requires at least one resource identity")
+        if any(not path.is_absolute() for path in self.resources):
+            raise ValueError("resolved dataset resource identities must be absolute")
+        if self.columns_known != (self.declaration.columns is not None):
+            raise ValueError("columns_known must agree with the dataset declaration")
+        if self.path_known:
+            if self.requested_path is None or self.root is None:
+                raise ValueError("a known dataset path requires requested_path and root")
+            if not self.requested_path.is_absolute() or not self.root.is_absolute():
+                raise ValueError("known requested/root dataset paths must be absolute")
+            if self.root not in self.resources:
+                raise ValueError("a known dataset root must be one of its resource identities")
+            if self.fallback is DatasetFallback.UNKNOWN_PATH:
+                raise ValueError("a known dataset path cannot use the unknown-path fallback")
+        elif self.requested_path is not None or self.root is not None or self.fallback is not DatasetFallback.UNKNOWN_PATH:
+            raise ValueError("an unknown dataset path requires no requested/root path and the unknown-path fallback")
+        if self.fallback in (DatasetFallback.UNDECLARED, DatasetFallback.UNKNOWN_COLUMNS, DatasetFallback.UNKNOWN_PATH) and not self.whole_dataset:
+            raise ValueError("a conservative dataset fallback must reserve the whole dataset")
+        if self.fallback is DatasetFallback.UNKNOWN_COLUMNS and self.columns_known:
+            raise ValueError("the unknown-columns fallback cannot declare known columns")
+        if self.fallback is DatasetFallback.UNDECLARED and self.columns_known:
+            raise ValueError("an undeclared fallback cannot declare known columns")
+        if self.fallback is None and (self.whole_dataset or not self.columns_known):
+            raise ValueError("whole-dataset or unknown-column access requires an explicit fallback reason")
+        if self.closure_status is not None and (not self.path_known or self.closure_status is not ClosureStatus.VALID):
+            raise ValueError("a retained closure status must describe a valid known path")
+        if not self.reason:
+            raise ValueError("resolved dataset access requires an inspectable reason")
+        return self
+
     @property
     def writes(self) -> bool:
         return self.mode is not DatasetMode.READ
@@ -208,12 +245,33 @@ def validate_scope_dataset_accesses(scope: Any) -> None:
     """Validate declaration-to-field links without touching the filesystem."""
 
     fields = set(scope.inputs_model.model_fields) | set(scope.outputs_model.model_fields)
+
+    def direct_path(model: type[BaseModel], name: str) -> bool:
+        field = model.model_fields.get(name)
+        if field is None:
+            return False
+        leaves = [
+            node.annotation
+            for node in walk_annotation(field.annotation, metadata=tuple(field.metadata), descend_mappings=False, descend_models=False)
+            if node.leaf and node.path == "" and node.annotation is not type(None)
+        ]
+        return bool(leaves) and all(isinstance(annotation, type) and issubclass(annotation, Path) for annotation in leaves)
+
+    def path_compatible(name: str) -> bool:
+        return direct_path(scope.inputs_model, name) or direct_path(scope.outputs_model, name)
+
     seen: set[tuple[str, DatasetTable]] = set()
     for access in scope.dataset_accesses:
         if access.field not in fields:
             raise ValueError(f"scope {scope.name!r} dataset access names unknown field {access.field!r}")
+        if not path_compatible(access.field):
+            raise ValueError(f"scope {scope.name!r} dataset access field {access.field!r} must be a direct Path or MS-compatible field")
         if access.root_field is not None and access.root_field not in fields:
             raise ValueError(f"scope {scope.name!r} dataset access names unknown root_field {access.root_field!r}")
+        if access.root_field is not None and not path_compatible(access.root_field):
+            raise ValueError(f"scope {scope.name!r} dataset access root_field {access.root_field!r} must be a direct Path or MS-compatible field")
+        if access.root_field == access.field:
+            raise ValueError(f"scope {scope.name!r} dataset access root_field must differ from field {access.field!r}")
         key = access.field, access.table
         if key in seen:
             raise ValueError(f"scope {scope.name!r} repeats dataset access for {access.field!r}, table {access.table.value}")
@@ -221,7 +279,10 @@ def validate_scope_dataset_accesses(scope: Any) -> None:
 
 
 def _canonical(value: Any, workspace: Path) -> Path:
-    path = Path(str(value))
+    try:
+        path = Path(os.fspath(value))
+    except TypeError as exc:
+        raise DatasetAccessError(f"dataset path value must be path-compatible, got {type(value).__name__}") from exc
     return (path if path.is_absolute() else workspace / path).resolve()
 
 
@@ -244,6 +305,8 @@ def resolve_scope_dataset_accesses(
     values: dict[str, Any],
     *,
     workspace: Path,
+    planned_roots: dict[Path, tuple[Path, ...]] | None = None,
+    unresolved_inputs: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[ResolvedDatasetAccess, ...]:
     """Resolve one leaf scope's MSv2 declarations against concrete values.
 
@@ -253,7 +316,10 @@ def resolve_scope_dataset_accesses(
     """
 
     workspace = workspace.resolve()
-    values = {**values, **_static_outputs(scope, values)}
+    from shinobi.steps.schema import static_output_values
+
+    values = {**values, **static_output_values(scope, values, unresolved_inputs=unresolved_inputs)}
+    planned_roots = planned_roots or {}
     inputs = dataset_declarations(scope.inputs_model)
     outputs = dataset_declarations(scope.outputs_model)
     for name in (*inputs, *outputs):
@@ -267,9 +333,9 @@ def resolve_scope_dataset_accesses(
         if field in outputs and field not in inputs:
             mode = DatasetMode.CREATE
         else:
-            from shinobi.steps.schema import mutated_path_fields
+            from shinobi.steps.schema import mutated_path_fields, write_path_fields
 
-            mode = DatasetMode.WRITE if field in mutated_path_fields(scope) else DatasetMode.READ
+            mode = DatasetMode.WRITE if field in mutated_path_fields(scope) | write_path_fields(scope) else DatasetMode.READ
         declarations.append((DatasetAccess(field=field, mode=mode), DatasetFallback.UNDECLARED))
 
     resolved: list[ResolvedDatasetAccess] = []
@@ -297,7 +363,11 @@ def resolve_scope_dataset_accesses(
             continue
 
         requested = _canonical(value, workspace)
-        if declaration.mode is DatasetMode.CREATE and not requested.exists():
+        if declaration.mode is DatasetMode.CREATE:
+            if requested.exists():
+                raise DatasetAccessError(
+                    f"scope {scope.name!r} CREATE dataset field {declaration.field!r} already exists at {requested}; replacement requires a separate lifecycle policy"
+                )
             resolved.append(
                 ResolvedDatasetAccess(
                     field=declaration.field,
@@ -321,6 +391,29 @@ def resolve_scope_dataset_accesses(
             root_candidate = requested.parent
         else:
             root_candidate = requested
+        planned = next(((root, resources) for root, resources in planned_roots.items() if root_candidate == root), None)
+        if planned is not None:
+            planned_root, resources = planned
+            resolved.append(
+                ResolvedDatasetAccess(
+                    field=declaration.field,
+                    declaration=declaration,
+                    requested_path=requested,
+                    root=planned_root,
+                    resources=resources,
+                    mode=declaration.mode,
+                    whole_dataset=declaration.columns is None,
+                    path_known=True,
+                    columns_known=declaration.columns is not None,
+                    fallback=fallback,
+                    reason=(
+                        f"{fallback.value} access; {declaration.mode.value} planned whole dataset: {planned_root}"
+                        if fallback is not None
+                        else f"{declaration.mode.value} planned {_declaration_label(planned_root.name or declaration.field, declaration)}"
+                    ),
+                )
+            )
+            continue
         closure = resolve_dataset_closure(root_candidate, storage_namespace=workspace)
         if not closure.valid:
             raise DatasetAccessError(f"scope {scope.name!r} cannot resolve dataset field {declaration.field!r}: {closure.status.value}: {closure.message}")
@@ -370,17 +463,39 @@ class ResolvedAccessPlanner:
     def __init__(self, workspace: Path | None = None) -> None:
         self._workspace = (workspace or Path.cwd()).resolve()
         self._accesses: dict[Path, _AccessState] = {}
+        self._planned_roots: dict[Path, tuple[Path, ...]] = {}
 
-    def order_after(self, name: str, scope: Any, values: dict[str, Any]) -> AccessDecision:
+    def order_after(
+        self,
+        name: str,
+        scope: Any,
+        values: dict[str, Any],
+        *,
+        unresolved_inputs: set[str] | frozenset[str] = frozenset(),
+        resolved_path_accesses: list[tuple[Path, bool]] | None = None,
+    ) -> AccessDecision:
         from shinobi.steps.schema import path_accesses, paths_overlap
 
-        datasets = resolve_scope_dataset_accesses(scope, values, workspace=self._workspace)
+        datasets = resolve_scope_dataset_accesses(
+            scope,
+            values,
+            workspace=self._workspace,
+            planned_roots=self._planned_roots,
+            unresolved_inputs=unresolved_inputs,
+        )
+        generic = resolved_path_accesses if resolved_path_accesses is not None else path_accesses(scope, values, workspace=self._workspace)
+        for access in datasets:
+            if access.mode is DatasetMode.READ and any(writes and any(paths_overlap(path, resource) for resource in access.resources) for path, writes in generic):
+                raise DatasetAccessError(f"scope {scope.name!r} declares READ access for {access.field!r}, but its schema also declares a filesystem write to the same dataset")
+        for access in datasets:
+            if access.mode is DatasetMode.CREATE and access.root is not None:
+                self._planned_roots[access.root] = access.resources
         declared_resources = {resource for access in datasets for resource in access.resources}
         accesses: list[tuple[Path, bool, str]] = []
         for access in datasets:
             label = _access_label(access)
             accesses.extend((resource, access.writes, label) for resource in access.resources)
-        for path, writes in path_accesses(scope, values, workspace=self._workspace):
+        for path, writes in generic:
             if any(paths_overlap(path, resource) for resource in declared_resources):
                 continue
             accesses.append((path, writes, str(path)))
@@ -426,32 +541,13 @@ class RecipeAccessPlan:
     reasons: dict[tuple[str, str], tuple[str, ...]]
 
 
-def _static_outputs(scope: Any, values: dict[str, Any]) -> dict[str, Any]:
-    from pydantic_core import PydanticUndefined
-
-    result: dict[str, Any] = {}
-    for name, model_field in scope.outputs_model.model_fields.items():
-        if name in values:
-            result[name] = values[name]
-            continue
-        meta = scope.field_meta.get(name)
-        if meta is not None and isinstance(meta.implicit, str):
-            try:
-                result[name] = meta.implicit.format(**values)
-                continue
-            except Exception:  # noqa: BLE001 - unresolved is represented by omission
-                pass
-        if model_field.default is not PydanticUndefined:
-            result[name] = model_field.default
-    return result
-
-
 def plan_recipe_accesses(
     recipe: Any,
-    inputs: dict[str, Any],
+    inputs: dict[str, Any] | BaseModel,
     *,
     workspace: Path | None = None,
     validated_steps: dict[int, tuple[BaseModel, bool]] | None = None,
+    validated_inputs: BaseModel | None = None,
 ) -> RecipeAccessPlan:
     """Resolve dataset contracts and add backward hazard edges before dispatch.
 
@@ -465,13 +561,20 @@ def plan_recipe_accesses(
     from pydantic_core import PydanticUndefined
 
     from shinobi.graph import RecipeGraph, build_graph
-    from shinobi.steps.schema import InputRef, OutputRef, Recipe
+    from shinobi.steps.schema import InputRef, OutputRef, Recipe, static_output_values
 
     if recipe.dataset_accesses:
         raise DatasetAccessError(f"recipe {recipe.name!r} declares dataset access metadata; attach access to the atomic steps that touch the dataset")
     graph = build_graph(recipe)
     root = (workspace or Path.cwd()).resolve()
-    validated = recipe.inputs_model(**inputs)
+    if validated_inputs is not None:
+        if not isinstance(validated_inputs, recipe.inputs_model):
+            raise TypeError(f"validated_inputs must be an instance of {recipe.inputs_model.__name__}")
+        validated = validated_inputs
+    elif isinstance(inputs, recipe.inputs_model):
+        validated = inputs
+    else:
+        validated = recipe.inputs_model(**inputs)
     recipe_inputs = {name: getattr(validated, name) for name in recipe.inputs_model.model_fields}
     outputs: dict[str, dict[str, Any]] = {}
     planner = ResolvedAccessPlanner(root)
@@ -491,6 +594,7 @@ def plan_recipe_accesses(
             raise DatasetAccessError(f"step {ref.name!r} scatters a dataset contract; declare bounded non-scattered steps instead")
 
         known = dict(ref.params)
+        unresolved_fields: set[str] = set()
         for field_name, source in ref.wiring.items():
             sources = source if isinstance(source, list) else [source]
             found: list[Any] = []
@@ -504,21 +608,27 @@ def plan_recipe_accesses(
                     complete = False
             if complete:
                 known[field_name] = found if isinstance(source, list) else found[0]
+            else:
+                known.pop(field_name, None)
+                unresolved_fields.add(field_name)
         for field_name, model_field in ref.step.inputs_model.model_fields.items():
-            if field_name not in known and model_field.default is not PydanticUndefined:
+            if field_name not in known and field_name not in unresolved_fields and model_field.default is not PydanticUndefined:
                 known[field_name] = model_field.default
         snapshot = (validated_steps or {}).get(id(ref))
         if snapshot is not None and snapshot[1]:
             model = snapshot[0]
-            known = {name: known.get(name, getattr(model, name)) for name in ref.step.inputs_model.model_fields}
+            known = {name: getattr(model, name) for name in ref.step.inputs_model.model_fields}
         else:
             try:
                 model = ref.step.inputs_model(**known)
                 known = {name: getattr(model, name) for name in ref.step.inputs_model.model_fields}
+                for name in unresolved_fields:
+                    known.pop(name, None)
             except Exception:
                 pass
 
-        decision = planner.order_after(ref.name, ref.step, {**known, **_static_outputs(ref.step, known)})
+        outputs_for_step = static_output_values(ref.step, known, unresolved_inputs=unresolved_fields)
+        decision = planner.order_after(ref.name, ref.step, {**known, **outputs_for_step}, unresolved_inputs=unresolved_fields)
         accesses[ref.name] = decision.datasets
         for parent in decision.dependencies:
             parent_index = by_name[parent]
@@ -526,7 +636,7 @@ def plan_recipe_accesses(
                 raise DatasetAccessError(f"access ordering for {ref.name!r} would require non-backward dependency on {parent!r}")
             dependencies[index].add(parent_index)
             reasons[(ref.name, parent)] = decision.reasons[parent]
-        outputs[ref.name] = _static_outputs(ref.step, known)
+        outputs[ref.name] = outputs_for_step
 
     dependents = [set() for _ in graph.names]
     for child, parents in enumerate(dependencies):
