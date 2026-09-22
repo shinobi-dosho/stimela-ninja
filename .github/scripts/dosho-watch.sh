@@ -80,29 +80,25 @@ fi
 if [[ "$ci_status" == skip ]] && command -v uv >/dev/null; then
     cd "$ROOT/stimela-ninja"
 
-    # simms, installed separately and tolerantly. dosho's skysim/telsim are
-    # `@shinobi.pystep` StepRefs, not Cabs, so a backend override cannot
-    # intercept them -- they run their own body and `import_callable` the real
-    # `simms.apps.*` at execution time. Without simms present the one test
-    # that dispatches them skips, and dosho's pysteps go unexercised in the
-    # only place that tests them against dosho main.
+    # Install the current released simms separately and tolerantly. The normal
+    # dosho wrappers import simms inside their execution container, but this
+    # repository's example-simulation test deliberately clones skysim/telsim
+    # onto the native backend to exercise their real dispatch/API contract.
+    # Without simms that test skips and only schema/graph coverage remains.
     #
-    # Not --no-deps: the simms app modules import dask/daskms/numpy at module
-    # level, so a dependency-less install fails the same way one module later.
-    #
-    # Failure here is reported, never fatal. simms is an unreleased git
-    # dependency; an upstream breakage there is not stimela-ninja breaking,
-    # and folding it into ci_status would say it was.
-    if uv pip install --quiet "simms @ git+https://github.com/wits-cfa/simms.git" 2>/dev/null; then
-        simms_note="simms installed from git -- dosho's skysim/telsim pysteps ran for real."
+    # Failure here is reported, never fatal. simms is a separately released
+    # dependency; an upstream packaging breakage there is not stimela-ninja
+    # breaking, and folding it into ci_status would say it was.
+    if uv pip install --quiet "simms>=3.0.2" 2>/dev/null; then
+        simms_note="simms installed from PyPI -- the native skysim/telsim example dispatch ran."
     else
-        simms_note="⚠️ simms could not be installed, so dosho's skysim/telsim pysteps were **skipped**, not tested."
+        simms_note="⚠️ simms could not be installed, so native skysim/telsim dispatch was **skipped**; only schema/graph coverage ran."
     fi
 
-    # simms depends on stimela-ninja, so installing it resolves that dependency
-    # and drags a PyPI *wheel* over the editable checkout -- silently switching
-    # the whole run to testing a released stimela-ninja against dosho tip, which
-    # is not what this job is for. Re-assert the checkout; --no-deps so nothing
+    # Installing simms or dosho can resolve its stimela-ninja dependency and
+    # drag a PyPI *wheel* over the editable checkout -- silently switching the
+    # whole run to testing a released stimela-ninja against dosho tip, which is
+    # not what this job is for. Re-assert the checkout; --no-deps so nothing
     # else is re-resolved on the way past.
     uv pip install --quiet --no-deps -e . 2>/dev/null || true
 

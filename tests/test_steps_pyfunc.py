@@ -329,6 +329,12 @@ def test_write_paths_agree_between_scope_and_model_metadata():
     assert ref.step.field_meta["keep"].write_path is False
 
 
+def test_pystep_carries_its_cache_policy_onto_the_scope():
+    ref = pystep(cache=False, cache_dir="/shared/cache")(add_offset)
+    assert ref.step.cache is False
+    assert ref.step.cache_dir == "/shared/cache"
+
+
 def annotated_over_field_default(
     ascii_sky: Annotated[Optional[str], ParamMeta(abbreviation="as", info="ignored")] = Field(None, description="Catalogue of sources."),
     smearing_subsamples: Annotated[int, ParamMeta(abbreviation="sss")] = Field(8, ge=1, description="Sub-sample cap."),

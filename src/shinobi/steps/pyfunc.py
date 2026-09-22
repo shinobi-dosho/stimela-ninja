@@ -851,6 +851,8 @@ def pystep(
     image: str | None = None,
     venv: str | None = None,
     backend: str | None = None,
+    cache: bool | None = None,
+    cache_dir: str | None = None,
     sandbox: bool | None = None,
     harvest: list[str] | None = None,
     write_paths: Sequence[str] | None = None,
@@ -877,6 +879,11 @@ def pystep(
     `backend` sets the default backend for this step (same as on any
     `Scope`). With `image`, this is typically a container backend name
     like ``"docker"`` or ``"apptainer"``; with `venv`, ``"venv"``.
+
+    `cache`/`cache_dir` set this step's cache policy, with the same precedence
+    as the corresponding fields on any `Scope`. In particular,
+    ``cache=False`` lets a function whose products depend on run-time choices
+    opt out when one static output schema cannot describe them safely.
 
     `sandbox`/`harvest` opt this step into sandboxed execution and declare
     extra keep-globs (see `shinobi.sandbox` and the fields on `Scope`).
@@ -943,6 +950,8 @@ def pystep(
             image=image,
             venv=venv,
             backend=backend,
+            cache=cache,
+            cache_dir=cache_dir,
             sandbox=sandbox,
             harvest=harvest or [],
             field_meta=dict(input_meta),

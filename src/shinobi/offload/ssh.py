@@ -647,12 +647,11 @@ def _venv_activation(remote_path: str, resolved: str | None = None) -> str:
         activate = shlex.quote(f"{resolved}/bin/activate")
         first = f"if [ -f {activate} ]; then . {activate}; el"
         tried = f"{resolved}, {tried}"
-    return (
-        f"{first}if [ -f venv/bin/activate ]; then . venv/bin/activate; "
-        "elif [ -f .venv/bin/activate ]; then . .venv/bin/activate; "
-        f"else echo 'ninja: no venv found under {remote_path} "
-        f"(tried {tried}) -- running against the login shell PATH' >&2; fi; "
-    )
+    # The path is allowed to contain ordinary filesystem punctuation, including
+    # quotes and shell metacharacters. Quote the complete diagnostic as one
+    # shell word rather than interpolating the path inside hand-written quotes.
+    not_found = f"ninja: no venv found under {remote_path} (tried {tried}) -- running against the login shell PATH"
+    return f"{first}if [ -f venv/bin/activate ]; then . venv/bin/activate; elif [ -f .venv/bin/activate ]; then . .venv/bin/activate; else echo {shlex.quote(not_found)} >&2; fi; "
 
 
 def launch_remote(
@@ -690,9 +689,10 @@ def launch_remote(
     accepted and ignored -- `off` means source nothing, and it means it
     whatever else was passed.
 
-    `launcher` is the argv prefix the target is handed to, defaulting to
-    `["ninja", "run"]`. A downstream CLI that builds shinobi recipes of its
-    own -- caracal, whose targets are pipeline YAML rather than
+    `launcher` is the argv prefix the target is handed to; `None` defaults to
+    `["ninja", "run"]`, while an explicitly empty prefix is rejected. A
+    downstream CLI that builds shinobi recipes of its own -- caracal, whose
+    targets are pipeline YAML rather than
     `file.py:name` -- passes its own entry point here instead of
     reimplementing the detach: the quoting in `_ssh`, the absolute
     log/exit redirects, and `_venv_activation`'s branch order are each
@@ -721,8 +721,8 @@ def launch_remote(
     if deprecation:
         warnings.warn(deprecation, DeprecationWarning, stacklevel=2)
 
-    launcher = list(launcher) if launcher else ["ninja", "run"]
-    if not launcher:
+    launcher = ["ninja", "run"] if launcher is None else list(launcher)
+    if not launcher or not isinstance(launcher[0], str) or not launcher[0].strip():
         raise ValueError("launcher must be a non-empty argv prefix")
 
     ts = int(time.time())

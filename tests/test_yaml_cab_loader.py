@@ -249,6 +249,19 @@ def test_use_missing_path_raises_cab_load_error():
         loads("cabs:\n  broken:\n    _use: does.not.exist\n")
 
 
+def test_use_self_cycle_raises_cab_load_error_naming_cycle():
+    text = "lib:\n  loop:\n    _use: lib.loop\ncabs:\n  tool:\n    command: echo\n"
+    with pytest.raises(CabLoadError, match=r"_use cycle detected: lib\.loop -> lib\.loop"):
+        loads(text)
+
+
+def test_use_multi_node_cycle_raises_cab_load_error_naming_cycle():
+    text = "lib:\n  left:\n    _use: lib.right\n  right:\n    _use: lib.left\ncabs:\n  tool:\n    command: echo\n"
+    cycle = r"_use cycle detected: lib\.(?:left -> lib\.right -> lib\.left|right -> lib\.left -> lib\.right)"
+    with pytest.raises(CabLoadError, match=cycle):
+        loads(text)
+
+
 def test_include_merges_files_relative_to_including_file(tmp_path):
     base = tmp_path / "base.yml"
     base.write_text("vars:\n  cult-cargo:\n    images:\n      registry: quay.io/stimela2\n")
@@ -257,6 +270,23 @@ def test_include_merges_files_relative_to_including_file(tmp_path):
     cabs = load_file(main)
     assert cabs["breizorro"].command == "breizorro"
     assert cabs["breizorro"].image == "breizorro"
+
+
+def test_include_self_cycle_raises_cab_load_error_naming_cycle(tmp_path):
+    main = tmp_path / "main.yml"
+    main.write_text("_include: main.yml\ncabs:\n  tool:\n    command: echo\n")
+    with pytest.raises(CabLoadError, match=r"_include cycle detected: .*main\.yml -> .*main\.yml"):
+        load_file(main)
+
+
+def test_include_multi_file_cycle_raises_cab_load_error_naming_cycle(tmp_path):
+    left = tmp_path / "left.yml"
+    right = tmp_path / "right.yml"
+    left.write_text("_include: right.yml\ncabs:\n  tool:\n    command: echo\n")
+    right.write_text("_include: left.yml\n")
+    cycle = r"_include cycle detected: .*left\.yml -> .*right\.yml -> .*left\.yml"
+    with pytest.raises(CabLoadError, match=cycle):
+        load_file(left)
 
 
 def test_shared_include_is_only_read_from_disk_once(tmp_path, monkeypatch):
