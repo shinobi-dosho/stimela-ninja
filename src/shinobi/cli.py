@@ -363,8 +363,7 @@ def _run_remote(
         raise click.ClickException("--cache-dir/--no-cache apply to local runs only; configure caching via the remote host's own AppConfig")
     if ctx.meta.get("config_file") is not None:
         raise click.ClickException(
-            "--config cannot be used with --remote: it names a local file that is not synced; "
-            "configure the remote host or use portable command-line overrides such as --backend"
+            "--config cannot be used with --remote: it names a local file that is not synced; configure the remote host or use portable command-line overrides such as --backend"
         )
 
     # Resolved here rather than left to `launch_remote`, for two reasons: a
