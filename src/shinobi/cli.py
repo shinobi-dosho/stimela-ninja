@@ -83,6 +83,13 @@ def main(
     setup_file_logging(ctx.obj.log)
     set_capture_limits(ctx.obj.log.capture_head_lines, ctx.obj.log.capture_tail_lines)
     ctx.meta["backend_override"] = backend
+    ctx.meta["config_file"] = config_file
+    ctx.meta["remote_group_flags"] = _forwarded_group_flags(
+        backend=backend,
+        log_file=log_file,
+        log_dir=log_dir,
+        log_level=log_level,
+    )
     # The CLI owns the process, so it is the CLI's job to make every way a run
     # ends -- not just Ctrl-C -- stop the work as well. Deliberately not done
     # on import: a library caller embedding shinobi keeps its own handlers.
@@ -266,6 +273,33 @@ def _forwarded_run_flags(*, quiet: bool, provenance: bool | None, sandbox: bool 
     return flags
 
 
+def _forwarded_group_flags(
+    *,
+    backend: str | None,
+    log_file: str | None,
+    log_dir: str | None,
+    log_level: str | None,
+) -> list[str]:
+    """Reconstruct portable, explicitly supplied top-level options.
+
+    These options belong before ``run`` on the remote command line.  Only
+    explicit values travel: when an option is absent, the remote host's own
+    AppConfig remains authoritative.  ``--config`` is deliberately absent;
+    its path names a local file and ``_run_remote`` refuses it rather than
+    silently loading one file locally and another (or none) remotely.
+    """
+    flags: list[str] = []
+    for option, value in (
+        ("--backend", backend),
+        ("--log-file", log_file),
+        ("--log-dir", log_dir),
+        ("--log-level", log_level),
+    ):
+        if value is not None:
+            flags.extend((option, value))
+    return flags
+
+
 def _venv_source(venv_lock: str | None, venv_packages: tuple[str, ...], pyfile: Path, *, provisioning: bool):
     """Decide what a `--venv` should provision from, in precedence order.
 
@@ -327,6 +361,11 @@ def _run_remote(
         raise click.ClickException("--remote and --dryrun are mutually exclusive")
     if cache_dir or no_cache:
         raise click.ClickException("--cache-dir/--no-cache apply to local runs only; configure caching via the remote host's own AppConfig")
+    if ctx.meta.get("config_file") is not None:
+        raise click.ClickException(
+            "--config cannot be used with --remote: it names a local file that is not synced; "
+            "configure the remote host or use portable command-line overrides such as --backend"
+        )
 
     # Resolved here rather than left to `launch_remote`, for two reasons: a
     # pair of flags asking for different environments should be refused
@@ -422,7 +461,8 @@ def _run_remote(
     # taking a value can't swallow a trailing `--sandbox` if the flags never
     # trail it.
     run_argv = [*_forwarded_run_flags(quiet=quiet, provenance=provenance, sandbox=sandbox), *ctx.args]
-    handle = launch_remote(remote_spec, remote_target, run_argv, venv=venv_mode, venv_path=resolved.path)
+    launcher = ["ninja", *ctx.meta.get("remote_group_flags", ()), "run"]
+    handle = launch_remote(remote_spec, remote_target, run_argv, venv=venv_mode, venv_path=resolved.path, launcher=launcher)
 
     handle_path = _handle_path(None, f"{pyfile.stem}.{attr}")
     handle_path.parent.mkdir(parents=True, exist_ok=True)
@@ -489,7 +529,7 @@ def _run_remote(
     "--remote",
     "remote",
     default=None,
-    help="Launch on a remote host instead of locally: 'user@host:/path'. Syncs the target file and its statically-discoverable cab deps, then runs detached -- see `ninja status`. --provenance/--sandbox/--quiet are forwarded to the remote run; --dryrun and --cache-dir/--no-cache are refused.",
+    help="Launch on a remote host instead of locally: 'user@host:/path'. Syncs the target file and its statically-discoverable cab deps, then runs detached -- see `ninja status`. Explicit --backend/--log-* and --provenance/--sandbox/--quiet options are forwarded; --config, --dryrun, and --cache-dir/--no-cache are refused.",
 )
 @click.option(
     "--venv",

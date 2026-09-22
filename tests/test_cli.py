@@ -348,6 +348,51 @@ def test_run_remote_forwards_nothing_extra_when_the_flags_are_unset(monkeypatch,
     assert "provenance" not in remote_cmd
     assert "sandbox" not in remote_cmd
     assert "--quiet" not in remote_cmd
+    assert "--backend" not in remote_cmd
+    assert "--log-" not in remote_cmd
+
+
+def test_run_remote_forwards_explicit_group_options_before_run(monkeypatch, tmp_path, _detach_file_logging):
+    """Group options are consumed by the parent Click context, but belong
+    before ``run`` on the remote command line (issue #161).
+    """
+    result, remote_cmd = _remote_launch_cmd(
+        monkeypatch,
+        tmp_path,
+        [
+            "--backend",
+            "apptainer",
+            "--log-file",
+            "remote.log",
+            "--log-dir",
+            "logs",
+            "--log-level",
+            "debug",
+            "run",
+            f"{FIXTURES_ABS}:greet",
+            "--remote",
+            "user@host:/path",
+            "--text",
+            "hi",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "ninja --backend apptainer --log-file remote.log --log-dir logs --log-level DEBUG run" in remote_cmd
+    assert remote_cmd.index("--backend") < remote_cmd.index(" run ") < remote_cmd.index("--text")
+
+
+def test_run_remote_refuses_local_config_before_sync(monkeypatch, tmp_path):
+    config = tmp_path / "config.yml"
+    config.write_text("backend:\n  default: native\n")
+    result, remote_cmd = _remote_launch_cmd(
+        monkeypatch,
+        tmp_path,
+        ["--config", str(config), "run", f"{FIXTURES_ABS}:greet", "--remote", "user@host:/path", "--text", "hi"],
+    )
+    assert result.exit_code != 0
+    assert "--config cannot be used with --remote" in result.output
+    assert "not synced" in result.output
+    assert remote_cmd is None
 
 
 def test_run_remote_activates_a_venv_by_default(monkeypatch, tmp_path):

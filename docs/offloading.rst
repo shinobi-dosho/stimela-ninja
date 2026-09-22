@@ -396,6 +396,12 @@ demanding one. ``ninja run TARGET --remote user@host:/path`` rsyncs the target
 and its cab dependencies to one host, starts ``ninja run`` there detached, and
 gives you a handle to poll -- no scheduler in between.
 
+Explicit global ``--backend`` and ``--log-*`` overrides are placed before
+``run`` on that remote command line. Unspecified settings still come from the
+remote host's own configuration. ``--config`` is refused with ``--remote``:
+its path identifies a local file, and this transport does not sync config
+files implicitly.
+
 The path may be relative, in which case it means what it would mean to
 ``rsync`` or ``ssh``: relative to the remote login shell's working directory.
 It is resolved to an absolute path once, from that shell's own ``$PWD``, before

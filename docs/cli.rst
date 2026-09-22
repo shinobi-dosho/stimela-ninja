@@ -96,6 +96,12 @@ Add ``--remote user@host:/path`` to launch on a remote host instead of
 locally: the target file and its statically-discoverable cab deps are synced
 over, then the run happens detached -- track it with ``ninja runs`` and
 ``ninja logs`` (below), or check one handle with ``ninja status``.
+Explicit global ``--backend``, ``--log-file``, ``--log-dir`` and
+``--log-level`` options are forwarded to the remote ``ninja`` invocation;
+when they are absent, the remote host's own configuration applies. A global
+``--config`` cannot be combined with ``--remote`` because it names a local
+file that is not synced; configure the remote host or use the portable global
+overrides instead.
 ``--venv {use,sync,off}`` (default: ``use``) says what to do about the remote
 Python environment.
 
