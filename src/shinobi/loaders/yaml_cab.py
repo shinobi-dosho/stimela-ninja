@@ -156,6 +156,7 @@ import yaml
 from shinobi.exceptions import CabLoadError
 from shinobi.loaders._modelgen import (
     COMMON_LEAF_KEYS,
+    ResolutionCycleGuard,
     build_model,
     contain_include,
     deep_merge,
@@ -185,6 +186,10 @@ def load_file(
 
     Returns:
         A dict mapping cab name to its built `Cab` instance.
+
+    Raises:
+        CabLoadError: If composition cannot be resolved, including an
+            ``_include`` or ``_use`` cycle. Cycle errors name the closed path.
     """
     path = Path(path)
     roots = package_roots or {}
@@ -219,6 +224,10 @@ def loads(
     therefore reaches the runtime as an image name and fails there -- loudly,
     at pull time, which is the safe direction: the alternative rejects every
     legitimate bare name (``ubuntu``) to catch a typo.
+
+    Raises:
+        CabLoadError: If composition cannot be resolved, including an
+            ``_include`` or ``_use`` cycle. Cycle errors name the closed path.
     """
     roots = package_roots or {}
     raw = yaml.safe_load(text) or {}
@@ -229,6 +238,7 @@ def loads(
 
 
 _PKG_INCLUDE_RE = re.compile(r"^\((?P<pkg>[\w.]+)\)(?P<rest>.*)$")
+_INCLUDE_CYCLES = ResolutionCycleGuard("_include")
 
 
 def _resolve_package_root(dotted: str, package_roots: dict[str, Path]) -> Path:
@@ -297,7 +307,9 @@ def _load_raw(path: Path, package_roots: dict[str, Path], containment_root: Path
     turned into a hashable, order-independent key since a plain dict can't
     be an `lru_cache` argument directly.
     """
-    return _load_raw_cached(path, tuple(sorted(package_roots.items())), containment_root)
+    path = path.resolve()
+    with _INCLUDE_CYCLES.enter(path, error=CabLoadError):
+        return _load_raw_cached(path, tuple(sorted(package_roots.items())), containment_root)
 
 
 @functools.lru_cache(maxsize=None)

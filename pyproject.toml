@@ -14,7 +14,7 @@ authors = [
     { name = "Sphesihle Makhathini", email = "sphemakh@gmail.com" },
 ]
 dependencies = [
-    "pydantic>=2.6",
+    "pydantic>=2.12",
     "pydantic-settings>=2.2",
     "pyyaml>=6.0",
     "click>=8.1",

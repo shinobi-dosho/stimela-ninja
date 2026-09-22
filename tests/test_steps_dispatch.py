@@ -92,6 +92,39 @@ def test_dynamic_pattern_param_warns_it_is_unvalidated():
     assert inputs["g1.solvable"] is True
 
 
+def test_dynamic_pattern_warning_distinguishes_unmatched_extras():
+    from shinobi.loaders import build_model
+    from shinobi.steps.schema import ParamMeta, ParamPattern, ParamSegment
+
+    recorder = RecordingBackend()
+    register_step_backend("record", recorder)
+    cab = Cab(
+        name="tool",
+        command="tool",
+        inputs_model=build_model("In", {"x": ("int", True, None)}, allow_extra=True),
+        outputs_model=Outputs,
+        backend="record",
+        input_patterns=[ParamPattern(segments=[ParamSegment(regex=r".+?"), ParamSegment(attrs={"solvable": ParamMeta()})])],
+    )
+
+    with pytest.warns(UserWarning) as caught:
+        _dispatch(cab, None, x=1, **{"g1.solvable": True, "g1.typo": "ignored"})
+
+    messages = [str(warning.message) for warning in caught]
+    matched = next(message for message in messages if "passed through to the tool" in message)
+    unmatched = next(message for message in messages if "not passed to the tool command line" in message)
+    assert "g1.solvable" in matched
+    assert "g1.typo" not in matched
+    assert "g1.typo" in unmatched
+    assert "g1.solvable" not in unmatched
+
+    _, argv, inputs = recorder.calls[0]
+    assert "--g1.solvable" in argv
+    assert "--g1.typo" not in argv
+    assert inputs["g1.solvable"] is True
+    assert inputs["g1.typo"] == "ignored"
+
+
 # -- auto-run + snapshot --
 
 

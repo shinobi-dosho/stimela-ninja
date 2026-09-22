@@ -72,6 +72,11 @@ def test_parse_remote_still_accepts_ordinary_hosts():
     assert parse_remote("user-name@ilifu-slurm-1:/p").host == "user-name@ilifu-slurm-1"
 
 
+def test_parse_remote_preserves_a_path_that_needs_shell_quoting():
+    path = "/scratch/O'Brien's reductions; run 1"
+    assert parse_remote(f"host:{path}").path == path
+
+
 # -- find_cab_deps --
 
 
@@ -231,6 +236,35 @@ def test_launch_remote_honours_a_custom_launcher(monkeypatch):
     assert handle.log_file.startswith("caracal-run-")
     assert handle.exit_file.startswith("caracal-run-")
     assert "/remote/path/caracal-run-" in remote_cmd
+
+
+def test_launch_remote_refuses_an_explicitly_empty_launcher(monkeypatch):
+    called = False
+
+    def fake_run(*args, **kwargs):
+        nonlocal called
+        called = True
+        return _FakeProc(returncode=0, stdout="1\n")
+
+    monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", fake_run)
+    with pytest.raises(ValueError, match="non-empty argv prefix"):
+        launch_remote(RemoteSpec("host", "/remote/path"), "recipe.py:tool", [], venv="off", launcher=[])
+    assert not called
+
+
+@pytest.mark.parametrize("executable", ["", "   "])
+def test_launch_remote_refuses_an_empty_launcher_executable(monkeypatch, executable):
+    called = False
+
+    def fake_run(*args, **kwargs):
+        nonlocal called
+        called = True
+        return _FakeProc(returncode=0, stdout="1\n")
+
+    monkeypatch.setattr("shinobi.offload.ssh.subprocess.run", fake_run)
+    with pytest.raises(ValueError, match="non-empty argv prefix"):
+        launch_remote(RemoteSpec("host", "/remote/path"), "recipe.py:tool", [], venv="off", launcher=[executable])
+    assert not called
 
 
 def test_launch_remote_defaults_to_ninja_run(monkeypatch):
@@ -412,6 +446,15 @@ def test_no_venv_at_all_says_so(tmp_path):
     out = _run_snippet(tmp_path, _venv_activation("/some/where"), present=())
     assert "no venv found under /some/where" in out
     assert "venv/, .venv/" in out
+
+
+def test_not_found_message_quotes_a_hostile_remote_path(tmp_path):
+    injected = tmp_path / "shell-injection-ran"
+    remote_path = f"/scratch/O'Brien; touch {injected}; $(printf command-substitution); #"
+    out = _run_snippet(tmp_path, _venv_activation(remote_path), present=())
+
+    assert out == (f"ninja: no venv found under {remote_path} (tried venv/, .venv/) -- running against the login shell PATH")
+    assert not injected.exists()
 
 
 def test_the_activation_reaches_the_calling_shell(tmp_path):

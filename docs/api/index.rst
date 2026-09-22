@@ -72,6 +72,7 @@ Datasets
 
 .. autoclass:: shinobi.dataset_closure.DatasetClosure
    :members:
+   :no-index:
 
 .. autoclass:: shinobi.dataset_closure.ClosureRequirement
    :members:
@@ -118,6 +119,21 @@ Datasets
 .. autofunction:: shinobi.datasets.inspect_casa_table
 
 .. autofunction:: shinobi.datasets.inspect_measurement_set_v2
+
+.. autoclass:: shinobi.dataset_lifecycle.DatasetLifecycleEvent
+   :members:
+
+.. autoclass:: shinobi.dataset_lifecycle.DatasetFileObservation
+   :members:
+
+.. autoclass:: shinobi.dataset_lifecycle.DatasetObservation
+   :members:
+
+.. autoclass:: shinobi.ownership.WorkspaceAccess
+   :members:
+
+.. autoclass:: shinobi.ownership.WorkspaceOwner
+   :members:
 
 Execution
 ---------

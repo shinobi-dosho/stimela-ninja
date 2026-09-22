@@ -329,6 +329,70 @@ def test_write_paths_agree_between_scope_and_model_metadata():
     assert ref.step.field_meta["keep"].write_path is False
 
 
+def test_pystep_cache_false_overrides_an_enabled_enclosing_cache(tmp_path):
+    calls = []
+
+    @pystep(cache=False, cache_dir=str(tmp_path / "step-cache"))
+    def uncached(ms: str) -> OffsetOutputs:
+        calls.append(ms)
+        return OffsetOutputs(shifted=ms)
+
+    ref = uncached
+    assert ref.step.cache is False
+    assert ref.step.cache_dir == str(tmp_path / "step-cache")
+
+    first = _dispatch(
+        ref.step,
+        ref.func,
+        _recipe_cache=True,
+        _recipe_cache_dir=str(tmp_path / "recipe-cache"),
+        ms="input.ms",
+    )
+    second = _dispatch(
+        ref.step,
+        ref.func,
+        _recipe_cache=True,
+        _recipe_cache_dir=str(tmp_path / "recipe-cache"),
+        ms="input.ms",
+    )
+
+    assert calls == ["input.ms", "input.ms"]
+    assert first.cached is False
+    assert second.cached is False
+
+
+def test_pystep_uses_its_own_cache_directory(tmp_path):
+    calls = []
+    step_cache = tmp_path / "step-cache"
+    recipe_cache = tmp_path / "recipe-cache"
+
+    @pystep(cache=True, cache_dir=str(step_cache))
+    def cached(ms: str) -> OffsetOutputs:
+        calls.append(ms)
+        return OffsetOutputs(shifted=ms)
+
+    first = _dispatch(
+        cached.step,
+        cached.func,
+        _recipe_cache=True,
+        _recipe_cache_dir=str(recipe_cache),
+        ms="input.ms",
+    )
+    second = _dispatch(
+        cached.step,
+        cached.func,
+        _recipe_cache=True,
+        _recipe_cache_dir=str(recipe_cache),
+        ms="input.ms",
+    )
+
+    assert calls == ["input.ms"]
+    assert first.cached is False
+    assert second.cached is True
+    assert (step_cache / "manifest.json").is_file()
+    assert not recipe_cache.exists()
+
+
 def annotated_over_field_default(
     ascii_sky: Annotated[Optional[str], ParamMeta(abbreviation="as", info="ignored")] = Field(None, description="Catalogue of sources."),
     smearing_subsamples: Annotated[int, ParamMeta(abbreviation="sss")] = Field(8, ge=1, description="Sub-sample cap."),

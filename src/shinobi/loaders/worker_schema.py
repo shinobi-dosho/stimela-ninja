@@ -72,6 +72,7 @@ from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter, ValidationE
 from shinobi.exceptions import ConfigLoadError
 from shinobi.loaders._modelgen import (
     COMMON_LEAF_KEYS,
+    ResolutionCycleGuard,
     contain_include,
     dtype_to_type,
     narrow_choices,
@@ -97,6 +98,7 @@ class ConfigSchema(BaseModel):
 
 
 _PKG_INCLUDE_RE = re.compile(r"^\((?P<module>[\w.]+)\)(?P<file>.+)$")
+_INCLUDE_CYCLES = ResolutionCycleGuard("_include")
 
 
 def load_worker_schema(path: str | Path, *, package_roots: dict[str, Path] | None = None) -> ConfigSchema:
@@ -117,12 +119,15 @@ def load_worker_schema(path: str | Path, *, package_roots: dict[str, Path] | Non
     Raises:
         ConfigLoadError: If the file's top-level content isn't a mapping,
             it has no top-level `name`, or a package-scoped `_include`
-            names a package with no entry in `package_roots`.
+            names a package with no entry in `package_roots`, or composition
+            contains an ``_include``/``_use`` cycle. Cycle errors name the
+            closed path.
     """
-    path = Path(path)
+    path = Path(path).resolve()
     roots = package_roots or {}
-    raw = yaml.safe_load(path.read_text()) or {}
-    raw = _resolve_includes(raw, path.parent, roots)
+    with _INCLUDE_CYCLES.enter(path, error=ConfigLoadError):
+        raw = yaml.safe_load(path.read_text()) or {}
+        raw = _resolve_includes(raw, path.parent, roots)
     resolved = resolve_use(raw, raw, error=ConfigLoadError)
 
     if not isinstance(resolved, dict):
@@ -179,7 +184,9 @@ def _load_include_file(path: Path, package_roots: dict[str, Path], containment_r
     since a plain dict can't be an `lru_cache` argument -- same split as
     `cultcargo._load_raw`.
     """
-    return _load_include_file_cached(path, tuple(sorted(package_roots.items())), containment_root)
+    path = path.resolve()
+    with _INCLUDE_CYCLES.enter(path, error=ConfigLoadError):
+        return _load_include_file_cached(path, tuple(sorted(package_roots.items())), containment_root)
 
 
 @functools.lru_cache(maxsize=None)

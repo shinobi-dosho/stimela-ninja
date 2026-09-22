@@ -19,10 +19,57 @@ import functools
 import keyword
 import operator
 import re
+from collections.abc import Hashable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Literal
 
 from pydantic import ConfigDict, Field, create_model
+
+
+class ResolutionCycleGuard:
+    """Detect recursion through one composition directive.
+
+    ``_use`` and ``_include`` resolve different kinds of addresses, but a
+    cycle has the same shape in both cases: entering an address already on
+    the active resolution path. Keep that rule here so the two loader
+    dialects report cycles consistently instead of eventually leaking a raw
+    :class:`RecursionError`.
+
+    A :class:`~contextvars.ContextVar` keeps one reusable guard safe across
+    concurrent loader calls while still carrying the active path through the
+    cached include loaders' recursive callbacks.
+    """
+
+    def __init__(self, directive: str):
+        self.directive = directive
+        self._active: ContextVar[tuple[Hashable, ...]] = ContextVar(
+            f"shinobi_{directive.strip('_')}_resolution_stack",
+            default=(),
+        )
+
+    @contextmanager
+    def enter(
+        self,
+        address: Hashable,
+        *,
+        error: type[Exception],
+        label: Callable[[Hashable], str] = str,
+    ) -> Iterator[None]:
+        """Enter ``address`` or raise ``error`` naming the closed cycle."""
+
+        active = self._active.get()
+        if address in active:
+            start = active.index(address)
+            cycle = (*active[start:], address)
+            rendered = " -> ".join(label(item) for item in cycle)
+            raise error(f"{self.directive} cycle detected: {rendered}")
+        token = self._active.set((*active, address))
+        try:
+            yield
+        finally:
+            self._active.reset(token)
 
 
 def sanitize(name: str) -> str:
@@ -288,6 +335,8 @@ def resolve_use(node: Any, root: dict[str, Any], *, error: type[Exception]) -> A
     differing only in which exception type reports a bad dotted path.
     """
 
+    cycles = ResolutionCycleGuard("_use")
+
     def entry_to_dict(dotted: str) -> Any:
         """Resolve the `_use` target at `dotted`, recursing into its own `_use`.
 
@@ -297,7 +346,8 @@ def resolve_use(node: Any, root: dict[str, Any], *, error: type[Exception]) -> A
         Returns:
             The target node with its own `_use` directives resolved.
         """
-        return resolve_directive(get_path(root, dotted, error=error), "_use", entry_to_dict)
+        with cycles.enter(dotted, error=error):
+            return resolve_directive(get_path(root, dotted, error=error), "_use", entry_to_dict)
 
     return resolve_directive(node, "_use", entry_to_dict)
 

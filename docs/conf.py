@@ -56,7 +56,6 @@ exclude_patterns = [
 # rather than passed over: `sphinx-build -n` is clean, and a new dangling
 # reference shows up as a warning instead of silently rendering as plain text.
 nitpicky = True
-nitpick_ignore_regex = [("py:class", r"(?:pathlib\.)?Path")]
 
 # Two kinds of unresolvable reference are left, and each needs the opposite
 # treatment.
@@ -71,6 +70,7 @@ nitpick_ignore_regex = [("py:class", r"(?:pathlib\.)?Path")]
 _QUALIFY_XREFS = {
     "BaseModel": "pydantic.BaseModel",
     "CliSettingsSource": "pydantic_settings.CliSettingsSource",
+    "Path": "pathlib.Path",
     "PydanticBaseSettingsSource": "pydantic_settings.PydanticBaseSettingsSource",
 }
 

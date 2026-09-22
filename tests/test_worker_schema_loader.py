@@ -85,6 +85,21 @@ def test_use_missing_path_raises_config_load_error(tmp_path):
         load_worker_schema(bad)
 
 
+def test_use_self_cycle_raises_config_load_error_naming_cycle(tmp_path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("name: bad\nlibs:\n  loop:\n    _use: libs.loop\ninputs: {}\n")
+    with pytest.raises(ConfigLoadError, match=r"_use cycle detected: libs\.loop -> libs\.loop"):
+        load_worker_schema(bad)
+
+
+def test_use_multi_node_cycle_raises_config_load_error_naming_cycle(tmp_path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("name: bad\nlibs:\n  left:\n    _use: libs.right\n  right:\n    _use: libs.left\ninputs: {}\n")
+    cycle = r"_use cycle detected: libs\.(?:left -> libs\.right -> libs\.left|right -> libs\.left -> libs\.right)"
+    with pytest.raises(ConfigLoadError, match=cycle):
+        load_worker_schema(bad)
+
+
 def test_missing_name_raises_config_load_error(tmp_path):
     noname = tmp_path / "noname.yaml"
     noname.write_text("inputs:\n  x:\n    dtype: str\n")
@@ -100,6 +115,23 @@ def test_plain_relative_include_merges_files(tmp_path):
     schema = load_worker_schema(main)
     assert "x" in schema.inputs_model.model_fields
     assert schema.inputs_model.model_fields["x"].default == 1
+
+
+def test_include_self_cycle_raises_config_load_error_naming_cycle(tmp_path):
+    main = tmp_path / "main.yaml"
+    main.write_text("_include: main.yaml\nname: thing\ninputs: {}\n")
+    with pytest.raises(ConfigLoadError, match=r"_include cycle detected: .*main\.yaml -> .*main\.yaml"):
+        load_worker_schema(main)
+
+
+def test_include_multi_file_cycle_raises_config_load_error_naming_cycle(tmp_path):
+    left = tmp_path / "left.yaml"
+    right = tmp_path / "right.yaml"
+    left.write_text("_include: right.yaml\nname: thing\ninputs: {}\n")
+    right.write_text("_include: left.yaml\n")
+    cycle = r"_include cycle detected: .*left\.yaml -> .*right\.yaml -> .*left\.yaml"
+    with pytest.raises(ConfigLoadError, match=cycle):
+        load_worker_schema(left)
 
 
 def _pkg_include_fixture(tmp_path):

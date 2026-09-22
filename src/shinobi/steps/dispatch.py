@@ -303,17 +303,35 @@ def _prepare_inputs(scope: Scope, kwargs: dict[str, Any], *, validated: Any = No
         else:
             value = copy.deepcopy(getattr(validated, name))
         prepared[name] = value
-    # dynamically-named (pattern-matched) params land in model_extra when
-    # the inputs_model allows extras; carry them through (immutable).
+    # Dynamically-named params and typos alike land in model_extra when the
+    # inputs model allows extras. Carry both through (immutable), but do not
+    # describe every extra as pattern-matched: build_argv emits only names a
+    # Cab's input_patterns actually admit.
     extras = validated.model_extra or {}
     if extras:
-        warnings.warn(
-            f"'{scope.name}': parameter(s) {sorted(extras)} matched a dynamic "
-            "parameter pattern and are passed through to the tool as-is -- "
-            "shinobi has no declared field for them, so it cannot type/range-"
-            "check them the way it does for the cab's declared parameters.",
-            stacklevel=2,
-        )
+        if isinstance(scope, Cab):
+            matched = sorted(name for name in extras if scope.match_pattern(name) is not None)
+            unmatched = sorted(set(extras) - set(matched))
+        else:
+            matched = []
+            unmatched = sorted(extras)
+        if matched:
+            warnings.warn(
+                f"'{scope.name}': parameter(s) {matched} matched a dynamic "
+                "parameter pattern and are passed through to the tool as-is -- "
+                "shinobi has no declared field for them, so it cannot type/range-"
+                "check them the way it does for the cab's declared parameters.",
+                stacklevel=2,
+            )
+        if unmatched:
+            if isinstance(scope, Cab):
+                detail = "they are retained in the prepared inputs but are not passed to the tool command line."
+            else:
+                detail = "they are retained in the prepared inputs but are not treated as dynamic tool parameters."
+            warnings.warn(
+                f"'{scope.name}': extra parameter(s) {unmatched} were accepted by the input model but did not match a dynamic parameter pattern; " + detail,
+                stacklevel=2,
+            )
     for name, value in extras.items():
         prepared[name] = copy.deepcopy(value)
     return prepared
