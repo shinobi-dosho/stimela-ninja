@@ -38,6 +38,7 @@ class Backend(ABC):
         stream: bool = True,
         pin: bool = False,
         cwd: str | None = None,
+        dataset_plan: Any | None = None,
     ) -> BackendRun:
         """Execute argv (as built by shinobi.policies.build_argv) and
         return a BackendRun. Must not raise on a non-zero exit -- that's
@@ -60,6 +61,11 @@ class Backend(ABC):
         the dispatch layer can't scope, so a sandboxed step on those
         backends degrades gracefully to an unsandboxed run (harvest finds
         the outputs already in the workspace and moves nothing).
+
+        ``dataset_plan`` is a closed, data-only strict-dataset namespace plan
+        produced after claim acquisition. Local-process backends need no
+        mounts and ignore it; container adapters consume its identity binds.
+        Scheduler backends currently refuse strict execution before ``run``.
         """
 
 

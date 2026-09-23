@@ -534,6 +534,7 @@ class _ContainerLauncher:
         from shinobi.backends.container import build_container_argv, container_stopper, new_container_name
 
         container_name = new_container_name()
+        dataset_plan = self.ctx.dataset_backend_plan(self.backend_name, run_prepared)
         full_argv, image_digest = build_container_argv(
             self.backend_name,
             self.ctx.scope,
@@ -541,6 +542,7 @@ class _ContainerLauncher:
             run_prepared,
             workdir,
             extra_dirs=extra_dirs,
+            dataset_mounts=[(str(mount.source), mount.writable) for mount in dataset_plan.mounts] if dataset_plan is not None else None,
             run_as_host_user=(self.ctx._config or AppConfig.load()).backend.run_as_host_user,
             pin=self.ctx._pin,
             container_name=container_name,

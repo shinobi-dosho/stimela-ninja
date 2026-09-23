@@ -24,6 +24,7 @@ class NativeBackend(Backend):
         stream: bool = True,
         pin: bool = False,  # accepted for the Backend protocol; native runs no container to pin
         cwd: str | None = None,
+        dataset_plan: Any | None = None,  # local route shares the controller's namespace
     ) -> BackendRun:
         """Run a cab's argv directly on the host.
 

@@ -110,6 +110,25 @@ Datasets
 
 .. autofunction:: shinobi.dataset_access.plan_recipe_accesses
 
+.. autoclass:: shinobi.dataset_backends.DatasetBackendCapability
+   :members:
+
+.. autoclass:: shinobi.dataset_backends.DatasetBackendMount
+   :members:
+
+.. autoclass:: shinobi.dataset_backends.DatasetBackendPlan
+   :members:
+
+.. autoclass:: shinobi.dataset_backends.DatasetBackendStatus
+   :members:
+
+.. autoclass:: shinobi.dataset_backends.DatasetNamespaceMode
+   :members:
+
+.. autofunction:: shinobi.dataset_backends.dataset_backend_capability
+
+.. autofunction:: shinobi.dataset_backends.plan_dataset_backend
+
 .. autofunction:: shinobi.datasets.dataset_fields
 
 .. autofunction:: shinobi.datasets.dataset_declarations

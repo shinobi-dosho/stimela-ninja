@@ -1,9 +1,12 @@
 """Contained local read and mutation lifecycles for strict MSv2 contracts.
 
-This module deliberately implements two small capabilities on one route: a
-flat local workflow may read, and (with exact recovery) write or create,
-ordinary directory-backed MSv2 datasets through the native backend.  The
-access planner remains authoritative for resource identities,
+This module deliberately implements two small capabilities: a flat local
+workflow may read, and (with exact recovery) write or create, ordinary
+directory-backed MSv2 datasets.  Backend adapters separately prove how each
+execution route sees that contained closure: native and virtualenv processes
+share the controller's namespace, while local containers receive explicit
+identity binds.  The access planner remains authoritative for resource
+identities,
 :mod:`shinobi.ownership` remains authoritative for exclusion, and
 :mod:`shinobi.snapshots` remains authoritative for naming, snapshotting and
 restoring states.  The lifecycle adds durable observations and declared
@@ -45,6 +48,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from shinobi.dataset_access import DatasetAccessError, DatasetFallback, DatasetMode, DatasetTable, ResolvedDatasetAccess, plan_recipe_accesses, resolve_scope_dataset_accesses
+from shinobi.dataset_backends import DATASET_MUTATION_CAPABILITY, DATASET_READ_CAPABILITY, DatasetBackendCapability
 from shinobi.dataset_closure import DATASET_CLOSURE_PROFILE, ClosureStatus, DatasetClosure, resolve_dataset_closure
 from shinobi.datasets import DatasetDescriptor, DatasetStatus, MSV2_STRUCTURAL_PROFILE, inspect_measurement_set_v2
 from shinobi.exceptions import DatasetLifecycleUnavailableError
@@ -53,8 +57,6 @@ from shinobi.storage import JsonFileStore
 from shinobi.steps.schema import Recipe, Scope
 
 
-DATASET_READ_CAPABILITY = "contained-native-msv2-read/v1"
-DATASET_MUTATION_CAPABILITY = "contained-native-msv2-mutation/v1"
 STRUCTURAL_SIGNATURE_VERSION = "msv2-structural-signature/v1"
 # What a structural signature covers, recorded beside every use of one so no
 # record can be read as a content identity.
@@ -261,6 +263,8 @@ class DatasetLifecycleAttempt(BaseModel):
     Schema 1 is the read-only baseline. Schema 2 adds per-leaf records and
     is required for the mutation capability; a v2 read-only attempt is also
     valid, so readers inside a mutation workflow share the leaf format.
+    ``backend_capabilities`` records the versioned namespace/lifecycle
+    decision for every effective backend in the claimed flat workflow.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -272,6 +276,7 @@ class DatasetLifecycleAttempt(BaseModel):
     phase: DatasetLifecyclePhase
     events: tuple[DatasetLifecycleEvent, ...]
     backends: tuple[str, ...]
+    backend_capabilities: tuple[DatasetBackendCapability, ...] = ()
     capability: Literal["contained-native-msv2-read/v1", "contained-native-msv2-mutation/v1"] = DATASET_READ_CAPABILITY
     capability_supported: bool
     planned_accesses: tuple[ResolvedDatasetAccess, ...] = ()

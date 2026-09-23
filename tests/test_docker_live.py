@@ -15,10 +15,12 @@ import subprocess
 import pytest
 
 from shinobi.backends.container import DockerBackend
+from shinobi.dataset_backends import DatasetBackendMount, DatasetBackendPlan, DatasetBackendStatus, dataset_backend_capability
 from shinobi.loaders import build_model
 from shinobi.steps.schema import Cab
 
 WSCLEAN_IMAGE = "quay.io/stimela/wsclean:1.8.0"
+BUSYBOX_IMAGE = "docker.io/library/busybox:latest"
 
 
 def _image_available(image: str) -> bool:
@@ -36,6 +38,10 @@ def _image_available(image: str) -> bool:
 requires_wsclean_image = pytest.mark.skipif(
     not _image_available(WSCLEAN_IMAGE),
     reason=f"docker or {WSCLEAN_IMAGE} not available locally",
+)
+requires_busybox_image = pytest.mark.skipif(
+    not _image_available(BUSYBOX_IMAGE),
+    reason=f"docker or {BUSYBOX_IMAGE} not available locally",
 )
 
 
@@ -79,3 +85,42 @@ def test_host_file_visible_at_same_path_via_bind_mount(tmp_path):
 
     assert result.success
     assert result.stdout == "hello from the host\n"
+
+
+@requires_busybox_image
+@pytest.mark.parametrize("writable", [False, True])
+def test_strict_dataset_plan_is_enforced_by_real_docker(tmp_path, writable):
+    """The post-claim identity bind is real enforcement, not argv evidence."""
+
+    root = tmp_path / "storage" / "obs.ms"
+    root.mkdir(parents=True)
+    member = root / "table.dat"
+    member.write_text("original")
+    alias = tmp_path / "alias.ms"
+    alias.symlink_to(root)
+    capability = dataset_backend_capability("docker", mutation=writable)
+    if capability.status is not DatasetBackendStatus.TESTED:
+        pytest.skip(capability.reason)
+    plan = DatasetBackendPlan(
+        capability=capability,
+        storage_namespace=tmp_path,
+        mounts=(DatasetBackendMount(source=root, target=root, writable=writable, reason="live strict mount"),),
+    )
+    cab = Cab(
+        name="strict-probe",
+        command="/bin/sh",
+        image=BUSYBOX_IMAGE,
+        inputs_model=build_model("In", {"ms": ("MS", True, None)}),
+        outputs_model=build_model("Out", {}),
+    )
+
+    result = DockerBackend(run_as_host_user=False).run(
+        cab,
+        ["/bin/sh", "-c", 'printf changed > "$1"', "strict-probe", str(member)],
+        {"ms": str(alias)},
+        stream=False,
+        dataset_plan=plan,
+    )
+
+    assert result.success is writable
+    assert member.read_text() == ("changed" if writable else "original")

@@ -174,14 +174,15 @@ recipes are refused with a diagnostic rather than partially planned.  Flatten
 those steps (including bounded loop expansions) so every access has one
 declared graph node.
 
-Contained local read execution
-------------------------------
+Contained read execution
+------------------------
 
 ``contained-native-msv2-read/v1`` is the first executable strict-dataset
 capability.  It accepts one ordinary, directory-backed MSv2 closure read by a
 direct atomic ``Cab`` or ``@pystep``, or by atomic leaves in one flat recipe,
-on the local ``native`` route.  Recipe boundary models may carry the same
-annotation; access declarations still belong on their leaves.
+through a backend route proven by the separate ``msv2-backend-route/v1``
+capability profile. Recipe boundary models may carry the same annotation;
+access declarations still belong on their leaves.
 
 Before dispatch, Shinobi resolves the complete access plan and structural
 closure observation, acquires a shared read claim for every canonical closure
@@ -198,11 +199,40 @@ read/output claims retain the conservative exclusive workspace authority. Any
 overlapping writer remains excluded through the same workspace ownership and
 shared registry protocol; there is no second dataset lock.
 
-The boundary covers the complete flat recipe.  Every leaf, including leaves
-without a dataset annotation, must use the local ``native`` route.  This stops
-an ordinary sibling from receiving the claimed MS through an unannotated
-``Path`` while executing in a container, venv, or scheduler route that the
+The boundary covers the complete flat recipe.  Every effective backend,
+including one selected by a leaf without a dataset annotation, must have a
+tested route capability.  This stops an ordinary sibling from receiving the
+claimed MS through an unannotated ``Path`` while executing in a namespace the
 outer lifecycle cannot observe.
+
+``native`` and ``venv`` execute in the lifecycle controller's filesystem
+namespace.  ``docker``, ``podman``, ``apptainer`` and ``singularity`` augment
+their schema-derived mounts with every resolved canonical closure. Each root
+starts read-only and only roots this leaf declares ``write`` access to become
+read-write. A declaring ``create`` leaf mounts the target's existing parent
+read-write; a missing parent, or an absent create root seen by any other leaf,
+is refused. Thus an unannotated container leaf receives all existing claimed
+roots read-only, preventing its broad workspace mount from bypassing the
+boundary or borrowing another leaf's mutation rights. The host lifecycle
+still performs inspection, claims and recovery. A closure member outside the
+contained root is refused rather than partially mounted. Mount contradictions
+are likewise refused rather than weakening either contract.
+
+Docker and Podman qualify only as local routes. An explicit remote
+``DOCKER_HOST``, non-default Docker context, remote ``CONTAINER_HOST`` or named
+Podman connection makes the route ``unavailable``: a daemon resolves bind
+sources in its own host namespace, which might contain different bytes at the
+same spelling.
+
+``slurm`` and ``kubernetes`` are currently ``unavailable`` for strict dataset
+execution.  Submitting from a host does not prove that a Slurm compute node
+sees the same storage namespace, and a Kubernetes ``hostPath`` spelling does
+not prove that the scheduled node names the same storage.  Neither route yet
+runs validation and recovery at the execution authority.  This is a
+pre-launch refusal, not a fallback to an ordinary ``Path``.  A remote CLI
+launch delegates planning to the remote ``ninja`` process, which acquires its
+own claim and selects a capability in the remote namespace. ``backend="remote"``
+is not a step backend and is refused; use the CLI's remote launch option.
 
 After the backend returns or raises, Shinobi observes again while the claim is
 still held.  A changed dataset, or an observation which can no longer be
@@ -224,7 +254,8 @@ mutation marker, execution is refused until a writer or operator with
 exclusive authority performs recovery.
 
 Every attempt durably records its versioned capability, resolved accesses,
-claim, pre/post observations, phase events, reason and terminal outcome below
+the backend route decisions, claim, pre/post observations, phase events,
+reason and terminal outcome below
 ``.shinobi/dataset-attempts`` in the launch workspace.  The public
 :class:`shinobi.DatasetLifecycleAttempt` and
 :class:`shinobi.DatasetLifecyclePhase` models describe those records; use
@@ -232,15 +263,15 @@ claim, pre/post observations, phase events, reason and terminal outcome below
 Successful runs end in ``committed``; pre-execution policy/claim failures in
 ``refused``; execution or postcondition failures in ``failed``.
 
-Contained local mutation
-------------------------
+Contained mutation
+------------------
 
 ``contained-native-msv2-mutation/v1`` extends the same route to ``write`` and
 ``create`` access with **exact** recovery.  A workflow in which any leaf
 writes or creates a strict dataset runs this lifecycle instead of the read
 one; leaves that only read are checked within it.  It accepts one or more
 pairwise-disjoint contained ordinary MSv2 roots (a ``create`` target is
-planned as absent), under the same flat-recipe, ``native``-only boundary.
+planned as absent), under the same flat-recipe and tested-backend boundary.
 
 Exact recovery reuses the Tier 1 mutation-chain snapshots
 (``shinobi.snapshots``) in a *strict* policy.  Tier 1's default promise is
@@ -374,8 +405,8 @@ step, replacing an existing ``create`` target without ``--overwrite``,
 external closure members (one
 directory rename cannot restore a closure spanning several roots),
 unsupported/opaque closure shapes, nested dataset recipes, dataset scatter,
-orchestration functions, manual ``Scope`` routes, non-native backends, and
-detached/offloaded execution remain strict refusals.
+orchestration functions, manual ``Scope`` routes, unproven scheduler/storage
+namespaces, and detached/offloaded execution remain strict refusals.
 Dry-run and compilation may still plan dataset-bearing workflows, but legacy
 and worker submission retain their planning-only marker and refuse before
 scheduler records, ownership claims, logs, or ``sbatch``.  Use ``Path`` or the

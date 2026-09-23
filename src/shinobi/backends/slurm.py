@@ -144,6 +144,7 @@ class SlurmBackend(Backend):
         stream: bool = True,
         pin: bool = False,
         cwd: str | None = None,  # accepted for the Backend protocol; the job runs in Slurm's own cwd
+        dataset_plan: Any | None = None,  # strict routes are capability-refused before submission
     ) -> BackendRun:
         """Submit a cab as a Slurm job and block until it terminates.
 

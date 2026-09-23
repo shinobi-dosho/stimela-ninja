@@ -10,7 +10,9 @@ from pydantic import BaseModel
 import shinobi.dataset_lifecycle as lifecycle_module
 import shinobi.dataset_access as access_module
 import shinobi.ownership as ownership_module
-from shinobi import DatasetAccess, DatasetMode, MeasurementSetV2, Recipe, pystep, read_dataset_attempt
+import shinobi.steps.dispatch as dispatch_module
+from shinobi import Cab, DatasetAccess, DatasetBackendStatus, DatasetMode, DatasetNamespaceMode, MeasurementSetV2, Recipe, pystep, read_dataset_attempt
+from shinobi.backends.recording import RecordingBackend
 from shinobi.cache import get_cache_manifest
 from shinobi.config import AppConfig
 from shinobi.dataset_access import DatasetFallback, ResolvedDatasetAccess
@@ -136,6 +138,22 @@ def _install_lifecycle(monkeypatch, workspace: Path, snapshots: list[DatasetLife
         lambda *args, **kwargs: ([(root, False)], None),
     )
     monkeypatch.setattr(lifecycle_module, "resolve_lifecycle_snapshot", resolve)
+
+
+def _install_local_container_configuration(monkeypatch, workspace: Path) -> None:
+    """Keep capability unit tests independent of the caller's CLI context."""
+
+    for name in (
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "CONTAINER_HOST",
+        "CONTAINER_CONNECTION",
+        "PODMAN_CONNECTION",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DOCKER_CONFIG", str(workspace / "empty-docker-config"))
+    monkeypatch.setenv("PODMAN_CONNECTIONS_CONF", str(workspace / "empty-podman-connections.json"))
+    monkeypatch.setenv("CONTAINERS_CONF", str(workspace / "empty-containers.conf"))
 
 
 def _attempts(workspace: Path) -> list[DatasetLifecycleAttempt]:
@@ -497,8 +515,44 @@ def test_multi_root_external_and_unsupported_closures_remain_refused(tmp_path, m
         resolve_lifecycle_snapshot(read.step, values, workspace=tmp_path)
 
 
-@pytest.mark.parametrize("backend", ["venv", "docker", "slurm"])
-def test_non_native_reader_routes_remain_refused(tmp_path, monkeypatch, backend):
+@pytest.mark.parametrize("backend", ["venv", "docker", "podman", "apptainer", "singularity"])
+def test_local_adapter_reader_routes_commit_with_capability_evidence(tmp_path, monkeypatch, backend):
+    ms = tmp_path / "observation.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("data")
+    _install_lifecycle(monkeypatch, tmp_path, [_snapshot(ms)])
+    _install_local_container_configuration(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    recording = RecordingBackend()
+    monkeypatch.setitem(dispatch_module._STEP_BACKENDS, backend, recording)
+    reader = Cab(
+        name="reader",
+        command="reader",
+        image="reader:latest" if backend != "venv" else None,
+        inputs_model=MSInput,
+        outputs_model=Empty,
+        dataset_accesses=[DatasetAccess(field="ms", mode="read")],
+    )
+
+    assert reader(ms=ms, backend=backend).success
+    assert len(recording.calls) == 1
+    [plan] = recording.dataset_plans
+    assert plan.capability.backend == backend
+    if backend == "venv":
+        assert plan.mounts == ()
+    else:
+        assert [(mount.source, mount.target, mount.writable) for mount in plan.mounts] == [(ms.resolve(), ms.resolve(), False)]
+    attempt = _attempts(tmp_path)[0]
+    assert attempt.phase is DatasetLifecyclePhase.COMMITTED
+    [capability] = attempt.backend_capabilities
+    assert capability.backend == backend
+    assert capability.status is DatasetBackendStatus.TESTED
+    assert capability.namespace_mode is (DatasetNamespaceMode.LOCAL if backend == "venv" else DatasetNamespaceMode.IDENTITY_BIND)
+
+
+@pytest.mark.parametrize("backend", ["slurm", "kubernetes"])
+def test_distributed_reader_routes_record_an_explicit_capability_refusal(tmp_path, monkeypatch, backend):
     ms = tmp_path / "observation.ms"
     ms.mkdir()
     (ms / "table.dat").write_text("data")
@@ -509,10 +563,57 @@ def test_non_native_reader_routes_remain_refused(tmp_path, monkeypatch, backend)
     def read(ms: MeasurementSetV2) -> None:
         pytest.fail("unsupported route executed")
 
-    with pytest.raises(DatasetLifecycleUnavailableError, match="not the supported native local route"):
+    with pytest.raises(DatasetLifecycleUnavailableError, match="storage namespace"):
         read(ms=ms, backend=backend)
 
-    assert _attempts(tmp_path)[0].phase is DatasetLifecyclePhase.REFUSED
+    attempt = _attempts(tmp_path)[0]
+    assert attempt.phase is DatasetLifecyclePhase.REFUSED
+    [capability] = attempt.backend_capabilities
+    assert capability.backend == backend
+    assert capability.status is DatasetBackendStatus.UNAVAILABLE
+    assert capability.namespace_mode is DatasetNamespaceMode.UNPROVEN
+
+
+def test_remote_launch_surface_cannot_be_selected_as_a_step_backend(tmp_path, monkeypatch):
+    ms = tmp_path / "observation.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("data")
+    _install_lifecycle(monkeypatch, tmp_path, [_snapshot(ms)])
+    monkeypatch.chdir(tmp_path)
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="read")])
+    def read(ms: MeasurementSetV2) -> None:
+        pytest.fail("remote launch surface executed as a local backend")
+
+    with pytest.raises(DatasetLifecycleUnavailableError, match="launcher makes no local dataset claim"):
+        read(ms=ms, backend="remote")
+
+    attempt = _attempts(tmp_path)[0]
+    assert attempt.phase is DatasetLifecyclePhase.REFUSED
+    [capability] = attempt.backend_capabilities
+    assert capability.namespace_mode is DatasetNamespaceMode.REMOTE_DELEGATED
+
+
+def test_remote_container_daemon_is_refused_before_leaf_execution(tmp_path, monkeypatch):
+    ms = tmp_path / "observation.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("data")
+    _install_lifecycle(monkeypatch, tmp_path, [_snapshot(ms)])
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DOCKER_HOST", "ssh://worker.example")
+
+    @pystep(image="reader:latest", dataset_accesses=[DatasetAccess(field="ms", mode="read")])
+    def read(ms: MeasurementSetV2) -> None:
+        pytest.fail("remote Docker route executed")
+
+    with pytest.raises(DatasetLifecycleUnavailableError, match="DOCKER_HOST"):
+        read(ms=ms, backend="docker")
+
+    attempt = _attempts(tmp_path)[0]
+    assert attempt.phase is DatasetLifecyclePhase.REFUSED
+    [capability] = attempt.backend_capabilities
+    assert capability.status is DatasetBackendStatus.UNAVAILABLE
+    assert capability.namespace_mode is DatasetNamespaceMode.UNPROVEN
 
 
 def test_postcondition_precedes_cache_and_run_manifest_publication(tmp_path, monkeypatch):
@@ -628,7 +729,7 @@ def test_pystep_path_output_default_cannot_drift_after_claim(tmp_path, monkeypat
     assert not called
 
 
-def test_non_contract_leaf_is_also_bounded_to_native_backend(tmp_path, monkeypatch):
+def test_non_contract_leaf_may_use_another_tested_local_route(tmp_path, monkeypatch):
     ms = tmp_path / "observation.ms"
     ms.mkdir()
     (ms / "table.dat").write_text("data")
@@ -637,17 +738,57 @@ def test_non_contract_leaf_is_also_bounded_to_native_backend(tmp_path, monkeypat
 
     @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="read")])
     def read(ms: MeasurementSetV2) -> None:
-        pytest.fail("strict leaf executed")
+        called.append("read")
 
     @pystep(backend="venv")
     def unrelated() -> None:
-        pytest.fail("non-contract leaf executed")
+        called.append("unrelated")
 
+    called = []
     recipe = Recipe(name="mixed", inputs_model=MSInput, outputs_model=Empty)
     recipe.add_step("read", read, ms=InputRef(field="ms"))
     recipe.add_step("unrelated", unrelated)
-    with pytest.raises(DatasetLifecycleUnavailableError, match="every leaf under the lifecycle"):
-        recipe(ms=ms)
+    with pytest.warns(UserWarning, match="no venv is declared"):
+        assert recipe(ms=ms).success
+    assert called == ["read", "unrelated"]
+    attempt = _attempts(tmp_path)[0]
+    assert {capability.backend for capability in attempt.backend_capabilities} == {"native", "venv"}
+
+
+def test_unannotated_container_leaf_receives_the_workflow_closure_plan(tmp_path, monkeypatch):
+    ms = tmp_path / "observation.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("data")
+    _install_lifecycle(monkeypatch, tmp_path, [_snapshot(ms)])
+    _install_local_container_configuration(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    native = RecordingBackend()
+    container = RecordingBackend()
+    monkeypatch.setitem(dispatch_module._STEP_BACKENDS, "native", native)
+    monkeypatch.setitem(dispatch_module._STEP_BACKENDS, "docker", container)
+    reader = Cab(
+        name="reader",
+        command="reader",
+        inputs_model=MSInput,
+        outputs_model=Empty,
+        dataset_accesses=[DatasetAccess(field="ms", mode="read")],
+    )
+    unrelated = Cab(
+        name="unrelated",
+        command="unrelated",
+        image="unrelated:latest",
+        backend="docker",
+        inputs_model=Empty,
+        outputs_model=Empty,
+    )
+    recipe = Recipe(name="mixed", inputs_model=MSInput, outputs_model=Empty)
+    recipe.add_step("reader", reader, ms=InputRef(field="ms"))
+    recipe.add_step("unrelated", unrelated)
+
+    assert recipe(ms=ms).success
+    [plan] = container.dataset_plans
+    assert [(mount.source, mount.target, mount.writable) for mount in plan.mounts] == [(ms.resolve(), ms.resolve(), False)]
 
 
 def test_real_casacore_contained_read_when_available(tmp_path, monkeypatch):
