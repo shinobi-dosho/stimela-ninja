@@ -563,6 +563,15 @@ def _run_remote(
     help="Deprecated alias for --venv use/--venv off.",
 )
 @click.option(
+    "--overwrite-step",
+    "overwrite_step",
+    multiple=True,
+    metavar="STEP",
+    help="Delete the existing strict MeasurementSetV2 that STEP creates, and invalidate the cached results of STEP and "
+    "everything downstream of it, before running. Repeatable. Usually spelled '--overwrite STEP'; this long form is for a "
+    "target that has its own 'overwrite' parameter.",
+)
+@click.option(
     "--include",
     "include_paths",
     multiple=True,
@@ -586,6 +595,7 @@ def run(
     venv_lock: str | None,
     venv_packages: tuple[str, ...],
     add_venv: bool | None,
+    overwrite_step: tuple[str, ...],
     include_paths: tuple[str, ...],
 ) -> None:
     """Run a Cab, Recipe, or @shinobi.step TARGET ('path/to/file.py:name'
@@ -598,6 +608,8 @@ def run(
         click.echo(ctx.get_help())
         ctx.exit()
 
+    if remote and overwrite_step:
+        raise click.ClickException("--overwrite-step is not forwarded by --remote; spell it --overwrite STEP, which is")
     if remote:
         _run_remote(
             ctx,
@@ -627,6 +639,32 @@ def run(
         scope, func, params = obj, None, {}
     else:
         raise click.ClickException(f"{target!r} is neither a Cab, Recipe, nor a @shinobi.step function")
+
+    target_options = build_options(scope.inputs_model)
+    # `--overwrite STEP` is taken from the target's arguments only when the
+    # target has no `overwrite` parameter of its own (many tools do); the
+    # parameter wins, and `--overwrite-step` is the unambiguous spelling.
+    overwrite_steps = list(overwrite_step)
+    target_args = list(ctx.args)
+    if not any("--overwrite" in option.opts for option in target_options):
+        remaining = []
+        position = 0
+        while position < len(target_args):
+            token = target_args[position]
+            if token == "--overwrite":
+                if position + 1 >= len(target_args):
+                    raise click.ClickException("--overwrite needs a step name")
+                overwrite_steps.append(target_args[position + 1])
+                position += 2
+                continue
+            if token.startswith("--overwrite="):
+                overwrite_steps.append(token.split("=", 1)[1])
+            else:
+                remaining.append(token)
+            position += 1
+        target_args = remaining
+    if overwrite_steps and dryrun:
+        raise click.ClickException("--overwrite deletes data before running and cannot be combined with --dryrun")
 
     def _callback(**kwargs):
         # Drop options the user didn't provide (None) so the inputs_model's
@@ -664,6 +702,7 @@ def run(
                 sandbox=sandbox,
                 _config=ctx.obj,
                 _provenance_target=target,
+                overwrite_steps=tuple(overwrite_steps),
                 **call_kwargs,
             )
         except (ShinobiError, RecipeGraphError) as exc:
@@ -700,11 +739,11 @@ def run(
 
     inner = click.Command(
         name=target,
-        params=build_options(scope.inputs_model),
+        params=target_options,
         callback=_callback,
         help=scope.info,
     )
-    inner.main(args=ctx.args, prog_name=f"{ctx.info_name} {target}", standalone_mode=False)
+    inner.main(args=target_args, prog_name=f"{ctx.info_name} {target}", standalone_mode=False)
 
 
 @main.command("replay")

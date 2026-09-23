@@ -41,7 +41,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from shinobi.dataset_access import DatasetFallback, DatasetMode, DatasetTable, ResolvedDatasetAccess, plan_recipe_accesses, resolve_scope_dataset_accesses
+from shinobi.dataset_access import DatasetAccessError, DatasetFallback, DatasetMode, DatasetTable, ResolvedDatasetAccess, plan_recipe_accesses, resolve_scope_dataset_accesses
 from shinobi.dataset_closure import DATASET_CLOSURE_PROFILE, ClosureStatus, DatasetClosure, resolve_dataset_closure
 from shinobi.datasets import DatasetDescriptor, DatasetStatus, MSV2_STRUCTURAL_PROFILE, inspect_measurement_set_v2
 from shinobi.exceptions import DatasetLifecycleUnavailableError
@@ -225,6 +225,18 @@ class DatasetLeafAttempt(BaseModel):
     reason: str = ""
 
 
+class DatasetOverwrite(BaseModel):
+    """One CREATE target an explicit ``overwrite`` deleted before planning."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    step: str
+    field: str
+    path: Path
+    existed: bool
+    invalidated: tuple[str, ...]
+
+
 class DatasetLifecycleAttempt(BaseModel):
     """Versioned durable provenance for one contained strict workflow.
 
@@ -251,12 +263,13 @@ class DatasetLifecycleAttempt(BaseModel):
     absent_roots: tuple[Path, ...] = ()
     leaves: tuple[DatasetLeafAttempt, ...] = ()
     recovery: tuple[str, ...] = ()
+    overwrites: tuple[DatasetOverwrite, ...] = ()
     outcome: Literal["pending", "committed", "refused", "failed"] = "pending"
     reason: str
 
     @model_validator(mode="after")
     def _consistent(self) -> "DatasetLifecycleAttempt":
-        if self.schema_version == 1 and (self.capability != DATASET_READ_CAPABILITY or self.leaves or self.absent_roots or self.recovery):
+        if self.schema_version == 1 and (self.capability != DATASET_READ_CAPABILITY or self.leaves or self.absent_roots or self.recovery or self.overwrites):
             raise ValueError("dataset lifecycle schema 1 records only the contained read capability")
         if not self.events or self.events[-1].phase is not self.phase:
             raise ValueError("dataset lifecycle phase must match the last event")
@@ -462,13 +475,13 @@ def _file_observation(path: Path) -> DatasetFileObservation:
 def _observe_root(root: Path, workspace: Path) -> DatasetObservation:
     closure = resolve_dataset_closure(root, storage_namespace=workspace)
     if closure.status is not ClosureStatus.VALID or closure.root is None:
-        raise DatasetLifecycleUnavailableError(f"contained MSv2 read refused: closure revalidation returned {closure.status.value}: {closure.message}")
+        raise DatasetLifecycleUnavailableError(f"contained MSv2 refused: closure revalidation returned {closure.status.value}: {closure.message}")
     external = tuple(resource.path for resource in closure.resources if resource.external_to_root)
     if external:
-        raise DatasetLifecycleUnavailableError("contained MSv2 read refused: external closure resources are not supported: " + ", ".join(map(str, external)))
+        raise DatasetLifecycleUnavailableError("contained MSv2 refused: external closure resources are not supported: " + ", ".join(map(str, external)))
     descriptor = inspect_measurement_set_v2(closure.root)
     if descriptor.status is not DatasetStatus.VALID:
-        raise DatasetLifecycleUnavailableError(f"contained MSv2 read refused: structural validation returned {descriptor.status.value}: {descriptor.message}")
+        raise DatasetLifecycleUnavailableError(f"contained MSv2 refused: structural validation returned {descriptor.status.value}: {descriptor.message}")
     paths: set[Path] = set()
     for resource in closure.resources:
         paths.add(resource.path)
@@ -856,16 +869,19 @@ class StrictLeaf:
         self._record("reused" if accepted else "pending", self.cache.reason)
         return accepted
 
-    def decide_run(self, cache_key: str | None, input_keys: dict[str, Any] | None, *, cacheable: bool) -> None:
+    def decide_run(self, cache_key: str | None, input_keys: dict[str, Any] | None, *, cacheable: bool, automatic: bool = False) -> None:
         self.cache_key = cache_key
         if self.cache is not None and self.cache.decision == "rejected-hit":
             return
+        reason = "no reusable entry for this key" if cacheable else "caching is disabled for this step"
+        if automatic:
+            reason += " (caching enabled automatically: a strict writer's states are named by cache key)"
         self.cache = DatasetCacheDecision(
             decision="miss" if cacheable else "disabled",
             cache_key=cache_key,
             identity="skip-cache key: tool identity, effective parameters and upstream provenance" if cacheable else "none",
             dataset_coverage=self.coverage(input_keys),
-            reason="no reusable entry for this key" if cacheable else "caching is disabled for this step",
+            reason=reason,
         )
 
     def observe_before(self, guard: Any | None) -> None:
@@ -912,7 +928,11 @@ class StrictLeaf:
             except DatasetLifecycleUnavailableError as exc:
                 failures.append(f"{root.name or root}: {exc}")
                 post[root] = None
-        issues = failures + leaf_postcondition_issues(self.accesses, self.pre, post)
+        # A root that exists but cannot be observed is reported once, by
+        # its observation failure, not again as "absent".
+        unobservable = {root for root in self.roots if post[root] is None and (root.exists() or root.is_symlink())}
+        judged = tuple(access for access in self.accesses if access.root not in unobservable)
+        issues = failures + leaf_postcondition_issues(judged, self.pre, post)
         observed = tuple(observation for observation in post.values() if observation is not None)
         if issues:
             reason = "postcondition failed: " + "; ".join(issues)
@@ -960,6 +980,122 @@ class StrictLeaf:
         )
 
 
+def overwrite_created_datasets(
+    scope: Scope,
+    values: BaseModel,
+    steps: tuple[str, ...],
+    *,
+    workspace: Path,
+    cache_dir: str,
+    run_id: str,
+) -> tuple[DatasetOverwrite, ...]:
+    """Delete the existing CREATE targets of ``steps`` and invalidate downstream.
+
+    A strict ``create`` refuses an existing target, because replacing it is
+    not the same contract as creating it. This is the explicit opt-out: for
+    each named step, its existing targets are deleted under a short
+    exclusive claim of their own, and the skip-cache entries of the step and
+    everything downstream of it -- wiring, ``after`` and access-hazard edges
+    alike -- are removed, so nothing reuses a product derived from the
+    deleted dataset. The workflow's own lifecycle then plans from scratch
+    and acquires its normal claim; a target recreated by someone else in
+    between is refused by that planning, not overwritten.
+
+    Only a CASA table (a directory with ``table.dat``) is deleted, and never
+    one that is a symlink or contains the workspace or the cache directory:
+    the path comes from a parameter, and a mistyped one must fail rather
+    than remove something that is not the product. An interrupted strict
+    mutation on the target is reconciled first, and the target's journal
+    history is dropped because it describes a dataset that no longer
+    exists; its snapshots stay on disk for ``ninja cache evict``.
+    """
+
+    import os
+    import shutil
+
+    from shinobi.cache import get_cache_manifest
+    from shinobi.ownership import acquire_workspace, ownership_workspace
+    from shinobi.snapshots import TRASH_SUFFIX, chain_id, get_journal, reconcile
+
+    workspace = workspace.resolve()
+    requested = tuple(dict.fromkeys(steps))
+    if isinstance(scope, Recipe):
+        names = [ref.name for ref in scope.steps]
+        unknown = sorted(set(requested) - set(names))
+        if unknown:
+            raise DatasetLifecycleUnavailableError(f"overwrite names unknown step(s) of {scope.name!r}: {', '.join(unknown)} (steps: {', '.join(names)})")
+        try:
+            plan = plan_recipe_accesses(scope, values, workspace=workspace, validated_inputs=values, overwrite_steps=frozenset(requested))
+        except DatasetAccessError as exc:
+            raise DatasetLifecycleUnavailableError(f"overwrite refused: {exc}") from exc
+        per_step = {name: plan.accesses.get(name, ()) for name in requested}
+        dependents = plan.graph.dependents
+        index = {name: position for position, name in enumerate(names)}
+    else:
+        if requested != (scope.name,):
+            raise DatasetLifecycleUnavailableError(f"overwrite names unknown step(s) {', '.join(requested)}; this target is the single step {scope.name!r}")
+        try:
+            per_step = {scope.name: resolve_scope_dataset_accesses(scope, _model_values(values), workspace=workspace, allow_existing_create=True)}
+        except DatasetAccessError as exc:
+            raise DatasetLifecycleUnavailableError(f"overwrite refused: {exc}") from exc
+        dependents, index, names = [set()], {scope.name: 0}, [scope.name]
+
+    targets: list[tuple[str, ResolvedDatasetAccess]] = []
+    for name in requested:
+        creates = [access for access in per_step[name] if access.mode is DatasetMode.CREATE and access.requested_path is not None]
+        if not creates:
+            raise DatasetLifecycleUnavailableError(f"overwrite names step {name!r}, which creates no strict MeasurementSetV2 at a known path")
+        targets.extend((name, access) for access in creates)
+
+    cache_root = Path(cache_dir).resolve()
+    for name, access in targets:
+        path = access.requested_path
+        assert path is not None
+        if not (path.exists() or path.is_symlink()):
+            continue
+        if path.is_symlink():
+            raise DatasetLifecycleUnavailableError(f"overwrite refused for step {name!r}: {path} is a symlink; remove or replace it yourself")
+        if workspace.is_relative_to(path) or cache_root.is_relative_to(path):
+            raise DatasetLifecycleUnavailableError(f"overwrite refused for step {name!r}: {path} contains the workspace or the cache directory")
+        if not path.is_dir() or not (path / "table.dat").is_file():
+            raise DatasetLifecycleUnavailableError(f"overwrite refused for step {name!r}: {path} is not a CASA table; delete it yourself if it is meant to go")
+
+    downstream: set[int] = set()
+    frontier = [index[name] for name in requested]
+    while frontier:
+        current = frontier.pop()
+        if current in downstream:
+            continue
+        downstream.add(current)
+        frontier.extend(dependents[current])
+    prefix = f"{scope.name}." if isinstance(scope, Recipe) else ""
+    invalidated = tuple(f"{prefix}{names[position]}" if prefix else names[position] for position in sorted(downstream))
+
+    paths = [access.requested_path for _name, access in targets if access.requested_path is not None]
+    lease = acquire_workspace(ownership_workspace(workspace, paths), f"{run_id}-overwrite", kind="local", accesses=[(path, True) for path in paths])
+    records: list[DatasetOverwrite] = []
+    try:
+        manifest = get_cache_manifest(cache_dir)
+        reconcile(cache_dir, manifest, paths=set(paths))
+        journal = get_journal(cache_dir)
+        for name, access in targets:
+            path = access.requested_path
+            assert path is not None
+            existed = path.exists()
+            if existed:
+                aside = path.with_name(path.name + TRASH_SUFFIX + run_id + "-overwrite")
+                if aside.exists():
+                    shutil.rmtree(aside)
+                os.rename(path, aside)
+                shutil.rmtree(aside)
+            journal.update_chain(chain_id(path), lambda _chain: None)
+            records.append(DatasetOverwrite(step=name, field=access.field, path=path, existed=existed, invalidated=invalidated))
+        manifest.remove(set(invalidated))
+    finally:
+        lease.release()
+    return tuple(records)
+
+
 def claim_covers_snapshot(owner: WorkspaceOwner, snapshot: DatasetLifecycleSnapshot) -> bool:
     """Whether the existing shared claim covers every closure resource read-only."""
 
@@ -1005,6 +1141,7 @@ __all__ = [
     "DatasetMutationOutcome",
     "DatasetMutationRecord",
     "DatasetObservation",
+    "DatasetOverwrite",
     "LeafMutationError",
     "StrictLeaf",
     "claim_covers_accesses",
@@ -1015,6 +1152,7 @@ __all__ = [
     "mutation_committed",
     "observe_dataset",
     "observe_roots",
+    "overwrite_created_datasets",
     "pending_dataset_recovery",
     "read_dataset_attempt",
     "resolve_lifecycle_snapshot",

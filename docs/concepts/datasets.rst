@@ -152,8 +152,8 @@ An unresolved ``OutputRef`` remains unknown even when the consumer input has a
 default; only its reservation may cover that interval.  A statically named
 ``create`` followed by a wired reader is planned through one provisional root
 identity before the product exists.  ``create`` means a new dataset: an
-existing target is refused because replacement needs a separate lifecycle
-policy.
+existing target is refused unless the run names the step in ``--overwrite``
+(see "Contained local mutation").
 Column detail is currently validation and provenance only: it does **not**
 permit concurrent writers, even when they name different columns.  Read/read
 access may overlap; every write or create is ordered against all overlapping
@@ -253,9 +253,12 @@ histories for one tree (an alias), a dataset whose root changed outside the
 journal, a predecessor whose structure differs from the one recorded for its
 state name, or a mutated field Tier 1 would decline (list-valued, scattered or
 wired to a keyless producer).  Because states are named by the writing step's
-cache key, each writing leaf must be cacheable, snapshots must be ``auto`` or
-``copy``, and every writer must journal into the workflow's cache directory;
-otherwise the workflow is refused with the reason.  A field wired from the
+cache key, a writing leaf caches automatically, whatever the configured
+default.  Only an *explicit* ``cache=False`` refuses the workflow: the call
+argument (``ninja run --no-cache``), the writer's own ``cache`` or an
+enclosing recipe's.  Snapshots must not be ``off``, and every writer must
+journal into the workflow's cache directory.  Each attempt's cache decision
+says when caching was enabled automatically.  A field wired from the
 top-level recipe's own input is a boundary dataset, exactly as if it had been
 passed to the step directly.
 
@@ -316,10 +319,41 @@ written dataset, a :class:`~shinobi.DatasetMutationRecord`
 rollback itself failed and the dataset stays marked for recovery, or
 ``refused``).
 
+Re-creating a dataset
+~~~~~~~~~~~~~~~~~~~~~
+
+A ``create`` step refuses a target that already exists, so re-running a
+pipeline that simulates its own MS fails at planning with a pointer to the
+opt-in:
+
+.. code-block:: console
+
+   $ ninja run pipeline.py:sim --ms obs.ms --overwrite simulate
+
+``--overwrite STEP`` (repeatable; ``overwrite_steps=["simulate"]`` from
+Python) deletes the existing ``create`` targets of STEP and invalidates the
+cached results of STEP and everything downstream of it -- through wiring,
+``after`` and access-hazard edges -- before the workflow plans.  The deletion
+runs under its own short exclusive claim, after reconciling any interrupted
+strict mutation on the target, and drops the target's journal history (its
+snapshots stay for ``ninja cache evict``).  The workflow then plans and
+claims as usual; a target recreated by someone else in between is refused,
+not overwritten.  The attempt record lists each ``overwrites`` entry.
+
+Because the path comes from a parameter, overwrite deletes only a CASA table
+(a directory containing ``table.dat``), and refuses a symlink (its resolved
+path is the link's target, which the caller never named) or a path containing
+the workspace or cache directory.  It names steps that ``create`` a strict
+``MeasurementSetV2`` only.  A target whose own parameters include
+``overwrite`` keeps its ``--overwrite`` flag; name the step with
+``--overwrite-step STEP`` instead.  ``--overwrite`` is refused with
+``--dryrun``.
+
 The boundary is intentionally narrow.  Unresolved or runtime-selected generic
 products, generic in-place mutation, a strict write addressed through a
 subtable path rather than its MS root, several fields writing one root in one
-step, replacing an existing ``create`` target, external closure members (one
+step, replacing an existing ``create`` target without ``--overwrite``,
+external closure members (one
 directory rename cannot restore a closure spanning several roots),
 unsupported/opaque closure shapes, nested dataset recipes, dataset scatter,
 orchestration functions, manual ``Scope`` routes, non-native backends, and

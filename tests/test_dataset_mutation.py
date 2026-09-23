@@ -417,10 +417,47 @@ def test_interruption_after_the_oracle_is_accepted_not_rolled_back(tmp_path):
 # -- refusals before launch --------------------------------------------------
 
 
-def test_uncached_writer_is_refused_before_launch(tmp_path):
+def test_strict_writer_caches_automatically(tmp_path):
+    # Caching is off by default, but a strict writer's states are named by
+    # cache key, so it is turned on for that step without being asked.
     ms = make_ms(tmp_path / "obs.ms")
-    with pytest.raises(DatasetLifecycleUnavailableError, match="not cacheable"):
-        renumber(ms=ms, value=7)
+    assert AppConfig().cache.enabled is False
+
+    assert renumber(ms=ms, value=7, cache_dir=str(tmp_path / "cache")).success
+
+    assert scans(ms) == [7] * ROWS
+    [leaf] = attempts(tmp_path)[-1].leaves
+    assert leaf.cache.decision == "miss" and "enabled automatically" in leaf.cache.reason
+    assert get_cache_manifest(str(tmp_path / "cache")).entry("renumber") is not None
+
+
+@pytest.mark.parametrize("where", ["argument", "scope", "recipe"])
+def test_explicitly_uncached_writer_is_refused_before_launch(tmp_path, where):
+    ms = make_ms(tmp_path / "obs.ms")
+    cache_dir = str(tmp_path / "cache")
+    if where == "argument":
+
+        def run():
+            return renumber(ms=ms, value=7, cache=False, cache_dir=cache_dir)
+
+    elif where == "scope":
+
+        @pystep(cache=False, dataset_accesses=[WRITE_SCANS])
+        def uncached(ms: MeasurementSetV2) -> None:
+            pytest.fail("an explicitly uncached strict writer executed")
+
+        def run():
+            return uncached(ms=ms, cache_dir=cache_dir)
+
+    else:
+        recipe = Recipe(name="uncached", inputs_model=MSInput, outputs_model=Empty, cache=False)
+        recipe.add_step("renumber", renumber, ms=InputRef(field="ms"), value=7)
+
+        def run():
+            return recipe(ms=ms, cache_dir=cache_dir)
+
+    with pytest.raises(DatasetLifecycleUnavailableError, match="caching explicitly disabled"):
+        run()
     assert scans(ms) == [1] * ROWS
     assert attempts(tmp_path)[-1].phase is DatasetLifecyclePhase.REFUSED
 
@@ -479,7 +516,7 @@ def test_existing_create_target_is_refused(tmp_path):
     def simulate(ms: MeasurementSetV2) -> None:
         pytest.fail("CREATE over an existing dataset executed")
 
-    with pytest.raises(Exception, match="already exists"):
+    with pytest.raises(Exception, match="already exists.*--overwrite"):
         simulate(ms=ms, **run_kwargs(tmp_path))
 
 
@@ -616,3 +653,121 @@ def test_writer_journalling_outside_the_workflow_cache_is_refused(tmp_path):
     recipe.add_step("detached", detached, ms=InputRef(field="ms"))
     with pytest.raises(DatasetLifecycleUnavailableError, match="outside the recovery"):
         recipe(ms=ms, **run_kwargs(tmp_path))
+
+
+# -- explicit overwrite of a CREATE target ---------------------------------
+
+
+@pystep(dataset_accesses=[DatasetAccess(field="ms", mode="create")])
+def simulate(ms: MeasurementSetV2, scan: int = 3) -> None:
+    make_ms(ms, scan=scan)
+
+
+def create_recipe() -> Recipe:
+    recipe = Recipe(name="sim", inputs_model=MSInput, outputs_model=Empty)
+    recipe.add_step("simulate", simulate, ms=InputRef(field="ms"))
+    recipe.add_step("increment", increment, ms=InputRef(field="ms"), by=2)
+    return recipe
+
+
+def test_overwrite_deletes_the_target_and_invalidates_downstream(tmp_path):
+    target = tmp_path / "new.ms"
+    assert create_recipe()(ms=target, **run_kwargs(tmp_path)).success
+    assert scans(target) == [5] * ROWS
+    with pytest.raises(Exception, match="already exists.*--overwrite"):
+        create_recipe()(ms=target, **run_kwargs(tmp_path))
+    assert scans(target) == [5] * ROWS
+
+    assert create_recipe()(ms=target, overwrite_steps=["simulate"], **run_kwargs(tmp_path)).success
+
+    assert scans(target) == [5] * ROWS
+    last = attempts(tmp_path)[-1]
+    assert last.phase is DatasetLifecyclePhase.COMMITTED
+    [record] = last.overwrites
+    assert (record.step, record.field, record.path, record.existed) == ("simulate", "ms", target.resolve(), True)
+    assert record.invalidated == ("sim.simulate", "sim.increment")
+    # Both steps really ran again rather than reusing their old entries.
+    assert {leaf.step_path: leaf.cache.decision for leaf in last.leaves} == {"sim.simulate": "miss", "sim.increment": "miss"}
+
+
+def test_overwrite_of_an_absent_target_just_runs(tmp_path):
+    target = tmp_path / "new.ms"
+    assert simulate(ms=target, overwrite_steps=["simulate"], **run_kwargs(tmp_path)).success
+    [record] = attempts(tmp_path)[-1].overwrites
+    assert not record.existed and record.invalidated == ("simulate",)
+
+
+def test_overwrite_refuses_what_it_cannot_safely_delete(tmp_path):
+    not_a_table = tmp_path / "notes.ms"
+    not_a_table.mkdir()
+    (not_a_table / "precious.txt").write_text("keep me")
+    with pytest.raises(DatasetLifecycleUnavailableError, match="is not a CASA table"):
+        simulate(ms=not_a_table, overwrite_steps=["simulate"], **run_kwargs(tmp_path))
+    assert (not_a_table / "precious.txt").read_text() == "keep me"
+
+    real = make_ms(tmp_path / "real.ms")
+    link = tmp_path / "link.ms"
+    link.symlink_to(real)
+    with pytest.raises(DatasetLifecycleUnavailableError, match="is a symlink"):
+        simulate(ms=link, overwrite_steps=["simulate"], **run_kwargs(tmp_path))
+    assert scans(real) == [1] * ROWS
+
+
+def test_overwrite_names_must_be_creating_steps(tmp_path):
+    ms = make_ms(tmp_path / "obs.ms")
+    with pytest.raises(DatasetLifecycleUnavailableError, match="unknown step"):
+        create_recipe()(ms=tmp_path / "new.ms", overwrite_steps=["nope"], **run_kwargs(tmp_path))
+    with pytest.raises(DatasetLifecycleUnavailableError, match="creates no strict MeasurementSetV2"):
+        chain_recipe()(ms=ms, overwrite_steps=["renumber"], **run_kwargs(tmp_path))
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="read")])
+    def reader(ms: MeasurementSetV2) -> None:
+        pytest.fail("a read-only workflow ran with overwrite")
+
+    with pytest.raises(DatasetLifecycleUnavailableError, match="only reads"):
+        reader(ms=ms, overwrite_steps=["reader"])
+    assert scans(ms) == [1] * ROWS
+
+
+CLI_MODULE = """\
+from shinobi import DatasetAccess, MeasurementSetV2, pystep
+import casacore.tables as tables
+
+
+@pystep(dataset_accesses=[DatasetAccess(field="ms", mode="create")])
+def simulate(ms: MeasurementSetV2) -> None:
+    table = tables.default_ms(str(ms))
+    table.addcols(tables.maketabdesc([tables.makearrcoldesc("DATA", 0j, ndim=2)]))
+    table.close()
+
+
+@pystep(dataset_accesses=[DatasetAccess(field="ms", mode="create")])
+def tool(ms: MeasurementSetV2, overwrite: bool = False) -> None:
+    table = tables.default_ms(str(ms))
+    table.addcols(tables.maketabdesc([tables.makearrcoldesc("DATA", 0j, ndim=2)]))
+    table.close()
+"""
+
+
+def test_cli_overwrite_option(tmp_path):
+    from click.testing import CliRunner
+
+    from shinobi.cli import main
+
+    module = tmp_path / "pipeline.py"
+    module.write_text(CLI_MODULE)
+    runner = CliRunner()
+    base = ["run", f"{module}:simulate", "--ms", str(tmp_path / "cli.ms"), "--cache-dir", str(tmp_path / "cache")]
+    assert runner.invoke(main, base).exit_code == 0
+    refused = runner.invoke(main, base)
+    assert refused.exit_code != 0 and "--overwrite" in refused.output
+    assert runner.invoke(main, [*base, "--overwrite", "simulate"]).exit_code == 0
+    assert runner.invoke(main, [*base, "--overwrite=simulate"]).exit_code == 0
+    assert "--overwrite deletes data" in runner.invoke(main, [*base, "--dryrun", "--overwrite", "simulate"]).output
+
+    # A target with its own `overwrite` parameter keeps it; the long form
+    # still names the step.
+    own = ["run", f"{module}:tool", "--ms", str(tmp_path / "tool.ms"), "--cache-dir", str(tmp_path / "cache")]
+    assert runner.invoke(main, own).exit_code == 0
+    assert runner.invoke(main, [*own, "--overwrite"]).exit_code != 0
+    assert runner.invoke(main, ["run", "--overwrite-step", "tool", *own[1:], "--overwrite"]).exit_code == 0

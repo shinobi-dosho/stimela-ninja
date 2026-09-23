@@ -24,7 +24,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 from shinobi.backends._stream import display_label, terminate_all
@@ -147,22 +147,26 @@ def _strict_mutation_cache_issues(scope: Scope, cache: bool | None, recipe_cache
     """Why a strict mutation workflow cannot name or recover its dataset states.
 
     Exact recovery names every predecessor and successor by the writing
-    step's cache key (`shinobi.snapshots`), so each writing leaf must be
-    cacheable and Tier 1 snapshots must be on. Every writer must also share
-    the workflow's cache directory: that is the one journal the workflow
-    reconciles under its claim, and a writer journalling elsewhere would
-    leave an interruption nobody recovers. The precedence mirrors `_dispatch`
-    and `_run_recipe`: explicit argument > the scope's own value > the
-    enclosing recipe's resolved value > configuration.
+    step's cache key (`shinobi.snapshots`). Caching is therefore turned on
+    automatically for a strict writer -- whatever the configured default --
+    and only an *explicit* ``cache=False`` refuses: the call argument
+    (``ninja run --no-cache``), the writer's own ``Scope.cache`` or an
+    enclosing recipe's, with the same precedence as `_dispatch`. Snapshots
+    must not be ``off``, which is an explicit escape hatch rather than a
+    default. Every writer must also share the workflow's cache directory:
+    that is the one journal the workflow reconciles under its claim, and a
+    writer journalling elsewhere would leave an interruption nobody
+    recovers.
     """
 
     if config.cache.snapshots.mode == "off":
         return ["cache.snapshots.mode is 'off'; exact MSv2 mutation recovery needs 'auto' or 'copy'"]
-    root = cache if cache is not None else scope.cache if scope.cache is not None else recipe_cache if recipe_cache is not None else config.cache.enabled
+    # None = nobody said; a strict writer then caches automatically.
+    root = cache if cache is not None else scope.cache if scope.cache is not None else recipe_cache
     root_dir = cache_dir or scope.cache_dir or recipe_cache_dir or config.cache.dir
     issues: list[str] = []
 
-    def visit(current: Scope, inherited: bool, prefix: str) -> None:
+    def visit(current: Scope, inherited: bool | None, prefix: str) -> None:
         if isinstance(current, Recipe):
             for ref in current.steps:
                 child = ref.step
@@ -172,8 +176,8 @@ def _strict_mutation_cache_issues(scope: Scope, cache: bool | None, recipe_cache
         if not _leaf_dataset_writes(current):
             return
         label = prefix or current.name
-        if not inherited:
-            issues.append(f"writing step {label!r} is not cacheable; exact MSv2 mutation recovery names dataset states by cache key (enable cache)")
+        if inherited is False:
+            issues.append(f"writing step {label!r} has caching explicitly disabled; exact MSv2 mutation recovery names dataset states by cache key (drop --no-cache/cache=False)")
         # A child's own directory beats the recipe's resolved one in
         # `_dispatch`; only the root scope sees the explicit argument.
         if current is not scope and current.cache_dir is not None and Path(current.cache_dir).resolve() != Path(root_dir).resolve():
@@ -838,11 +842,16 @@ def _dispatch(
     _validated_inputs: BaseModel | None = None,
     _leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
     _boundary_fields: frozenset[str] = frozenset(),
+    overwrite_steps: Sequence[str] = (),
     **kwargs: Any,
 ) -> StepResult:
     config = _config or AppConfig.load()
     run_id = _run_id or new_run_id()
     dataset_declarations = _scope_dataset_declarations(scope)
+    if overwrite_steps and (not dataset_declarations or _dataset_lifecycle is not None or _cache_path is not None):
+        raise DatasetLifecycleUnavailableError(
+            "overwrite applies only to a top-level workflow whose steps create a strict MeasurementSetV2; declare the created field as MeasurementSetV2"
+        )
     if dataset_declarations and _dataset_lifecycle is None:
         # Strict execution enters only through this top-level wrapper.  A
         # nested invocation without its parent's lifecycle token would be an
@@ -855,6 +864,7 @@ def _dispatch(
             claim_covers_accesses,
             claim_covers_snapshot,
             observe_roots,
+            overwrite_created_datasets,
             pending_dataset_recovery,
             resolve_lifecycle_snapshot,
         )
@@ -927,6 +937,30 @@ def _dispatch(
         try:
             backends = _dataset_execution_backends(scope, func, root_backend)
             validated_inputs = _validated_inputs if _validated_inputs is not None else _validate_inputs(scope, kwargs)
+            effective_cache_dir = cache_dir or scope.cache_dir or _recipe_cache_dir or config.cache.dir
+            if mutation:
+                cache_issues = _strict_mutation_cache_issues(scope, cache, _recipe_cache, cache_dir, _recipe_cache_dir, config)
+                if cache_issues:
+                    raise DatasetLifecycleUnavailableError("contained MSv2 mutation refused: " + "; ".join(cache_issues))
+            if overwrite_steps:
+                if not mutation:
+                    raise DatasetLifecycleUnavailableError("overwrite applies only to steps that create a strict MeasurementSetV2; this workflow only reads")
+                # Before planning, which refuses an existing CREATE target:
+                # this is the one explicit way past that refusal.
+                overwrites = overwrite_created_datasets(
+                    scope,
+                    validated_inputs,
+                    tuple(overwrite_steps),
+                    workspace=launch_workspace,
+                    cache_dir=effective_cache_dir,
+                    run_id=run_id,
+                )
+                for record in overwrites:
+                    if record.existed:
+                        logger.warning("overwrite: deleted %s (step %s, field %s)", record.path, record.step, record.field)
+                if overwrites:
+                    logger.warning("overwrite: invalidated cached results of %s", ", ".join(overwrites[0].invalidated))
+                lifecycle.amend(overwrites=overwrites)
             accesses, leaf_inputs = scope_path_accesses(scope, validated_inputs, workspace=launch_workspace)
             planned = resolve_snapshot()
             lifecycle.transition(
@@ -942,10 +976,6 @@ def _dispatch(
                 pre_observations=planned.observations,
                 **({"absent_roots": planned.absent_roots} if mutation else {}),
             )
-            if mutation:
-                cache_issues = _strict_mutation_cache_issues(scope, cache, _recipe_cache, cache_dir, _recipe_cache_dir, config)
-                if cache_issues:
-                    raise DatasetLifecycleUnavailableError("contained MSv2 mutation refused: " + "; ".join(cache_issues))
             resources = {resource for access in planned.accesses for resource in access.resources}
             access_issues = contained_access_issues(
                 scope,
@@ -983,7 +1013,6 @@ def _dispatch(
             covered = not claim_covers_accesses(lease.owner, revalidated.accesses) if mutation else claim_covers_snapshot(lease.owner, revalidated)
             if revalidated != planned or not covered:
                 raise DatasetLifecycleUnavailableError(f"contained MSv2 {noun} refused before backend execution: the access plan or observation changed after claim")
-            effective_cache_dir = cache_dir or scope.cache_dir or _recipe_cache_dir or config.cache.dir
             if mutation:
                 # Crash recovery for the datasets this workflow writes, under
                 # its exclusive claim -- which is what makes it safe without
@@ -1275,6 +1304,21 @@ def _dispatch(
         # than passed down (see `cache.set_content_sample`).
         set_content_sample(config.cache.content_sample)
     cache_enabled = cache if cache is not None else scope.cache if scope.cache is not None else _recipe_cache if _recipe_cache is not None else config.cache.enabled
+    # A strict MSv2 writer caches automatically: its dataset states are
+    # named by cache key. The workflow has already refused any *explicit*
+    # disable on its path (`_strict_mutation_cache_issues`), so the only
+    # value overridden here is an inherited or configured default.
+    strict_cache_auto = (
+        _dataset_lifecycle is not None
+        and getattr(_dataset_lifecycle, "mutation", False)
+        and not isinstance(scope, Recipe)
+        and cache is None
+        and scope.cache is None
+        and not cache_enabled
+        and bool(_leaf_dataset_writes(scope))
+    )
+    if strict_cache_auto:
+        cache_enabled = True
     cache_dir_value = cache_dir or scope.cache_dir or _recipe_cache_dir or config.cache.dir
     cache_path = _cache_path or scope.name
     stream_enabled = stream if stream is not None else _recipe_stream if _recipe_stream is not None else config.log.stream
@@ -1427,7 +1471,7 @@ def _dispatch(
     # which is safe because a mutated path contributes only its path string
     # to the key, so no restore can move it (see `snapshots.before_run`).
     if strict_leaf is not None:
-        strict_leaf.decide_run(cache_key, _input_keys, cacheable=cacheable)
+        strict_leaf.decide_run(cache_key, _input_keys, cacheable=cacheable, automatic=strict_cache_auto)
     if strict_leaf is not None and strict_leaf.writes:
         assert cache_key is not None
         try:

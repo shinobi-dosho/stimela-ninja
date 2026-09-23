@@ -400,7 +400,7 @@ def test_reader_exception_records_failure_without_masking_original(tmp_path, mon
 def test_mutation_without_nameable_states_is_refused_before_execution(tmp_path, monkeypatch, mode):
     # Write/create now runs under the mutation lifecycle (see
     # test_dataset_mutation.py), but only when exact recovery can name every
-    # state -- which it cannot for an uncached writer.
+    # state -- which it cannot for an explicitly uncached writer.
     ms = tmp_path / "observation.ms"
     ms.mkdir()
     (ms / "table.dat").write_text("data")
@@ -411,8 +411,8 @@ def test_mutation_without_nameable_states_is_refused_before_execution(tmp_path, 
     def mutate(ms: MeasurementSetV2) -> None:
         pytest.fail("mutating strict route executed")
 
-    with pytest.raises(DatasetLifecycleUnavailableError, match="not cacheable"):
-        mutate(ms=ms)
+    with pytest.raises(DatasetLifecycleUnavailableError, match="caching explicitly disabled"):
+        mutate(ms=ms, cache=False)
     attempt = _attempts(tmp_path)[0]
     assert attempt.phase is DatasetLifecyclePhase.REFUSED
     assert attempt.capability == "contained-native-msv2-mutation/v1"

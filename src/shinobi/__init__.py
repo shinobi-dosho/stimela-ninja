@@ -59,6 +59,7 @@ from shinobi.dataset_lifecycle import (  # noqa: E402
     DatasetLifecycleSnapshot,
     DatasetMutationOutcome,
     DatasetMutationRecord,
+    DatasetOverwrite,
     dataset_attempt_path,
     read_dataset_attempt,
 )
@@ -82,6 +83,7 @@ __all__ = [
     "DatasetMode",
     "DatasetMutationOutcome",
     "DatasetMutationRecord",
+    "DatasetOverwrite",
     "DatasetSelection",
     "DatasetTable",
     "ExecContext",

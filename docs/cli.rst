@@ -75,6 +75,17 @@ or ``AppConfig.cache.enabled`` -- these flags alone don't turn caching on):
     $ ninja run myrecipe.py:selfcal --ms data.ms --cache-dir /scratch/cache
     $ ninja run myrecipe.py:selfcal --ms data.ms --no-cache
 
+A step writing a strict ``MeasurementSetV2`` is the exception: it caches
+automatically, and ``--no-cache`` refuses that workflow instead. A step that
+*creates* one refuses an existing target; ``--overwrite STEP`` (repeatable)
+deletes it and invalidates STEP and everything downstream before the run.
+When the target has its own ``overwrite`` parameter, spell it
+``--overwrite-step STEP``. See :doc:`concepts/datasets`.
+
+.. code-block:: console
+
+    $ ninja run pipeline.py:sim --ms obs.ms --overwrite simulate
+
 By default, running cabs' stdout/stderr are echoed live as they run
 (native/container backends only). Add ``--quiet`` to restore the old
 behavior of a silent run followed by one dump of captured output at the end;

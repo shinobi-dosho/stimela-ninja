@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_serializer, model_validator
 from pydantic_core import PydanticUndefined
@@ -766,11 +766,25 @@ class Scope(BaseModel):
             for name, field in model.model_fields.items()
         }
 
-    def __call__(self, *, backend: str | None = None, cache: bool | None = None, cache_dir: str | None = None, sandbox: bool | None = None, **kwargs: Any):
-        """Bare execution -- no orchestration function."""
+    def __call__(
+        self,
+        *,
+        backend: str | None = None,
+        cache: bool | None = None,
+        cache_dir: str | None = None,
+        sandbox: bool | None = None,
+        overwrite_steps: Sequence[str] = (),
+        **kwargs: Any,
+    ):
+        """Bare execution -- no orchestration function.
+
+        `overwrite_steps` names steps whose existing strict MSv2 CREATE
+        targets are deleted first, invalidating the cache downstream (the
+        Python spelling of ``ninja run --overwrite``).
+        """
         from shinobi.steps.dispatch import _dispatch
 
-        return _dispatch(self, None, backend=backend, cache=cache, cache_dir=cache_dir, sandbox=sandbox, **kwargs)
+        return _dispatch(self, None, backend=backend, cache=cache, cache_dir=cache_dir, sandbox=sandbox, overwrite_steps=overwrite_steps, **kwargs)
 
     def mutability_of(self, field: str) -> Mutability:
         """Look up the declared mutability of an input field.
@@ -1071,6 +1085,7 @@ class StepRef(BaseModel):
         cache_dir: str | None = None,
         provenance: bool | None = None,
         sandbox: bool | None = None,
+        overwrite_steps: Sequence[str] = (),
         **kwargs: Any,
     ):
         """Standalone execution. `params` are merged under caller kwargs;
@@ -1080,7 +1095,7 @@ class StepRef(BaseModel):
         outside a Recipe; to run one slice, pass its scalar inputs directly.
         `provenance` opts this run into image pinning + manifest emission,
         overriding the config default; `sandbox` likewise opts into (or out
-        of) sandboxed execution.
+        of) sandboxed execution. `overwrite_steps` is as for `Scope.__call__`.
         """
         from shinobi.steps.dispatch import _dispatch
 
@@ -1092,6 +1107,7 @@ class StepRef(BaseModel):
             cache_dir=cache_dir,
             provenance=provenance,
             sandbox=sandbox,
+            overwrite_steps=overwrite_steps,
             **{**self.params, **kwargs},
         )
 
