@@ -170,7 +170,9 @@ def _strict_mutation_cache_issues(scope: Scope, cache: bool | None, recipe_cache
         if isinstance(current, Recipe):
             for ref in current.steps:
                 child = ref.step
-                effective = child.cache if child.cache is not None else inherited
+                # An explicit call-level disable outranks every step's own
+                # setting, exactly as dispatch applies it.
+                effective = False if cache is False else child.cache if child.cache is not None else inherited
                 visit(child, effective, f"{prefix}{ref.name}")
             return
         if not _leaf_dataset_writes(current):
@@ -428,6 +430,7 @@ class ExecContext:
         recipe_backend: str | None = None,
         config: AppConfig | None = None,
         cache_enabled: bool = False,
+        cache_forced_off: bool = False,
         cache_dir: str = "",
         cache_path: str = "",
         stream: bool = True,
@@ -489,6 +492,9 @@ class ExecContext:
         self._recipe_backend = recipe_backend
         self._config = config
         self._cache_enabled = cache_enabled
+        # An explicit call-level `cache=False` (`ninja run --no-cache`) is
+        # authoritative for the whole tree, over every step's own setting.
+        self._cache_forced_off = cache_forced_off
         self._cache_dir = cache_dir
         self._cache_path = cache_path
         self._stream = stream
@@ -669,6 +675,7 @@ class ExecContext:
                 validated_inputs=validated,
                 dataset_lifecycle=self._dataset_lifecycle,
                 publication_gate=self._publication_gate,
+                cache_forced_off=self._cache_forced_off,
             )
         else:
             raise TypeError(
@@ -1380,6 +1387,7 @@ def _dispatch(
         recipe_backend=_recipe_backend,
         config=_config,
         cache_enabled=cache_enabled,
+        cache_forced_off=cache is False,
         cache_dir=cache_dir_value,
         cache_path=cache_path,
         stream=stream_enabled,
@@ -2022,6 +2030,7 @@ def _run_recipe(
     validated_inputs: BaseModel | None = None,
     dataset_lifecycle: Any | None = None,
     publication_gate: Callable[[Callable[[], None]], None] | None = None,
+    cache_forced_off: bool = False,
 ) -> StepResult:
     """Topological wavefront scheduler over the recipe's declared DAG.
 
@@ -2255,6 +2264,9 @@ def _run_recipe(
                 ref.step,
                 ref.func,
                 _recipe_backend=backend_name,
+                # Passed as the child's own call argument, so it outranks
+                # the child's `Scope.cache` and keeps propagating down.
+                cache=False if cache_forced_off else None,
                 _recipe_cache=cache_enabled,
                 _recipe_cache_dir=cache_dir,
                 _recipe_stream=stream,

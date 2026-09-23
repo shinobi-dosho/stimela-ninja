@@ -30,6 +30,7 @@ from shinobi.snapshots import (
     HeadStatus,
     Marker,
     SnapshotGuard,
+    StateIdentity,
     StrictMutation,
     chain_id,
     faults,
@@ -45,7 +46,13 @@ def _signature(path: Path) -> str:
     return hashlib.sha256(json.dumps(sorted(p.name for p in path.iterdir())).encode()).hexdigest()
 
 
-STRICT = StrictMutation(signature=_signature)
+def _identity(path: Path) -> StateIdentity:
+    """Structure plus each file's (name, size, mtime), as the real one does."""
+    files = sorted((p.name, p.stat().st_size, p.stat().st_mtime_ns) for p in path.iterdir() if p.is_file())
+    return StateIdentity(signature=_signature(path), fingerprint=hashlib.sha256(json.dumps(files).encode()).hexdigest())
+
+
+STRICT = StrictMutation(identity=_identity)
 
 
 @pytest.fixture(autouse=True)
@@ -66,7 +73,7 @@ def _guard(tmp_path: Path, ms: Path, key: str, *, step: str = "step", run: str =
 
 
 def _commit(guard: SnapshotGuard, ms: Path) -> None:
-    guard.successor_signatures["ms"] = _signature(ms)
+    guard.successor_identities["ms"] = _identity(ms)
     guard.after_success(lambda: None)
 
 
@@ -172,7 +179,7 @@ def test_strict_refuses_a_taint_blocked_predecessor(tmp_path):
 
 def test_strict_create_starts_a_fresh_chain_and_failure_restores_absence(tmp_path):
     target = tmp_path / "new.ms"
-    policy = StrictMutation(signature=_signature, create_fields=frozenset({"ms"}))
+    policy = StrictMutation(identity=_identity, create_fields=frozenset({"ms"}))
     journal = get_journal(str(tmp_path / "cache"))
     # A chain for an earlier, since-deleted dataset at the same path.
     journal.update_chain(chain_id(target), lambda _chain: Chain(dev=1, ino=2, ctime_ns=3, path=str(target), head="old", generations=[Generation(name="old")]))
@@ -191,7 +198,7 @@ def test_strict_create_starts_a_fresh_chain_and_failure_restores_absence(tmp_pat
 
 def test_strict_create_refuses_an_existing_target(tmp_path):
     ms = _dataset(tmp_path)
-    policy = StrictMutation(signature=_signature, create_fields=frozenset({"ms"}))
+    policy = StrictMutation(identity=_identity, create_fields=frozenset({"ms"}))
     guard = SnapshotGuard(get_journal(str(tmp_path / "cache")), "create", "c" * 64, "run", {"ms": ms}, {}, set(), strict=policy)
     with pytest.raises(DatasetLifecycleUnavailableError, match="already exists"):
         guard.before_run()
@@ -231,12 +238,13 @@ def test_strict_reuse_requires_the_head_to_descend_from_the_state(tmp_path):
     (ms / "b-col").write_text("after b")
     _commit(b, ms)
     state_a, state_b = state_name("a" * 64, "ms"), state_name("b" * 64, "ms")
-    live = _signature(ms)
+    live = _identity(ms)
 
     assert strict_reuse_issue(journal, ms, state_b, live) is None
     assert strict_reuse_issue(journal, ms, state_a, live) is None
     assert "does not descend" in strict_reuse_issue(journal, ms, state_name("z" * 64, "ms"), live)
-    assert "structure differs" in strict_reuse_issue(journal, ms, state_b, "0" * 64)
+    assert "structure differs" in strict_reuse_issue(journal, ms, state_b, StateIdentity(signature="0" * 64, fingerprint=live.fingerprint))
+    assert "table files differ" in strict_reuse_issue(journal, ms, state_b, StateIdentity(signature=live.signature, fingerprint="0" * 64))
 
     def marked(chain: Chain | None) -> Chain | None:
         chain.marker = Marker(step_path="b", field="ms", cache_key="b" * 64, run_id="x", started_at=0.0)
@@ -296,3 +304,28 @@ def test_attempt_schema_versions_are_closed():
 
 def test_unreadable_or_foreign_attempt_is_never_a_success_oracle(tmp_path):
     assert not mutation_committed(tmp_path / "missing.json", attempt_id="run", step_path="s", cache_key="k")
+
+
+def test_strict_guard_refuses_an_in_place_write_it_never_saw(tmp_path):
+    # Rewriting a member file moves neither the structure nor the root's
+    # ctime -- exactly what an in-place casacore cell update does -- so only
+    # the member fingerprint can tell the live head from the recorded one.
+    import os
+
+    ms = _dataset(tmp_path)
+    first = _guard(tmp_path, ms, "a" * 64)
+    first.before_run()
+    (ms / "table.dat").write_text("v1")
+    _commit(first, ms)
+    root_ctime = ms.stat().st_ctime_ns
+    (ms / "table.dat").write_text("vX")  # same size, new content and mtime
+    os.utime(ms / "table.dat", ns=(1, 1))
+    assert ms.stat().st_ctime_ns == root_ctime
+
+    journal = get_journal(str(tmp_path / "cache"))
+    assert "table files differ" in strict_reuse_issue(journal, ms, state_name("a" * 64, "ms"), _identity(ms))
+    again = _guard(tmp_path, ms, "b" * 64, run="run2")
+    with pytest.raises(DatasetLifecycleUnavailableError, match="table files changed"):
+        again.before_run()
+    assert (ms / "table.dat").read_text() == "vX"
+    assert journal.get(chain_id(ms)).marker is None

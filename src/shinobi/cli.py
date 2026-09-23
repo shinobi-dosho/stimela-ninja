@@ -609,7 +609,7 @@ def run(
         ctx.exit()
 
     if remote and overwrite_step:
-        raise click.ClickException("--overwrite-step is not forwarded by --remote; spell it --overwrite STEP, which is")
+        raise click.ClickException("--overwrite-step is not forwarded by --remote; use --overwrite STEP instead, which is forwarded")
     if remote:
         _run_remote(
             ctx,

@@ -598,11 +598,12 @@ def test_binary_cab_writer_runs_sandboxed_and_rolls_back_on_nonzero_exit(tmp_pat
 
     failed = cab(script=script, ms=Path("obs.ms"), value=-1, sandbox=True, **run_kwargs(tmp_path))
     assert not failed.success and failed.returncode == 3
-    # The tool wrote -1 before failing; its exact predecessor is back.
+    # The tool wrote -1 before failing. This call changed its parameters, so
+    # it had consumed the pre-chain state; the head it found (6) is back.
     assert scans(ms) == [6] * ROWS
     last = attempts(tmp_path)[-1]
     assert last.phase is DatasetLifecyclePhase.FAILED
-    assert last.leaves[0].mutations[0].outcome is DatasetMutationOutcome.ROLLED_BACK
+    assert last.leaves[0].mutations[0].outcome is DatasetMutationOutcome.PRE_RUN_RESTORED
 
 
 def test_external_closure_refuses_the_exact_restart_guarantee(tmp_path):
@@ -771,3 +772,144 @@ def test_cli_overwrite_option(tmp_path):
     assert runner.invoke(main, own).exit_code == 0
     assert runner.invoke(main, [*own, "--overwrite"]).exit_code != 0
     assert runner.invoke(main, ["run", "--overwrite-step", "tool", *own[1:], "--overwrite"]).exit_code == 0
+
+
+# -- review regressions (PR #165) -------------------------------------------
+
+
+@pytest.mark.parametrize("swap", ["plain-directory", "symlink"])
+def test_overwrite_revalidates_the_target_under_its_claim(tmp_path, monkeypatch, swap):
+    # Absent when checked, replaced before the claim: the deletion must see
+    # what is there *now*, not what was there when the plan was made.
+    import shinobi.ownership as ownership
+
+    target = tmp_path / "new.ms"
+    precious = tmp_path / "precious"
+    precious.mkdir()
+    (precious / "keep.txt").write_text("keep me")
+    real_acquire = ownership.acquire_workspace
+
+    def acquire_after_swap(*args, **kwargs):
+        if swap == "plain-directory":
+            target.mkdir()
+            (target / "keep.txt").write_text("keep me")
+        else:
+            target.symlink_to(precious)
+        return real_acquire(*args, **kwargs)
+
+    monkeypatch.setattr(ownership, "acquire_workspace", acquire_after_swap)
+    match = "is not a CASA table" if swap == "plain-directory" else "is a symlink"
+    with pytest.raises(DatasetLifecycleUnavailableError, match=match):
+        simulate(ms=target, overwrite_steps=["simulate"], **run_kwargs(tmp_path))
+    assert (precious / "keep.txt").read_text() == "keep me"
+    assert target.is_symlink() if swap == "symlink" else (target / "keep.txt").exists()
+
+
+def test_overwrite_follows_a_symlinked_parent_like_rm(tmp_path):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    (tmp_path / "data").symlink_to(scratch)
+    assert simulate(ms=tmp_path / "data" / "sim.ms", **run_kwargs(tmp_path)).success
+    set_scans(scratch / "sim.ms", 99)
+
+    assert simulate(ms=tmp_path / "data" / "sim.ms", overwrite_steps=["simulate"], **run_kwargs(tmp_path)).success
+
+    assert (tmp_path / "data").is_symlink()
+    assert scans(scratch / "sim.ms") == [3] * ROWS
+    [record] = attempts(tmp_path)[-1].overwrites
+    assert record.existed and record.path == (scratch / "sim.ms").resolve()
+
+
+def test_same_key_rerun_replaces_the_successor_snapshot(tmp_path):
+    # A nondeterministic tool re-run under an unchanged key writes different
+    # cells with an identical structure; the successor snapshot must be the
+    # state now on disk, not the previous run's.
+    ms = make_ms(tmp_path / "obs.ms")
+    draws = iter([41, 42])
+
+    @pystep(dataset_accesses=[WRITE_SCANS])
+    def noisy(ms: MeasurementSetV2) -> None:
+        set_scans(ms, next(draws))
+
+    assert noisy(ms=ms, **run_kwargs(tmp_path)).success
+    get_cache_manifest(str(tmp_path / "cache")).remove({"noisy"})
+    assert noisy(ms=ms, **run_kwargs(tmp_path)).success
+
+    assert scans(ms) == [42] * ROWS
+    [mutation] = attempts(tmp_path)[-1].leaves[0].mutations
+    assert scans(mutation.successor_snapshot) == [42] * ROWS
+
+
+def test_failed_mid_chain_rerun_returns_to_the_head_it_found_and_says_so(tmp_path):
+    ms = make_ms(tmp_path / "obs.ms")
+    assert chain_recipe(first=10, by=1)(ms=ms, **run_kwargs(tmp_path)).success
+    assert scans(ms) == [11] * ROWS
+
+    @pystep(name="increment", dataset_accesses=[WRITE_SCANS])
+    def broken_increment(ms: MeasurementSetV2, by: int) -> None:
+        set_scans(ms, scans(ms)[0] + by)
+        raise RuntimeError("tool died after writing")
+
+    recipe = Recipe(name="chain", inputs_model=MSInput, outputs_model=Empty)
+    recipe.add_step("renumber", renumber, ms=InputRef(field="ms"), value=10)
+    recipe.add_step("increment", broken_increment, ms=InputRef(field="ms"), by=5)
+    with pytest.raises(Exception, match="tool died"):
+        recipe(ms=ms, **run_kwargs(tmp_path))
+
+    # It had restored renumber's state (10) and written 15; the complete
+    # state it found (11) is back, trusted, and the record says which.
+    assert scans(ms) == [11] * ROWS
+    leaf = next(leaf for leaf in attempts(tmp_path)[-1].leaves if leaf.step_path == "chain.increment")
+    [mutation] = leaf.mutations
+    assert mutation.outcome is DatasetMutationOutcome.PRE_RUN_RESTORED
+    chain = get_journal(str(tmp_path / "cache")).get(chain_id(ms.resolve()))
+    assert chain.marker is None and chain.status is HeadStatus.TRUSTED
+    # Provenance names both: what the step consumed and what is on disk now.
+    assert mutation.predecessor_state != mutation.restored_state == chain.head
+
+    assert chain_recipe(first=10, by=5)(ms=ms, **run_kwargs(tmp_path)).success
+    assert scans(ms) == [15] * ROWS
+
+
+def test_in_place_write_outside_the_journal_is_never_reused_or_restored_over(tmp_path):
+    # The second review's reproduction: an ordinary casacore cell update
+    # moves neither the structure nor the root's ctime.
+    ms = make_ms(tmp_path / "obs.ms")
+    assert renumber(ms=ms, value=7, **run_kwargs(tmp_path)).success
+    set_scans(ms, 99)
+
+    with pytest.raises(DatasetLifecycleUnavailableError, match="table files changed"):
+        renumber(ms=ms, value=7, **run_kwargs(tmp_path))
+
+    # Neither reused (a cache hit over 99) nor rolled back over someone's write.
+    assert scans(ms) == [99] * ROWS
+    [leaf] = attempts(tmp_path)[-1].leaves
+    assert leaf.cache.decision == "rejected-hit" and "changed outside this journal" in leaf.cache.reason
+    assert leaf.outcome == "refused"
+
+
+def test_member_fingerprints_are_recorded_and_survive_a_restore(tmp_path):
+    ms = make_ms(tmp_path / "obs.ms")
+    assert chain_recipe(first=10, by=1)(ms=ms, **run_kwargs(tmp_path)).success
+    # A mid-chain re-run restores renumber's state from its snapshot and
+    # must find exactly the member files recorded for it.
+    assert chain_recipe(first=10, by=5)(ms=ms, **run_kwargs(tmp_path)).success
+    leaf = next(leaf for leaf in attempts(tmp_path)[-1].leaves if leaf.step_path == "chain.increment")
+    [mutation] = leaf.mutations
+    assert mutation.predecessor_fingerprint and mutation.successor_fingerprint
+    assert mutation.predecessor_fingerprint != mutation.successor_fingerprint
+    assert "not a content hash" in mutation.fingerprint_coverage
+
+
+def test_call_level_cache_off_outranks_a_writers_own_cache_setting(tmp_path):
+    ms = make_ms(tmp_path / "obs.ms")
+
+    @pystep(cache=True, dataset_accesses=[WRITE_SCANS])
+    def eager(ms: MeasurementSetV2) -> None:
+        pytest.fail("an explicitly uncached run executed a strict writer")
+
+    recipe = Recipe(name="eager", inputs_model=MSInput, outputs_model=Empty)
+    recipe.add_step("eager", eager, ms=InputRef(field="ms"))
+    with pytest.raises(DatasetLifecycleUnavailableError, match="caching explicitly disabled"):
+        recipe(ms=ms, cache=False, cache_dir=str(tmp_path / "cache"))
+    assert scans(ms) == [1] * ROWS

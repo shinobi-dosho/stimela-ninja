@@ -1450,3 +1450,31 @@ def test_flipping_the_content_sample_flag_invalidates_the_memo(tmp_path):
         assert len(sampled[0]) == 4 and len(plain[0]) == 3
     finally:
         set_content_sample(False)
+
+
+def test_call_level_cache_off_outranks_a_steps_own_cache_true(tmp_path, monkeypatch):
+    # `ninja run --no-cache` promises "regardless of AppConfig/Scope cache
+    # settings": the call's explicit disable must reach a step that opts in.
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    class Out(BaseModel):
+        pass
+
+    @shinobi.pystep(cache=True)
+    def eager(n: int) -> None:
+        calls.append(n)
+
+    recipe = shinobi.Recipe(name="wrap", inputs_model=Out, outputs_model=Out)
+    recipe.add_step("eager", eager, n=1)
+    cache_dir = str(tmp_path / "cache")
+
+    recipe(cache=False, cache_dir=cache_dir)
+    recipe(cache=False, cache_dir=cache_dir)
+    assert calls == [1, 1]
+    assert get_cache_manifest(cache_dir).entry("wrap.eager") is None
+
+    # Without the explicit disable the step's own opt-in still applies.
+    recipe(cache_dir=cache_dir)
+    recipe(cache_dir=cache_dir)
+    assert calls == [1, 1, 1]

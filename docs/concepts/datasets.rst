@@ -276,14 +276,23 @@ Each strict leaf then:
    written dataset contributes only its path string; a wired one its producer
    lineage; an unwired one its per-file path/mtime/size fingerprint).  A skip
    cache hit on a writer is reused only when the journal vouches for the live
-   dataset and its head *descends* from the state the step produced.  This
-   catches a same-key re-run of an upstream writer, which moves the dataset
-   back while every downstream key still matches;
+   dataset -- same structure *and* same member files as the recorded head --
+   and that head *descends* from the state the step produced.  This catches
+   a same-key re-run of an upstream writer, which moves the dataset back
+   while every downstream key still matches;
+#. refuses, before anything else, a dataset whose table files changed since
+   the journal recorded its head (an in-place write outside the pipeline,
+   which moves neither the structure nor the root directory's ctime), rather
+   than reusing it or restoring over it;
 #. restores and verifies its exact predecessor, snapshots it, marks the
    dataset in flight, and observes it structurally;
-#. runs the tool.  A non-zero exit or exception rolls the dataset back to its
-   exact predecessor **immediately** (a ``create`` target is removed), rather
-   than leaving the partial write for the next run;
+#. runs the tool.  A non-zero exit or exception returns the dataset to an
+   exact, trusted state **immediately** rather than leaving the partial write
+   for the next run: its predecessor when the step ran against the head it
+   found, or that head when the step had first restored an older predecessor
+   (a mid-chain re-run must not leave the workspace behind the complete state
+   it found -- crash reconciliation does the same).  A ``create`` target is
+   removed;
 #. validates its declared postconditions.  Exit status zero is not success:
    a writer may change the MAIN row count, the schema (MAIN columns,
    subtables, closure membership) and MAIN keyword names only where its
@@ -304,9 +313,14 @@ column writes are recorded, not verified.  Every mutation record keeps four
 identities apart: the physical snapshot directories, the structural signature
 (``msv2-structural-signature/v1``: row count, column/keyword/subtable names,
 closure membership, table files and storage managers -- explicitly **not**
-cell values), the step's cache key, and the journal state names that give
-provenance lineage.  A structural signature can refuse an incompatible tree;
-it is never evidence that visibility data are unchanged.  A future MSv4/Zarr
+cell values) together with the member fingerprint
+(``msv2-member-fingerprint/v1``: each table file's relative path, size and
+mtime), the step's cache key, and the journal state names that give
+provenance lineage.  The signature refuses an incompatible tree and the
+fingerprint catches a write through the filesystem; neither is a content
+hash, and neither is evidence that visibility data are scientifically
+unchanged.  A failed mutation's record also names the state it left on disk
+(``restored_state``), separately from the one it consumed.  A future MSv4/Zarr
 reusable state is a separate identity and never replaces the native
 predecessor snapshot as the rollback source.
 
@@ -315,9 +329,10 @@ Mutation attempts are schema version 2 records: the version 1 fields plus
 step with its accesses, cache decision, pre/post observations and, per
 written dataset, a :class:`~shinobi.DatasetMutationRecord`
 (predecessor/successor state, signature and snapshot, and outcome:
-``committed``, ``rolled-back``, ``absent-restored``, ``untrusted`` when a
-rollback itself failed and the dataset stays marked for recovery, or
-``refused``).
+``committed``, ``rolled-back`` (the predecessor is back), ``pre-run-restored``
+(the head the run found is back, after a mid-chain re-run failed),
+``absent-restored``, ``untrusted`` when a rollback itself failed and the
+dataset stays marked for recovery, or ``refused``).
 
 Re-creating a dataset
 ~~~~~~~~~~~~~~~~~~~~~
@@ -343,7 +358,10 @@ not overwritten.  The attempt record lists each ``overwrites`` entry.
 Because the path comes from a parameter, overwrite deletes only a CASA table
 (a directory containing ``table.dat``), and refuses a symlink (its resolved
 path is the link's target, which the caller never named) or a path containing
-the workspace or cache directory.  It names steps that ``create`` a strict
+the workspace or cache directory.  These checks run again under the claim,
+immediately before deletion.  A symlinked *parent* directory is followed, as
+``rm -r`` would: ``data/obs.ms`` with ``data`` linked to scratch storage names
+the table on scratch storage.  It names steps that ``create`` a strict
 ``MeasurementSetV2`` only.  A target whose own parameters include
 ``overwrite`` keeps its ``--overwrite`` flag; name the step with
 ``--overwrite-step STEP`` instead.  ``--overwrite`` is refused with

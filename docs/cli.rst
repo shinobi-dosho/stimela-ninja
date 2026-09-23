@@ -68,7 +68,9 @@ do.
 
 Add ``--cache-dir DIR`` / ``--no-cache`` to control step-level result caching
 (a step must also opt in via its own ``Scope.cache``, an enclosing recipe's,
-or ``AppConfig.cache.enabled`` -- these flags alone don't turn caching on):
+or ``AppConfig.cache.enabled`` -- these flags alone don't turn caching on).
+``--no-cache`` is authoritative: it also disables steps that set
+``cache=True`` themselves:
 
 .. code-block:: console
 

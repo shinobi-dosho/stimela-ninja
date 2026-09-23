@@ -191,6 +191,10 @@ class Generation:
     # `dataset_lifecycle.structural_signature`). Cheap structure only -- it
     # can refuse an incompatible tree, never vouch for visibility values.
     structural_signature: str | None = None
+    # A strict guard's member-file fingerprint of this state (relative path,
+    # size and mtime of every table file). The signature cannot see an
+    # in-place cell write; this can, because casacore rewrites the file.
+    content_fingerprint: str | None = None
     # The state this one was produced from, recorded by a strict guard so
     # reuse can ask whether the live head *descends* from a state (see
     # `strict_reuse_issue`). The generation list is commit order, not lineage.
@@ -201,6 +205,8 @@ class Generation:
         # Written only when present, so a non-strict journal is unchanged.
         if self.structural_signature is not None:
             data["structural_signature"] = self.structural_signature
+        if self.content_fingerprint is not None:
+            data["content_fingerprint"] = self.content_fingerprint
         if self.parent is not None:
             data["parent"] = self.parent
         return data
@@ -557,6 +563,22 @@ def eligible_fields(
 
 
 @dataclass(frozen=True)
+class StateIdentity:
+    """What a strict guard records about one named state of a dataset.
+
+    Two identities, neither standing in for the other: the structural
+    signature (schema, rows, closure membership -- no values) and the member
+    fingerprint (each table file's relative path, size and mtime). The
+    fingerprint is metadata, not a content hash: it detects a write through
+    the filesystem, which is what an in-place cell update is, but not a
+    deliberate mtime reset.
+    """
+
+    signature: str
+    fingerprint: str
+
+
+@dataclass(frozen=True)
 class StrictMutation:
     """Exact-recovery obligations of one strict MSv2 mutation.
 
@@ -565,15 +587,15 @@ class StrictMutation:
     strict MSv2 contract promises exact predecessor recovery instead, so
     under this policy every such degradation is a refusal before launch,
     failure rolls the dataset back to its predecessor immediately, and each
-    named state carries a structural signature that a restore or reuse must
+    named state carries a `StateIdentity` that a restore or reuse must
     match.
 
-    `signature` observes one dataset root (`dataset_lifecycle` supplies it,
+    `identity` observes one dataset root (`dataset_lifecycle` supplies it,
     so this module stays free of casacore). `create_fields` are the guard's
     CREATE targets, whose predecessor is absence by contract.
     """
 
-    signature: Callable[[Path], str]
+    identity: Callable[[Path], StateIdentity]
     create_fields: frozenset[str] = frozenset()
 
 
@@ -590,11 +612,13 @@ class _FieldPlan:
     skip: bool = False
     path_was_absent: bool = False
     # Strict mode only: whether the restore was forced (the pre-run disk was
-    # an untrusted partial write), the observed predecessor signature, and
-    # what finally happened to the path.
+    # an untrusted partial write), the observed predecessor identity, the
+    # head the run found (what a failed re-run returns to), and what finally
+    # happened to the path.
     forced: bool = False
     marked: bool = False
-    predecessor_signature: str | None = None
+    predecessor: StateIdentity | None = None
+    pre_run_head: str | None = None
     outcome: str = "pending"
 
 
@@ -631,7 +655,7 @@ class SnapshotGuard:
         self.strict = strict
         self.success_kind = success_kind
         # Set by the lifecycle after postcondition validation, before S1.
-        self.successor_signatures: dict[str, str] = {}
+        self.successor_identities: dict[str, StateIdentity] = {}
         self.journal = journal
         self.step_path = step_path
         self.cache_key = cache_key
@@ -719,16 +743,21 @@ class SnapshotGuard:
             return
         if plan.required is None:
             self._refuse(plan, "the journal names no predecessor state for this dataset (an uncached writer detached its chain)")
-        signature = self.strict.signature(plan.path)
+        identity = self.strict.identity(plan.path)
         chain = self.journal.get(plan.cid) if plan.cid is not None else None
         generation = chain.generation(plan.required) if chain is not None and plan.required is not None else None
-        if generation is not None and generation.structural_signature is not None and generation.structural_signature != signature:
+        if generation is not None and generation.structural_signature is not None and generation.structural_signature != identity.signature:
             self._refuse(
                 plan,
-                f"its live structure ({signature[:12]}) differs from the structure recorded for predecessor state {plan.required} "
+                f"its live structure ({identity.signature[:12]}) differs from the structure recorded for predecessor state {plan.required} "
                 f"({generation.structural_signature[:12]}); the dataset changed outside this journal or its snapshot is not that state",
             )
-        plan.predecessor_signature = signature
+        if generation is not None and generation.content_fingerprint is not None and generation.content_fingerprint != identity.fingerprint:
+            self._refuse(
+                plan,
+                f"its table files differ from those recorded for predecessor state {plan.required}; the dataset changed outside this journal or its snapshot is not that state",
+            )
+        plan.predecessor = identity
 
     def _preflight(self, plan: _FieldPlan) -> None:
         """Strict: both snapshots this step depends on must be affordable now.
@@ -849,6 +878,19 @@ class SnapshotGuard:
             # its head, and the forced restore below replaces the tree
             # exactly; the moved root is that interruption, not a new write.
             moved = False
+        if self.strict is not None and chain is not None and chain.marker is None and chain.status is HeadStatus.TRUSTED and chain.head is not None:
+            # The root's ctime does not move when casacore rewrites a table
+            # file in place, so a trusted head is also checked member by
+            # member. A mismatch is a write this journal never saw.
+            head = chain.generation(chain.head)
+            if head is not None and head.content_fingerprint is not None and head.content_fingerprint != self.strict.identity(plan.path).fingerprint:
+                self._refuse(
+                    plan,
+                    f"its table files changed since the journal recorded head state {chain.head}, so a write outside this pipeline "
+                    "postdates every recorded state; inspect it, then 'ninja cache invalidate' the chain to start from the current contents",
+                )
+        if chain is not None:
+            plan.pre_run_head = chain.head
         if moved:
             assert chain is not None
             # The tree's root metadata moved since our last recorded step:
@@ -1138,22 +1180,21 @@ class SnapshotGuard:
 
         The default Rule B skips a name that already exists, which is right
         when the name alone identifies the content. A strict re-run with an
-        unchanged key (after a rollback, or a rejected reuse) can produce a
-        structurally different tree from a nondeterministic tool, and then
-        the old snapshot is not the state now on disk. So an existing
-        snapshot is kept only when its recorded signature matches, and is
-        otherwise replaced atomically.
+        unchanged key (after a rollback, a lost manifest entry, or a
+        rejected reuse) re-executes the tool, and a nondeterministic tool
+        can write different cells under the same key. The old snapshot is
+        then not the state now on disk, and a later restore would reinstate
+        cells nothing downstream consumed. The structural signature cannot
+        detect that -- it deliberately excludes cell values -- so an
+        existing snapshot is always replaced, atomically with respect to a
+        failure to take the new one. This path only runs when a step
+        actually executed, and on a clone-capable filesystem it is cheap.
         """
         assert self.cache_key is not None
         name = state_name(self.cache_key, plan.field)
-        signature = self.successor_signatures.get(plan.field)
-        if signature is None:
+        if self.successor_identities.get(plan.field) is None:
             raise DatasetLifecycleUnavailableError(f"strict MSv2 mutation of '{plan.field}' has no validated successor observation")
         dest = self.journal.snapshot_dir(name)
-        chain = self.journal.get(plan.cid) if plan.cid is not None else None
-        generation = chain.generation(name) if chain is not None else None
-        if dest.exists() and generation is not None and generation.structural_signature == signature:
-            return
         stale = None
         if dest.exists():
             stale = dest.with_name(dest.name + ".stale." + self.run_id)
@@ -1185,10 +1226,10 @@ class SnapshotGuard:
         precisely why it has nothing rather than reporting a generic miss.
         """
         dest = self.journal.snapshot_dir(name)
-        signature = plan.predecessor_signature if rule == "A" else None
+        identity = plan.predecessor if rule == "A" else None
         if dest.exists():
-            if signature is not None:
-                self._record_generation(plan, name, size=tree_size(dest), present=True, signature=signature)
+            if identity is not None:
+                self._record_generation(plan, name, size=tree_size(dest), present=True, identity=identity)
             return
         tier = CloneTier.COPY if self.force_copy else probe(self.journal.root)
         affordable, needed, available = can_afford(plan.path, self.journal.root, tier=tier)
@@ -1224,9 +1265,9 @@ class SnapshotGuard:
         if rule == "A":
             # Apparent size, recorded once at insert -- eviction must never
             # `du` a snapshot directory to decide what to drop.
-            self._record_generation(plan, name, size=tree_size(dest), present=True, signature=signature)
+            self._record_generation(plan, name, size=tree_size(dest), present=True, identity=identity)
 
-    def _record_generation(self, plan: _FieldPlan, name: str, size: int, present: bool, signature: str | None = None) -> None:
+    def _record_generation(self, plan: _FieldPlan, name: str, size: int, present: bool, identity: StateIdentity | None = None) -> None:
         if plan.cid is None:
             return
 
@@ -1236,10 +1277,20 @@ class SnapshotGuard:
             for gen in chain.generations:
                 if gen.name == name:
                     gen.snapshot_present = gen.snapshot_present or present
-                    if gen.structural_signature is None:
-                        gen.structural_signature = signature
+                    if identity is not None and gen.structural_signature is None:
+                        gen.structural_signature = identity.signature
+                    if identity is not None and gen.content_fingerprint is None:
+                        gen.content_fingerprint = identity.fingerprint
                     return chain
-            chain.generations.append(Generation(name=name, size=size, snapshot_present=present, structural_signature=signature))
+            chain.generations.append(
+                Generation(
+                    name=name,
+                    size=size,
+                    snapshot_present=present,
+                    structural_signature=identity.signature if identity is not None else None,
+                    content_fingerprint=identity.fingerprint if identity is not None else None,
+                )
+            )
             return chain
 
         self.journal.update_chain(plan.cid, mutate)
@@ -1261,7 +1312,7 @@ class SnapshotGuard:
         produced = state_name(self.cache_key, plan.field) if self.cache_key else None
         consumed_key = f"{self.step_path}::{plan.field}"
         consumed_name = plan.required
-        successor = self.successor_signatures.get(plan.field)
+        successor = self.successor_identities.get(plan.field)
 
         def mutate(chain: Chain | None) -> Chain:
             if chain is None:
@@ -1278,9 +1329,19 @@ class SnapshotGuard:
             parent = consumed_name if self.strict is not None else None
             if generation is None:
                 snapshot = self.journal.snapshot_dir(produced)
-                chain.generations.append(Generation(name=produced, size=tree_size(snapshot), snapshot_present=snapshot.exists(), structural_signature=successor, parent=parent))
+                chain.generations.append(
+                    Generation(
+                        name=produced,
+                        size=tree_size(snapshot),
+                        snapshot_present=snapshot.exists(),
+                        structural_signature=successor.signature if successor is not None else None,
+                        content_fingerprint=successor.fingerprint if successor is not None else None,
+                        parent=parent,
+                    )
+                )
             elif self.strict is not None:
-                generation.structural_signature = successor
+                generation.structural_signature = successor.signature if successor is not None else None
+                generation.content_fingerprint = successor.fingerprint if successor is not None else None
                 generation.parent = parent
             chain.head = produced
             chain.status = HeadStatus.TRUSTED
@@ -1365,10 +1426,22 @@ class SnapshotGuard:
                 plan.trash = None
 
     def _strict_rollback(self, plan: _FieldPlan) -> None:
-        """Return one strict dataset to its exact pre-run state, now."""
-        if plan.skip or not plan.marked or plan.outcome in {"rolled-back", "refused", "committed"}:
+        """Return one strict dataset to an exact, named state, now.
+
+        Which state is deliberate. If the step ran against the head it
+        found, that head *is* its predecessor, and the dataset goes back to
+        it (``rolled-back``). If the step first restored an older
+        predecessor over a trusted head -- a re-run of a mid-chain step --
+        the dataset goes back to that head (``pre-run-restored``), exactly
+        as the non-strict guard and crash reconciliation both do: a failed
+        re-run must not leave the workspace behind the complete state it
+        found. Either way the disk is exactly a named, trusted state, and
+        the outcome says which.
+        """
+        if plan.skip or not plan.marked or plan.outcome in {"rolled-back", "pre-run-restored", "refused", "committed"}:
             return
         assert plan.cid is not None
+        outcome = "rolled-back"
         try:
             if plan.trash is not None and not plan.forced:
                 # The pre-run tree was the trusted head (this step restored
@@ -1378,6 +1451,7 @@ class SnapshotGuard:
                 os.rename(plan.trash, plan.path)
                 plan.trash = None
                 trusted = True
+                outcome = "pre-run-restored"
             else:
                 if plan.required is None:
                     raise DatasetLifecycleUnavailableError("no predecessor state is named")
@@ -1411,8 +1485,14 @@ class SnapshotGuard:
             return chain
 
         self.journal.update_chain(plan.cid, settled)
-        plan.outcome = "rolled-back"
-        logger.info("step %s: rolled strict dataset '%s' at %s back to its exact predecessor", self.step_path, plan.field, plan.path)
+        plan.outcome = outcome
+        logger.info(
+            "step %s: returned strict dataset '%s' at %s to %s",
+            self.step_path,
+            plan.field,
+            plan.path,
+            "the head this run found" if outcome == "pre-run-restored" else "its exact predecessor",
+        )
 
     def _replace_from_snapshot(self, plan: _FieldPlan, name: str) -> None:
         """Replace the live tree with snapshot `name`, keeping it on failure."""
@@ -1480,7 +1560,7 @@ class SnapshotGuard:
         self.journal.update_chain(cid, mutate)
 
 
-def strict_reuse_issue(journal: ChainJournal, path: Path, produced: str, live_signature: str) -> str | None:
+def strict_reuse_issue(journal: ChainJournal, path: Path, produced: str, live: StateIdentity) -> str | None:
     """Why a strict writer's skip-cache hit must not be reused, or ``None``.
 
     The skip cache proves the step's inputs and declared outputs are
@@ -1489,9 +1569,11 @@ def strict_reuse_issue(journal: ChainJournal, path: Path, produced: str, live_si
     *upstream* mutator does exactly that: the head moves back to a state
     this step's product was derived from, yet every downstream key still
     matches. So a hit is reused only when the journal vouches for the live
-    tree (no marker, trusted head, unchanged root identity and matching
-    structure) and the head is `produced` or descends from it through the
-    strict parent links.
+    tree (no marker, trusted head, unchanged root identity, matching
+    structure and matching member files) and the head is `produced` or
+    descends from it through the strict parent links. The member check is
+    what catches an ordinary in-place write: it moves neither the root's
+    ctime nor the structure.
     """
     cid = chain_id(path)
     chain = journal.get(cid)
@@ -1508,10 +1590,12 @@ def strict_reuse_issue(journal: ChainJournal, path: Path, produced: str, live_si
     if chain.ctime_ns and chain.ctime_ns != st.st_ctime_ns:
         return "the dataset's root identity changed outside the journal"
     head = chain.generation(chain.head)
-    if head is None or head.structural_signature is None:
-        return "the live head has no recorded structural signature"
-    if head.structural_signature != live_signature:
+    if head is None or head.structural_signature is None or head.content_fingerprint is None:
+        return "the live head has no recorded structural signature and member fingerprint"
+    if head.structural_signature != live.signature:
         return "the live structure differs from the structure recorded for the head state"
+    if head.content_fingerprint != live.fingerprint:
+        return "the live table files differ from those recorded for the head state (changed outside this journal)"
     seen: set[str] = set()
     current: Generation | None = head
     while current is not None and current.name not in seen:

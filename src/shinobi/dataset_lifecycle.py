@@ -14,10 +14,13 @@ hierarchy or snapshot store.
 
 - *physical snapshot identity* -- the snapshot directory holding an exact
   copy of a state's closure (``predecessor_snapshot``/``successor_snapshot``);
-- *structural identity* -- :func:`structural_signature`, a hash of the
-  bounded ``msv2-structural/v1`` observation (row count, column, keyword and
-  subtable names, closure membership, table files and storage managers). It
-  refuses an incompatible tree; it never proves visibility values unchanged;
+- *observed state* -- :func:`structural_signature`, a hash of the bounded
+  ``msv2-structural/v1`` observation (row count, column, keyword and subtable
+  names, closure membership, table files and storage managers), plus
+  :func:`member_fingerprint`, each table file's relative path, size and
+  mtime. The signature refuses an incompatible tree; the fingerprint catches
+  an in-place cell write, which moves neither the structure nor the root
+  directory. Neither is a content hash or proves visibility values;
 - *logical cache identity* -- the step's skip-cache key, which names the
   state it produces;
 - *provenance lineage* -- the journal state names (``predecessor_state`` and
@@ -58,6 +61,11 @@ STRUCTURAL_SIGNATURE_VERSION = "msv2-structural-signature/v1"
 STRUCTURAL_SIGNATURE_COVERAGE = (
     "MAIN row count; MAIN column, keyword and subtable names; closure membership, "
     "table files and storage managers. Cell values, keyword values and visibility data are not examined."
+)
+MEMBER_FINGERPRINT_VERSION = "msv2-member-fingerprint/v1"
+MEMBER_FINGERPRINT_COVERAGE = (
+    "Relative path, size and mtime of every regular file in the closure's tables. Detects writes through the "
+    "filesystem, including in-place cell updates; not a content hash, so a deliberately restored mtime is not detected."
 )
 
 
@@ -168,6 +176,10 @@ class DatasetMutationOutcome(str, Enum):
     COMMITTED = "committed"
     # Failure: the dataset is exactly its predecessor again.
     ROLLED_BACK = "rolled-back"
+    # Failure of a re-run that had restored an older predecessor over the
+    # trusted head: the dataset is exactly that head again, the state the
+    # run found. ``predecessor_state`` is what the step consumed, not this.
+    PRE_RUN_RESTORED = "pre-run-restored"
     ABSENT_RESTORED = "absent-restored"
     # Failure whose rollback also failed: the journal marks the dataset for
     # restore before anything else may use it.
@@ -191,10 +203,16 @@ class DatasetMutationRecord(BaseModel):
     predecessor_signature: str | None
     predecessor_snapshot: Path | None
     successor_state: str
+    predecessor_fingerprint: str | None = None
     successor_signature: str | None = None
+    successor_fingerprint: str | None = None
     successor_snapshot: Path | None = None
     signature_coverage: str = STRUCTURAL_SIGNATURE_COVERAGE
+    fingerprint_coverage: str = MEMBER_FINGERPRINT_COVERAGE
     outcome: DatasetMutationOutcome = DatasetMutationOutcome.PENDING
+    # The named state the dataset holds after a failure: the predecessor for
+    # ``rolled-back``, the head the run found for ``pre-run-restored``.
+    restored_state: str | None = None
 
 
 class DatasetCacheDecision(BaseModel):
@@ -500,6 +518,35 @@ def dataset_signature(root: Path, workspace: Path) -> str:
     """:func:`structural_signature` of a freshly observed root."""
 
     return structural_signature(observe_dataset(root, workspace))
+
+
+def member_fingerprint(observation: DatasetObservation) -> str:
+    """The member-file identity of one observed MSv2 closure.
+
+    Every regular table file's path (relative to the root), size and mtime.
+    Directories and inode/ctime are excluded: an exact snapshot restored at
+    the same path has new inodes and directory times but, because the clone
+    ladder preserves file mtimes, the same fingerprint. See
+    :data:`MEMBER_FINGERPRINT_COVERAGE` for what it does not cover.
+    """
+
+    import stat
+
+    root = observation.root
+    entries = sorted(
+        (str(item.path.relative_to(root)) if item.path.is_relative_to(root) else str(item.path), item.size, item.mtime_ns) for item in observation.files if stat.S_ISREG(item.mode)
+    )
+    blob = {"version": MEMBER_FINGERPRINT_VERSION, "files": entries}
+    return hashlib.sha256(json.dumps(blob, sort_keys=True).encode()).hexdigest()
+
+
+def dataset_identity(root: Path, workspace: Path) -> Any:
+    """One observation's `shinobi.snapshots.StateIdentity`."""
+
+    from shinobi.snapshots import StateIdentity
+
+    observation = observe_dataset(root, workspace)
+    return StateIdentity(signature=structural_signature(observation), fingerprint=member_fingerprint(observation))
 
 
 def observe_roots(roots: tuple[Path, ...], workspace: Path) -> tuple[tuple[DatasetObservation, ...], tuple[Path, ...]]:
@@ -820,7 +867,7 @@ class StrictLeaf:
         from shinobi.snapshots import StrictMutation
 
         workspace = self.lifecycle.workspace
-        return StrictMutation(signature=lambda path: dataset_signature(path, workspace), create_fields=self.creates)
+        return StrictMutation(identity=lambda path: dataset_identity(path, workspace), create_fields=self.creates)
 
     def coverage(self, input_keys: dict[str, Any] | None) -> tuple[str, ...]:
         """How each dataset field entered the cache key -- stated, not implied."""
@@ -851,11 +898,11 @@ class StrictLeaf:
         problems = []
         for field, root in sorted(self.fields.items()):
             try:
-                signature = dataset_signature(root, self.lifecycle.workspace)
+                live = dataset_identity(root, self.lifecycle.workspace)
             except DatasetLifecycleUnavailableError as exc:
                 problems.append(f"{field}: {exc}")
                 continue
-            issue = strict_reuse_issue(journal, root, state_name(cache_key, field), signature)
+            issue = strict_reuse_issue(journal, root, state_name(cache_key, field), live)
             if issue is not None:
                 problems.append(f"{field}: {issue}")
         accepted = not problems
@@ -907,6 +954,7 @@ class StrictLeaf:
                 root=root,
                 predecessor_state=required,
                 predecessor_signature=structural_signature(before) if before is not None else None,
+                predecessor_fingerprint=member_fingerprint(before) if before is not None else None,
                 predecessor_snapshot=guard.journal.snapshot_dir(required) if guard is not None and required is not None else None,
                 successor_state=state_name(self.cache_key, field),
             )
@@ -941,12 +989,18 @@ class StrictLeaf:
         for field, root in self.fields.items():
             observation = post[root]
             assert observation is not None
-            signature = structural_signature(observation)
+            from shinobi.snapshots import StateIdentity
+
+            identity = StateIdentity(signature=structural_signature(observation), fingerprint=member_fingerprint(observation))
             if guard is not None:
-                guard.successor_signatures[field] = signature
+                guard.successor_identities[field] = identity
             record = self.mutations[field]
             self.mutations[field] = record.model_copy(
-                update={"successor_signature": signature, "successor_snapshot": guard.journal.snapshot_dir(record.successor_state) if guard is not None else None}
+                update={
+                    "successor_signature": identity.signature,
+                    "successor_fingerprint": identity.fingerprint,
+                    "successor_snapshot": guard.journal.snapshot_dir(record.successor_state) if guard is not None else None,
+                }
             )
         self._post = observed
         self._record("validated", "declared postconditions hold", post=observed)
@@ -961,7 +1015,11 @@ class StrictLeaf:
         for field, record in self.mutations.items():
             plan = plans.get(field)
             outcome = DatasetMutationOutcome.REFUSED if refused else DatasetMutationOutcome(plan.outcome) if plan is not None and plan.outcome != "pending" else record.outcome
-            self.mutations[field] = record.model_copy(update={"outcome": outcome})
+            restored = {
+                DatasetMutationOutcome.ROLLED_BACK: record.predecessor_state,
+                DatasetMutationOutcome.PRE_RUN_RESTORED: plan.pre_run_head if plan is not None else None,
+            }.get(outcome)
+            self.mutations[field] = record.model_copy(update={"outcome": outcome, "restored_state": restored})
         self._record("refused" if refused else "failed", reason, post=getattr(self, "_post", ()))
 
     def _record(self, outcome: str, reason: str, *, post: tuple[DatasetObservation, ...] = ()) -> None:
@@ -1012,6 +1070,7 @@ def overwrite_created_datasets(
 
     import os
     import shutil
+    import stat
 
     from shinobi.cache import get_cache_manifest
     from shinobi.ownership import acquire_workspace, ownership_workspace
@@ -1048,17 +1107,31 @@ def overwrite_created_datasets(
         targets.extend((name, access) for access in creates)
 
     cache_root = Path(cache_dir).resolve()
-    for name, access in targets:
-        path = access.requested_path
-        assert path is not None
-        if not (path.exists() or path.is_symlink()):
-            continue
-        if path.is_symlink():
+
+    def deletable(name: str, path: Path) -> bool:
+        """Whether ``path`` exists and may be deleted; refuse if it must not be.
+
+        ``lstat`` rather than ``stat``: whatever occupies the final
+        component now is what ``os.rename`` would move.
+        """
+        try:
+            mode = os.lstat(path).st_mode
+        except FileNotFoundError:
+            return False
+        if stat.S_ISLNK(mode):
             raise DatasetLifecycleUnavailableError(f"overwrite refused for step {name!r}: {path} is a symlink; remove or replace it yourself")
         if workspace.is_relative_to(path) or cache_root.is_relative_to(path):
             raise DatasetLifecycleUnavailableError(f"overwrite refused for step {name!r}: {path} contains the workspace or the cache directory")
-        if not path.is_dir() or not (path / "table.dat").is_file():
+        if not stat.S_ISDIR(mode) or not (path / "table.dat").is_file():
             raise DatasetLifecycleUnavailableError(f"overwrite refused for step {name!r}: {path} is not a CASA table; delete it yourself if it is meant to go")
+        return True
+
+    # Checked now to fail before taking any claim, and again under it: the
+    # path may change in between, and reconciliation under the claim may
+    # itself move a quarantined tree back into place.
+    for name, access in targets:
+        assert access.requested_path is not None
+        deletable(name, access.requested_path)
 
     downstream: set[int] = set()
     frontier = [index[name] for name in requested]
@@ -1079,14 +1152,19 @@ def overwrite_created_datasets(
         reconcile(cache_dir, manifest, paths=set(paths))
         journal = get_journal(cache_dir)
         for name, access in targets:
+            assert access.requested_path is not None
+            deletable(name, access.requested_path)
+        for name, access in targets:
             path = access.requested_path
             assert path is not None
-            existed = path.exists()
+            existed = deletable(name, path)
             if existed:
                 aside = path.with_name(path.name + TRASH_SUFFIX + run_id + "-overwrite")
                 if aside.exists():
                     shutil.rmtree(aside)
                 os.rename(path, aside)
+                # rmtree refuses a symlink, so even a swap after the check
+                # above cannot turn this into deleting a link's target.
                 shutil.rmtree(aside)
             journal.update_chain(chain_id(path), lambda _chain: None)
             records.append(DatasetOverwrite(step=name, field=access.field, path=path, existed=existed, invalidated=invalidated))
@@ -1143,12 +1221,16 @@ __all__ = [
     "DatasetObservation",
     "DatasetOverwrite",
     "LeafMutationError",
+    "MEMBER_FINGERPRINT_COVERAGE",
+    "MEMBER_FINGERPRINT_VERSION",
     "StrictLeaf",
     "claim_covers_accesses",
     "claim_covers_snapshot",
     "dataset_attempt_path",
+    "dataset_identity",
     "dataset_signature",
     "leaf_postcondition_issues",
+    "member_fingerprint",
     "mutation_committed",
     "observe_dataset",
     "observe_roots",
