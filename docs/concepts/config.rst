@@ -246,6 +246,13 @@ field, a path produced by an uncached step, a snapshot that could not fit --
 is left alone with a warning, and runs exactly as it would with snapshots
 off. It never rolls back something it cannot justify.
 
+The one exception is a strict ``MeasurementSetV2`` write or create. It
+promises its exact predecessor, so each of those cases is a refusal before
+the tool starts instead. Caching is enabled for such a writer automatically;
+``snapshots.mode: off``, or explicitly disabling its cache, refuses the
+workflow outright (see
+:doc:`datasets`, "Contained local mutation").
+
 .. important::
 
    With rollback in play, **declaring in-place mutation stops being an

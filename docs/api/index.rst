@@ -129,6 +129,12 @@ Datasets
 .. autoclass:: shinobi.dataset_lifecycle.DatasetObservation
    :members:
 
+.. autodata:: shinobi.dataset_lifecycle.STRUCTURAL_SIGNATURE_COVERAGE
+
+.. autofunction:: shinobi.dataset_lifecycle.structural_signature
+
+.. autofunction:: shinobi.dataset_lifecycle.leaf_postcondition_issues
+
 .. autoclass:: shinobi.ownership.WorkspaceAccess
    :members:
 

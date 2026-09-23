@@ -152,8 +152,8 @@ An unresolved ``OutputRef`` remains unknown even when the consumer input has a
 default; only its reservation may cover that interval.  A statically named
 ``create`` followed by a wired reader is planned through one provisional root
 identity before the product exists.  ``create`` means a new dataset: an
-existing target is refused because replacement needs a separate lifecycle
-policy.
+existing target is refused unless the run names the step in ``--overwrite``
+(see "Contained local mutation").
 Column detail is currently validation and provenance only: it does **not**
 permit concurrent writers, even when they name different columns.  Read/read
 access may overlap; every write or create is ordered against all overlapping
@@ -232,11 +232,150 @@ claim, pre/post observations, phase events, reason and terminal outcome below
 Successful runs end in ``committed``; pre-execution policy/claim failures in
 ``refused``; execution or postcondition failures in ``failed``.
 
-The boundary is intentionally narrow.  Write/create access, unresolved or
-runtime-selected generic products, generic in-place mutation, multiple roots,
-external closure members, unsupported/opaque closure shapes, nested dataset
-recipes, dataset scatter, orchestration functions, manual ``Scope`` routes,
-non-native backends, and detached/offloaded execution remain strict refusals.
+Contained local mutation
+------------------------
+
+``contained-native-msv2-mutation/v1`` extends the same route to ``write`` and
+``create`` access with **exact** recovery.  A workflow in which any leaf
+writes or creates a strict dataset runs this lifecycle instead of the read
+one; leaves that only read are checked within it.  It accepts one or more
+pairwise-disjoint contained ordinary MSv2 roots (a ``create`` target is
+planned as absent), under the same flat-recipe, ``native``-only boundary.
+
+Exact recovery reuses the Tier 1 mutation-chain snapshots
+(``shinobi.snapshots``) in a *strict* policy.  Tier 1's default promise is
+"never worse than an uncached run": a state it cannot name or restore
+degrades to running against live disk with a warning.  A strict dataset
+promises its exact predecessor instead, so every such degradation is a
+refusal **before** the tool launches -- a missing or unaffordable snapshot, a
+predecessor that predates a write the journal could not name, two journal
+histories for one tree (an alias), a dataset whose root changed outside the
+journal, a predecessor whose structure differs from the one recorded for its
+state name, or a mutated field Tier 1 would decline (list-valued, scattered or
+wired to a keyless producer).  Because states are named by the writing step's
+cache key, a writing leaf caches automatically, whatever the configured
+default.  Only an *explicit* ``cache=False`` refuses the workflow: the call
+argument (``ninja run --no-cache``), the writer's own ``cache`` or an
+enclosing recipe's.  Snapshots must not be ``off``, and every writer must
+journal into the workflow's cache directory.  Each attempt's cache decision
+says when caching was enabled automatically.  A field wired from the
+top-level recipe's own input is a boundary dataset, exactly as if it had been
+passed to the step directly.
+
+The workflow takes an **exclusive** claim over every written closure and
+performs crash recovery for those datasets under it: an in-flight marker left
+by an interrupted strict step is decided by that step's own success oracle
+(below), and an unvouched successor is rolled back before anything runs.
+Datasets the workflow only reads stay under a shared claim and a pending
+marker on one is still refused.
+
+Each strict leaf then:
+
+#. records its cache decision -- ``miss``, ``hit``, or ``rejected-hit`` -- with
+   the identity used and, per dataset field, the fingerprint coverage (a
+   written dataset contributes only its path string; a wired one its producer
+   lineage; an unwired one its per-file path/mtime/size fingerprint).  A skip
+   cache hit on a writer is reused only when the journal vouches for the live
+   dataset -- same structure *and* same member files as the recorded head --
+   and that head *descends* from the state the step produced.  This catches
+   a same-key re-run of an upstream writer, which moves the dataset back
+   while every downstream key still matches;
+#. refuses, before anything else, a dataset whose table files changed since
+   the journal recorded its head (an in-place write outside the pipeline,
+   which moves neither the structure nor the root directory's ctime), rather
+   than reusing it or restoring over it;
+#. restores and verifies its exact predecessor, snapshots it, marks the
+   dataset in flight, and observes it structurally;
+#. runs the tool.  A non-zero exit or exception returns the dataset to an
+   exact, trusted state **immediately** rather than leaving the partial write
+   for the next run: its predecessor when the step ran against the head it
+   found, or that head when the step had first restored an older predecessor
+   (a mid-chain re-run must not leave the workspace behind the complete state
+   it found -- crash reconciliation does the same).  A ``create`` target is
+   removed;
+#. validates its declared postconditions.  Exit status zero is not success:
+   a writer may change the MAIN row count, the schema (MAIN columns,
+   subtables, closure membership) and MAIN keyword names only where its
+   ``DatasetAccess`` permits, may add or remove only its declared columns
+   when its columns are known, and may touch only the tables it declares
+   (checked against each table's own backing files).  A ``create`` must
+   produce a valid contained MSv2 carrying its declared columns.  A reader
+   must leave the dataset identical.  A writer that breaks its contract is
+   rolled back and raises
+   :class:`~shinobi.exceptions.DatasetLifecycleViolationError`;
+#. snapshots the successor, commits it in the journal with its structural
+   signature and parent state, and only then writes its ``committed`` leaf
+   record.  That record is the in-flight marker's success oracle; the reusable
+   cache index is written after it.
+
+Which *cells* a writer changed is not observable structurally, so declared
+column writes are recorded, not verified.  Every mutation record keeps four
+identities apart: the physical snapshot directories, the structural signature
+(``msv2-structural-signature/v1``: row count, column/keyword/subtable names,
+closure membership, table files and storage managers -- explicitly **not**
+cell values) together with the member fingerprint
+(``msv2-member-fingerprint/v1``: each table file's relative path, size and
+mtime), the step's cache key, and the journal state names that give
+provenance lineage.  The signature refuses an incompatible tree and the
+fingerprint catches a write through the filesystem; neither is a content
+hash, and neither is evidence that visibility data are scientifically
+unchanged.  A failed mutation's record also names the state it left on disk
+(``restored_state``), separately from the one it consumed.  A future MSv4/Zarr
+reusable state is a separate identity and never replaces the native
+predecessor snapshot as the rollback source.
+
+Mutation attempts are schema version 2 records: the version 1 fields plus
+``absent_roots``, crash ``recovery`` notes and one ``leaves`` entry per strict
+step with its accesses, cache decision, pre/post observations and, per
+written dataset, a :class:`~shinobi.DatasetMutationRecord`
+(predecessor/successor state, signature and snapshot, and outcome:
+``committed``, ``rolled-back`` (the predecessor is back), ``pre-run-restored``
+(the head the run found is back, after a mid-chain re-run failed),
+``absent-restored``, ``untrusted`` when a rollback itself failed and the
+dataset stays marked for recovery, or ``refused``).
+
+Re-creating a dataset
+~~~~~~~~~~~~~~~~~~~~~
+
+A ``create`` step refuses a target that already exists, so re-running a
+pipeline that simulates its own MS fails at planning with a pointer to the
+opt-in:
+
+.. code-block:: console
+
+   $ ninja run pipeline.py:sim --ms obs.ms --overwrite simulate
+
+``--overwrite STEP`` (repeatable; ``overwrite_steps=["simulate"]`` from
+Python) deletes the existing ``create`` targets of STEP and invalidates the
+cached results of STEP and everything downstream of it -- through wiring,
+``after`` and access-hazard edges -- before the workflow plans.  The deletion
+runs under its own short exclusive claim, after reconciling any interrupted
+strict mutation on the target, and drops the target's journal history (its
+snapshots stay for ``ninja cache evict``).  The workflow then plans and
+claims as usual; a target recreated by someone else in between is refused,
+not overwritten.  The attempt record lists each ``overwrites`` entry.
+
+Because the path comes from a parameter, overwrite deletes only a CASA table
+(a directory containing ``table.dat``), and refuses a symlink (its resolved
+path is the link's target, which the caller never named) or a path containing
+the workspace or cache directory.  These checks run again under the claim,
+immediately before deletion.  A symlinked *parent* directory is followed, as
+``rm -r`` would: ``data/obs.ms`` with ``data`` linked to scratch storage names
+the table on scratch storage.  It names steps that ``create`` a strict
+``MeasurementSetV2`` only.  A target whose own parameters include
+``overwrite`` keeps its ``--overwrite`` flag; name the step with
+``--overwrite-step STEP`` instead.  ``--overwrite`` is refused with
+``--dryrun``.
+
+The boundary is intentionally narrow.  Unresolved or runtime-selected generic
+products, generic in-place mutation, a strict write addressed through a
+subtable path rather than its MS root, several fields writing one root in one
+step, replacing an existing ``create`` target without ``--overwrite``,
+external closure members (one
+directory rename cannot restore a closure spanning several roots),
+unsupported/opaque closure shapes, nested dataset recipes, dataset scatter,
+orchestration functions, manual ``Scope`` routes, non-native backends, and
+detached/offloaded execution remain strict refusals.
 Dry-run and compilation may still plan dataset-bearing workflows, but legacy
 and worker submission retain their planning-only marker and refuse before
 scheduler records, ownership claims, logs, or ``sbatch``.  Use ``Path`` or the

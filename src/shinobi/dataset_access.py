@@ -308,12 +308,16 @@ def resolve_scope_dataset_accesses(
     workspace: Path,
     planned_roots: dict[Path, tuple[Path, ...]] | None = None,
     unresolved_inputs: set[str] | frozenset[str] = frozenset(),
+    allow_existing_create: bool = False,
 ) -> tuple[ResolvedDatasetAccess, ...]:
     """Resolve one leaf scope's MSv2 declarations against concrete values.
 
     Unknown columns and omitted declarations degrade to whole-dataset access.
     An unknown path is refused unless its declaration supplies a reservation
     envelope, because otherwise neither ordering nor ownership can cover it.
+    A CREATE target that already exists is refused unless
+    ``allow_existing_create`` is set, which only the explicit ``overwrite``
+    path does, to locate the target it is about to delete.
     """
 
     workspace = workspace.resolve()
@@ -380,9 +384,20 @@ def resolve_scope_dataset_accesses(
 
         requested = _canonical(value, workspace)
         if declaration.mode is DatasetMode.CREATE:
-            if requested.exists():
+            spelled = Path(os.fspath(value))
+            spelled = spelled if spelled.is_absolute() else workspace / spelled
+            if allow_existing_create and spelled.is_symlink():
+                # The canonical path is the link's *target*: deleting it to
+                # "overwrite" the link would remove data the caller never
+                # named. Refused here, where the spelling is still visible.
                 raise DatasetAccessError(
-                    f"scope {scope.name!r} CREATE dataset field {declaration.field!r} already exists at {requested}; replacement requires a separate lifecycle policy"
+                    f"scope {scope.name!r} CREATE dataset field {declaration.field!r} is a symlink ({spelled} -> {requested}); "
+                    "overwrite refuses it, remove or replace the link yourself"
+                )
+            if (requested.exists() or requested.is_symlink()) and not allow_existing_create:
+                raise DatasetAccessError(
+                    f"scope {scope.name!r} CREATE dataset field {declaration.field!r} already exists at {requested}; "
+                    "re-run with --overwrite <step> (overwrite_steps=[...] in Python) to delete it and invalidate the cache downstream"
                 )
             resolved.append(
                 ResolvedDatasetAccess(
@@ -489,6 +504,7 @@ class ResolvedAccessPlanner:
         *,
         unresolved_inputs: set[str] | frozenset[str] = frozenset(),
         resolved_path_accesses: list[tuple[Path, bool]] | None = None,
+        allow_existing_create: bool = False,
     ) -> AccessDecision:
         from shinobi.steps.schema import path_accesses, paths_overlap
 
@@ -498,6 +514,7 @@ class ResolvedAccessPlanner:
             workspace=self._workspace,
             planned_roots=self._planned_roots,
             unresolved_inputs=unresolved_inputs,
+            allow_existing_create=allow_existing_create,
         )
         generic = resolved_path_accesses if resolved_path_accesses is not None else path_accesses(scope, values, workspace=self._workspace)
         for access in datasets:
@@ -570,6 +587,7 @@ def plan_recipe_accesses(
     workspace: Path | None = None,
     validated_steps: dict[int, tuple[BaseModel, bool]] | None = None,
     validated_inputs: BaseModel | None = None,
+    overwrite_steps: frozenset[str] = frozenset(),
 ) -> RecipeAccessPlan:
     """Resolve dataset contracts and add backward hazard edges before dispatch.
 
@@ -650,7 +668,13 @@ def plan_recipe_accesses(
                 pass
 
         outputs_for_step = static_output_values(ref.step, known, unresolved_inputs=unresolved_fields)
-        decision = planner.order_after(ref.name, ref.step, {**known, **outputs_for_step}, unresolved_inputs=unresolved_fields)
+        decision = planner.order_after(
+            ref.name,
+            ref.step,
+            {**known, **outputs_for_step},
+            unresolved_inputs=unresolved_fields,
+            allow_existing_create=ref.name in overwrite_steps,
+        )
         accesses[ref.name] = decision.datasets
         for parent in decision.dependencies:
             parent_index = by_name[parent]

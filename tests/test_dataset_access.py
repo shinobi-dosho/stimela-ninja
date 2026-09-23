@@ -384,7 +384,7 @@ def test_dataset_access_fields_must_be_direct_paths():
 def test_create_refuses_an_existing_target(tmp_path):
     existing = tmp_path / "existing.ms"
     existing.mkdir()
-    with pytest.raises(DatasetAccessError, match="already exists.*replacement requires"):
+    with pytest.raises(DatasetAccessError, match="already exists.*--overwrite"):
         resolve_scope_dataset_accesses(_scope("create", DatasetMode.CREATE), {"ms": existing}, workspace=tmp_path)
 
 
