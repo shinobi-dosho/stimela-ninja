@@ -85,6 +85,51 @@ Available backends
     with the caller's uid/gid, privilege escalation disabled, and all
     capabilities dropped.
 
+Strict dataset routes
+---------------------
+
+A :data:`~shinobi.datasets.MeasurementSetV2` access contract is never reduced to an
+ordinary path because a backend was selected.  The versioned
+``msv2-backend-route/v1`` profile records one of ``tested``, ``unavailable``
+or ``unsupported`` for every effective backend in the flat workflow:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 20 56
+
+   * - Route
+     - Namespace mode
+     - Strict MSv2 behavior
+   * - ``native`` / ``venv``
+     - local
+     - Tested. Execution, inspection and exact recovery share the host
+       namespace.
+   * - ``docker`` / ``podman`` / ``apptainer`` / ``singularity``
+     - identity bind
+     - Tested for contained closures. The canonical closure root is added to
+       the normal schema-derived mounts. Every root starts read-only and only
+       this leaf's declared mutation roots become read-write; ``create``
+       requires and mounts its existing parent. Docker/Podman remote daemon
+       configurations are unavailable because bind sources would resolve in
+       another host namespace.
+   * - ``slurm``
+     - unproven
+     - Unavailable until submission-to-compute storage mapping and lifecycle
+       authority are explicit and validated.
+   * - ``kubernetes``
+     - unproven
+     - Unavailable because ``hostPath`` alone does not establish node
+       identity and there is no pod-side validation/recovery adapter.
+   * - remote ``ninja`` launch
+     - remote delegated
+     - The remote process replans paths, claims resources and applies the
+       capability of its own selected backend; the local launcher makes no
+       dataset claim. This is a CLI launch surface, not a value for a step's
+       ``backend=``.
+
+An unavailable or unsupported route is refused before a tool, scheduler job
+or pod starts. See :doc:`datasets` for the lifecycle and closure guarantees.
+
 Choosing a backend
 ------------------
 

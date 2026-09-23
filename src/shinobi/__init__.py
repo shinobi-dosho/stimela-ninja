@@ -49,6 +49,15 @@ from shinobi.steps import (  # noqa: E402
 )
 from shinobi.dataset_closure import DatasetClosure, resolve_dataset_closure  # noqa: E402
 from shinobi.dataset_access import DatasetAccessError, RecipeAccessPlan, plan_recipe_accesses  # noqa: E402
+from shinobi.dataset_backends import (  # noqa: E402
+    DATASET_BACKEND_CAPABILITY_PROFILE,
+    DatasetBackendCapability,
+    DatasetBackendMount,
+    DatasetBackendPlan,
+    DatasetBackendStatus,
+    DatasetNamespaceMode,
+    dataset_backend_capability,
+)
 from shinobi.dataset_lifecycle import (  # noqa: E402
     DATASET_MUTATION_CAPABILITY,
     DATASET_READ_CAPABILITY,
@@ -71,6 +80,10 @@ __all__ = [
     "DatasetClosure",
     "DatasetAccess",
     "DatasetAccessError",
+    "DatasetBackendCapability",
+    "DatasetBackendMount",
+    "DatasetBackendPlan",
+    "DatasetBackendStatus",
     "DatasetColumns",
     "DatasetCacheDecision",
     "DatasetFallback",
@@ -83,6 +96,7 @@ __all__ = [
     "DatasetMode",
     "DatasetMutationOutcome",
     "DatasetMutationRecord",
+    "DatasetNamespaceMode",
     "DatasetOverwrite",
     "DatasetSelection",
     "DatasetTable",
@@ -101,6 +115,8 @@ __all__ = [
     "StepRef",
     "DATASET_MUTATION_CAPABILITY",
     "DATASET_READ_CAPABILITY",
+    "DATASET_BACKEND_CAPABILITY_PROFILE",
+    "dataset_backend_capability",
     "dataset_attempt_path",
     "pystep",
     "plan_recipe_accesses",

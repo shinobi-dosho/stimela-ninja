@@ -192,8 +192,12 @@ def _strict_mutation_cache_issues(scope: Scope, cache: bool | None, recipe_cache
 
 
 def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: str) -> tuple[str, ...]:
-    """Validate the deliberately small contained native execution shape.
+    """Validate the deliberately small contained execution shape.
 
+    Backend namespace/recovery support is decided separately by
+    :func:`shinobi.dataset_backends.dataset_backend_capability`, so this
+    walker has one job: validate the atomic/flat shape and report every
+    effective route under the lifecycle, including unannotated siblings.
     Writes and creates are admitted here; whether the workflow can promise
     exact recovery for them is decided by the mutation lifecycle.
     """
@@ -221,13 +225,9 @@ def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: 
                 visit(ref.step, ref.func, ref.step.backend or backend_name, nested=True, scattered=ref.scatter is not None)
             return
         # One outer lifecycle claim covers the whole flat recipe, not merely
-        # the annotated leaves.  Letting an unannotated sibling select a
-        # container, venv or scheduler would put an unobserved route inside
-        # that claim and could hand it the MS through an ordinary Path.
-        if backend_name != "native":
-            raise DatasetLifecycleUnavailableError(
-                f"contained MSv2 execution refused: backend {backend_name!r} is not the supported native local route for leaf {current.name!r}; every leaf under the lifecycle must use native"
-            )
+        # the annotated leaves. Record every route so the capability adapter
+        # can refuse an unproven sibling before any leaf starts.
+        backends.add(backend_name)
         if not has_contract:
             return
         if nested and isinstance(current, Recipe):
@@ -256,7 +256,6 @@ def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: 
                 "strict dataset contract cannot execute until validation, staging and recovery support this route; "
                 "the contained lifecycle accepts only MeasurementSetV2 fields, not " + ", ".join(unsupported)
             )
-        backends.add(backend_name)
 
     visit(scope, func, inherited)
     return tuple(sorted(backends))
@@ -547,6 +546,52 @@ class ExecContext:
         """
         return override or self._backend_override or self.scope.backend or self._recipe_backend or (self._config or AppConfig.load()).backend.default
 
+    def dataset_backend_plan(self, backend_name: str, prepared: dict[str, Any] | None = None) -> Any | None:
+        """Prepared namespace plan for an atomic leaf under a strict lifecycle.
+
+        The outer lifecycle has already resolved and claimed the workflow's
+        authoritative access set.  Resolving this leaf again from the exact
+        prepared values checks that an annotated leaf receives only paths
+        covered by that claim. Every workflow root is then re-asserted
+        read-only for the container, upgraded only for roots this leaf
+        declares write/create access to; an unannotated leaf gets no upgrade.
+        The mutation lifecycle's strict-leaf wrapper performs the same claim
+        check for its bookkeeping. Keeping plan construction here gives cab
+        and pystep container launchers one shared adapter.
+        """
+
+        if self._dataset_lifecycle is None or isinstance(self.scope, Recipe):
+            return None
+        from shinobi.dataset_access import resolve_scope_dataset_accesses, scope_has_dataset_contract
+        from shinobi.dataset_backends import plan_dataset_backend
+        from shinobi.dataset_lifecycle import claim_covers_accesses
+
+        workflow_accesses = self._dataset_lifecycle.record.planned_accesses
+        if scope_has_dataset_contract(self.scope):
+            values = prepared if prepared is not None else self.prepare_inputs()
+            planned_roots = {access.root: access.resources for access in workflow_accesses if access.root is not None}
+            accesses = resolve_scope_dataset_accesses(
+                self.scope,
+                values,
+                workspace=self._dataset_lifecycle.workspace,
+                planned_roots=planned_roots,
+            )
+        else:
+            accesses = ()
+        claim = self._dataset_lifecycle.record.claim
+        if claim is None:
+            raise DatasetLifecycleUnavailableError("strict dataset backend planning requires the workflow claim")
+        uncovered = claim_covers_accesses(claim, accesses)
+        if uncovered:
+            raise DatasetLifecycleUnavailableError("strict dataset backend planning found closure resources outside the workflow claim: " + ", ".join(map(str, uncovered)))
+        return plan_dataset_backend(
+            backend_name,
+            workflow_accesses,
+            workspace=self._dataset_lifecycle.workspace,
+            mutation=self._dataset_lifecycle.mutation,
+            leaf_accesses=accesses,
+        )
+
     def import_callable(self, name: str, module: str | None = None) -> Callable:
         """Import and return a callable by name.
 
@@ -646,6 +691,7 @@ class ExecContext:
         prepared = _prepare_inputs(self.scope, raw, validated=validated)
         backend_name = self.resolve_backend_name(backend)
         if isinstance(self.scope, Cab):
+            dataset_plan = self.dataset_backend_plan(backend_name, prepared)
             result = _run_cab(
                 self.scope,
                 prepared,
@@ -655,6 +701,7 @@ class ExecContext:
                 pin=self._pin,
                 sandbox_root=self._sandbox_root,
                 clear_outputs=self._clear_outputs,
+                dataset_plan=dataset_plan,
             )
         elif isinstance(self.scope, Recipe):
             result = _run_recipe(
@@ -943,6 +990,20 @@ def _dispatch(
 
         try:
             backends = _dataset_execution_backends(scope, func, root_backend)
+            from shinobi.dataset_backends import DatasetBackendStatus, DatasetNamespaceMode, dataset_backend_capability
+
+            backend_capabilities = tuple(dataset_backend_capability(name, mutation=mutation) for name in backends)
+            lifecycle.amend(backends=backends, backend_capabilities=backend_capabilities)
+            unavailable = tuple(
+                capability
+                for capability in backend_capabilities
+                if capability.status is not DatasetBackendStatus.TESTED or capability.namespace_mode is DatasetNamespaceMode.REMOTE_DELEGATED
+            )
+            if unavailable:
+                raise DatasetLifecycleUnavailableError(
+                    f"contained MSv2 {noun} refused by backend capability {unavailable[0].profile}: "
+                    + "; ".join(f"{capability.backend} is {capability.status.value}: {capability.reason}" for capability in unavailable)
+                )
             validated_inputs = _validated_inputs if _validated_inputs is not None else _validate_inputs(scope, kwargs)
             effective_cache_dir = cache_dir or scope.cache_dir or _recipe_cache_dir or config.cache.dir
             if mutation:
@@ -978,6 +1039,7 @@ def _dispatch(
                     else "resolved one contained ordinary MSv2 read closure"
                 ),
                 backends=backends,
+                backend_capabilities=backend_capabilities,
                 capability_supported=True,
                 planned_accesses=planned.accesses,
                 pre_observations=planned.observations,
@@ -1721,6 +1783,7 @@ def _run_cab(
     pin: bool = False,
     sandbox_root: str | None = None,
     clear_outputs: bool = True,
+    dataset_plan: Any | None = None,
 ) -> StepResult:
     # Sandboxed run (shinobi.sandbox): the tool's cwd is a private scratch
     # dir; path-typed inputs are anchored back at the workspace so the tool
@@ -1748,15 +1811,18 @@ def _run_cab(
     # The backend gets the prepared dict (not a rebuilt model) so MUTABLE
     # fields reach it as the caller's own objects by reference -- rebuilding
     # a pydantic model here would deep-copy every container and break that.
-    run = backend.run(
-        cab,
-        argv,
-        run_inputs,
-        label=label or cab.name,
-        stream=stream,
-        pin=pin,
-        cwd=str(sandbox_dir) if sandbox_dir is not None else None,
-    )
+    backend_kwargs: dict[str, Any] = {
+        "label": label or cab.name,
+        "stream": stream,
+        "pin": pin,
+        "cwd": str(sandbox_dir) if sandbox_dir is not None else None,
+    }
+    # Preserve the long-standing call shape for third-party backends on
+    # ordinary workflows. A strict route has already rejected an unknown
+    # backend and may rely on this versioned plan, so it must be explicit.
+    if dataset_plan is not None:
+        backend_kwargs["dataset_plan"] = dataset_plan
+    run = backend.run(cab, argv, run_inputs, **backend_kwargs)
     _report_elision(run, label or cab.name, wrangled=bool(cab.wranglers))
     lines = run.stdout.splitlines() + run.stderr.splitlines()
     wrangled = apply_wranglers(cab.wranglers, lines)

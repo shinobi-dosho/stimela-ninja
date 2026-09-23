@@ -178,6 +178,7 @@ class VenvBackend(Backend):
         stream: bool = True,
         pin: bool = False,
         cwd: str | None = None,
+        dataset_plan: Any | None = None,  # venv subprocess shares the host namespace
     ) -> BackendRun:
         """Run `argv` inside the resolved venv (or natively if none)."""
         venv = resolve_venv(cab.venv)
@@ -190,7 +191,7 @@ class VenvBackend(Backend):
                 "with no environment isolation",
                 stacklevel=2,
             )
-            return get_backend("native").run(cab, argv, inputs, label=label, stream=stream, pin=pin, cwd=cwd)
+            return get_backend("native").run(cab, argv, inputs, label=label, stream=stream, pin=pin, cwd=cwd, dataset_plan=dataset_plan)
 
         run_argv = [resolve_command(venv, argv[0]), *argv[1:]] if argv else argv
         run = run_streaming(run_argv, label=label or cab.name, stream=stream, cwd=cwd, env=venv_env(venv), keep_matching=tuple(cab.wranglers))

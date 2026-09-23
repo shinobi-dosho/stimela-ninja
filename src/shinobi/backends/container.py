@@ -12,6 +12,12 @@ sees the same paths the caller used. This is why Backend.run() is handed
 the validated inputs model, not just argv -- argv is just strings by that
 point, with no memory of which of them are paths.
 
+For a strict dataset contract, the schema-derived mounts are augmented by a
+post-claim backend plan. It identity-mounts every canonical contained closure
+root read-only, upgrading only roots this leaf declares write access to (or
+the existing parent of its create target). This keeps aliases from making the
+container see a different tree than the host lifecycle observes and recovers.
+
 The cab's *output* side is read the same way, because a tool's output stem is
 conventionally declared as a string-typed input (wsclean's ``prefix``) that
 contributes no path field of its own: the directories a path-typed output, a
@@ -735,6 +741,55 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
     return mounts
 
 
+def merge_dataset_mounts(
+    mounts: list[tuple[str, bool]],
+    dataset_mounts: list[tuple[str, bool]],
+    *,
+    scope_name: str,
+) -> list[tuple[str, bool]]:
+    """Merge closure-derived identity binds into schema-derived mounts.
+
+    A strict read is re-asserted read-only at the canonical dataset root,
+    nested inside the broader parent mount a path-typed input normally earns.
+    A mutation root is mounted read-write.  Contradictory exact or nested
+    mounts are refused rather than weakening either the schema or dataset
+    access contract.  Parents are emitted before children for runtimes that
+    happen to honour declaration order rather than path depth.
+    """
+
+    merged = list(mounts)
+    by_path = {Path(path): writable for path, writable in merged}
+    for raw_path, writable in dataset_mounts:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            raise BackendError(f"{scope_name}: strict dataset mount {path} is not absolute")
+        conflict = next(
+            (
+                (other, other_writable)
+                for other, other_writable in by_path.items()
+                if other != path and ((not writable and other_writable and other.is_relative_to(path)) or (writable and not other_writable and path.is_relative_to(other)))
+            ),
+            None,
+        )
+        if conflict is not None:
+            other, other_writable = conflict
+            raise BackendError(
+                f"{scope_name}: strict dataset mount {path} ({'rw' if writable else 'ro'}) conflicts with nested mount "
+                f"{other} ({'rw' if other_writable else 'ro'}); the declared access contracts cannot both hold"
+            )
+        existing = by_path.get(path)
+        if existing is not None:
+            if existing != writable:
+                raise BackendError(
+                    f"{scope_name}: strict dataset access needs {path} mounted {'read-write' if writable else 'read-only'}, "
+                    f"but another declaration needs the same path {'read-write' if existing else 'read-only'}"
+                )
+            continue
+        by_path[path] = writable
+        merged.append((str(path), writable))
+    return sorted(merged, key=lambda item: len(Path(item[0]).parts))
+
+
 def _rootless(runtime: str) -> bool:
     """Whether `runtime` acts as *this* user's session rather than through a
     root daemon. Two consequences ride on the same fact, so they share this
@@ -978,6 +1033,7 @@ def build_container_argv(
     workdir: str,
     *,
     extra_dirs: list[str] | None = None,
+    dataset_mounts: list[tuple[str, bool]] | None = None,
     run_as_host_user: bool = False,
     pin: bool = False,
     runs_here: bool = True,
@@ -1003,6 +1059,10 @@ def build_container_argv(
     `extra_dirs` adds additional bind-mount directories beyond those
     derived from the scope's path-typed inputs (e.g. a pystep's runner
     script directory and source module directory).
+
+    `dataset_mounts` adds canonical identity binds from the strict dataset
+    backend plan. Its boolean is writable (``False`` emits ``:ro``), and
+    contradictions with schema-derived mounts are refused.
 
     `run_as_host_user`, for docker/podman only, adds `--user uid:gid` plus
     `HOME=<workdir>` so bind-mounted outputs come out owned by the invoking
@@ -1051,6 +1111,12 @@ def build_container_argv(
             if d not in seen:
                 seen.add(d)
                 dir_modes.append((d, True))  # extra dirs (runner/module) mount read-write
+    if dataset_mounts:
+        dir_modes = merge_dataset_mounts(
+            dir_modes,
+            dataset_mounts,
+            scope_name=getattr(scope, "name", "<scope>"),
+        )
 
     if runtime in _DOCKER_LIKE:
         mounts = [flag for d, w in dir_modes for flag in ("-v", f"{d}:{d}" if w else f"{d}:{d}:ro")]
@@ -1112,6 +1178,7 @@ class ContainerBackend(Backend):
         pin: bool = False,
         cwd: str | None = None,
         container_name: str | None = None,
+        dataset_plan: Any | None = None,
     ) -> tuple[list[str], str | None]:
         return build_container_argv(
             self.runtime,
@@ -1122,6 +1189,7 @@ class ContainerBackend(Backend):
             run_as_host_user=self.run_as_host_user,
             pin=pin,
             container_name=container_name,
+            dataset_mounts=[(str(mount.source), mount.writable) for mount in dataset_plan.mounts] if dataset_plan is not None else None,
         )
 
     def run(
@@ -1134,6 +1202,7 @@ class ContainerBackend(Backend):
         stream: bool = True,
         pin: bool = False,
         cwd: str | None = None,
+        dataset_plan: Any | None = None,
     ) -> BackendRun:
         """Run a cab's argv inside the configured container runtime.
 
@@ -1146,12 +1215,14 @@ class ContainerBackend(Backend):
             pin: Digest-pin the image before running (provenance enabled).
             cwd: Working directory to bind-mount and run inside (e.g. a step
                 sandbox), overriding the backend's `workdir` for this run.
+            dataset_plan: Strict dataset namespace plan created under the
+                workflow lifecycle, or ``None`` for an ordinary cab.
 
         Returns:
             The completed `BackendRun` (never raises on non-zero exit).
         """
         container_name = new_container_name() if self.runtime in _DOCKER_LIKE else None
-        full_argv, image_digest = self._wrap(cab, argv, inputs, pin=pin, cwd=cwd, container_name=container_name)
+        full_argv, image_digest = self._wrap(cab, argv, inputs, pin=pin, cwd=cwd, container_name=container_name, dataset_plan=dataset_plan)
         run = run_streaming(
             full_argv,
             label=label or cab.name,

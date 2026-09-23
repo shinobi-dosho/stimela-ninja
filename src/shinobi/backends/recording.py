@@ -28,6 +28,8 @@ class RecordingBackend(Backend):
         # index-aligned with `calls` -- kept separate so the long-standing
         # 3-tuple shape of `calls` stays unpickable-compatible for tests.
         self.cwds: list[str | None] = []
+        # Strict dataset namespace plans, index-aligned with ``calls``.
+        self.dataset_plans: list[Any | None] = []
 
     def run(
         self,
@@ -39,6 +41,7 @@ class RecordingBackend(Backend):
         stream: bool = True,
         pin: bool = False,  # accepted for the Backend protocol; recording backend runs nothing
         cwd: str | None = None,
+        dataset_plan: Any | None = None,
     ) -> BackendRun:
         """Record the call and return an empty, successful `BackendRun`.
 
@@ -55,4 +58,5 @@ class RecordingBackend(Backend):
         """
         self.calls.append((cab, argv, inputs))
         self.cwds.append(cwd)
+        self.dataset_plans.append(dataset_plan)
         return BackendRun(returncode=0, stdout="", stderr="")

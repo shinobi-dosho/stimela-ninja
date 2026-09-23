@@ -130,6 +130,44 @@ def test_docker_wrap_mounts_file_param_parent_dir():
     assert mounts == {"/work:/work", "/data/in:/data/in"}
 
 
+def test_strict_dataset_mount_reasserts_canonical_root_read_only():
+    cab = make_cab({"ms": ("MS", False, None)})
+    argv, _ = container.build_container_argv(
+        "docker",
+        cab,
+        ["tool", "--ms", "/aliases/obs.ms"],
+        {"ms": "/aliases/obs.ms"},
+        "/work",
+        dataset_mounts=[("/storage/obs.ms", False)],
+    )
+
+    mounts = [argv[i + 1] for i, value in enumerate(argv) if value == "-v"]
+    assert mounts == ["/work:/work", "/aliases:/aliases", "/storage/obs.ms:/storage/obs.ms:ro"]
+
+
+def test_strict_dataset_mount_refuses_an_exact_schema_mode_conflict():
+    cab = make_cab({"ms": ("MS", False, None)})
+
+    with pytest.raises(BackendError, match="same path read-write"):
+        container.build_container_argv(
+            "docker",
+            cab,
+            ["tool"],
+            {"ms": "/data/obs.ms"},
+            "/work",
+            dataset_mounts=[("/work", False)],
+        )
+
+
+def test_matching_dataset_root_still_refuses_a_writable_descendant():
+    with pytest.raises(BackendError, match="conflicts with nested mount"):
+        container.merge_dataset_mounts(
+            [("/data/obs.ms", False), ("/data/obs.ms/OTHER", True)],
+            [("/data/obs.ms", False)],
+            scope_name="reader",
+        )
+
+
 def test_docker_wrap_mounts_relative_file_param_under_workdir():
     cab = make_cab({"mask": ("File", False, None)})
     argv, _ = DockerBackend(workdir="/work", run_as_host_user=False)._wrap(cab, ["tool", "--mask", "out/mask.fits"], {"mask": "out/mask.fits"})

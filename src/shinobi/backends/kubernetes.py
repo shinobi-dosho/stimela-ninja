@@ -254,6 +254,7 @@ class KubernetesBackend(Backend):
         stream: bool = True,
         pin: bool = False,  # accepted for the Backend protocol; not yet wired for k8s
         cwd: str | None = None,  # accepted for the Backend protocol; the pod runs in its image's cwd
+        dataset_plan: Any | None = None,  # strict routes are capability-refused before pod creation
     ) -> BackendRun:
         """Run a cab as a Kubernetes Job and block until it completes.
 
