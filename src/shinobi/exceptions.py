@@ -38,14 +38,21 @@ class ReplayError(ShinobiError):
 class DatasetLifecycleUnavailableError(ShinobiError):
     """Execution was refused for a strict dataset annotation.
 
-    Only the contained native MSv2 read lifecycle is executable.  This
-    exception keeps every unsupported route from looking enforced while an
-    annotation is only being carried as a path by that execution stack.
+    Only the contained native MSv2 read and mutation lifecycles are
+    executable.  This exception keeps every unsupported route from looking
+    enforced while an annotation is only being carried as a path by that
+    execution stack, and it is also the refusal raised before a strict
+    mutation launches when exact predecessor recovery cannot be promised.
     """
 
 
 class DatasetLifecycleViolationError(ShinobiError):
-    """A read-only dataset changed while a strict lifecycle held its claim."""
+    """A strict dataset broke its declared postcondition under its claim.
+
+    For a reader, the dataset changed; for a writer, the change exceeded what
+    its access contract permits.  A writer's dataset has been rolled back to
+    its exact predecessor when this is raised, unless a note says otherwise.
+    """
 
 
 class UnsupportedFlavourError(ShinobiError):

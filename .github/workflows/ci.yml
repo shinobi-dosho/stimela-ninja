@@ -71,6 +71,11 @@ jobs:
       - name: Run real CASA-table fixture test
         run: uv run --python 3.12 --locked --group dev --extra casacore pytest -q tests/test_datasets.py::test_generated_tiny_casacore_tables_when_available
 
+      # The mutation lifecycle's observations, signatures and rollbacks are
+      # only meaningful against real tables; the main job skips this file.
+      - name: Run strict MSv2 lifecycle tests against real tables
+        run: uv run --python 3.12 --locked --group dev --extra casacore pytest -q tests/test_dataset_mutation.py tests/test_dataset_lifecycle.py::test_real_casacore_contained_read_when_available
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest

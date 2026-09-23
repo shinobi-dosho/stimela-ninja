@@ -116,13 +116,85 @@ def _refuse_unenforced_datasets(scope: Scope) -> None:
         )
 
 
-def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: str) -> tuple[str, ...]:
-    """Validate the deliberately small contained-read execution shape."""
+def _leaf_dataset_writes(scope: Scope) -> set[str]:
+    """Dataset fields a leaf writes or creates, from declarations alone.
 
-    from shinobi.dataset_access import DatasetMode, scope_has_dataset_contract, scope_tree_has_dataset_contract
+    Declared ``write``/``create`` accesses, plus the inferred shapes that
+    access resolution would also treat as writes: an annotated output that
+    is not an input (a create), and an annotated field in the shared
+    mutated/write-path sets.
+    """
+
+    from shinobi.dataset_access import DatasetMode
+    from shinobi.datasets import dataset_declarations
+    from shinobi.steps.schema import mutated_path_fields, write_path_fields
+
+    inputs = dataset_declarations(scope.inputs_model)
+    outputs = dataset_declarations(scope.outputs_model)
+    declared = {access.field for access in scope.dataset_accesses if access.mode is not DatasetMode.READ}
+    inferred = (set(outputs) - set(inputs)) | ((mutated_path_fields(scope) | write_path_fields(scope)) & (set(inputs) | set(outputs)))
+    explicit_reads = {access.field for access in scope.dataset_accesses if access.mode is DatasetMode.READ}
+    return declared | (inferred - explicit_reads)
+
+
+def _scope_tree_writes_datasets(scope: Scope) -> bool:
+    if isinstance(scope, Recipe):
+        return any(_scope_tree_writes_datasets(ref.step) for ref in scope.steps)
+    return bool(_leaf_dataset_writes(scope))
+
+
+def _strict_mutation_cache_issues(scope: Scope, cache: bool | None, recipe_cache: bool | None, cache_dir: str | None, recipe_cache_dir: str | None, config: AppConfig) -> list[str]:
+    """Why a strict mutation workflow cannot name or recover its dataset states.
+
+    Exact recovery names every predecessor and successor by the writing
+    step's cache key (`shinobi.snapshots`), so each writing leaf must be
+    cacheable and Tier 1 snapshots must be on. Every writer must also share
+    the workflow's cache directory: that is the one journal the workflow
+    reconciles under its claim, and a writer journalling elsewhere would
+    leave an interruption nobody recovers. The precedence mirrors `_dispatch`
+    and `_run_recipe`: explicit argument > the scope's own value > the
+    enclosing recipe's resolved value > configuration.
+    """
+
+    if config.cache.snapshots.mode == "off":
+        return ["cache.snapshots.mode is 'off'; exact MSv2 mutation recovery needs 'auto' or 'copy'"]
+    root = cache if cache is not None else scope.cache if scope.cache is not None else recipe_cache if recipe_cache is not None else config.cache.enabled
+    root_dir = cache_dir or scope.cache_dir or recipe_cache_dir or config.cache.dir
+    issues: list[str] = []
+
+    def visit(current: Scope, inherited: bool, prefix: str) -> None:
+        if isinstance(current, Recipe):
+            for ref in current.steps:
+                child = ref.step
+                effective = child.cache if child.cache is not None else inherited
+                visit(child, effective, f"{prefix}{ref.name}")
+            return
+        if not _leaf_dataset_writes(current):
+            return
+        label = prefix or current.name
+        if not inherited:
+            issues.append(f"writing step {label!r} is not cacheable; exact MSv2 mutation recovery names dataset states by cache key (enable cache)")
+        # A child's own directory beats the recipe's resolved one in
+        # `_dispatch`; only the root scope sees the explicit argument.
+        if current is not scope and current.cache_dir is not None and Path(current.cache_dir).resolve() != Path(root_dir).resolve():
+            issues.append(
+                f"writing step {label!r} uses cache_dir {current.cache_dir!r}, not the workflow's {root_dir!r}; its journal would be outside the recovery the workflow performs"
+            )
+
+    visit(scope, root, "")
+    return issues
+
+
+def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: str) -> tuple[str, ...]:
+    """Validate the deliberately small contained native execution shape.
+
+    Writes and creates are admitted here; whether the workflow can promise
+    exact recovery for them is decided by the mutation lifecycle.
+    """
+
+    from shinobi.dataset_access import scope_has_dataset_contract, scope_tree_has_dataset_contract
     from shinobi.datasets import DatasetKind, dataset_declarations
     from shinobi.steps.pyfunc import PystepCallable
-    from shinobi.steps.schema import mutated_path_fields, write_path_fields
 
     backends: set[str] = set()
 
@@ -133,13 +205,13 @@ def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: 
             # boundary; access contracts still belong to the atomic leaves.
             # ``Recipe`` validation already rejects recipe-level accesses.
             if current_func is not None and scope_tree_has_dataset_contract(current):
-                raise DatasetLifecycleUnavailableError("contained MSv2 read refused: recipe orchestration functions are not an ordinary read route")
+                raise DatasetLifecycleUnavailableError("contained MSv2 execution refused: recipe orchestration functions are not an ordinary dataset route")
             for ref in current.steps:
                 child_has_contract = scope_tree_has_dataset_contract(ref.step)
                 if isinstance(ref.step, Recipe) and child_has_contract:
-                    raise DatasetLifecycleUnavailableError(f"contained MSv2 read refused: step {ref.name!r} is a nested dataset recipe; flatten it")
+                    raise DatasetLifecycleUnavailableError(f"contained MSv2 execution refused: step {ref.name!r} is a nested dataset recipe; flatten it")
                 if ref.scatter is not None and child_has_contract:
-                    raise DatasetLifecycleUnavailableError(f"contained MSv2 read refused: step {ref.name!r} scatters a dataset contract")
+                    raise DatasetLifecycleUnavailableError(f"contained MSv2 execution refused: step {ref.name!r} scatters a dataset contract")
                 visit(ref.step, ref.func, ref.step.backend or backend_name, nested=True, scattered=ref.scatter is not None)
             return
         # One outer lifecycle claim covers the whole flat recipe, not merely
@@ -148,22 +220,22 @@ def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: 
         # that claim and could hand it the MS through an ordinary Path.
         if backend_name != "native":
             raise DatasetLifecycleUnavailableError(
-                f"contained MSv2 read refused: backend {backend_name!r} is not the supported native local route for leaf {current.name!r}; every leaf under the lifecycle must use native"
+                f"contained MSv2 execution refused: backend {backend_name!r} is not the supported native local route for leaf {current.name!r}; every leaf under the lifecycle must use native"
             )
         if not has_contract:
             return
         if nested and isinstance(current, Recipe):
-            raise DatasetLifecycleUnavailableError("contained MSv2 read refused: nested dataset recipes are not supported")
+            raise DatasetLifecycleUnavailableError("contained MSv2 execution refused: nested dataset recipes are not supported")
         if scattered:
-            raise DatasetLifecycleUnavailableError("contained MSv2 read refused: scattered dataset access is not supported")
+            raise DatasetLifecycleUnavailableError("contained MSv2 execution refused: scattered dataset access is not supported")
         if isinstance(current, Cab):
             if current_func is not None:
-                raise DatasetLifecycleUnavailableError("contained MSv2 read refused: cab orchestration functions are not an ordinary read route")
+                raise DatasetLifecycleUnavailableError("contained MSv2 execution refused: cab orchestration functions are not an ordinary dataset route")
             if current.flavour != "binary":
-                raise DatasetLifecycleUnavailableError(f"contained MSv2 read refused: cab flavour {current.flavour!r} is not the supported binary route")
+                raise DatasetLifecycleUnavailableError(f"contained MSv2 execution refused: cab flavour {current.flavour!r} is not the supported binary route")
         elif not isinstance(current_func, PystepCallable):
             raise DatasetLifecycleUnavailableError(
-                "strict dataset annotations remain declarative for manual Scope execution; use a Cab or @pystep for the contained native read lifecycle"
+                "strict dataset annotations remain declarative for manual Scope execution; use a Cab or @pystep for the contained native lifecycle"
             )
         declarations = {
             **dataset_declarations(current.inputs_model),
@@ -171,21 +243,12 @@ def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: 
         }
         if any(token in name for name in declarations for token in (".", "[]", ".*")):
             names = ", ".join(sorted(declarations))
-            raise DatasetLifecycleUnavailableError(f"contained MSv2 read refused: nested dataset fields are not direct: {names}")
+            raise DatasetLifecycleUnavailableError(f"contained MSv2 execution refused: nested dataset fields are not direct: {names}")
         unsupported = sorted(name for name, declaration in declarations.items() if declaration.kind is not DatasetKind.MEASUREMENT_SET_V2)
         if unsupported:
             raise DatasetLifecycleUnavailableError(
                 "strict dataset contract cannot execute until validation, staging and recovery support this route; "
                 "the contained lifecycle accepts only MeasurementSetV2 fields, not " + ", ".join(unsupported)
-            )
-        if any(access.mode is not DatasetMode.READ for access in current.dataset_accesses):
-            raise DatasetLifecycleUnavailableError("contained MSv2 read refused: write/create access requires mutation recovery, which is not available")
-        inputs = dataset_declarations(current.inputs_model)
-        outputs = dataset_declarations(current.outputs_model)
-        implicit_writes = (set(outputs) - set(inputs)) | ((mutated_path_fields(current) | write_path_fields(current)) & set(declarations))
-        if implicit_writes:
-            raise DatasetLifecycleUnavailableError(
-                "contained MSv2 read refused: inferred write/create dataset field(s) require mutation recovery: " + ", ".join(sorted(implicit_writes))
             )
         backends.add(backend_name)
 
@@ -694,6 +757,53 @@ def _snapshot_guard(
     )
 
 
+def _strict_snapshot_guard(
+    scope: Scope,
+    ctx: "ExecContext",
+    leaf: Any,
+    cache_dir: str,
+    cache_path: str,
+    cache_key: str,
+    run_id: str,
+    input_keys: dict[str, Any] | None,
+    wired_fields: set[str] | None,
+    boundary_fields: frozenset[str],
+    slice_index: int | None,
+    config: AppConfig,
+) -> SnapshotGuard:
+    """Tier 1 under a strict MSv2 policy for one writing leaf.
+
+    Uses the same eligibility rules as `_snapshot_guard`, but a strict field
+    Tier 1 would decline is refused rather than run unprotected. A field
+    wired from the top-level recipe's own input is a boundary path, exactly
+    as if the dataset had been passed to the step directly.
+    """
+
+    from shinobi.dataset_lifecycle import LeafMutationError
+
+    wired = set(wired_fields or ()) - set(boundary_fields) if wired_fields is not None else None
+    _protected, excluded = eligible_fields(scope, ctx.prepare_inputs(), input_keys, wired, slice_index is not None)
+    blocked = [exclusion for exclusion in excluded if exclusion.field in leaf.fields]
+    if blocked:
+        raise LeafMutationError(
+            f"strict MSv2 mutation of {cache_path!r} refused before launch: " + "; ".join(f"'{exclusion.field}' cannot be protected: {exclusion.reason}" for exclusion in blocked)
+        )
+    return SnapshotGuard(
+        journal=get_journal(cache_dir),
+        step_path=cache_path,
+        cache_key=cache_key,
+        run_id=run_id,
+        fields=dict(leaf.fields),
+        input_keys=input_keys,
+        wired_fields=wired,
+        force_copy=config.cache.snapshots.mode == "copy",
+        success_record=leaf.lifecycle.store.path,
+        success_step_path=cache_path,
+        strict=leaf.policy(),
+        success_kind="dataset-lifecycle",
+    )
+
+
 def _dispatch(
     scope: Scope,
     func: Callable | None,
@@ -727,6 +837,7 @@ def _dispatch(
     _dataset_lifecycle: Any | None = None,
     _validated_inputs: BaseModel | None = None,
     _leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
+    _boundary_fields: frozenset[str] = frozenset(),
     **kwargs: Any,
 ) -> StepResult:
     config = _config or AppConfig.load()
@@ -741,7 +852,9 @@ def _dispatch(
         from shinobi.dataset_lifecycle import (
             DatasetLifecycle,
             DatasetLifecyclePhase,
+            claim_covers_accesses,
             claim_covers_snapshot,
+            observe_roots,
             pending_dataset_recovery,
             resolve_lifecycle_snapshot,
         )
@@ -756,11 +869,17 @@ def _dispatch(
 
         launch_workspace = Path.cwd().resolve()
         root_backend = backend or scope.backend or _recipe_backend or config.backend.default
+        # One skeleton, two capabilities: a workflow in which any leaf writes
+        # or creates a strict dataset runs the mutation lifecycle (exclusive
+        # claim, recovery, per-leaf postconditions); otherwise the read one.
+        mutation = _scope_tree_writes_datasets(scope)
+        noun = "mutation" if mutation else "read"
         lifecycle = DatasetLifecycle.start(
             workspace=launch_workspace,
             attempt_id=run_id,
             scope=scope.name,
             backends=(root_backend,),
+            mutation=mutation,
         )
         lease = None
         executing = False
@@ -794,26 +913,39 @@ def _dispatch(
                 primary.add_note(
                     f"dataset lifecycle record update also failed: {type(transition_exc).__name__}: {transition_exc}; inspect the pending attempt record before recovery"
                 )
-                logger.exception("contained MSv2 read failed and its lifecycle record update also failed")
+                logger.exception("contained MSv2 %s failed and its lifecycle record update also failed", noun)
+
+        def resolve_snapshot():
+            return resolve_lifecycle_snapshot(
+                scope,
+                validated_inputs,
+                workspace=launch_workspace,
+                validated_steps=leaf_inputs,
+                mutation=mutation,
+            )
 
         try:
             backends = _dataset_execution_backends(scope, func, root_backend)
             validated_inputs = _validated_inputs if _validated_inputs is not None else _validate_inputs(scope, kwargs)
             accesses, leaf_inputs = scope_path_accesses(scope, validated_inputs, workspace=launch_workspace)
-            planned = resolve_lifecycle_snapshot(
-                scope,
-                validated_inputs,
-                workspace=launch_workspace,
-                validated_steps=leaf_inputs,
-            )
+            planned = resolve_snapshot()
             lifecycle.transition(
                 DatasetLifecyclePhase.PLANNED,
-                "resolved one contained ordinary MSv2 read closure",
+                (
+                    f"resolved {len(planned.observations) + len(planned.absent_roots)} contained ordinary MSv2 root(s) for mutation"
+                    if mutation
+                    else "resolved one contained ordinary MSv2 read closure"
+                ),
                 backends=backends,
                 capability_supported=True,
                 planned_accesses=planned.accesses,
                 pre_observations=planned.observations,
+                **({"absent_roots": planned.absent_roots} if mutation else {}),
             )
+            if mutation:
+                cache_issues = _strict_mutation_cache_issues(scope, cache, _recipe_cache, cache_dir, _recipe_cache_dir, config)
+                if cache_issues:
+                    raise DatasetLifecycleUnavailableError("contained MSv2 mutation refused: " + "; ".join(cache_issues))
             resources = {resource for access in planned.accesses for resource in access.resources}
             access_issues = contained_access_issues(
                 scope,
@@ -823,13 +955,17 @@ def _dispatch(
                 validated_steps=leaf_inputs,
             )
             if access_issues:
-                raise DatasetLifecycleUnavailableError("contained MSv2 read refused: " + "; ".join(access_issues))
+                raise DatasetLifecycleUnavailableError(f"contained MSv2 {noun} refused: " + "; ".join(access_issues))
+            # A dataset's own declared write names exactly one of its closure
+            # resources; any other write reaching into a closure is generic.
             overlapping_writes = sorted(
-                {path for path, writes in accesses if writes and any(paths_overlap(path, resource) for resource in resources)},
+                {path for path, writes in accesses if writes and not (mutation and path in resources) and any(paths_overlap(path, resource) for resource in resources)},
                 key=str,
             )
             if overlapping_writes:
-                raise DatasetLifecycleUnavailableError("contained MSv2 read refused: a generic write overlaps the read-only closure: " + ", ".join(map(str, overlapping_writes)))
+                raise DatasetLifecycleUnavailableError(
+                    f"contained MSv2 {noun} refused: a generic write overlaps the {'dataset' if mutation else 'read-only'} closure: " + ", ".join(map(str, overlapping_writes))
+                )
             writable_paths = [path for path, writes in accesses if writes]
             claim_workspace = ownership_workspace(launch_workspace, writable_paths) if writable_paths else launch_workspace
             lease = acquire_workspace(
@@ -840,34 +976,49 @@ def _dispatch(
             )
             lifecycle.transition(
                 DatasetLifecyclePhase.CLAIMED,
-                "acquired ownership covering every read-only closure resource",
+                "acquired ownership covering every closure resource at its declared strength" if mutation else "acquired ownership covering every read-only closure resource",
                 claim=lease.owner,
             )
-            revalidated = resolve_lifecycle_snapshot(
-                scope,
-                validated_inputs,
-                workspace=launch_workspace,
-                validated_steps=leaf_inputs,
-            )
-            if revalidated != planned or not claim_covers_snapshot(lease.owner, revalidated):
-                raise DatasetLifecycleUnavailableError("contained MSv2 read refused before backend execution: the access plan or observation changed after claim")
+            revalidated = resolve_snapshot()
+            covered = not claim_covers_accesses(lease.owner, revalidated.accesses) if mutation else claim_covers_snapshot(lease.owner, revalidated)
+            if revalidated != planned or not covered:
+                raise DatasetLifecycleUnavailableError(f"contained MSv2 {noun} refused before backend execution: the access plan or observation changed after claim")
             effective_cache_dir = cache_dir or scope.cache_dir or _recipe_cache_dir or config.cache.dir
+            if mutation:
+                # Crash recovery for the datasets this workflow writes, under
+                # its exclusive claim -- which is what makes it safe without
+                # the best-effort "am I alone" probe: no cooperating writer
+                # can hold these paths now. Roots it only reads stay under a
+                # shared claim and are left to the check below.
+                written_roots = {access.root for access in revalidated.accesses if access.writes and access.root is not None}
+                notes = reconcile(effective_cache_dir, get_cache_manifest(effective_cache_dir), paths=written_roots) if written_roots else []
+                if notes:
+                    for note in notes:
+                        logger.warning("dataset recovery: %s", note)
+                    lifecycle.amend(recovery=(*lifecycle.record.recovery, *notes))
             # An interrupted writer may have left a journal while snapshots were
             # enabled previously.  The current snapshot policy cannot make that
             # pending mutation safe to recover under a shared read claim.
             pending = pending_dataset_recovery(effective_cache_dir, revalidated)
             if pending:
                 raise DatasetLifecycleUnavailableError(
-                    "contained MSv2 read refused before backend execution: pending mutation recovery requires an exclusive writer claim: " + ", ".join(map(str, pending))
+                    f"contained MSv2 {noun} refused before backend execution: pending mutation recovery requires an exclusive writer claim: " + ", ".join(map(str, pending))
                 )
+            if mutation and notes:
+                # Recovery may have rolled a dataset back; the baseline the
+                # workflow runs against is the recovered one.
+                revalidated = resolve_snapshot()
+                lifecycle.amend(pre_observations=revalidated.observations)
+                planned = revalidated
             lifecycle.transition(
                 DatasetLifecyclePhase.REVALIDATED,
                 "post-claim access plan and observation match the claimed baseline",
             )
             lifecycle.transition(
                 DatasetLifecyclePhase.EXECUTING,
-                "entering native local dispatch under the shared read claim",
+                f"entering native local dispatch under the {'exclusive' if mutation else 'shared read'} claim",
             )
+            planned_roots = tuple(sorted({access.root for access in planned.accesses if access.root is not None}, key=str))
             executing = True
             try:
                 result = _dispatch(
@@ -897,7 +1048,10 @@ def _dispatch(
                     _snapshot_success_record=_snapshot_success_record,
                     _snapshot_success_step_path=_snapshot_success_step_path,
                     _result_commit=_result_commit,
-                    _publication_gate=hold_publication,
+                    # A mutation workflow validates and publishes per leaf:
+                    # each writer's successor must be committed before the
+                    # next leaf consumes it, so nothing can wait for the end.
+                    _publication_gate=None if mutation else hold_publication,
                     _workspace_claimed=True,
                     _dataset_lifecycle=lifecycle,
                     _validated_inputs=validated_inputs,
@@ -905,6 +1059,21 @@ def _dispatch(
                     **kwargs,
                 )
             except BaseException as exc:
+                if mutation:
+                    # Each leaf has already validated, rolled back or marked
+                    # its own datasets; the workflow record states the end.
+                    try:
+                        final, _absent = observe_roots(planned_roots, launch_workspace)
+                    except BaseException as observe_exc:
+                        exc.add_note(f"final dataset observation also failed: {type(observe_exc).__name__}: {observe_exc}")
+                        final = ()
+                    transition_preserving(
+                        DatasetLifecyclePhase.FAILED,
+                        f"execution raised {type(exc).__name__}: {exc}",
+                        exc,
+                        post_observations=final,
+                    )
+                    raise
                 try:
                     post = resolve_lifecycle_snapshot(
                         scope,
@@ -936,6 +1105,32 @@ def _dispatch(
                     post_observations=post.observations,
                 )
                 raise
+            if mutation:
+                try:
+                    final, _absent = observe_roots(planned_roots, launch_workspace)
+                except BaseException as exc:
+                    violation = DatasetLifecycleViolationError("strict MSv2 workflow completed but its final dataset observation could not be established")
+                    transition_preserving(DatasetLifecyclePhase.FAILED, f"final observation failed: {type(exc).__name__}: {exc}", violation)
+                    raise violation from exc
+                # Written roots were validated leaf by leaf; a root nothing
+                # declared a write to must be exactly as planned.
+                written = {access.root for access in planned.accesses if access.writes}
+                baseline = {observation.root: observation for observation in planned.observations}
+                changed = sorted((observation.root for observation in final if observation.root not in written and baseline.get(observation.root) != observation), key=str)
+                if changed:
+                    violation = DatasetLifecycleViolationError("strict MSv2 workflow changed a dataset it declared only as read: " + ", ".join(map(str, changed)))
+                    transition_preserving(DatasetLifecyclePhase.FAILED, str(violation), violation, post_observations=final)
+                    raise violation
+                lifecycle.transition(
+                    DatasetLifecyclePhase.VALIDATED,
+                    "every leaf's declared postconditions held and read-only roots are unchanged",
+                    post_observations=final,
+                )
+                if result.success:
+                    lifecycle.transition(DatasetLifecyclePhase.COMMITTED, "native contained MSv2 mutation workflow committed")
+                else:
+                    lifecycle.transition(DatasetLifecyclePhase.FAILED, f"native workflow returned non-zero status {result.returncode}")
+                return result
             try:
                 post = resolve_lifecycle_snapshot(
                     scope,
@@ -984,7 +1179,7 @@ def _dispatch(
                 phase = DatasetLifecyclePhase.FAILED if executing else DatasetLifecyclePhase.REFUSED
                 transition_preserving(phase, f"{type(exc).__name__}: {exc}", exc)
             if isinstance(exc, WorkspaceOwnershipError):
-                wrapped = DatasetLifecycleUnavailableError(f"contained MSv2 read claim refused: {exc}")
+                wrapped = DatasetLifecycleUnavailableError(f"contained MSv2 {noun} claim refused: {exc}")
                 primary_error = wrapped
                 raise wrapped from exc
             raise
@@ -998,7 +1193,7 @@ def _dispatch(
                     primary_error.add_note(
                         f"workspace lease cleanup also failed: {type(cleanup_exc).__name__}: {cleanup_exc}; the exact claim remains for inspection/reconciliation"
                     )
-                    logger.exception("contained MSv2 read failed and its workspace lease cleanup also failed")
+                    logger.exception("contained MSv2 %s failed and its workspace lease cleanup also failed", noun)
     if dataset_declarations and _dataset_lifecycle is None:
         _refuse_unenforced_datasets(scope)
     if _cache_path is None and not _workspace_claimed:
@@ -1165,16 +1360,40 @@ def _dispatch(
         else:
             _publication_gate(action)
 
+    # A leaf carrying a strict dataset contract inside a mutation lifecycle:
+    # it records its own cache decision, observations and outcomes.
+    strict_leaf = None
+    if _dataset_lifecycle is not None and getattr(_dataset_lifecycle, "mutation", False) and not isinstance(scope, Recipe):
+        from shinobi.dataset_access import scope_has_dataset_contract
+
+        if scope_has_dataset_contract(scope):
+            from shinobi.dataset_lifecycle import StrictLeaf
+
+            strict_leaf = StrictLeaf(_dataset_lifecycle, cache_path, scope, ctx.prepare_inputs())
+
     if cacheable:
         execution_identity = _execution_identity or _local_execution_identity(scope, ctx, pinned=provenance_enabled)
         if execution_identity is None:
             logger.warning("step %s: cache disabled -- selected execution environment could not be fingerprinted", cache_path)
             cacheable = False
+    if strict_leaf is not None and strict_leaf.writes and not (cacheable and snapshots_enabled):
+        reason = "exact MSv2 mutation recovery names states by cache key and needs Tier 1 snapshots, but " + (
+            "this step is not cacheable (disabled, or its execution environment could not be fingerprinted)" if not cacheable else "snapshots are off"
+        )
+        strict_leaf.fail(None, reason, refused=True)
+        raise DatasetLifecycleUnavailableError(f"strict MSv2 mutation of {cache_path!r} refused before launch: {reason}")
     if cacheable:
         manifest = get_cache_manifest(cache_dir_value)
         prepared_for_key = ctx.prepare_inputs()
         cache_key = compute_cache_key(scope, func, prepared_for_key, _input_keys, execution_identity)
         hit = manifest.check(cache_path, cache_key, scope, prepared_for_key)
+        if hit is not None and strict_leaf is not None and not strict_leaf.decide_reuse(cache_key, _input_keys, get_journal(cache_dir_value)):
+            # The key and outputs match, but the dataset has moved on to a
+            # state that does not contain this step's work (see
+            # `snapshots.strict_reuse_issue`). Re-run it: the guard restores
+            # its exact predecessor first.
+            logger.warning("step %s: cache hit rejected for strict MSv2 reuse -- %s", cache_path, strict_leaf.cache.reason)
+            hit = None
         if hit is not None:
             # A hit stands in for the run that first produced this key, so it
             # must advertise the same provenance -- otherwise dependents would
@@ -1207,28 +1426,60 @@ def _dispatch(
     # what is being consumed. All of it after the cache key is computed --
     # which is safe because a mutated path contributes only its path string
     # to the key, so no restore can move it (see `snapshots.before_run`).
-    guard = (
-        _snapshot_guard(
-            scope,
-            ctx,
-            cache_dir_value,
-            cache_path,
-            cache_key,
-            run_id,
-            _input_keys,
-            _wired_fields,
-            _slice_index,
-            config,
-            _snapshot_success_record,
-            _snapshot_success_step_path,
+    if strict_leaf is not None:
+        strict_leaf.decide_run(cache_key, _input_keys, cacheable=cacheable)
+    if strict_leaf is not None and strict_leaf.writes:
+        assert cache_key is not None
+        try:
+            guard = _strict_snapshot_guard(
+                scope,
+                ctx,
+                strict_leaf,
+                cache_dir_value,
+                cache_path,
+                cache_key,
+                run_id,
+                _input_keys,
+                _wired_fields,
+                _boundary_fields,
+                _slice_index,
+                config,
+            )
+            guard.before_run()
+        except BaseException as exc:
+            strict_leaf.fail(None, f"refused before launch: {exc}", refused=True)
+            raise
+    else:
+        guard = (
+            _snapshot_guard(
+                scope,
+                ctx,
+                cache_dir_value,
+                cache_path,
+                cache_key,
+                run_id,
+                _input_keys,
+                _wired_fields,
+                _slice_index,
+                config,
+                _snapshot_success_record,
+                _snapshot_success_step_path,
+            )
+            if snapshots_enabled
+            else None
         )
-        if snapshots_enabled
-        else None
-    )
-    if guard is not None and _publication_gate is not None:
-        raise DatasetLifecycleUnavailableError("contained MSv2 read refused: a lifecycle leaf requires mutation recovery; mutation support is not available")
-    if guard is not None:
-        guard.before_run()
+        if guard is not None and _publication_gate is not None:
+            raise DatasetLifecycleUnavailableError("contained MSv2 read refused: a lifecycle leaf requires mutation recovery, which only the mutation lifecycle provides")
+        if guard is not None:
+            guard.before_run()
+    if strict_leaf is not None:
+        try:
+            strict_leaf.observe_before(guard)
+        except BaseException as exc:
+            if guard is not None:
+                guard.after_failure()
+            strict_leaf.fail(guard, f"predecessor observation failed: {type(exc).__name__}: {exc}", refused=True)
+            raise
     try:
         if func is None:
             result = ctx.run()
@@ -1238,7 +1489,7 @@ def _dispatch(
                 result = ctx.run()
             elif not isinstance(result, StepResult):
                 raise TypeError(f"step function {getattr(func, '__name__', func)!r} must return StepResult or None, got {type(result).__name__}")
-    except BaseException:
+    except BaseException as step_exc:
         # BaseException, not Exception: an interrupt is now an orderly unwind
         # (the child is stopped first), so the step's workspace needs the same
         # rollback any other failure gets. Catching only Exception left an
@@ -1249,6 +1500,8 @@ def _dispatch(
             # touched it. The marker stays set on purpose -- the next run then
             # forces a rollback before re-executing.
             guard.after_failure()
+        if strict_leaf is not None:
+            strict_leaf.fail(guard, f"step raised {type(step_exc).__name__}: {step_exc}")
         raise
     finally:
         # This step may have written to the workspace -- including to an
@@ -1257,6 +1510,18 @@ def _dispatch(
         # In the `finally` because a step that raised part-way through has
         # still had the chance to write. See `cache._hash_path`.
         invalidate_path_hashes()
+
+    if strict_leaf is not None and result.success:
+        # Exit status zero is not success for a strict step: its declared
+        # postconditions decide, before anything names or publishes the
+        # successor. A violating writer is rolled back to its predecessor.
+        try:
+            strict_leaf.validate(guard)
+        except BaseException as exc:
+            if guard is not None:
+                guard.after_failure()
+            strict_leaf.fail(guard, f"{type(exc).__name__}: {exc}")
+            raise
 
     # A recipe's stdout/stderr aggregate its sub-steps', and each sub-step
     # already logged its own via its recursive _dispatch -- re-logging the
@@ -1286,6 +1551,10 @@ def _dispatch(
             # snapshot (S1) precedes the explicit success oracle (S3), or a
             # committed result could name a state with nothing snapshotted.
             def _record() -> None:
+                if strict_leaf is not None:
+                    # A strict leaf's committed entry is its marker's success
+                    # oracle, so it precedes the reusable cache index.
+                    strict_leaf.commit()
                 if cacheable:
                     manifest.record(cache_path, cache_key, result, run_id=run_id)
 
@@ -1296,12 +1565,22 @@ def _dispatch(
                     _result_commit(result, _record)
 
             if guard is not None:
-                guard.after_success(_commit)
+                try:
+                    guard.after_success(_commit)
+                except BaseException as exc:
+                    # Before S3 the guard has rolled back; after it, the
+                    # committed oracle stands and only tidying failed.
+                    recorded = strict_leaf.lifecycle.leaf(cache_path) if strict_leaf is not None else None
+                    if strict_leaf is not None and (recorded is None or recorded.outcome != "committed"):
+                        strict_leaf.fail(guard, f"commit failed: {type(exc).__name__}: {exc}")
+                    raise
             else:
                 _commit()
         else:
             if guard is not None:
                 guard.after_failure()
+            if strict_leaf is not None:
+                strict_leaf.fail(guard, f"step returned non-zero status {result.returncode}")
             if _result_commit is not None:
                 _result_commit(result, lambda: None)
         if _cache_path is None and provenance_enabled:
@@ -1948,6 +2227,12 @@ def _run_recipe(
                 # named from the journal, the second cannot be named at
                 # all). See `snapshots.eligible_fields`.
                 _wired_fields=set(ref.wiring),
+                # Fields wired straight from a top-level recipe's own inputs.
+                # They carry no producer key because they have no producer:
+                # they are the workflow boundary, not a keyless upstream step.
+                # Only the strict dataset guard distinguishes the two (see
+                # `_strict_snapshot_guard`); ordinary Tier 1 is unchanged.
+                _boundary_fields=frozenset(field for field, source in ref.wiring.items() if isinstance(source, InputRef)) if input_keys is None else frozenset(),
                 _run_id=run_id,
                 _slice_index=slice_idx,
                 _leaf_inputs=leaf_inputs,
