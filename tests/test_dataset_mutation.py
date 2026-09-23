@@ -12,7 +12,6 @@ import os
 import threading
 from pathlib import Path
 
-import numpy as np
 import pytest
 from pydantic import BaseModel
 
@@ -35,6 +34,7 @@ from shinobi.steps.dispatch import _dispatch
 from shinobi.steps.schema import InputRef
 
 tables = pytest.importorskip("casacore.tables")
+np = pytest.importorskip("numpy")  # installed with casacore, not by default
 if not hasattr(tables, "default_ms"):  # pragma: no cover - depends on the installed build
     pytest.skip("installed python-casacore has no default_ms fixture builder", allow_module_level=True)
 
