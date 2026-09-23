@@ -52,8 +52,7 @@ Before writing logic that resembles something already in the codebase, look for 
 ## Architecture summary
 
 - **MSv2 task-access planning** (`shinobi.dataset_access`): a `Scope` carries the same serializable `DatasetAccess` declarations for binary cabs and Python steps (read/write/create; MAIN or a supported referenced subtable; column provenance; explicit row-count/schema/keyword permissions; bounded data-only selection). Resolution is an explicit planning operation, never Pydantic construction, and emits invariant-checked `ResolvedDatasetAccess` records containing canonical DatasetClosure root/resource identities but no casacore handles. Omitted/unknown columns conservatively mean the whole dataset; an unresolved producer output stays unknown and requires a reservation envelope. One `ResolvedAccessPlanner` extends `path_accesses` ordering for local planning, dry-run, legacy/worker Slurm planning and ownership inputs: read/read overlaps, every write/create excludes overlapping closure access, contradictory schema-write/declared-read shapes fail closed, aliases and parent/subtable spellings converge, planned create roots flow to downstream readers, and separate roots conflict when their closures share an external resource. Dataset reads enter the ownership access set so an external writer cannot overlap them. Inferred edges point backward in stable explicit-topological order, carry inspectable hazard reasons, and never manufacture `OutputRef` provenance. Dataset-bearing nested recipes/scatter are bounded refusals for now. Legacy and worker workflows carry a planning-only marker; strict local execution and both submission paths remain refused until lifecycle enforcement lands.
-- **Experimental worker protocol** (`offload.bundle`, `offload.records`, `offload.code`, `offload.worker`): versioned data-only plans, staged source and atomic per-attempt observations executed by one short-lived worker per Slurm allocation. `ninja compile --worker --submit` is opt-in; the legacy compiler keeps its stricter default. Reading a bundle never imports captured code, while a worker imports a pystep only from the verified staged snapshot. Worker sandboxes live on the submission/workspace filesystem, successful records follow validation+harvest, failed attempts retain diagnostics, and an idempotent finalizer never promotes missing records from scheduler state. M2 cache decisions happen inside allocations and use committed parent records for `OutputRef` provenance plus frozen code/image/tool-venv identity; ordering-only edges never manufacture data provenance. Cache hits publish current immutable attempt records. `shinobi.ownership` gives each write-declaring or dataset-access-declaring workflow a durable canonical root claim plus an entry in one shared access registry from before local execution/first `sbatch` through terminal completion. The registry stores complete canonical access sets, admits disjoint workflows and rejects equality/containment overlap whenever either side writes, so nested-root exclusion is order-independent and cross-authority reads cannot race a mutation. Detached workers fail closed unless their immutable plan, ownership marker, registry entry and live root record agree. Ownership persists through queued gaps and client death, while local liveness or complete durable job records plus Slurm accounting must prove death before reconciliation releases it. Requeues derive a fresh attempt UUID from `SLURM_RESTART_COUNT`, and readers select the newest published invocation rather than accepting an earlier success oracle. Mutation-declaring workers now reuse the local snapshot guard: recovery is path-scoped before the cache decision, and the immutable final attempt record is the sole success oracle published after the produced-state snapshot/journal commit but before the reusable cache index and final trash/marker cleanup. Missing or failed attempt records force rollback; a committed uncached mutator is preserved. See `docs/offloading.rst` for the serialization, environment, ownership, cache and publication contracts.
-- **Experimental worker protocol** (`offload.bundle`, `offload.records`, `offload.code`, `offload.worker`): versioned data-only plans, staged source and atomic per-attempt observations executed by one short-lived worker per Slurm allocation. `ninja compile --worker --submit` is opt-in; the legacy compiler keeps its stricter default. Reading a bundle never imports captured code, while a worker imports a pystep only from the verified staged snapshot. Worker sandboxes live on the submission/workspace filesystem, successful records follow validation+harvest, failed attempts retain diagnostics, and an idempotent finalizer never promotes missing records from scheduler state. It publishes a manifest only after every accepted job is terminal and every attempt committed. Concurrent finalizers compare reconstructed manifest content while treating `generated_at` as publication metadata: the first writer's timestamp wins, but any other difference is fatal. M2 cache decisions happen inside allocations and use committed parent records for `OutputRef` provenance plus frozen code/image/tool-venv identity; ordering-only edges never manufacture data provenance. Cache hits publish current immutable attempt records. Worker preparation freezes the complete filesystem-access plan: a required path output or explicit `implicit` write declaration that cannot be resolved is a preparation error, while an optional `None` or empty path output is a resolved declaration of no product and is valid. `shinobi.ownership` gives each write-declaring workflow a durable canonical root claim plus an entry in one shared access registry from before local execution/first `sbatch` through terminal completion. The registry stores complete canonical access sets, admits disjoint workflows and rejects equality/containment overlap whenever either side writes, so nested-root exclusion is order-independent and cross-authority reads cannot race a mutation. Detached workers fail closed unless their immutable plan, ownership marker, registry entry and live root record agree. Ownership persists through queued gaps and client death, while local liveness or complete durable job records plus Slurm accounting must prove death before reconciliation releases it. Requeues derive a fresh attempt UUID from `SLURM_RESTART_COUNT`, and readers select the newest published invocation rather than accepting an earlier success oracle. Mutation-declaring workers now reuse the local snapshot guard: recovery is path-scoped before the cache decision, and the immutable final attempt record is the sole success oracle published after the produced-state snapshot/journal commit but before the reusable cache index and final trash/marker cleanup. Missing or failed attempt records force rollback; a committed uncached mutator is preserved. See `docs/offloading.rst` for the serialization, environment, ownership, cache and publication contracts.
+- **Experimental worker protocol** (`offload.bundle`, `offload.records`, `offload.code`, `offload.worker`): versioned data-only plans, staged source and atomic per-attempt observations executed by one short-lived worker per Slurm allocation. `ninja compile --worker --submit` is opt-in; the legacy compiler keeps its stricter default. Reading a bundle never imports captured code, while a worker imports a pystep only from the verified staged snapshot. Worker sandboxes live on the submission/workspace filesystem, successful records follow validation+harvest, failed attempts retain diagnostics, and an idempotent finalizer never promotes missing records from scheduler state. It publishes a manifest only after every accepted job is terminal and every attempt committed. Concurrent finalizers compare reconstructed manifest content while treating `generated_at` as publication metadata: the first writer's timestamp wins, but any other difference is fatal. M2 cache decisions happen inside allocations and use committed parent records for `OutputRef` provenance plus frozen code/image/tool-venv identity; ordering-only edges never manufacture data provenance. Cache hits publish current immutable attempt records. Worker preparation freezes the complete filesystem-access plan: a required path output or explicit `implicit` write declaration that cannot be resolved is a preparation error, while an optional `None` or empty path output is a resolved declaration of no product and is valid. `shinobi.ownership` gives each write-declaring or dataset-access-declaring workflow a durable canonical root claim plus an entry in one shared access registry from before local execution/first `sbatch` through terminal completion. The registry stores complete canonical access sets, admits disjoint workflows and rejects equality/containment overlap whenever either side writes, so nested-root exclusion is order-independent and cross-authority reads cannot race a mutation. Detached workers fail closed unless their immutable plan, ownership marker, registry entry and live root record agree. Ownership persists through queued gaps and client death, while local liveness or complete durable job records plus Slurm accounting must prove death before reconciliation releases it. Requeues derive a fresh attempt UUID from `SLURM_RESTART_COUNT`, and readers select the newest published invocation rather than accepting an earlier success oracle. Mutation-declaring workers now reuse the local snapshot guard: recovery is path-scoped before the cache decision, and the immutable final attempt record is the sole success oracle published after the produced-state snapshot/journal commit but before the reusable cache index and final trash/marker cleanup. Missing or failed attempt records force rollback; a committed uncached mutator is preserved. See `docs/offloading.rst` for the serialization, environment, ownership, cache and publication contracts.
 - **Result plumbing** (`shinobi.results`): `_run_cab` applies wranglers to a `BackendRun`'s stdout+stderr, fills `outputs_model` fields by priority (wrangler value > same-named final input > reserved names `returncode`/`stdout`/`stderr` > resolved `ParamMeta.implicit` > field default), validates, and wraps everything in `StepResult` (`name`, `returncode`, `stdout`, `stderr`, `outputs: BaseModel`, `inputs: BaseModel` -- the effective post-override inputs, `.success`). For a `Recipe` these aggregate from sub-steps. `OutputRef` resolution reads `results[ref.step].outputs.<field>`.
 - **`@shinobi.step` decorator** (`shinobi.step`): binds an orchestration function to a `Scope` (Cab or Recipe), returning a `StepRef` -- the single carrier of the function (no global registry). The function takes `ctx` (an `ExecContext`) and returns either the `StepResult` from `ctx.run(**overrides)` or `None` (auto-run); anything else raises `TypeError`. `@recipe.step` is the same, appending the StepRef to `recipe.steps`. The function's signature is **not** introspected -- the pydantic models on the Scope are authoritative. Everything flows through `_dispatch(scope, func, ...)` (in `shinobi.steps.dispatch`); `Scope.__call__` dispatches with `func=None`. Backend resolution priority: explicit arg > scope's own `backend` > enclosing recipe's backend > `AppConfig.load().backend.default`.
 - **`@shinobi.pystep` decorator** (`shinobi.steps.pyfunc`): the opposite tradeoff from `@shinobi.step` -- for a plain, type-hinted Python function with no external tool and no existing `Cab`/`Recipe`, it derives `inputs_model` from the function's own signature (`inspect.signature` + `typing.get_type_hints`, not `param.annotation` directly, since every module here uses `from __future__ import annotations`) and `outputs_model` from its return-type annotation (a `BaseModel` subclass, used directly and returned as-is; no annotation/`-> None` means no outputs; anything else is rejected at decoration time rather than auto-wrapped into an invented field name). It builds a bare `Scope` (not a `Cab`, not a `Recipe`) and wraps the function in an adapter that returns its own `StepResult` directly, never calling `ctx.run()`. v1 has no per-parameter mutability override (every field is `IMMUTABLE`, the `Scope` default) -- add one only if a real function needs it. `Recipe.add_step` accepts the resulting `StepRef` directly (not just a bare `Scope`/`Cab`/`Recipe`), carrying its `func` over, so a pystep wires into a Recipe the same way a Cab does.
@@ -79,93 +78,6 @@ Cab definitions -- especially YAML cabs in the scabha dialect, of which cult-car
 ## Config: one validation library, not five
 
 Stimela 2.0 stacks `omegaconf` + its own `scabha.configuratt` + `munch` + `python-benedict` for config handling. shinobi uses `pydantic` + `pydantic-settings` only -- the same library already used for cab schemas. Precedence, highest to lowest: explicit overrides (CLI) > env vars (`SHINOBI_*`) > config file > built-in defaults. See `shinobi/config.py`.
-
-## Repo layout
-
-```
-src/shinobi/
-  steps/
-    schema.py          # Scope, Cab, Recipe (definitions); StepRef (binding: func/wiring/
-                         # params/scatter/__call__); InputRef/OutputRef; ScatterSpec;
-                         # Mutability; ParamMeta; Policies; ParamPattern/ParamSegment;
-                         # input/output patterns; wiring proxies; path_fields()
-    dispatch.py        # _dispatch (single entry point), ExecContext, _prepare_inputs
-                         # (mutability), _run_cab (argv->backend->wranglers->StepResult),
-                         # _run_recipe (topological wavefront over a thread pool),
-                         # backend-instance override registry
-    decorator.py       # @shinobi.step -> StepRef
-    pyfunc.py          # @shinobi.pystep -> StepRef, from a plain function's own signature
-    loops.py           # should_skip/passthrough_result: the one definition of an
-                         # unrolled loop's short-circuit, shared by _run_recipe and
-                         # the Slurm compiler (see Recipe.add_loop)
-    __init__.py        # re-exports; also re-exported from shinobi/__init__.py
-  policies.py          # build_argv() over a Cab + flavour guard (rejects non-"binary";
-                         # see SECURITY.md)
-  resources.py         # Resources (a step's declared footprint), ResourceBudget (config),
-                         # cgroup-aware detect_budget(), and Budget -- the admission-control
-                         # state machine shared across a run's nested schedulers
-  results.py           # BackendRun (returncode/stdout/stderr), StepResult (+ inputs)
-  cache.py             # compute_cache_key (wired=provenance / unwired=fingerprint),
-                         # ProvenanceKey (str subclass carrying .producer_field),
-                         # CacheManifest (backed by storage.JsonFileStore),
-                         # optional bounded content sample
-  dataset_closure.py   # explicit bounded MSv2 physical-resource observation;
-                         # canonical tables/managers only, no execution lifecycle
-  storage.py           # cross-process JSON transactions: Linux OFD lock +
-                         # checksummed log, then fsynced temp + atomic materialized
-                         # view; directory durability shared with worker publication
-  snapshots.py         # Tier 1: chain journal (chains.json), in-flight markers, rules A/B,
-                         # restore + quarantine-and-swap, crash reconciliation, eviction,
-                         # invalidate/check. Read cache.py first.
-  clonefs.py           # the clone ladder: FICLONE -> copy_file_range (ZFS) -> copy.
-                         # No hardlink rung -- a shared inode is not a snapshot.
-  sandbox.py           # per-step scratch cwd: prepare_output_parents (relative half of
-                         # declared_output_dirs) / absolutize_path_inputs / harvest_outputs
-                         # (declared fields + harvest globs, _move replaces the destination)
-                         # / clear_stale_outputs (the same replacement for the destinations
-                         # the tool writes directly -- see the note below)
-  wranglers.py         # stdout/stderr -> structured outputs
-  graph.py             # build_graph(Recipe) -> RecipeGraph (shared: true edges, wiring
-                         # validation, cycle detection); RecipeGraphError;
-                         # check_offloadable() -> RecipeNotOffloadableError
-  dag.py               # graph_nodes(Recipe) -> list[TraceStep] (display view over
-                         # build_graph), render_dag (box-drawing)
-  offload/             # compile-and-offload tier (sibling of dispatch, not in it)
-    slurm.py             # compile_slurm() -> SlurmWorkflow (pure); submit_slurm/status_slurm
-                         # (sbatch/sacct, single-node live-verified); OffloadCompileError
-    ssh.py               # dependency discovery, sync and detached `ninja run --remote`
-    remote_venv.py       # remote environment declarations, probing and provisioning
-    tracking.py          # handle discovery, fresh status probes and remote log following
-  download.py          # resumable HTTP/S3 download used by `ninja download`
-  config.py            # AppConfig (pydantic-settings); BackendConfig, ExecutionConfig
-                         # (max_workers), LogConfig, CacheConfig (+ SnapshotConfig)
-  cli.py               # click entrypoint (ninja); `run` dynamically builds --options from
-                         # inputs_model; --dryrun via graph_nodes + render_dag (argv echo for
-                         # Cab); remote launch/tracking; compile/status; cache/clean/download
-  backends/
-    __init__.py          # Backend ABC + class registry (register/get_backend)
-    native.py            # subprocess
-    venv.py              # subprocess in an existing virtualenv (native + activated env); always unpinned
-    container.py         # docker/podman/apptainer (+`singularity`, the same CLI under its
-                         # former name -- registered separately because the backend name is
-                         # also the binary invoked), bind_dir_modes over path_fields() +
-                         # declared_output_dirs
-    slurm.py             # sbatch/sacct, verified against a real cluster; automated tests mock the CLI
-    kubernetes.py        # kubectl, live-verified against a real kind cluster
-    recording.py         # RecordingBackend -- test double, records calls
-  loaders/
-    yaml_cab.py          # YAML cabs (scabha dialect) -> Cab
-    stimela_classic.py   # stimela-classic parameters.json -> Cab
-    worker_schema.py     # scabha-derived worker config schema -> ConfigSchema/models
-    _modelgen.py         # dtype->type map + pydantic.create_model helper + name sanitiser
-tests/                   # run via `uv run pytest` (pythonpath=["src"] in pyproject)
-  fixtures/sample_steps.py    # tiny Cab/Recipe fixtures for tests/test_steps_*.py
-  fixtures/sample_targets.py  # Cab/Recipe/StepRef targets for tests/test_cli.py
-                           # test_docker_live.py / test_kubernetes_live.py / test_slurm_live.py
-                           # are real (non-mocked) integration tests, skipped without
-                           # docker / a cluster (slurm_live/ = throwaway all-in-one Slurm)
-                           # test_slurm_backend.py / test_kubernetes_backend.py mock the CLI calls
-```
 
 ## Before adding a feature
 
