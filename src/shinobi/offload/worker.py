@@ -683,6 +683,9 @@ class _WorkerDatasetLifecycle:
                 f"step {self.step_path!r}: detached dataset lifecycle is {self.lifecycle.record.phase.value!r}, expected 'executing' or 'validated' before publication"
             )
 
+    def validate_before_publication(self) -> None:
+        self._validate_success(publish=False)
+
     def finish(self, result: StepResult) -> None:
         from shinobi.dataset_lifecycle import DatasetLifecyclePhase
 
@@ -805,7 +808,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         if frozen.tool_venv_digest is not None and result.venv_digest != frozen.tool_venv_digest:
             raise BundleError(f"step {step_path!r}: executed tool venv digest {result.venv_digest!r} does not match submission fingerprint {frozen.tool_venv_digest!r}")
         if result.success and dataset_runtime is not None and not dataset_runtime.contract.mutation:
-            dataset_runtime._validate_success(publish=False)
+            dataset_runtime.validate_before_publication()
         result.code_digest = common["code_digest"]
         result.worker_digest = common["worker_digest"]
         result.job_id = job_id
