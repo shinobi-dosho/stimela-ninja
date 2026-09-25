@@ -180,6 +180,28 @@ def gen0_name(path: Path, fingerprint: Any) -> str:
     return f"gen0__{hashlib.sha256(blob.encode()).hexdigest()[:32]}"
 
 
+def _replace_tree_from_snapshot(path: Path, source: Path, run_id: str, *, force_copy: bool = False) -> None:
+    """Atomically replace ``path`` from ``source``, restoring it on error."""
+
+    failed = path.with_name(path.name + TRASH_SUFFIX + run_id + "-failed")
+    if failed.exists():
+        shutil.rmtree(failed)
+    present = path.exists()
+    if present:
+        os.rename(path, failed)
+    tier = CloneTier.COPY if force_copy else probe(path.parent)
+    try:
+        clone_tree(source, path, tier=tier)
+    except BaseException:
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+        if present:
+            os.rename(failed, path)
+        raise
+    if present:
+        shutil.rmtree(failed, ignore_errors=True)
+
+
 @dataclass
 class Generation:
     """One named state of a tracked path."""
@@ -239,6 +261,10 @@ class Marker:
     # names a strict MSv2 attempt whose committed mutation entry is the
     # oracle (see `dataset_lifecycle.mutation_committed`).
     success_kind: str | None = None
+    # Strict lifecycles must recover without reconstructing the original
+    # SnapshotGuard (notably in a detached finalizer). This is the exact
+    # named state a failed/interrupted mutation must put back.
+    strict_rollback_state: str | None = None
 
     def as_json(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -253,6 +279,8 @@ class Marker:
         }
         if self.success_kind is not None:
             data["success_kind"] = self.success_kind
+        if self.strict_rollback_state is not None:
+            data["strict_rollback_state"] = self.strict_rollback_state
         return data
 
 
@@ -1074,6 +1102,7 @@ class SnapshotGuard:
             success_step_path=self.success_step_path,
             path_was_absent=plan.path_was_absent,
             success_kind=self.success_kind,
+            strict_rollback_state=(plan.pre_run_head if plan.trash is not None and not plan.forced else plan.required) if self.strict is not None else None,
         )
         if plan.path_was_absent:
 
@@ -1499,23 +1528,7 @@ class SnapshotGuard:
         source = self.journal.snapshot_dir(name)
         if not source.exists():
             raise DatasetLifecycleUnavailableError(f"snapshot {name} is missing")
-        failed = plan.path.with_name(plan.path.name + TRASH_SUFFIX + self.run_id + "-failed")
-        if failed.exists():
-            shutil.rmtree(failed)
-        present = plan.path.exists()
-        if present:
-            os.rename(plan.path, failed)
-        tier = CloneTier.COPY if self.force_copy else probe(plan.path.parent)
-        try:
-            clone_tree(source, plan.path, tier=tier)
-        except BaseException:
-            if plan.path.exists():
-                shutil.rmtree(plan.path, ignore_errors=True)
-            if present:
-                os.rename(failed, plan.path)
-            raise
-        if present:
-            shutil.rmtree(failed, ignore_errors=True)
+        _replace_tree_from_snapshot(plan.path, source, self.run_id, force_copy=self.force_copy)
 
     def _discard_trash(self, plan: _FieldPlan) -> None:
         if plan.trash is not None:
@@ -1785,7 +1798,7 @@ def _marker_completed(marker: Marker, manifest) -> bool:
     return record.committed and str(record.attempt_id) == marker.run_id and record.step_path == expected_step_path and record.cache_key == marker.cache_key
 
 
-def reconcile(cache_dir: str, manifest, *, paths: set[Path] | None = None) -> list[str]:
+def reconcile(cache_dir: str, manifest, *, paths: set[Path] | None = None, exact: bool = False) -> list[str]:
     """Decide what a crashed run left behind, once per cache directory per
     process.
 
@@ -1802,6 +1815,10 @@ def reconcile(cache_dir: str, manifest, *, paths: set[Path] | None = None) -> li
     step re-runs, and if it is killed mid-rewrite a run-blind oracle would
     find the old entry, call the step complete, drop the trash and leave the
     head trusted -- a permanent cache hit over a half-written MS.
+
+    ``exact=True`` is the strict-dataset form: a missing oracle is recovered
+    immediately to the rollback state frozen in the marker. It never leaves
+    live partial bytes merely marked for a later retry.
 
     Returns a human-readable line per decision, for `ninja cache check`.
     """
@@ -1857,6 +1874,32 @@ def reconcile(cache_dir: str, manifest, *, paths: set[Path] | None = None) -> li
                 journal.update_chain(cid, lambda _chain: None)
             except OSError:
                 notes.append(f"{chain.path}: could not restore its pre-run absence -- left the partial path in place for inspection")
+            continue
+        if exact:
+            rollback = marker.strict_rollback_state
+            if rollback is None:
+                raise DatasetLifecycleUnavailableError(f"strict recovery for {chain.path} has no recorded rollback state")
+            if chain.taint_blocks(rollback):
+                raise DatasetLifecycleUnavailableError(f"strict recovery for {chain.path} cannot restore {rollback}: it predates an unnamed write")
+            source = journal.snapshot_dir(rollback)
+            if chain.generation(rollback) is None or not source.exists():
+                raise DatasetLifecycleUnavailableError(f"strict recovery for {chain.path} cannot restore missing snapshot {rollback}")
+            path = Path(chain.path)
+            _replace_tree_from_snapshot(path, source, marker.run_id)
+            if trash is not None:
+                shutil.rmtree(trash, ignore_errors=True)
+            st = path.stat()
+
+            def recovered(c: Chain | None) -> Chain | None:
+                if c is not None:
+                    c.dev, c.ino, c.ctime_ns = st.st_dev, st.st_ino, st.st_ctime_ns
+                    c.head = rollback
+                    c.marker = None
+                    c.status = HeadStatus.TRUSTED
+                return c
+
+            journal.update_chain(cid, recovered)
+            notes.append(f"{chain.path}: run {marker.run_id} of '{marker.step_path}' did not complete; restored exact state {rollback}")
             continue
         if trash is not None:
             try:

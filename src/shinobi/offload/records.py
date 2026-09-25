@@ -14,6 +14,7 @@ from uuid import UUID
 from pydantic import ConfigDict, Field, JsonValue, model_validator
 
 from shinobi.cache import ProvenanceKey
+from shinobi.dataset_lifecycle import DatasetLifecycleAttempt
 from shinobi.offload._codec import BundleError, WireModel, pack_model, unpack
 from shinobi.offload.bundle import write_new
 from shinobi.provenance import StepRecord, _record
@@ -42,7 +43,7 @@ class Observation(StepRecord):
 
 
 class AttemptRecord(WireModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     workflow_id: UUID
     attempt_id: UUID
     step_path: str
@@ -59,9 +60,20 @@ class AttemptRecord(WireModel):
     scheduler_state: str | None = None
     code_digest: str | None = None
     worker_digest: str | None = None
+    dataset_lifecycle: DatasetLifecycleAttempt | None = None
 
     @model_validator(mode="after")
     def _check_outcome(self) -> AttemptRecord:
+        lifecycle = self.dataset_lifecycle
+        if (self.schema_version == 1) != (lifecycle is None):
+            raise BundleError("dataset lifecycle evidence requires attempt-record schema version 2")
+        if lifecycle is not None:
+            if lifecycle.attempt_id != str(self.attempt_id):
+                raise BundleError("dataset lifecycle evidence belongs to a different attempt invocation")
+            if self.state in ("succeeded", "cached", "skipped") and lifecycle.outcome != "committed":
+                raise BundleError("a committed worker result requires committed dataset lifecycle evidence")
+            if self.state == "failed" and lifecycle.outcome not in ("failed", "refused"):
+                raise BundleError("a failed worker result requires terminal dataset lifecycle evidence")
         result = self.observation
         if self.state in ("running", "unknown"):
             if result is not None or self.cache_key is not None or self.output_keys:
@@ -99,6 +111,7 @@ class AttemptRecord(WireModel):
         code_digest: str | None = None,
         worker_digest: str | None = None,
         sandbox: str | None = None,
+        dataset_lifecycle: DatasetLifecycleAttempt | None = None,
     ) -> AttemptRecord:
         inputs, outputs = pack_model(result.inputs), pack_model(result.outputs)
         # Reuse provenance's metadata mapping, but not its lossy I/O payload.
@@ -111,6 +124,7 @@ class AttemptRecord(WireModel):
                     keys[field] = ProducedState(cache_key=str(key), producer_field=getattr(key, "producer_field", None) or field)
         state = "failed" if not result.success else "skipped" if result.skipped else "cached" if result.cached else "succeeded"
         return cls(
+            schema_version=2 if dataset_lifecycle is not None else 1,
             workflow_id=workflow_id,
             attempt_id=attempt_id,
             step_path=step_path,
@@ -125,6 +139,7 @@ class AttemptRecord(WireModel):
             code_digest=code_digest,
             worker_digest=worker_digest,
             sandbox=sandbox,
+            dataset_lifecycle=dataset_lifecycle,
         )
 
     def result(self, scope: Scope) -> StepResult:

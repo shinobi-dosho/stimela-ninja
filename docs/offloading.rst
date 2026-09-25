@@ -207,6 +207,25 @@ before its final attempt record is committed. Failed tools and harvest errors
 retain the exact shared sandbox path in their diagnostics. Harvesting several
 products is ordered, but is not a filesystem transaction across all products.
 
+Strict ``MeasurementSetV2`` contracts add a compute-side lifecycle around
+that worker path. Preparation freezes the whole-workflow and per-leaf
+resolved accesses, contained closure identities, cache store, tool-backend
+capabilities and an explicit identity mapping for the site's shared storage.
+The submission-host observation is evidence, not permission to execute:
+each allocation re-resolves and observes on its compute node under the exact
+durable owner, and checks both that owner and the newest requeue invocation
+again immediately before publishing.
+
+The immutable version-2 ``AttemptRecord`` embeds terminal dataset lifecycle
+evidence and is the strict mutation marker's detached success oracle. The
+successor snapshot, journal update and committed leaf evidence precede it;
+the reusable cache index and marker cleanup follow it. The finalizer
+reconciles written roots and requires terminal lifecycle evidence before it
+releases ownership. A missing result, corrupt lifecycle file, failed
+recovery, stale invocation or lost claim remains fail-closed. This supports
+contained read, write and create leaves; the legacy argv compiler remains
+planning-only for dataset contracts.
+
 Scientific-workspace ownership is deliberately coarser than the per-step
 access ordering: one workflow that declares any filesystem write owns the
 canonical workspace from before its first local step or ``sbatch`` call until
@@ -355,6 +374,13 @@ remaining S1--S5 publication boundaries; the physical gate verifies that the
 same recovery protocol works through the scheduler, subprocess/container
 boundaries and the site's actual shared filesystem.
 
+Strict ``MeasurementSetV2`` execution has an additional gate:
+``tests/slurm_physical/run_m4_msv2.py`` creates, reads and writes a real
+Casacore MS across compute nodes, then kills a writer before its immutable
+oracle and requires detached-finalizer rollback before ownership release.
+Run it after the M2 storage probe with the ``measurement-set`` development
+dependencies available in the shared worker/tool environment.
+
 When a recipe can be offloaded
 ------------------------------
 
@@ -501,13 +527,14 @@ sharing an external subtable are ordered consistently in local, dry-run and
 Slurm planning.  The compiled job records retain deterministic reasons such
 as ``write-after-read: observation.ms, MAIN.FLAG``.  Columns remain
 provenance detail: different columns do not authorize parallel writers yet.
-Strict dataset execution and submission remain refused until the lifecycle
-backend is available; this issue only makes their planning contract explicit.
-Legacy compilation and worker-bundle preparation carry a planning-only marker,
-and both submission paths check it before scheduler, log or ownership side
-effects.  A planned ``create`` root can feed downstream readers without being
-materialized during compilation, while an existing ``create`` target is
-refused rather than treated as an implicit replacement.
+The legacy compiler retains a planning-only marker for strict datasets. A
+worker bundle also carries a preparation marker, but
+``prepare_worker_slurm`` replaces it with an executable versioned lifecycle
+plan only after validating the contained closure, shared identity mapping,
+tool routes, cache/recovery policy and ownership access set. A planned
+``create`` root can feed downstream readers without being materialized during
+compilation, while an existing ``create`` target is refused rather than
+treated as an implicit replacement.
 
 Because this works on **resolved values**, it does not care how each step
 spells the path. A step wiring the MS from a recipe input and a step naming

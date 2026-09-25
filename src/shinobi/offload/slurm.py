@@ -58,6 +58,7 @@ from shinobi.backends.slurm_script import (
     safe_slurm_name,
     sbatch_resource_opts,
 )
+from shinobi.config import AppConfig
 from shinobi.dataset_access import ResolvedAccessPlanner, scope_tree_has_dataset_contract
 from shinobi.exceptions import BackendError, DatasetLifecycleUnavailableError
 from shinobi.graph import check_offloadable
@@ -607,6 +608,93 @@ def _pin_worker_bundle(bundle):
     return bundle.model_copy(update={"steps": tuple(steps)})
 
 
+def _dataset_worker_plan(
+    pinned,
+    recipe: Recipe,
+    recipe_inputs: dict[str, Any],
+    per_step: dict[str, tuple],
+    generic_accesses: dict[Path, bool],
+):
+    """Freeze the strict lifecycle contract workers must re-establish.
+
+    Submission-host observations are retained as preparation evidence, not as
+    permission to execute stale bytes.  Every allocation resolves and
+    observes again under the still-live detached claim.
+    """
+
+    from shinobi.dataset_backends import DatasetBackendStatus, DatasetNamespaceMode, dataset_backend_capability, worker_dataset_backend_capability
+    from shinobi.dataset_lifecycle import DatasetLifecycleSnapshot, resolve_lifecycle_snapshot
+    from shinobi.offload._codec import unpack
+    from shinobi.offload.worker import DatasetStepPlan, DatasetWorkerPlan
+    from shinobi.ownership import contained_access_issues
+    from shinobi.steps.dispatch import _scope_tree_writes_datasets, _strict_mutation_cache_issues
+    from shinobi.steps.schema import paths_overlap
+
+    workspace = Path(pinned.workspace).resolve()
+    config = AppConfig.model_validate({name: unpack(value) for name, value in pinned.config.items()})
+    values = recipe.inputs_model(**recipe_inputs)
+    mutation = _scope_tree_writes_datasets(recipe)
+    cache_dir = pinned.cache_dir_override or recipe.cache_dir or config.cache.dir
+    if not Path(cache_dir).is_absolute():
+        cache_dir = str(workspace / cache_dir)
+    if mutation:
+        issues = _strict_mutation_cache_issues(
+            recipe,
+            pinned.cache_override,
+            None,
+            pinned.cache_dir_override,
+            None,
+            config,
+        )
+        if issues:
+            raise DatasetLifecycleUnavailableError("detached MSv2 mutation refused: " + "; ".join(issues))
+
+    steps = tuple(DatasetStepPlan(step_path=step.name, accesses=tuple(per_step.get(step.name, ()))) for step in pinned.steps)
+    snapshot = (
+        resolve_lifecycle_snapshot(recipe, values, workspace=workspace, mutation=mutation)
+        if any(step.accesses for step in steps)
+        else DatasetLifecycleSnapshot(accesses=(), observations=())
+    )
+    if tuple(access for step in steps for access in step.accesses) != snapshot.accesses:
+        raise DatasetLifecycleUnavailableError("detached MSv2 preparation produced inconsistent workflow and per-step access plans")
+
+    resources = {resource for access in snapshot.accesses for resource in access.resources}
+    access_issues = contained_access_issues(
+        recipe,
+        values,
+        workspace=workspace,
+        dataset_resources=resources,
+        allow_dataset_write_aliases=True,
+    )
+    if access_issues:
+        raise DatasetLifecycleUnavailableError("detached MSv2 lifecycle refused: " + "; ".join(access_issues))
+    overlapping_writes = sorted(
+        {path for path, writes in generic_accesses.items() if writes and not (mutation and path in resources) and any(paths_overlap(path, resource) for resource in resources)},
+        key=str,
+    )
+    if overlapping_writes:
+        raise DatasetLifecycleUnavailableError("detached MSv2 lifecycle refused: a generic write overlaps the dataset closure: " + ", ".join(map(str, overlapping_writes)))
+
+    tool_capabilities = tuple(dataset_backend_capability(step.backend, mutation=mutation) for step in pinned.steps)
+    unavailable = tuple(
+        capability for capability in tool_capabilities if capability.status is not DatasetBackendStatus.TESTED or capability.namespace_mode is DatasetNamespaceMode.REMOTE_DELEGATED
+    )
+    if unavailable:
+        raise DatasetLifecycleUnavailableError(
+            "detached MSv2 lifecycle refused by tool-backend capability: "
+            + "; ".join(f"{capability.backend} is {capability.status.value}: {capability.reason}" for capability in unavailable)
+        )
+    return DatasetWorkerPlan(
+        storage_namespace=str(workspace),
+        mutation=mutation,
+        capability=worker_dataset_backend_capability(mutation=mutation),
+        tool_capabilities=tool_capabilities,
+        initial_snapshot=snapshot,
+        steps=steps,
+        cache_dir=str(Path(cache_dir).resolve()),
+    )
+
+
 def _prepare_worker_slurm(
     bundle,
     *,
@@ -646,6 +734,8 @@ def _prepare_worker_slurm(
     log_dir = submission_dir / "logs"
     jobs: list[SlurmJob] = []
     workflow_accesses: dict[Path, bool] = {}
+    generic_workflow_accesses: dict[Path, bool] = {}
+    dataset_accesses: dict[str, tuple] = {}
     topological = graph.topological_indices()
     order_rank = {index: rank for rank, index in enumerate(topological)}
     for index in topological:
@@ -672,6 +762,7 @@ def _prepare_worker_slurm(
         generic_accesses = path_accesses(scope, known, workspace=Path(pinned.workspace))
         for path, writes in generic_accesses:
             workflow_accesses[path] = workflow_accesses.get(path, False) or writes
+            generic_workflow_accesses[path] = generic_workflow_accesses.get(path, False) or writes
         mutation_deps = mutation.order_after(
             frozen.name,
             scope,
@@ -682,6 +773,7 @@ def _prepare_worker_slurm(
         if mutation.last_decision is not None:
             from shinobi.dataset_access import dataset_workspace_accesses
 
+            dataset_accesses[frozen.name] = mutation.last_decision.datasets
             for path, writes in dataset_workspace_accesses(mutation.last_decision.datasets):
                 workflow_accesses[path] = workflow_accesses.get(path, False) or writes
         depends_on = sorted({graph.names[item] for item in graph.deps[index]} | mutation_deps, key=lambda name: order_rank[step_index[name]])
@@ -720,7 +812,13 @@ def _prepare_worker_slurm(
         owner_root = Path(pinned.workspace).resolve()
     else:
         owner_root = ownership_workspace(Path(pinned.workspace), writes)
+    dataset_lifecycle = None
+    execution_blocked_reason = pinned.execution_blocked_reason
+    if scope_tree_has_dataset_contract(recipe):
+        dataset_lifecycle = _dataset_worker_plan(pinned, recipe, recipe_inputs, dataset_accesses, generic_workflow_accesses)
+        execution_blocked_reason = None
     plan = ExecutionPlan(
+        schema_version=2 if dataset_lifecycle is not None else 1,
         workflow_id=submission["workflow_id"],
         bundle_digest=pinned.digest,
         worker=worker,
@@ -729,7 +827,8 @@ def _prepare_worker_slurm(
         ownership_workspace=str(owner_root),
         ownership_registry=str(ownership_registry()),
         accesses=tuple(WorkspaceAccess(path=str(path), writes=writes) for path, writes in sorted(workflow_accesses.items(), key=lambda item: str(item[0]))),
-        execution_blocked_reason=pinned.execution_blocked_reason,
+        execution_blocked_reason=execution_blocked_reason,
+        dataset_lifecycle=dataset_lifecycle,
     )
     write_new(submission_dir / "execution.json", plan)
 
@@ -751,7 +850,7 @@ def _prepare_worker_slurm(
         submission_dir=submission_dir,
         jobs=jobs,
         finalizer=finalizer,
-        execution_blocked_reason=pinned.execution_blocked_reason,
+        execution_blocked_reason=execution_blocked_reason,
     )
 
 

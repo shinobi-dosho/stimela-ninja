@@ -543,6 +543,30 @@ def test_contained_access_check_reuses_claim_time_default_factory(tmp_path):
     assert issues == ()
 
 
+def test_contained_access_check_does_not_treat_dataset_output_as_generic(tmp_path):
+    class DatasetOut(BaseModel):
+        ms: shinobi.MeasurementSetV2
+
+    target = tmp_path / "future.ms"
+    leaf = Cab(
+        name="create",
+        command="create-ms",
+        inputs_model=Empty,
+        outputs_model=DatasetOut,
+        dataset_accesses=[
+            shinobi.DatasetAccess(
+                field="ms",
+                mode=shinobi.DatasetMode.CREATE,
+                reservation=target,
+                columns=shinobi.DatasetColumns(create=("DATA",)),
+                allow_schema_change=True,
+            )
+        ],
+    )
+
+    assert contained_access_issues(leaf, Empty(), workspace=tmp_path, dataset_resources={target}) == ()
+
+
 def test_immutable_pystep_rewriting_same_named_path_still_needs_ownership():
     class Ms(BaseModel):
         ms: Path

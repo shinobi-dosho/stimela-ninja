@@ -23,7 +23,7 @@ from shinobi.dag import graph_nodes, render_dag
 from shinobi.exceptions import DatasetLifecycleUnavailableError
 from shinobi.graph import RecipeNotOffloadableError, check_offloadable
 from shinobi.offload.bundle import freeze_recipe
-from shinobi.offload.slurm import MutationOrder, compile_slurm, prepare_worker_slurm, submit_slurm, submit_worker_slurm
+from shinobi.offload.slurm import MutationOrder, compile_slurm, prepare_worker_slurm, submit_slurm
 from shinobi.offload.worker import ExecutionPlan
 from shinobi.ownership import WorkspaceOwnershipError, acquire_workspace, scope_path_accesses, scope_requires_ownership
 from shinobi.steps.pyfunc import pystep
@@ -604,23 +604,22 @@ def test_planned_create_identity_flows_to_reader_and_all_planners(monkeypatch, t
     assert legacy.jobs[1].access_reasons == ["read-after-write: future.ms, MAIN.DATA"]
 
 
-def test_worker_dataset_planning_is_marked_blocked_before_submission(monkeypatch, tmp_path):
+def test_worker_dataset_planning_becomes_an_executable_lifecycle_plan(monkeypatch, tmp_path):
     target = tmp_path / "future.ms"
     recipe = _create_then_read_recipe()
     monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda *args, **kwargs: pytest.fail("planned dataset was inspected before creation"))
     bundle = freeze_recipe(recipe, {"target": target}, config=AppConfig(), workspace=tmp_path)
     assert bundle.execution_blocked_reason is not None
     workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
-    assert workflow.execution_blocked_reason == bundle.execution_blocked_reason
+    assert workflow.execution_blocked_reason is None
     assert workflow.jobs[1].depends_on == ["create"]
     assert workflow.jobs[1].access_reasons == ["read-after-write: future.ms, MAIN.DATA"]
     execution = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
-    assert execution.execution_blocked_reason == bundle.execution_blocked_reason
-
-    with pytest.raises(DatasetLifecycleUnavailableError, match="planning-only"):
-        submit_worker_slurm(workflow)
-    assert not (workflow.submission_dir / "logs").exists()
-    assert not (workflow.submission_dir / "submission-claim.json").exists()
+    assert execution.execution_blocked_reason is None
+    assert execution.schema_version == 2
+    assert execution.dataset_lifecycle is not None
+    assert execution.dataset_lifecycle.mutation
+    assert [step.step_path for step in execution.dataset_lifecycle.steps] == ["create", "read"]
 
 
 def test_worker_preserves_wired_optional_none_as_a_known_absence(monkeypatch, tmp_path):

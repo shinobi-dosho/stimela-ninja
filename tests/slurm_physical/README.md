@@ -133,3 +133,35 @@ steps ran on ``k1``, image pysteps on ``n1`` and venv pysteps on ``n2``. Job
 their published restart-generation records were the attempts selected by
 finalization. The checker passed every state vector and the final MS was
 exactly ``vis[two]|image[requeued]|venv-requeued[4242]``.
+
+## Physical M4 strict-MSv2 lifecycle probe
+
+``run_m4_msv2.py`` is the release gate for detached strict dataset support.
+Run it only after the M2 shared-metadata probe on the same mount, with a shared
+worker/tool interpreter containing ``python-casacore`` and NumPy. It creates a
+real MSv2 on one node, writes ``SCAN_NUMBER`` on a second, and reads it on a
+third. A separate write is then killed at the pre-oracle ``S2`` boundary; the
+detached finalizer must restore the exact predecessor, publish a failed
+immutable attempt, and release ownership only after recovery. A final retry on
+the third node must commit the intended values::
+
+    python /data/src/stimela-ninja/tests/slurm_physical/run_m4_msv2.py run \
+      --root /data/physical-m4-msv2-001
+    python /data/src/stimela-ninja/tests/slurm_physical/run_m4_msv2.py check \
+      --root /data/physical-m4-msv2-001
+
+Use ``--worker-python`` and ``--casacore-python`` when those environments are
+separate, and pass the site's three ``--nodes`` plus ``--partition``. A code
+merge does not by itself establish site support: record a successful fresh-
+process check here, including job and node identities, after running the gate.
+
+Physical M4 passed on 2026-09-25 against the Kudu/Nyala ``physical-dev``
+cluster after M2 jobs 422--424 proved shared metadata and cross-node OFD
+locking. Jobs 431 (create, ``k1``), 432 (write, ``n1``) and 433 (read,
+``n2``) completed, followed by finalizer 434 on ``k1``. The injected S2
+writer was job 435 on ``n1`` and exited ``86:0``; finalizer 436 returned
+``1:0`` for the intentionally failed workflow only after restoring
+``SCAN_NUMBER`` to ``7,7,7,7`` and releasing ownership. Retry job 437 on
+``n2`` and finalizer 438 on ``k1`` completed, and a separate checker process
+verified the final MS contained ``9,9,9,9`` plus all execution, attempt,
+settlement and finalization records.

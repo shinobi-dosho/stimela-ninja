@@ -231,6 +231,7 @@ def contained_access_issues(
     workspace: Path,
     dataset_resources: set[Path],
     validated_steps: dict[int, tuple[BaseModel, bool]] | None = None,
+    allow_dataset_write_aliases: bool = False,
 ) -> tuple[str, ...]:
     """Return generic filesystem declarations a contained read cannot prove.
 
@@ -266,6 +267,27 @@ def contained_access_issues(
         validated_steps=validated_steps,
     ):
         dataset_inputs = set(dataset_declarations(leaf.inputs_model))
+        dataset_outputs = set(dataset_declarations(leaf.outputs_model))
+        writable_dataset_resources: set[Path] = set()
+        if allow_dataset_write_aliases:
+            from shinobi.dataset_access import DatasetAccessError, resolve_scope_dataset_accesses
+
+            try:
+                writable_dataset_resources = {
+                    resource
+                    for access in resolve_scope_dataset_accesses(
+                        leaf,
+                        known,
+                        workspace=root,
+                        unresolved_inputs=unresolved,
+                    )
+                    if access.writes
+                    for resource in access.resources
+                }
+            except DatasetAccessError:
+                # The authoritative planner reports the original resolution
+                # error. This helper only decides generic-path containment.
+                pass
         generic_inputs = (path_fields(leaf.inputs_model) | write_path_fields(leaf)) - dataset_inputs
         unknown_inputs = sorted(generic_inputs & unresolved)
         if unknown_inputs:
@@ -282,12 +304,14 @@ def contained_access_issues(
                 {path for path in concrete_paths(known[name]) if any(paths_overlap(path, resource) for resource in dataset_resources)},
                 key=str,
             )
+            if overlaps and all(any(path == resource or path.is_relative_to(resource) for resource in writable_dataset_resources) for path in overlaps):
+                continue
             if overlaps:
                 qualifier = "generic write overlaps" if name in write_path_fields(leaf) else f"generic path input {name!r} overlaps"
                 issues.append(f"scope {leaf.name!r} {qualifier} the MSv2 closure: " + ", ".join(map(str, overlaps)))
 
-        output_paths = path_fields(leaf.outputs_model)
-        unresolved_outputs = sorted(unresolved_output_path_fields(leaf, known))
+        output_paths = path_fields(leaf.outputs_model) - dataset_outputs
+        unresolved_outputs = sorted(unresolved_output_path_fields(leaf, known) - dataset_outputs)
         if unresolved_outputs:
             issues.append(f"scope {leaf.name!r} has unresolved generic path output(s): {', '.join(unresolved_outputs)}")
         for name in sorted(output_paths):
@@ -801,6 +825,20 @@ def inspect_ownership(workspace: Path, workflow_id: str | None = None) -> Owners
             "uncertain",
             f"every recorded Slurm job is terminal, but {len(missing)} planned job(s) have no durable scheduler record; submission may have crashed after scheduler acceptance",
         )
+    if execution.dataset_lifecycle is not None:
+        try:
+            from shinobi.offload.worker import DatasetSettlement, _latest_attempt
+
+            settlement = DatasetSettlement.model_validate_json((submission / "dataset-settlement.json").read_text())
+            expected_attempts = tuple(_latest_attempt(submission, attempt) for attempt in execution.attempts)
+            if settlement.workflow_id != submitted.workflow_id or settlement.bundle_digest != bundle.digest or settlement.attempts != expected_attempts:
+                raise ValueError("dataset settlement identity disagrees with the newest planned invocations")
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            return OwnershipInspection(
+                owner,
+                "uncertain",
+                f"every planned Slurm job is terminal, but dataset recovery/release evidence is unavailable: {exc}",
+            )
     return OwnershipInspection(owner, "dead", "every planned Slurm job has a durable record and is terminal")
 
 

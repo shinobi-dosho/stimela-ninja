@@ -3,6 +3,8 @@
 A bundle is a frozen declaration, not evidence that any step ran. Reading
 one reconstructs only framework schemas, never imports its captured code.
 Paths remain relative to the recorded shared workspace, not the bundle dir.
+Dataset-bearing bundles retain a preparation marker until the side-effecting
+Slurm preparation stage freezes their compute-side lifecycle contract.
 """
 
 from __future__ import annotations
@@ -156,7 +158,7 @@ class RecipeBundle(WireModel):
         recipe = self.declaration()
         has_datasets = scope_tree_has_dataset_contract(recipe)
         if has_datasets != (self.execution_blocked_reason is not None):
-            raise BundleError("dataset-bearing bundles must carry their planning-only execution refusal")
+            raise BundleError("dataset-bearing bundles must carry their compute-lifecycle preparation marker")
         for value in self.config.values():
             unpack(value)  # also validate tagged/finite configuration on read
         # Do not apply legacy eligibility: declarations intentionally have
@@ -300,7 +302,7 @@ def freeze_recipe(
                 pystep_wants_ctx=pystep.wants_ctx if pystep else None,
             )
         )
-    blocked = "MSv2 dataset contracts are planning-only until lifecycle enforcement is available" if scope_tree_has_dataset_contract(recipe) else None
+    blocked = "MSv2 dataset contracts require compute-side lifecycle preparation before submission" if scope_tree_has_dataset_contract(recipe) else None
     return RecipeBundle(
         workspace=str(workspace.resolve()),
         recipe=root,

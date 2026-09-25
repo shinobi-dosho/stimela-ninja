@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from shinobi import DatasetAccess, MeasurementSetV2, pystep
+from shinobi.cache import get_cache_manifest
 from shinobi.dataset_lifecycle import (
     DATASET_MUTATION_CAPABILITY,
     DATASET_READ_CAPABILITY,
@@ -35,6 +36,7 @@ from shinobi.snapshots import (
     chain_id,
     faults,
     get_journal,
+    reconcile,
     state_name,
     strict_reuse_issue,
 )
@@ -116,6 +118,31 @@ def test_strict_failure_rolls_back_immediately_and_clears_the_marker(tmp_path):
     assert chain.marker is None and chain.status is HeadStatus.TRUSTED and chain.head.startswith("gen0__")
     assert guard.plans[0].outcome == "rolled-back"
     assert not list(tmp_path.glob("obs.ms.shinobi-trash.*"))
+
+
+def test_strict_reconcile_restores_exact_predecessor_without_a_retry(tmp_path):
+    ms = _dataset(tmp_path)
+    guard = _guard(tmp_path, ms, "a" * 64)
+    guard.before_run()
+    (ms / "table.dat").write_text("unrecorded successor")
+    guard.successor_identities["ms"] = _identity(ms)
+    faults.hooks["S2"] = lambda: (_ for _ in ()).throw(KeyboardInterrupt("hard stop before oracle"))
+    with pytest.raises(KeyboardInterrupt):
+        guard.after_success(lambda: None)
+    faults.hooks.clear()
+
+    notes = reconcile(
+        str(tmp_path / "cache"),
+        get_cache_manifest(str(tmp_path / "cache")),
+        paths={ms},
+        exact=True,
+    )
+
+    assert (ms / "table.dat").read_text() == "v0"
+    chain = get_journal(str(tmp_path / "cache")).get(chain_id(ms))
+    assert chain.marker is None and chain.status is HeadStatus.TRUSTED
+    assert chain.head.startswith("gen0__")
+    assert any("restored exact state" in note for note in notes)
 
 
 def test_strict_refusals_undo_before_launch(tmp_path):

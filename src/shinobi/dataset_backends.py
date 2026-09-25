@@ -133,6 +133,7 @@ class DatasetNamespaceMode(str, Enum):
 
     LOCAL = "local"
     IDENTITY_BIND = "identity-bind"
+    SHARED_IDENTITY = "shared-identity"
     REMOTE_DELEGATED = "remote-delegated"
     UNPROVEN = "unproven"
 
@@ -284,6 +285,31 @@ def dataset_backend_capability(backend: str, *, mutation: bool) -> DatasetBacken
     )
 
 
+def worker_dataset_backend_capability(*, mutation: bool) -> DatasetBackendCapability:
+    """Capability supplied by a short-lived shared-storage Slurm worker.
+
+    This is deliberately distinct from the blocking ``slurm`` step backend.
+    The submission host does not inspect or recover a worker's dataset.  The
+    worker re-resolves the frozen identity mapping, observes, executes and
+    recovers in one compute-node namespace while the detached workflow's
+    durable shared-storage claim remains active.
+    """
+
+    return DatasetBackendCapability(
+        backend="slurm-worker",
+        lifecycle=DATASET_MUTATION_CAPABILITY if mutation else DATASET_READ_CAPABILITY,
+        status=DatasetBackendStatus.TESTED,
+        namespace_mode=DatasetNamespaceMode.SHARED_IDENTITY,
+        execution_location="Slurm compute-node worker",
+        inspection_location="same Slurm compute-node worker",
+        recovery_location="same Slurm compute-node worker or detached finalizer",
+        reason=(
+            "the immutable plan records an identity mapping for shared storage; "
+            "the compute worker re-resolves it under the workflow claim and performs lifecycle observation and recovery locally"
+        ),
+    )
+
+
 def plan_dataset_backend(
     backend: str,
     accesses: tuple[ResolvedDatasetAccess, ...],
@@ -382,4 +408,5 @@ __all__ = [
     "DatasetNamespaceMode",
     "dataset_backend_capability",
     "plan_dataset_backend",
+    "worker_dataset_backend_capability",
 ]

@@ -1,11 +1,13 @@
-"""Contained local read and mutation lifecycles for strict MSv2 contracts.
+"""Contained read and mutation lifecycles for strict MSv2 contracts.
 
-This module deliberately implements two small capabilities: a flat local
-workflow may read, and (with exact recovery) write or create, ordinary
-directory-backed MSv2 datasets.  Backend adapters separately prove how each
-execution route sees that contained closure: native and virtualenv processes
-share the controller's namespace, while local containers receive explicit
-identity binds.  The access planner remains authoritative for resource
+This module deliberately implements two small capabilities: a flat workflow
+may read, and (with exact recovery) write or create, ordinary directory-backed
+MSv2 datasets. Local dispatch and short-lived detached workers each run the
+controller in the same namespace as their tool adapter. Backend adapters
+separately prove how each execution route sees that contained closure: native
+and virtualenv processes share the controller's namespace, while local
+containers receive explicit identity binds. The access planner remains
+authoritative for resource
 identities,
 :mod:`shinobi.ownership` remains authoritative for exclusion, and
 :mod:`shinobi.snapshots` remains authoritative for naming, snapshotting and
@@ -411,7 +413,23 @@ class DatasetLifecycle:
         return self.record.capability == DATASET_MUTATION_CAPABILITY
 
     @classmethod
-    def start(cls, *, workspace: Path, attempt_id: str, scope: str, backends: tuple[str, ...], mutation: bool = False) -> "DatasetLifecycle":
+    def start(
+        cls,
+        *,
+        workspace: Path,
+        attempt_id: str,
+        scope: str,
+        backends: tuple[str, ...],
+        mutation: bool = False,
+        store_path: Path | None = None,
+    ) -> "DatasetLifecycle":
+        """Create one durable lifecycle controller.
+
+        Local dispatch uses the workspace attempt store.  A detached worker
+        supplies its per-invocation shared-submission path so retries cannot
+        overwrite one another and the final immutable worker record can embed
+        the exact evidence it observed.
+        """
         reason = f"strict MSv2 {'mutation' if mutation else 'read'} lifecycle planning started"
         event = DatasetLifecycleEvent(phase=DatasetLifecyclePhase.PLANNED, observed_at=time.time(), reason=reason)
         record = DatasetLifecycleAttempt(
@@ -426,7 +444,7 @@ class DatasetLifecycle:
             capability_supported=False,
             reason=reason,
         )
-        store = DatasetLifecycleStore(dataset_attempt_path(workspace, attempt_id))
+        store = DatasetLifecycleStore(store_path or dataset_attempt_path(workspace, attempt_id))
         store.create(record)
         return cls(store, record, workspace=workspace)
 
