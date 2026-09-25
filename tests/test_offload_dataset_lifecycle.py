@@ -424,6 +424,88 @@ def test_read_worker_with_generic_snapshot_publishes_after_dataset_validation(mo
         lease.release()
 
 
+def test_read_worker_rejects_dataset_change_before_generic_snapshot_commit(monkeypatch, tmp_path):
+    class ReadReport(BaseModel):
+        script: str
+        ms: MeasurementSetV2
+        target: Path
+
+    class ReportOut(BaseModel):
+        artifact: Path
+
+    root = tmp_path / "data.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    report = tmp_path / "report.txt"
+    _install_dataset(monkeypatch, tmp_path, root)
+    cab = Cab(
+        name="read-report",
+        command=f"{sys.executable} -c",
+        inputs_model=ReadReport,
+        outputs_model=ReportOut,
+        field_meta={
+            "script": ParamMeta(positional_head=True),
+            "ms": ParamMeta(positional=True),
+            "target": ParamMeta(positional=True),
+            "artifact": ParamMeta(implicit="{target}"),
+        },
+        dataset_accesses=[DatasetAccess(field="ms", mode=DatasetMode.READ, columns=DatasetColumns(read=("DATA",)))],
+    )
+    recipe = Recipe(
+        name="read-report-worker",
+        inputs_model=StrictMS,
+        outputs_model=Empty,
+        steps=[
+            StepRef(
+                name="read",
+                step=cab,
+                params={
+                    "script": "from pathlib import Path;import sys;Path(sys.argv[1],'table.dat').write_text('mutated');Path(sys.argv[2]).write_text('reported')",
+                    "target": report,
+                },
+                wiring={"ms": InputRef(field="ms")},
+            )
+        ],
+        cache_dir=str(tmp_path / "cache"),
+    )
+    config = AppConfig.model_validate({"cache": {"enabled": True, "dir": str(tmp_path / "cache")}})
+    bundle = freeze_recipe(recipe, {"ms": root}, config=config, workspace=tmp_path)
+    workflow = prepare_worker_slurm(
+        bundle,
+        submission_root=tmp_path / "runs",
+        worker_python=Path(sys.executable),
+        dataset_storage_qualification=qualified_storage(tmp_path),
+    )
+    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    lease = acquire_workspace(
+        Path(plan.ownership_workspace),
+        str(plan.workflow_id),
+        kind="slurm",
+        submission=workflow.submission_dir,
+        accesses=((Path(access.path), access.writes) for access in plan.accesses),
+        registry=Path(plan.ownership_registry),
+    )
+    write_new(workflow.submission_dir / "ownership.json", lease.owner)
+    try:
+        attempt = plan.attempt("read")
+        assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
+        record = AttemptRecord.read(
+            workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "final.json",
+            workflow_id=plan.workflow_id,
+            attempt_id=attempt.attempt_id,
+            step_path=attempt.step_path,
+            bundle_digest=bundle.digest,
+        )
+        assert record.state == "failed"
+        assert record.dataset_lifecycle is not None
+        assert record.dataset_lifecycle.outcome == "failed"
+        assert "changed a read-only dataset" in (record.error or "")
+        assert report.read_text() == "reported"
+        assert get_journal(str(tmp_path / "cache")).get(chain_id(report.resolve())) is None
+    finally:
+        lease.release()
+
+
 def test_finalizer_releases_only_after_committed_dataset_evidence(monkeypatch, tmp_path):
     root = tmp_path / "data.ms"
     root.mkdir()
