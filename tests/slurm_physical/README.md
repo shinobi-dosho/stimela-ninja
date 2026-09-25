@@ -183,3 +183,13 @@ finalizer 445 completed; the injected S2 job 446 on ``n1`` and finalizer 447
 failed as intended after exact recovery; retry 448 on ``n2`` and finalizer 449
 completed. A fresh checker process verified the final ``9,9,9,9`` contents and
 all durable records.
+
+The remaining review findings were verified at commit ``b015df3`` on
+2026-09-25 after adding the per-invocation and recovery locks. Jobs 450
+(create, ``k1``), 451 (write, ``n1``), 452 (read, ``n2``) and finalizer 453
+completed; injected S2 job 454 on ``n1`` and finalizer 455 failed only after
+exact rollback; retry 456 on ``n2`` and finalizer 457 completed. A fresh
+checker verified final ``9,9,9,9`` contents and every durable record. The
+ordinary suite separately races two finalizers through one recovery marker;
+the physical M2 qualification proves that the same persistent OFD lock used
+by that regression excludes peers across these three nodes.
