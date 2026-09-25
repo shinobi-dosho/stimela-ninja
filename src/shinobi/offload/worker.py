@@ -672,7 +672,7 @@ class _WorkerDatasetLifecycle:
     def _validate_success(self) -> None:
         from shinobi.dataset_lifecycle import DatasetLifecyclePhase
 
-        post = self._validated_post or self._check_success()
+        post = self._validated_post if self._validated_post is not None else self._check_success()
         if self.lifecycle.record.phase is DatasetLifecyclePhase.EXECUTING:
             self.lifecycle.transition(
                 DatasetLifecyclePhase.VALIDATED,
