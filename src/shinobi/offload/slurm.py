@@ -397,7 +397,7 @@ def compile_slurm(
         )
         resolved_outputs[name] = own_outputs
 
-    blocked = "MSv2 dataset contracts are planning-only until lifecycle enforcement is available" if planning_only else None
+    blocked = "MSv2 dataset contracts are planning-only in the legacy compiler; use `ninja compile --worker` for detached lifecycle enforcement" if planning_only else None
     return SlurmWorkflow(recipe=recipe.name, jobs=jobs, log_dir=log_dir, execution_blocked_reason=blocked)
 
 
@@ -688,7 +688,6 @@ def _dataset_worker_plan(
         values,
         workspace=workspace,
         dataset_resources=resources,
-        allow_dataset_write_aliases=True,
     )
     if access_issues:
         raise DatasetLifecycleUnavailableError("detached MSv2 lifecycle refused: " + "; ".join(access_issues))

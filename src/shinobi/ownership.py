@@ -231,7 +231,6 @@ def contained_access_issues(
     workspace: Path,
     dataset_resources: set[Path],
     validated_steps: dict[int, tuple[BaseModel, bool]] | None = None,
-    allow_dataset_write_aliases: bool = False,
 ) -> tuple[str, ...]:
     """Return generic filesystem declarations a contained read cannot prove.
 
@@ -242,6 +241,16 @@ def contained_access_issues(
     proof.  This is deliberately stricter than ordinary dispatch: refusing a
     shape is safe, while guessing a reservation can let a nominal reader
     choose the dataset itself after the shared read claim has been acquired.
+
+    One alias is admitted: a generic, non-``write_path`` input whose value
+    *is* the root of a dataset the same leaf creates (the usual
+    ``target: Path`` plus ``ms`` output with ``implicit="{target}"`` shape).
+    Before the run that root is absent and claimed exclusively, so the alias
+    only names where the product goes.  An alias to a dataset the leaf
+    *writes* is still refused: its pre-run content would enter the cache key
+    and its parent would gain a generic mount, neither of which the strict
+    lifecycle accounts for.  So is a path *below* a created root, which can
+    reach a member the closure's observations never examine.
     """
 
     from shinobi.datasets import dataset_declarations
@@ -268,21 +277,20 @@ def contained_access_issues(
     ):
         dataset_inputs = set(dataset_declarations(leaf.inputs_model))
         dataset_outputs = set(dataset_declarations(leaf.outputs_model))
-        writable_dataset_resources: set[Path] = set()
-        if allow_dataset_write_aliases:
-            from shinobi.dataset_access import DatasetAccessError, resolve_scope_dataset_accesses
+        created_dataset_roots: set[Path] = set()
+        if dataset_outputs or dataset_inputs:
+            from shinobi.dataset_access import DatasetAccessError, DatasetMode, resolve_scope_dataset_accesses
 
             try:
-                writable_dataset_resources = {
-                    resource
+                created_dataset_roots = {
+                    access.root.resolve()
                     for access in resolve_scope_dataset_accesses(
                         leaf,
                         known,
                         workspace=root,
                         unresolved_inputs=unresolved,
                     )
-                    if access.writes
-                    for resource in access.resources
+                    if access.mode is DatasetMode.CREATE and access.root is not None
                 }
             except DatasetAccessError:
                 # The authoritative planner reports the original resolution
@@ -304,7 +312,7 @@ def contained_access_issues(
                 {path for path in concrete_paths(known[name]) if any(paths_overlap(path, resource) for resource in dataset_resources)},
                 key=str,
             )
-            if overlaps and all(any(path == resource or path.is_relative_to(resource) for resource in writable_dataset_resources) for path in overlaps):
+            if overlaps and name not in write_path_fields(leaf) and all(path in created_dataset_roots for path in overlaps):
                 continue
             if overlaps:
                 qualifier = "generic write overlaps" if name in write_path_fields(leaf) else f"generic path input {name!r} overlaps"

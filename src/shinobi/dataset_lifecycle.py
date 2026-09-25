@@ -455,7 +455,14 @@ class DatasetLifecycle:
         self.store.replace(record)
         self.record = record
 
-    def transition(self, phase: DatasetLifecyclePhase, reason: str, **changes: Any) -> None:
+    def preview(self, phase: DatasetLifecyclePhase, reason: str, **changes: Any) -> DatasetLifecycleAttempt:
+        """Return the validated record `transition` would publish, unpublished.
+
+        A detached worker embeds its COMMITTED evidence in the immutable
+        attempt record, so that evidence must exist before the record is
+        linked -- but persisting it first would claim a commit that a failed
+        link never made.  `adopt` publishes the previewed record afterwards.
+        """
         outcome = {
             DatasetLifecyclePhase.COMMITTED: "committed",
             DatasetLifecyclePhase.REFUSED: "refused",
@@ -463,8 +470,8 @@ class DatasetLifecycle:
         }.get(phase, "pending")
         with self._lock:
             event = DatasetLifecycleEvent(phase=phase, observed_at=time.time(), reason=reason)
-            self._publish(
-                {
+            record = self.record.model_copy(
+                update={
                     "phase": phase,
                     "events": (*self.record.events, event),
                     "outcome": outcome,
@@ -472,6 +479,20 @@ class DatasetLifecycle:
                     **changes,
                 }
             )
+            return DatasetLifecycleAttempt.model_validate(record.model_dump())
+
+    def adopt(self, record: DatasetLifecycleAttempt) -> None:
+        """Publish a record previewed from the current one."""
+
+        with self._lock:
+            if record.events[: len(self.record.events)] != self.record.events:
+                raise ValueError("an adopted dataset lifecycle record must extend the current one")
+            self.store.replace(record)
+            self.record = record
+
+    def transition(self, phase: DatasetLifecyclePhase, reason: str, **changes: Any) -> None:
+        with self._lock:
+            self.adopt(self.preview(phase, reason, **changes))
 
     def amend(self, **changes: Any) -> None:
         """Update evidence without a phase transition (e.g. recovery notes)."""

@@ -1818,7 +1818,8 @@ def reconcile(cache_dir: str, manifest, *, paths: set[Path] | None = None, exact
 
     ``exact=True`` is the strict-dataset form: a missing oracle is recovered
     immediately to the rollback state frozen in the marker. It never leaves
-    live partial bytes merely marked for a later retry.
+    live partial bytes merely marked for a later retry. A marker that froze
+    no rollback state is reconciled exactly as without ``exact``.
 
     Returns a human-readable line per decision, for `ninja cache check`.
     """
@@ -1875,10 +1876,12 @@ def reconcile(cache_dir: str, manifest, *, paths: set[Path] | None = None, exact
             except OSError:
                 notes.append(f"{chain.path}: could not restore its pre-run absence -- left the partial path in place for inspection")
             continue
-        if exact:
-            rollback = marker.strict_rollback_state
-            if rollback is None:
-                raise DatasetLifecycleUnavailableError(f"strict recovery for {chain.path} has no recorded rollback state")
+        # A marker without a frozen rollback state predates strict recovery
+        # (a plain Tier 1 run, or a strict run from before the field existed)
+        # and takes the ordinary path below; the strict guard that follows
+        # still restores or refuses whatever state that leaves.
+        rollback = marker.strict_rollback_state if exact else None
+        if rollback is not None:
             if chain.taint_blocks(rollback):
                 raise DatasetLifecycleUnavailableError(f"strict recovery for {chain.path} cannot restore {rollback}: it predates an unnamed write")
             source = journal.snapshot_dir(rollback)

@@ -219,10 +219,18 @@ digest and its absolute path are frozen in ``execution.json``. Workspace,
 submission directory, cache and every dataset closure resource must lie under
 the qualified root. Each compute worker re-reads the same file and refuses a
 changed, missing or differently mapped qualification before lifecycle work.
+The qualification is an operator attestation guarded by filesystem
+permissions, not a signed artifact: its digest proves the compute node read
+the bytes the submission host froze, not that the M2 checker wrote them.
 The submission-host observation is evidence, not permission to execute:
 each allocation re-resolves and observes on its compute node under the exact
-durable owner, and checks both that owner and the newest requeue invocation
-again immediately before publishing.
+durable owner. After the tool exits, and before its successor is snapshotted,
+the worker checks that owner, the newest requeue invocation and the pinned
+image/venv identities once more, and validates every root the leaf only
+reads; read-only roots are observed again when the record is published. That
+fence stops a superseded or unowned invocation from publishing. It does not
+stop two invocations of one step mutating concurrently: that relies on Slurm
+terminating the previous run of a requeued job.
 
 The immutable version-2 ``AttemptRecord`` embeds terminal dataset lifecycle
 evidence and is the strict mutation marker's detached success oracle. The

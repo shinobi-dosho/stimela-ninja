@@ -382,9 +382,20 @@ freezes the whole-workflow and per-leaf accesses, closure identities, tool
 backend decisions, cache store and the versioned
 ``shared-identity`` compute-worker capability.  It does not authorize a job
 from that observation: every allocation re-resolves and observes its leaf on
-the compute node, verifies the exact live ownership record and registry entry,
-and repeats that ownership and newest-invocation check immediately before
-publication.
+the compute node and verifies the exact live ownership record and registry
+entry.  After the tool exits it repeats the ownership, newest-invocation and
+pinned-identity checks once, before the successor snapshot, and refuses any
+change to a root the leaf only reads (again at publication).  A leaf observes
+its own roots and the roots no step writes; a root only a sibling writes may
+change meanwhile, since independent writers are not ordered, and is vouched
+for by that sibling's own lifecycle.  The fence keeps a superseded invocation
+from publishing; that two invocations never mutate concurrently rests on
+Slurm terminating a requeued job's previous run.
+
+The ``slurm-shared-storage/v1`` qualification that admits a site is an
+operator attestation protected by filesystem permissions, not a signed
+artifact: whoever can write it can claim the route.  Its frozen digest proves
+only that every compute node read the bytes the submission host froze.
 
 The immutable worker ``AttemptRecord`` is the detached mutation success
 oracle.  A strict leaf snapshots and journals its successor and commits its

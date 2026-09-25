@@ -20,7 +20,7 @@ from shinobi.offload.slurm import prepare_worker_slurm
 from shinobi.offload.worker import ExecutionPlan, SubmittedJob, execute_step, finalize_submission
 from shinobi.ownership import acquire_workspace, inspect_ownership, inspect_workspace
 from shinobi.snapshots import chain_id, get_journal
-from shinobi.steps.schema import InputRef, Mutability, ParamMeta, Recipe, StepRef
+from shinobi.steps.schema import InputRef, Mutability, OutputRef, ParamMeta, Recipe, StepRef
 from tests._shared_storage import qualified_storage
 
 
@@ -251,6 +251,79 @@ def test_create_worker_validates_and_commits_new_dataset(monkeypatch, tmp_path):
         assert (root / "table.dat").read_text() == "created"
     finally:
         lease.release()
+
+
+def test_local_create_admits_the_same_root_alias_as_the_worker(monkeypatch, tmp_path):
+    # One containment rule for both routes: the generic target the worker
+    # admits above must not be refused by strict local dispatch.
+    root = tmp_path / "created.ms"
+    _install_dataset(monkeypatch, tmp_path, root)
+    monkeypatch.chdir(tmp_path)
+
+    recipe = _create_recipe(tmp_path)
+    recipe.output_wiring["ms"] = OutputRef(step="create", field="ms")
+
+    result = recipe(target=root, backend="native")
+
+    assert result.success
+    assert (root / "table.dat").read_text() == "created"
+
+
+class AliasIn(BaseModel):
+    ms: MeasurementSetV2
+    alias: Path
+
+
+class CreateAliasIn(BaseModel):
+    alias: Path
+
+
+class CreateAliasOut(BaseModel):
+    ms: MeasurementSetV2
+    product: Path | None = None
+
+
+def test_generic_alias_is_admitted_only_at_a_created_dataset_root(monkeypatch, tmp_path):
+    from shinobi.ownership import contained_access_issues
+
+    written = tmp_path / "data.ms"
+    written.mkdir()
+    created = tmp_path / "new.ms"
+    _install_dataset(monkeypatch, tmp_path, written)
+
+    def creator_issues(alias: Path, **meta) -> tuple[str, ...]:
+        field_meta = {"ms": ParamMeta(implicit=str(created))}
+        if meta:
+            field_meta |= {"alias": ParamMeta(**meta), "product": ParamMeta(implicit="{alias}")}
+        cab = Cab(
+            name="creator",
+            command="true",
+            inputs_model=CreateAliasIn,
+            outputs_model=CreateAliasOut,
+            field_meta=field_meta,
+            dataset_accesses=[DatasetAccess(field="ms", mode=DatasetMode.CREATE, columns=DatasetColumns(create=("DATA",)), allow_schema_change=True)],
+        )
+        return contained_access_issues(cab, {"alias": alias}, workspace=tmp_path, dataset_resources={created.resolve()})
+
+    writer = Cab(
+        name="writer",
+        command="true",
+        inputs_model=AliasIn,
+        outputs_model=StrictMS,
+        dataset_accesses=[DatasetAccess(field="ms", mode=DatasetMode.WRITE, columns=DatasetColumns(write=("DATA",)))],
+    )
+
+    def overlap(issues: tuple[str, ...]) -> bool:
+        return any("overlaps the MSv2 closure" in issue for issue in issues)
+
+    # Naming where a new dataset goes is the one admitted alias.
+    assert not overlap(creator_issues(created))
+    # Below the created root the alias can reach members nothing observes.
+    assert overlap(creator_issues(created / "SUBTABLE"))
+    # A write_path destination is cleared before launch: never the dataset.
+    assert overlap(creator_issues(created, write_path=True))
+    # An existing dataset the step writes is never re-reachable generically.
+    assert overlap(contained_access_issues(writer, {"ms": written, "alias": written}, workspace=tmp_path, dataset_resources={written.resolve()}))
 
 
 def test_failed_writer_is_restored_before_failed_attempt_publication(monkeypatch, tmp_path):
@@ -629,5 +702,172 @@ def test_finalizer_retains_claim_when_lifecycle_evidence_is_corrupt(monkeypatch,
         assert not finalized.complete
         assert not (workflow.submission_dir / "finalization.json").exists()
         assert inspect_workspace(Path(plan.ownership_workspace), str(plan.workflow_id)) is not None
+    finally:
+        lease.release()
+
+
+def _register_jobs(workflow, plan, *step_paths: str) -> None:
+    bundle = RecipeBundle.read(workflow.submission_dir / "bundle.json")
+    (workflow.submission_dir / "jobs").mkdir(exist_ok=True)
+    for index, step_path in enumerate(step_paths):
+        write_new(
+            workflow.submission_dir / "jobs" / f"{index:04d}.json",
+            SubmittedJob(
+                workflow_id=plan.workflow_id,
+                bundle_digest=bundle.digest,
+                step_path=step_path,
+                attempt_id=plan.attempt(step_path).attempt_id,
+                job_id=str(42 + index),
+            ),
+        )
+
+
+class TwoMS(BaseModel):
+    first: MeasurementSetV2
+    second: MeasurementSetV2
+
+
+def _two_writers(tmp_path: Path, monkeypatch):
+    roots = (tmp_path / "a.ms", tmp_path / "b.ms")
+    for root in roots:
+        root.mkdir()
+        (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, roots[0])
+    writer = _recipe(tmp_path).steps[0]
+    recipe = Recipe(
+        name="two-writers",
+        inputs_model=TwoMS,
+        outputs_model=Empty,
+        steps=[
+            writer.model_copy(update={"name": "A", "wiring": {"ms": InputRef(field="first")}}),
+            writer.model_copy(update={"name": "B", "wiring": {"ms": InputRef(field="second")}}),
+        ],
+        cache_dir=str(tmp_path / "cache"),
+    )
+    bundle = freeze_recipe(recipe, {"first": roots[0], "second": roots[1]}, config=AppConfig(), workspace=tmp_path)
+    workflow = prepare_worker_slurm(
+        bundle,
+        submission_root=tmp_path / "runs",
+        worker_python=Path(sys.executable),
+        dataset_storage_qualification=qualified_storage(tmp_path),
+    )
+    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    lease = acquire_workspace(
+        Path(plan.ownership_workspace),
+        str(plan.workflow_id),
+        kind="slurm",
+        submission=workflow.submission_dir,
+        accesses=((Path(access.path), access.writes) for access in plan.accesses),
+        registry=Path(plan.ownership_registry),
+    )
+    write_new(workflow.submission_dir / "ownership.json", lease.owner)
+    return roots, workflow, plan, lease
+
+
+def test_independent_writer_does_not_see_a_sibling_write_as_a_violation(monkeypatch, tmp_path):
+    import shinobi.offload.worker as worker_module
+
+    (first, second), workflow, plan, lease = _two_writers(tmp_path, monkeypatch)
+    finish = worker_module._WorkerDatasetLifecycle.finish
+
+    def sibling_commits_meanwhile(self, result):
+        # B is unordered with A, so its write may land while A runs.
+        (second / "table.dat").write_text("raw|written-by-B")
+        return finish(self, result)
+
+    monkeypatch.setattr(worker_module._WorkerDatasetLifecycle, "finish", sibling_commits_meanwhile)
+    try:
+        attempt = plan.attempt("A")
+        assert execute_step(workflow.submission_dir, "A", attempt.attempt_id) == 0
+        assert (first / "table.dat").read_text() == "raw|written"
+    finally:
+        lease.release()
+
+
+def test_finalizer_leaves_a_never_started_dependant_cancelled(monkeypatch, tmp_path):
+    _roots, workflow, plan, _lease = _two_writers(tmp_path, monkeypatch)
+    assert execute_step(workflow.submission_dir, "A", plan.attempt("A").attempt_id) == 0
+    _register_jobs(workflow, plan, "A", "B")
+    monkeypatch.setattr("shinobi.offload.slurm.status_slurm", lambda jobs: {"A": "COMPLETED", "B": "CANCELLED by 0"})
+
+    finalized = finalize_submission(workflow.submission_dir)
+
+    states = {step.step_path: step.state for step in finalized.steps}
+    assert states == {"A": "succeeded", "B": "cancelled"}
+    assert not (workflow.submission_dir / "attempts" / str(plan.attempt("B").attempt_id) / "final.json").exists()
+    assert inspect_workspace(Path(plan.ownership_workspace), str(plan.workflow_id)) is None
+
+
+def test_refusal_before_observation_is_terminal_and_releasable(monkeypatch, tmp_path):
+    import shinobi.offload.worker as worker_module
+
+    root = tmp_path / "data.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    workflow, plan, _lease = _prepared(tmp_path, _recipe(tmp_path), root)
+    monkeypatch.setattr(worker_module, "_planned_access_matches", lambda planned, actual: False)
+    attempt = plan.attempts[0]
+
+    assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
+    record = _record(workflow, plan)
+    assert record.state == "failed" and record.dataset_lifecycle is not None
+    assert record.dataset_lifecycle.outcome == "refused" and record.dataset_lifecycle.pre_observations == ()
+
+    _register_jobs(workflow, plan, attempt.step_path)
+    monkeypatch.setattr("shinobi.offload.slurm.status_slurm", lambda jobs: dict.fromkeys(jobs, "FAILED"))
+    finalize_submission(workflow.submission_dir)
+
+    assert (root / "table.dat").read_text() == "raw"
+    assert inspect_workspace(Path(plan.ownership_workspace), str(plan.workflow_id)) is None
+
+
+def test_failed_record_link_after_validation_rolls_the_writer_back(monkeypatch, tmp_path):
+    root = tmp_path / "data.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    workflow, plan, lease = _prepared(tmp_path, _recipe(tmp_path), root)
+    write = AttemptRecord.write
+
+    def no_space_for_success(self, *args, **kwargs):
+        if self.state == "succeeded":
+            raise OSError(28, "No space left on device")
+        return write(self, *args, **kwargs)
+
+    monkeypatch.setattr(AttemptRecord, "write", no_space_for_success)
+    try:
+        attempt = plan.attempts[0]
+        assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
+        record = _record(workflow, plan)
+        assert record.state == "failed"
+        assert record.dataset_lifecycle is not None and record.dataset_lifecycle.outcome == "failed"
+        assert (root / "table.dat").read_text() == "raw"
+        assert get_journal(str(tmp_path / "cache")).get(chain_id(root)).marker is None
+    finally:
+        lease.release()
+
+
+def test_read_only_change_after_precommit_is_caught_at_publication(monkeypatch, tmp_path):
+    import shinobi.offload.worker as worker_module
+
+    root = tmp_path / "data.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    workflow, plan, lease = _prepared(tmp_path, _recipe(tmp_path, read=True), root)
+    finish = worker_module._WorkerDatasetLifecycle.finish
+
+    def changed_meanwhile(self, result):
+        (root / "table.dat").write_text("raw|changed after precommit")
+        return finish(self, result)
+
+    monkeypatch.setattr(worker_module._WorkerDatasetLifecycle, "finish", changed_meanwhile)
+    try:
+        attempt = plan.attempts[0]
+        assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
+        record = _record(workflow, plan)
+        assert record.state == "failed" and record.dataset_lifecycle.outcome == "failed"
+        assert "read-only dataset" in record.error
     finally:
         lease.release()
