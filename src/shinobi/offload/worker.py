@@ -635,6 +635,7 @@ class _WorkerDatasetLifecycle:
             DatasetLifecyclePhase.EXECUTING,
             "entering detached worker dispatch under the durable workflow claim",
         )
+        self._validated_post = None
 
     @property
     def evidence(self):
@@ -658,14 +659,20 @@ class _WorkerDatasetLifecycle:
             root for root in self.roots if root not in written and (before.get(root) != after.get(root) or (root in self.baseline.absent_roots) != (root in post.absent_roots))
         )
 
-    def _validate_success(self) -> None:
-        from shinobi.dataset_lifecycle import DatasetLifecyclePhase
+    def _check_success(self):
         from shinobi.exceptions import DatasetLifecycleViolationError
 
         post = self._observe()
         changed = self._read_only_changed(post)
         if changed:
             raise DatasetLifecycleViolationError("detached MSv2 worker changed a read-only dataset: " + ", ".join(map(str, changed)))
+        self._validated_post = post
+        return post
+
+    def _validate_success(self) -> None:
+        from shinobi.dataset_lifecycle import DatasetLifecyclePhase
+
+        post = self._validated_post or self._check_success()
         if self.lifecycle.record.phase is DatasetLifecyclePhase.EXECUTING:
             self.lifecycle.transition(
                 DatasetLifecyclePhase.VALIDATED,
@@ -799,7 +806,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         if frozen.tool_venv_digest is not None and result.venv_digest != frozen.tool_venv_digest:
             raise BundleError(f"step {step_path!r}: executed tool venv digest {result.venv_digest!r} does not match submission fingerprint {frozen.tool_venv_digest!r}")
         if result.success and dataset_runtime is not None and not dataset_runtime.contract.mutation:
-            dataset_runtime._validate_success()
+            dataset_runtime._check_success()
         result.code_digest = common["code_digest"]
         result.worker_digest = common["worker_digest"]
         result.job_id = job_id
