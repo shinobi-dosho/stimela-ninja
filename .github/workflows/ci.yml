@@ -66,15 +66,18 @@ jobs:
         run: uv python install 3.12
 
       - name: Verify optional inspector installation
-        run: uv run --python 3.12 --locked --group dev --extra casacore python -c "import casacore.tables"
+        run: uv run --python 3.12 --locked --group dev --group measurement-set python -c "import casacore.tables"
 
-      - name: Run real CASA-table fixture test
-        run: uv run --python 3.12 --locked --group dev --extra casacore pytest -q tests/test_datasets.py::test_generated_tiny_casacore_tables_when_available
+      # Run each module containing a casacore-gated test, rather than naming
+      # one fixture test and leaving the closure/access cases silently skipped
+      # in the ordinary matrix.
+      - name: Run real CASA-table model, closure, and access tests
+        run: uv run --python 3.12 --locked --group dev --group measurement-set pytest -q tests/test_datasets.py tests/test_dataset_closure.py tests/test_dataset_access.py
 
       # The mutation lifecycle's observations, signatures and rollbacks are
       # only meaningful against real tables; the main job skips this file.
       - name: Run strict MSv2 lifecycle tests against real tables
-        run: uv run --python 3.12 --locked --group dev --extra casacore pytest -q tests/test_dataset_mutation.py tests/test_dataset_lifecycle.py::test_real_casacore_contained_read_when_available
+        run: uv run --python 3.12 --locked --group dev --group measurement-set pytest -q tests/test_dataset_mutation.py tests/test_dataset_lifecycle.py::test_real_casacore_contained_read_when_available
 
   audit:
     name: Dependency audit

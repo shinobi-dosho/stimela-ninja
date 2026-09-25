@@ -47,7 +47,10 @@ Install the optional inspector in the environment which performs inspection:
 
    pip install "stimela-ninja[casacore]"
 
-For a source checkout managed by uv, use ``uv sync --extra casacore``.
+For a source checkout managed by uv, use
+``uv sync --group dev --group measurement-set``.  The development group is
+also the environment used for real-table lifecycle and recovery acceptance
+tests; those tests must not silently skip during Measurement Set work.
 
 The result is a serializable :class:`~shinobi.datasets.DatasetDescriptor`.
 Statuses distinguish a missing path, a non-directory, an unavailable
