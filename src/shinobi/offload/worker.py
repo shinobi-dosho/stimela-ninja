@@ -659,20 +659,19 @@ class _WorkerDatasetLifecycle:
             root for root in self.roots if root not in written and (before.get(root) != after.get(root) or (root in self.baseline.absent_roots) != (root in post.absent_roots))
         )
 
-    def _check_success(self):
+    def _validate_success(self, *, publish: bool) -> None:
+        from shinobi.dataset_lifecycle import DatasetLifecyclePhase
         from shinobi.exceptions import DatasetLifecycleViolationError
 
-        post = self._observe()
-        changed = self._read_only_changed(post)
-        if changed:
-            raise DatasetLifecycleViolationError("detached MSv2 worker changed a read-only dataset: " + ", ".join(map(str, changed)))
-        self._validated_post = post
-        return post
-
-    def _validate_success(self) -> None:
-        from shinobi.dataset_lifecycle import DatasetLifecyclePhase
-
-        post = self._validated_post if self._validated_post is not None else self._check_success()
+        post = self._validated_post
+        if post is None:
+            post = self._observe()
+            changed = self._read_only_changed(post)
+            if changed:
+                raise DatasetLifecycleViolationError("detached MSv2 worker changed a read-only dataset: " + ", ".join(map(str, changed)))
+            self._validated_post = post
+        if not publish:
+            return
         if self.lifecycle.record.phase is DatasetLifecyclePhase.EXECUTING:
             self.lifecycle.transition(
                 DatasetLifecyclePhase.VALIDATED,
@@ -688,7 +687,7 @@ class _WorkerDatasetLifecycle:
         from shinobi.dataset_lifecycle import DatasetLifecyclePhase
 
         if result.success:
-            self._validate_success()
+            self._validate_success(publish=True)
             self.lifecycle.transition(DatasetLifecyclePhase.COMMITTED, "immutable detached attempt is ready for publication")
             return
         self._recover_failure(f"worker returned non-zero status {result.returncode}")
@@ -806,7 +805,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         if frozen.tool_venv_digest is not None and result.venv_digest != frozen.tool_venv_digest:
             raise BundleError(f"step {step_path!r}: executed tool venv digest {result.venv_digest!r} does not match submission fingerprint {frozen.tool_venv_digest!r}")
         if result.success and dataset_runtime is not None and not dataset_runtime.contract.mutation:
-            dataset_runtime._check_success()
+            dataset_runtime._validate_success(publish=False)
         result.code_digest = common["code_digest"]
         result.worker_digest = common["worker_digest"]
         result.job_id = job_id
