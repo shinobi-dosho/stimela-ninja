@@ -3,8 +3,9 @@
 Immutable worker observations use atomic no-clobber publication; mutable cache
 indexes and snapshot journals use :class:`JsonFileStore`.  Both routes share
 the durability primitive here, but only mutable metadata takes a short-lived
-transaction lock.  That lock is deliberately not ownership of any scientific
-data a step may mutate.
+transaction lock. :class:`SharedFileLock` uses the same verified primitive for
+the few operations that must exclude a peer across a longer critical section.
+Neither lock is ownership of scientific data a step may mutate.
 
 The transaction contract requires 64-bit Linux open-file-description locks
 which conflict with the POSIX locks used by NFSv4, plus atomic same-directory
@@ -434,3 +435,42 @@ class JsonFileStore:
             self._cleanup_temporaries_unlocked()
         finally:
             self._unlock(fd)
+
+
+class SharedFileLock:
+    """A persistent shared-filesystem lock held across a larger operation.
+
+    ``JsonFileStore`` deliberately holds its lock only for one metadata
+    transaction.  A recovery tree swap or a detached worker invocation needs
+    the same physically-verified OFD lock semantics across a longer critical
+    section.  This wrapper reuses the store's acquisition, timeout, fork and
+    close discipline without creating a materialized JSON view.
+
+    The ``.lock`` inode is part of the protocol and must never be unlinked.
+    Construct a fresh instance for each acquisition.
+    """
+
+    def __init__(self, identity: Path, *, lock_timeout: float = 60.0):
+        self._store = JsonFileStore(identity, lock_timeout=lock_timeout)
+        self.path = self._store.lock_path
+        self._fd: int | None = None
+
+    def acquire(self) -> None:
+        if self._fd is not None:
+            raise SharedStorageError(f"shared lock {self.path} is already held by this instance")
+        fd = self._store._open_and_lock(fcntl.LOCK_EX)
+        assert fd is not None
+        self._fd = fd
+
+    def release(self) -> None:
+        if self._fd is None:
+            return
+        fd, self._fd = self._fd, None
+        self._store._unlock(fd)
+
+    def __enter__(self) -> "SharedFileLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.release()

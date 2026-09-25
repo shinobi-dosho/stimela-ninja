@@ -20,6 +20,7 @@ from shinobi.offload.slurm import prepare_worker_slurm
 from shinobi.offload.worker import ExecutionPlan, SubmittedJob, execute_step, finalize_submission
 from shinobi.ownership import acquire_workspace, inspect_ownership, inspect_workspace
 from shinobi.snapshots import chain_id, get_journal
+from shinobi.storage import SharedFileLock, SharedStorageError
 from shinobi.steps.schema import InputRef, Mutability, OutputRef, ParamMeta, Recipe, StepRef
 from tests._shared_storage import qualified_storage
 
@@ -400,6 +401,33 @@ def test_stale_invocation_is_fenced_before_strict_commit(monkeypatch, tmp_path):
         assert (workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "publication-error.json").is_file()
         assert (root / "table.dat").read_text() == "raw"
         assert get_journal(str(tmp_path / "cache")).get(chain_id(root)).marker is None
+    finally:
+        lease.release()
+
+
+def test_requeued_invocation_cannot_overlap_its_predecessor(monkeypatch, tmp_path):
+    root = tmp_path / "data.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    workflow, plan, lease = _prepared(tmp_path, _recipe(tmp_path), root)
+    import shinobi.offload.worker as worker_module
+
+    planned = plan.attempts[0]
+    identity = workflow.submission_dir / "attempts" / str(planned.attempt_id) / "invocation"
+    holder = SharedFileLock(identity)
+    monkeypatch.setenv("SLURM_RESTART_COUNT", "1")
+    monkeypatch.setattr(worker_module, "SharedFileLock", lambda path: SharedFileLock(path, lock_timeout=0.05))
+    try:
+        with holder:
+            with pytest.raises(SharedStorageError, match="timed out"):
+                execute_step(workflow.submission_dir, planned.step_path, planned.attempt_id)
+            assert (root / "table.dat").read_text() == "raw"
+
+        # The same scheduler invocation can proceed once the predecessor has
+        # really exited and released the shared lock.
+        assert execute_step(workflow.submission_dir, planned.step_path, planned.attempt_id) == 0
+        assert (root / "table.dat").read_text() == "raw|written"
     finally:
         lease.release()
 

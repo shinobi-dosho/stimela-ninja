@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -143,6 +144,58 @@ def test_strict_reconcile_restores_exact_predecessor_without_a_retry(tmp_path):
     assert chain.marker is None and chain.status is HeadStatus.TRUSTED
     assert chain.head.startswith("gen0__")
     assert any("restored exact state" in note for note in notes)
+
+
+def test_concurrent_reconcile_serializes_the_physical_restore(monkeypatch, tmp_path):
+    import shinobi.snapshots as snapshots_module
+
+    ms = _dataset(tmp_path)
+    guard = _guard(tmp_path, ms, "a" * 64)
+    guard.before_run()
+    (ms / "table.dat").write_text("partial")
+    guard.successor_identities["ms"] = _identity(ms)
+    faults.hooks["S2"] = lambda: (_ for _ in ()).throw(KeyboardInterrupt("hard stop before oracle"))
+    with pytest.raises(KeyboardInterrupt):
+        guard.after_success(lambda: None)
+    faults.hooks.clear()
+
+    original = snapshots_module._replace_tree_from_snapshot
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[Path] = []
+
+    def held_replace(path, source, run_id, **kwargs):
+        calls.append(path)
+        entered.set()
+        assert release.wait(timeout=10)
+        return original(path, source, run_id, **kwargs)
+
+    monkeypatch.setattr(snapshots_module, "_replace_tree_from_snapshot", held_replace)
+    outcomes: list[list[str]] = []
+    errors: list[BaseException] = []
+
+    def recover() -> None:
+        try:
+            outcomes.append(reconcile(str(tmp_path / "cache"), get_cache_manifest(str(tmp_path / "cache")), paths={ms}, exact=True))
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    first = threading.Thread(target=recover)
+    second = threading.Thread(target=recover)
+    first.start()
+    assert entered.wait(timeout=10)
+    second.start()
+    release.set()
+    first.join(timeout=10)
+    second.join(timeout=10)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert errors == []
+    assert len(calls) == 1
+    assert sorted(map(len, outcomes)) == [0, 1]
+    assert (ms / "table.dat").read_text() == "v0"
+    chain = get_journal(str(tmp_path / "cache")).get(chain_id(ms))
+    assert chain.marker is None and chain.status is HeadStatus.TRUSTED
 
 
 def test_strict_reconcile_returns_a_mid_chain_rerun_to_the_head_it_found(tmp_path):

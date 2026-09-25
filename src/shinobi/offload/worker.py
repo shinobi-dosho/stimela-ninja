@@ -43,6 +43,7 @@ from shinobi.ownership import WorkspaceAccess
 from shinobi.provenance import RunManifest, build_manifest
 from shinobi.results import StepResult
 from shinobi.snapshots import faults, mutation_paths, reconcile
+from shinobi.storage import SharedFileLock
 from shinobi.steps.dispatch import _dispatch, _prepare_inputs
 from shinobi.steps.loops import passthrough_result, should_skip
 from shinobi.steps.pyfunc import _make_adapter
@@ -736,6 +737,27 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
     if planned.attempt_id != attempt_id:
         raise BundleError(f"attempt id for {step_path!r} does not match the execution plan")
     attempt_id = _invocation_attempt(submission_dir, planned)
+    if plan.dataset_lifecycle is None:
+        return _execute_step_invocation(submission_dir, step_path, attempt_id, submission, bundle, plan, planned)
+    # A requeue publishes its newer identity before waiting here.  The old
+    # invocation will then fail its publication fence and roll itself back
+    # while still holding this lock; only after it exits may the replacement
+    # inspect/recover the marker and launch.  This removes the overlap window
+    # in which the stale rollback could otherwise revert the new invocation.
+    invocation_lock = submission_dir / "attempts" / str(planned.attempt_id) / "invocation"
+    with SharedFileLock(invocation_lock):
+        return _execute_step_invocation(submission_dir, step_path, attempt_id, submission, bundle, plan, planned)
+
+
+def _execute_step_invocation(
+    submission_dir: Path,
+    step_path: str,
+    attempt_id: UUID,
+    submission: Submission,
+    bundle: RecipeBundle,
+    plan: ExecutionPlan,
+    planned: PlannedAttempt,
+) -> int:
     index = next(i for i, step in enumerate(bundle.steps) if step.name == step_path)
     frozen = bundle.steps[index]
     job_id = os.environ.get("SLURM_JOB_ID")

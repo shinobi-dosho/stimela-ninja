@@ -110,7 +110,7 @@ from typing import Any, Callable
 from shinobi.cache import ProvenanceKey, _hash_path
 from shinobi.clonefs import CloneTier, can_afford, clone_tree, probe, tree_size
 from shinobi.exceptions import DatasetLifecycleUnavailableError
-from shinobi.storage import JsonFileStore
+from shinobi.storage import JsonFileStore, SharedFileLock
 from shinobi.steps.schema import Scope, mutated_path_fields
 
 logger = logging.getLogger("shinobi.snapshots")
@@ -415,6 +415,12 @@ class ChainJournal(JsonFileStore):
 
     def snapshot_dir(self, name: str) -> Path:
         return self.root / "states" / name
+
+    @property
+    def recovery_lock_path(self) -> Path:
+        """Persistent lock inode serializing physical recovery operations."""
+
+        return SharedFileLock(self.root / "recovery").path
 
     @staticmethod
     def _load(data: dict[str, Any]) -> dict[str, Chain]:
@@ -1821,9 +1827,19 @@ def reconcile(cache_dir: str, manifest, *, paths: set[Path] | None = None, exact
     live partial bytes merely marked for a later retry. A marker that froze
     no rollback state is reconciled exactly as without ``exact``.
 
+    Recovery includes filesystem replacement outside the journal's short
+    metadata transaction.  A persistent shared lock therefore covers the
+    complete read/replace/journal-update sequence, so two finalizers cannot
+    act on the same marker and trash path concurrently.
+
     Returns a human-readable line per decision, for `ninja cache check`.
     """
     journal = get_journal(cache_dir)
+    with SharedFileLock(journal.root / "recovery"):
+        return _reconcile_locked(journal, manifest, paths=paths, exact=exact)
+
+
+def _reconcile_locked(journal: ChainJournal, manifest, *, paths: set[Path] | None, exact: bool) -> list[str]:
     selected = {chain_id(path) for path in paths} if paths is not None else None
     notes: list[str] = []
     for cid, chain in journal.all_chains().items():

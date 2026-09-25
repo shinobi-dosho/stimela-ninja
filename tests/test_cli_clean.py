@@ -4,6 +4,8 @@ from click.testing import CliRunner
 
 from shinobi.cache import CacheManifest
 from shinobi.cli import _clear_step_cache, main
+from shinobi.snapshots import get_journal
+from shinobi.storage import SharedFileLock
 
 
 def _seed(tmp_path, monkeypatch):
@@ -108,6 +110,29 @@ def test_clean_waits_for_metadata_transaction_and_preserves_lock_domain(tmp_path
     assert manifest.lock_path.stat().st_ino == inode
     manifest.update(lambda data: data.update(after={"cache_key": "after"}))
     assert set(manifest.read()) == {"after"}
+
+
+def test_clean_preserves_the_recovery_lock_domain(tmp_path, monkeypatch):
+    _runs, cache = _seed(tmp_path, monkeypatch)
+    journal = get_journal(str(cache))
+    lock = SharedFileLock(journal.root / "recovery")
+    lock.acquire()
+    inode = lock.path.stat().st_ino
+    outcome = {}
+
+    def clean_cache():
+        _clear_step_cache(cache)
+        outcome["complete"] = True
+
+    cleaner = threading.Thread(target=clean_cache)
+    cleaner.start()
+    cleaner.join(timeout=0.05)
+    assert cleaner.is_alive()
+    lock.release()
+    cleaner.join(timeout=10)
+
+    assert outcome["complete"] is True
+    assert journal.recovery_lock_path.stat().st_ino == inode
 
 
 def _seed_launch(tmp_path, recipe):

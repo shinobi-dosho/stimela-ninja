@@ -946,19 +946,18 @@ def _clear_step_cache(root: Path) -> None:
     """Clear cache contents without ever replacing its lock domains."""
     from shinobi.cache import CacheManifest
     from shinobi.snapshots import ChainJournal
-    from shinobi.storage import sync_directory
+    from shinobi.storage import SharedFileLock, sync_directory
 
     manifest = CacheManifest(root / "manifest.json")
     journal = ChainJournal(root / "snapshots")
-    manifest.reset()
 
     def clear_snapshot_payloads() -> None:
         if not journal.root.exists():
             return
         for entry in journal.root.iterdir():
-            # The transaction inode and run-presence locks are persistent.
-            # Unlinking either while held would split a lock domain.
-            if entry == journal.lock_path or entry.name == "locks":
+            # Transaction, recovery and run-presence lock inodes are
+            # persistent. Unlinking one while held would split its domain.
+            if entry in {journal.lock_path, journal.recovery_lock_path} or entry.name == "locks":
                 continue
             if entry.is_dir() and not entry.is_symlink():
                 shutil.rmtree(entry)
@@ -966,15 +965,19 @@ def _clear_step_cache(root: Path) -> None:
                 entry.unlink(missing_ok=True)
         sync_directory(journal.root)
 
-    journal.reset(clear_snapshot_payloads)
-    for entry in root.iterdir():
-        if entry == manifest.lock_path or entry == journal.root:
-            continue
-        if entry.is_dir() and not entry.is_symlink():
-            shutil.rmtree(entry)
-        else:
-            entry.unlink(missing_ok=True)
-    sync_directory(root)
+    # Cleaning and crash recovery both replace snapshot payloads. Serialize
+    # their complete operations, not only the individual metadata updates.
+    with SharedFileLock(journal.root / "recovery"):
+        manifest.reset()
+        journal.reset(clear_snapshot_payloads)
+        for entry in root.iterdir():
+            if entry == manifest.lock_path or entry == journal.root:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink(missing_ok=True)
+        sync_directory(root)
 
 
 def _unreconciled_trash(config: AppConfig) -> list[Path]:

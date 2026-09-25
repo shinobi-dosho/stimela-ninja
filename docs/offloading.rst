@@ -228,9 +228,12 @@ durable owner. After the tool exits, and before its successor is snapshotted,
 the worker checks that owner, the newest requeue invocation and the pinned
 image/venv identities once more, and validates every root the leaf only
 reads; read-only roots are observed again when the record is published. That
-fence stops a superseded or unowned invocation from publishing. It does not
-stop two invocations of one step mutating concurrently: that relies on Slurm
-terminating the previous run of a requeued job.
+fence stops a superseded or unowned invocation from publishing. Requeues
+publish their newer identity before waiting on a persistent per-step
+invocation lock. The predecessor therefore detects supersession and rolls
+back while it still holds the lock; only after it exits may the replacement
+recover and launch. Correctness does not depend on Slurm avoiding an overlap
+between the two batch-script processes.
 
 The immutable version-2 ``AttemptRecord`` embeds terminal dataset lifecycle
 evidence and is the strict mutation marker's detached success oracle. The
@@ -241,6 +244,13 @@ releases ownership. A missing result, corrupt lifecycle file, failed
 recovery, stale invocation or lost claim remains fail-closed. This supports
 contained read, write and create leaves; the legacy argv compiler remains
 planning-only for dataset contracts.
+
+Dataset reconciliation holds a persistent cache-wide recovery lock across the
+complete marker read, physical tree replacement and journal update. This is
+longer-lived than an ordinary metadata transaction by design: concurrent
+manual and scheduled finalizers may reconstruct the same result, but they may
+not operate on the same rollback trash path at once. ``ninja clean --cache``
+preserves this lock inode along with the journal and manifest lock domains.
 
 Scientific-workspace ownership is deliberately coarser than the per-step
 access ordering: one workflow that declares any filesystem write owns the
