@@ -33,6 +33,16 @@ dev = [
     "ruff>=0.5",
 ]
 
+# Real Measurement Set development and acceptance coverage. Keep this separate
+# from `dev` so ordinary contributors and unsupported platforms retain a light
+# environment, while MS work has one reproducible group that must not silently
+# skip its real-table tests. The pinned xarray-ms/Zarr stack selected by the
+# profile-bounded round-trip experiment will join this group when that work
+# lands.
+measurement-set = [
+    "python-casacore>=3.7,<4",
+]
+
 # dosho (the native shinobi cab repository) supplies the real
 # wsclean/cubical/simms cabs `examples/example-simulation.py` imports.
 #

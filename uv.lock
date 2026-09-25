@@ -1271,6 +1271,9 @@ docs = [
 examples = [
     { name = "dosho" },
 ]
+measurement-set = [
+    { name = "python-casacore" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1297,6 +1300,7 @@ docs = [
     { name = "sphinx-copybutton", specifier = ">=0.5" },
 ]
 examples = [{ name = "dosho" }]
+measurement-set = [{ name = "python-casacore", specifier = ">=3.7,<4" }]
 
 [[package]]
 name = "tomli"
