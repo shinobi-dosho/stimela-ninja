@@ -28,6 +28,7 @@ from shinobi.offload.worker import ExecutionPlan
 from shinobi.ownership import WorkspaceOwnershipError, acquire_workspace, scope_path_accesses, scope_requires_ownership
 from shinobi.steps.pyfunc import pystep
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, ParamMeta, Recipe, ScatterSpec, Scope, StepRef
+from tests._shared_storage import qualified_storage
 
 
 class MSIn(BaseModel):
@@ -610,7 +611,12 @@ def test_worker_dataset_planning_becomes_an_executable_lifecycle_plan(monkeypatc
     monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda *args, **kwargs: pytest.fail("planned dataset was inspected before creation"))
     bundle = freeze_recipe(recipe, {"target": target}, config=AppConfig(), workspace=tmp_path)
     assert bundle.execution_blocked_reason is not None
-    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+    workflow = prepare_worker_slurm(
+        bundle,
+        submission_root=tmp_path / "runs",
+        worker_python=Path(sys.executable),
+        dataset_storage_qualification=qualified_storage(tmp_path),
+    )
     assert workflow.execution_blocked_reason is None
     assert workflow.jobs[1].depends_on == ["create"]
     assert workflow.jobs[1].access_reasons == ["read-after-write: future.ms, MAIN.DATA"]
@@ -646,7 +652,12 @@ def test_worker_preserves_wired_optional_none_as_a_known_absence(monkeypatch, tm
     monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda *args, **kwargs: pytest.fail("absent optional dataset was inspected"))
     bundle = freeze_recipe(recipe, {}, config=AppConfig(), workspace=tmp_path)
 
-    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+    workflow = prepare_worker_slurm(
+        bundle,
+        submission_root=tmp_path / "runs",
+        worker_python=Path(sys.executable),
+        dataset_storage_qualification=qualified_storage(tmp_path),
+    )
 
     assert [job.name for job in workflow.jobs] == ["produce", "consume"]
     assert workflow.jobs[1].depends_on == ["produce"]
@@ -673,7 +684,12 @@ def test_worker_dataset_refusal_removes_staged_submission(monkeypatch, tmp_path)
     submission_root = tmp_path / "runs"
 
     with pytest.raises(DatasetAccessError, match="schema also declares a filesystem write"):
-        prepare_worker_slurm(bundle, submission_root=submission_root, worker_python=Path(sys.executable))
+        prepare_worker_slurm(
+            bundle,
+            submission_root=submission_root,
+            worker_python=Path(sys.executable),
+            dataset_storage_qualification=qualified_storage(tmp_path),
+        )
 
     assert submission_root.is_dir()
     assert list(submission_root.iterdir()) == []

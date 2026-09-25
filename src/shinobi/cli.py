@@ -1118,6 +1118,12 @@ def _handle_path(workdir: str | None, recipe: str) -> Path:
 @click.option("--worker", is_flag=True, help="Use the experimental frozen-bundle M1 worker lifecycle (requires --submit).")
 @click.option("--submission-root", type=click.Path(path_type=Path), default=None, help="Shared directory for immutable worker submissions.")
 @click.option("--worker-python", type=click.Path(path_type=Path), default=None, help="Absolute compute-visible Python for the staged worker.")
+@click.option(
+    "--dataset-storage-qualification",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Site-issued qualification for the exact shared-storage tree used by a strict dataset worker.",
+)
 @click.option("--code-root", type=click.Path(path_type=Path), multiple=True, help="Python import root for bundled pystep source (repeatable).")
 @click.option(
     "--cache/--no-cache",
@@ -1141,6 +1147,7 @@ def compile_recipe(
     worker: bool,
     submission_root: Path | None,
     worker_python: Path | None,
+    dataset_storage_qualification: Path | None,
     code_root: tuple[Path, ...],
     cache: bool | None,
     cache_dir: str | None,
@@ -1171,6 +1178,8 @@ def compile_recipe(
         raise click.ClickException("--worker currently requires --submit because submission preparation stages immutable source and environment data")
     if not worker and (cache is not None or cache_dir is not None):
         raise click.ClickException("--cache/--no-cache/--cache-dir require --worker; the legacy argv compiler has no runtime cache lifecycle")
+    if not worker and dataset_storage_qualification is not None:
+        raise click.ClickException("--dataset-storage-qualification requires --worker")
 
     def _callback(**kwargs):
         inputs = unflatten_kwargs(recipe.inputs_model, kwargs)
@@ -1190,7 +1199,12 @@ def compile_recipe(
                     cache=cache,
                     cache_dir=cache_dir,
                 )
-                workflow = prepare_worker_slurm(bundle, submission_root=root, worker_python=worker_python)
+                workflow = prepare_worker_slurm(
+                    bundle,
+                    submission_root=root,
+                    worker_python=worker_python,
+                    dataset_storage_qualification=dataset_storage_qualification,
+                )
             except (BundleError, ShinobiError, RecipeNotOffloadableError, OffloadCompileError, RecipeGraphError) as exc:
                 raise click.ClickException(str(exc)) from None
             try:

@@ -18,12 +18,22 @@ def test_compile_help_exposes_worker_cache_controls():
     assert result.exit_code == 0
     assert "--cache / --no-cache" in result.output
     assert "--cache-dir" in result.output
+    assert "--dataset-storage-qualification" in result.output
 
 
 def test_legacy_compile_refuses_runtime_cache_controls():
     result = CliRunner().invoke(main, ["compile", f"{FIXTURES}:path_pipe", "--cache", "--ms", "/scratch/obs.ms"])
     assert result.exit_code != 0
     assert "require --worker" in result.output
+
+
+def test_legacy_compile_refuses_dataset_storage_qualification(tmp_path):
+    result = CliRunner().invoke(
+        main,
+        ["compile", f"{FIXTURES}:path_pipe", "--dataset-storage-qualification", str(tmp_path / "qualification.json"), "--ms", "/scratch/obs.ms"],
+    )
+    assert result.exit_code != 0
+    assert "--dataset-storage-qualification requires --worker" in result.output
 
 
 def test_compile_recipe_prints_dependency_chained_scripts():

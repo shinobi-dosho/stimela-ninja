@@ -233,7 +233,10 @@ a host does not prove that its executor sees the same storage namespace or run
 validation and recovery at the execution authority.  This is distinct from
 the detached worker compiler described below: its short-lived compute worker
 is the lifecycle authority and re-resolves the frozen shared-storage mapping
-under the durable workflow claim.  A remote CLI launch likewise delegates
+under the durable workflow claim. This route is available only when submission
+is given a persisted physical-M2 qualification for the exact shared tree; the
+worker verifies the frozen qualification and digest again on the compute node.
+A remote CLI launch likewise delegates
 planning to the remote ``ninja`` process. ``backend="remote"`` is not a step
 backend; use the CLI's remote launch option.
 

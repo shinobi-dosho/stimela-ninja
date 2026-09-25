@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
 from pydantic import BaseModel
 
 import shinobi.dataset_access as access_module
@@ -11,6 +12,8 @@ from shinobi import Cab, DatasetAccess, DatasetColumns, DatasetMode, Measurement
 from shinobi.config import AppConfig
 from shinobi.dataset_closure import ClosureCapabilities, ClosureRequirement, ClosureResource, ClosureStatus, DatasetClosure
 from shinobi.datasets import DatasetDescriptor, DatasetStatus, MSV2_STRUCTURAL_V1
+from shinobi.exceptions import DatasetLifecycleUnavailableError
+from shinobi.offload._codec import BundleError
 from shinobi.offload.bundle import RecipeBundle, freeze_recipe, write_new
 from shinobi.offload.records import AttemptRecord
 from shinobi.offload.slurm import prepare_worker_slurm
@@ -18,6 +21,7 @@ from shinobi.offload.worker import ExecutionPlan, SubmittedJob, execute_step, fi
 from shinobi.ownership import acquire_workspace, inspect_ownership, inspect_workspace
 from shinobi.snapshots import chain_id, get_journal
 from shinobi.steps.schema import InputRef, Mutability, ParamMeta, Recipe, StepRef
+from tests._shared_storage import qualified_storage
 
 
 class Empty(BaseModel):
@@ -116,7 +120,12 @@ def _recipe(workspace: Path, *, fail: bool = False, read: bool = False) -> Recip
 
 def _prepared(workspace: Path, recipe: Recipe, root: Path):
     bundle = freeze_recipe(recipe, {"ms": root}, config=AppConfig(), workspace=workspace)
-    workflow = prepare_worker_slurm(bundle, submission_root=workspace / "runs", worker_python=Path(sys.executable))
+    workflow = prepare_worker_slurm(
+        bundle,
+        submission_root=workspace / "runs",
+        worker_python=Path(sys.executable),
+        dataset_storage_qualification=qualified_storage(workspace),
+    )
     plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
     assert workflow.execution_blocked_reason is None
     assert plan.dataset_lifecycle is not None
@@ -216,7 +225,12 @@ def test_create_worker_validates_and_commits_new_dataset(monkeypatch, tmp_path):
     _install_dataset(monkeypatch, tmp_path, root)
     recipe = _create_recipe(tmp_path)
     bundle = freeze_recipe(recipe, {"target": root}, config=AppConfig(), workspace=tmp_path)
-    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+    workflow = prepare_worker_slurm(
+        bundle,
+        submission_root=tmp_path / "runs",
+        worker_python=Path(sys.executable),
+        dataset_storage_qualification=qualified_storage(tmp_path),
+    )
     plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
     lease = acquire_workspace(
         Path(plan.ownership_workspace),
@@ -254,6 +268,158 @@ def test_failed_writer_is_restored_before_failed_attempt_publication(monkeypatch
         assert record.dataset_lifecycle.outcome == "failed"
         assert (root / "table.dat").read_text() == "raw"
         assert get_journal(str(tmp_path / "cache")).get(chain_id(root)).marker is None
+    finally:
+        lease.release()
+
+
+def test_dataset_worker_requires_persisted_storage_qualification(monkeypatch, tmp_path):
+    root = tmp_path / "data.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    bundle = freeze_recipe(_recipe(tmp_path, read=True), {"ms": root}, config=AppConfig(), workspace=tmp_path)
+
+    with pytest.raises(DatasetLifecycleUnavailableError, match="no persisted site qualification"):
+        prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+
+
+def test_compute_worker_rejects_changed_storage_qualification(monkeypatch, tmp_path):
+    root = tmp_path / "data.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    workflow, plan, lease = _prepared(tmp_path, _recipe(tmp_path, read=True), root)
+    qualification = Path(plan.dataset_lifecycle.qualification_path)
+    qualification.write_text(qualification.read_text() + "\n")
+    try:
+        attempt = plan.attempts[0]
+        assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
+        record = _record(workflow, plan)
+        assert "qualification differs from the immutable execution plan" in record.error
+        assert (root / "table.dat").read_text() == "raw"
+    finally:
+        lease.release()
+
+
+def test_stale_invocation_is_fenced_before_strict_commit(monkeypatch, tmp_path):
+    root = tmp_path / "data.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    workflow, plan, lease = _prepared(tmp_path, _recipe(tmp_path), root)
+    import shinobi.offload.worker as worker_module
+
+    original = worker_module._require_current_invocation
+    checks = 0
+
+    def supersede_at_publication(*args, **kwargs):
+        nonlocal checks
+        checks += 1
+        if checks > 1:
+            raise BundleError("test invocation was superseded before publication")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(worker_module, "_require_current_invocation", supersede_at_publication)
+    try:
+        attempt = plan.attempts[0]
+        assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
+        assert not (workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "final.json").exists()
+        assert (workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "publication-error.json").is_file()
+        assert (root / "table.dat").read_text() == "raw"
+        assert get_journal(str(tmp_path / "cache")).get(chain_id(root)).marker is None
+    finally:
+        lease.release()
+
+
+def test_read_worker_with_generic_snapshot_publishes_after_dataset_validation(monkeypatch, tmp_path):
+    class ReadOnly(BaseModel):
+        script: str
+        ms: MeasurementSetV2
+
+    class WriteReport(BaseModel):
+        script: str
+        target: Path
+
+    class ReportOut(BaseModel):
+        artifact: Path
+
+    root = tmp_path / "data.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    report = tmp_path / "report.txt"
+    _install_dataset(monkeypatch, tmp_path, root)
+    reader = Cab(
+        name="read-only",
+        command=f"{sys.executable} -c",
+        inputs_model=ReadOnly,
+        outputs_model=Empty,
+        field_meta={
+            "script": ParamMeta(positional_head=True),
+            "ms": ParamMeta(positional=True),
+        },
+        dataset_accesses=[DatasetAccess(field="ms", mode=DatasetMode.READ, columns=DatasetColumns(read=("DATA",)))],
+    )
+    writer = Cab(
+        name="write-report",
+        command=f"{sys.executable} -c",
+        inputs_model=WriteReport,
+        outputs_model=ReportOut,
+        field_meta={
+            "script": ParamMeta(positional_head=True),
+            "target": ParamMeta(positional=True),
+            "artifact": ParamMeta(implicit="{target}"),
+        },
+    )
+    recipe = Recipe(
+        name="read-report-worker",
+        inputs_model=StrictMS,
+        outputs_model=Empty,
+        steps=[
+            StepRef(
+                name="read",
+                step=reader,
+                params={"script": "from pathlib import Path;import sys;Path(sys.argv[1],'table.dat').read_text()"},
+                wiring={"ms": InputRef(field="ms")},
+            ),
+            StepRef(
+                name="report",
+                step=writer,
+                params={"script": "from pathlib import Path;import sys;Path(sys.argv[1]).write_text('reported')", "target": report},
+            ),
+        ],
+        cache_dir=str(tmp_path / "cache"),
+    )
+    config = AppConfig.model_validate({"cache": {"enabled": True, "dir": str(tmp_path / "cache")}})
+    bundle = freeze_recipe(recipe, {"ms": root}, config=config, workspace=tmp_path)
+    workflow = prepare_worker_slurm(
+        bundle,
+        submission_root=tmp_path / "runs",
+        worker_python=Path(sys.executable),
+        dataset_storage_qualification=qualified_storage(tmp_path),
+    )
+    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    lease = acquire_workspace(
+        Path(plan.ownership_workspace),
+        str(plan.workflow_id),
+        kind="slurm",
+        submission=workflow.submission_dir,
+        accesses=((Path(access.path), access.writes) for access in plan.accesses),
+        registry=Path(plan.ownership_registry),
+    )
+    write_new(workflow.submission_dir / "ownership.json", lease.owner)
+    try:
+        attempt = plan.attempt("report")
+        assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 0
+        bundle = RecipeBundle.read(workflow.submission_dir / "bundle.json")
+        record = AttemptRecord.read(
+            workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "final.json",
+            workflow_id=plan.workflow_id,
+            attempt_id=attempt.attempt_id,
+            step_path=attempt.step_path,
+            bundle_digest=bundle.digest,
+        )
+        assert record.committed
+        assert report.read_text() == "reported"
     finally:
         lease.release()
 

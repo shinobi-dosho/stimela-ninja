@@ -211,6 +211,14 @@ Strict ``MeasurementSetV2`` contracts add a compute-side lifecycle around
 that worker path. Preparation freezes the whole-workflow and per-leaf
 resolved accesses, contained closure identities, cache store, tool-backend
 capabilities and an explicit identity mapping for the site's shared storage.
+That mapping is not inferred from path spelling: ``prepare_worker_slurm``
+requires a persisted ``slurm-shared-storage/v1`` qualification emitted by the
+physical M2 checker, and ``ninja compile --worker --submit`` accepts it through
+``--dataset-storage-qualification PATH``. The qualification, its exact byte
+digest and its absolute path are frozen in ``execution.json``. Workspace,
+submission directory, cache and every dataset closure resource must lie under
+the qualified root. Each compute worker re-reads the same file and refuses a
+changed, missing or differently mapped qualification before lifecycle work.
 The submission-host observation is evidence, not permission to execute:
 each allocation re-resolves and observes on its compute node under the exact
 durable owner, and checks both that owner and the newest requeue invocation
@@ -312,7 +320,10 @@ running scientific data, an operator must:
    absolute paths on the submission host and every selected compute node.
 #. Run ``tests/slurm_physical/run_m2.py`` against that exact shared mount.
    The probe must demonstrate cross-node OFD-lock exclusion and lossless
-   concurrent cache/journal transactions in every holder direction.
+   concurrent cache/journal transactions in every holder direction. Its
+   ``check`` command writes the site qualification; retain that file on the
+   qualified mount and pass it as ``--dataset-storage-qualification`` for
+   strict dataset submissions.
 #. Provision the worker environment on the login host, either with
    ``provision_worker_venv`` from the project's locked dependencies or by
    installing a fixed interpreter at the absolute path passed to

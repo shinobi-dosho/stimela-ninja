@@ -614,6 +614,9 @@ def _dataset_worker_plan(
     recipe_inputs: dict[str, Any],
     per_step: dict[str, tuple],
     generic_accesses: dict[Path, bool],
+    *,
+    submission_dir: Path,
+    storage_qualification: Path | None,
 ):
     """Freeze the strict lifecycle contract workers must re-establish.
 
@@ -622,7 +625,13 @@ def _dataset_worker_plan(
     observes again under the still-live detached claim.
     """
 
-    from shinobi.dataset_backends import DatasetBackendStatus, DatasetNamespaceMode, dataset_backend_capability, worker_dataset_backend_capability
+    from shinobi.dataset_backends import (
+        DatasetBackendStatus,
+        DatasetNamespaceMode,
+        dataset_backend_capability,
+        load_shared_storage_qualification,
+        worker_dataset_backend_capability,
+    )
     from shinobi.dataset_lifecycle import DatasetLifecycleSnapshot, resolve_lifecycle_snapshot
     from shinobi.offload._codec import unpack
     from shinobi.offload.worker import DatasetStepPlan, DatasetWorkerPlan
@@ -631,12 +640,27 @@ def _dataset_worker_plan(
     from shinobi.steps.schema import paths_overlap
 
     workspace = Path(pinned.workspace).resolve()
+    unavailable = worker_dataset_backend_capability(mutation=_scope_tree_writes_datasets(recipe))
+    if storage_qualification is None:
+        raise DatasetLifecycleUnavailableError(
+            f"detached MSv2 lifecycle refused by worker capability {unavailable.profile}: {unavailable.reason}; "
+            "supply a site-issued --dataset-storage-qualification from the exact shared tree"
+        )
+    qualification_path = storage_qualification.resolve()
+    qualification, qualification_digest = load_shared_storage_qualification(qualification_path)
+    qualified_root = qualification.storage_root.resolve()
+    for label, path in (("workspace", workspace), ("submission directory", submission_dir.resolve())):
+        if path != qualified_root and not path.is_relative_to(qualified_root):
+            raise DatasetLifecycleUnavailableError(f"detached MSv2 lifecycle refused: {label} {path} is outside qualified shared-storage root {qualified_root}")
     config = AppConfig.model_validate({name: unpack(value) for name, value in pinned.config.items()})
     values = recipe.inputs_model(**recipe_inputs)
     mutation = _scope_tree_writes_datasets(recipe)
     cache_dir = pinned.cache_dir_override or recipe.cache_dir or config.cache.dir
     if not Path(cache_dir).is_absolute():
         cache_dir = str(workspace / cache_dir)
+    resolved_cache_dir = Path(cache_dir).resolve()
+    if resolved_cache_dir != qualified_root and not resolved_cache_dir.is_relative_to(qualified_root):
+        raise DatasetLifecycleUnavailableError(f"detached MSv2 lifecycle refused: cache directory {resolved_cache_dir} is outside qualified shared-storage root {qualified_root}")
     if mutation:
         issues = _strict_mutation_cache_issues(
             recipe,
@@ -686,12 +710,15 @@ def _dataset_worker_plan(
         )
     return DatasetWorkerPlan(
         storage_namespace=str(workspace),
+        qualification=qualification,
+        qualification_path=str(qualification_path),
+        qualification_digest=qualification_digest,
         mutation=mutation,
-        capability=worker_dataset_backend_capability(mutation=mutation),
+        capability=worker_dataset_backend_capability(mutation=mutation, qualification=qualification),
         tool_capabilities=tool_capabilities,
         initial_snapshot=snapshot,
         steps=steps,
-        cache_dir=str(Path(cache_dir).resolve()),
+        cache_dir=str(resolved_cache_dir),
     )
 
 
@@ -702,6 +729,7 @@ def _prepare_worker_slurm(
     worker_python: Path | None = None,
     sbatch_opts: dict[str, str] | None = None,
     step_sbatch_opts: dict[str, dict[str, str]] | None = None,
+    dataset_storage_qualification: Path | None = None,
     staged: list[Path],
 ) -> WorkerSlurmWorkflow:
     from shinobi.graph import build_graph
@@ -815,7 +843,15 @@ def _prepare_worker_slurm(
     dataset_lifecycle = None
     execution_blocked_reason = pinned.execution_blocked_reason
     if scope_tree_has_dataset_contract(recipe):
-        dataset_lifecycle = _dataset_worker_plan(pinned, recipe, recipe_inputs, dataset_accesses, generic_workflow_accesses)
+        dataset_lifecycle = _dataset_worker_plan(
+            pinned,
+            recipe,
+            recipe_inputs,
+            dataset_accesses,
+            generic_workflow_accesses,
+            submission_dir=submission_dir,
+            storage_qualification=dataset_storage_qualification,
+        )
         execution_blocked_reason = None
     plan = ExecutionPlan(
         schema_version=2 if dataset_lifecycle is not None else 1,
@@ -861,6 +897,7 @@ def prepare_worker_slurm(
     worker_python: Path | None = None,
     sbatch_opts: dict[str, str] | None = None,
     step_sbatch_opts: dict[str, dict[str, str]] | None = None,
+    dataset_storage_qualification: Path | None = None,
 ) -> WorkerSlurmWorkflow:
     """Stage a frozen bundle and compile one short-lived worker job per step.
 
@@ -880,6 +917,7 @@ def prepare_worker_slurm(
             worker_python=worker_python,
             sbatch_opts=sbatch_opts,
             step_sbatch_opts=step_sbatch_opts,
+            dataset_storage_qualification=dataset_storage_qualification,
             staged=staged,
         )
     except Exception:

@@ -11,10 +11,13 @@ from shinobi.dataset_backends import (
     DatasetBackendMount,
     DatasetNamespaceMode,
     dataset_backend_capability,
+    load_shared_storage_qualification,
     plan_dataset_backend,
+    worker_dataset_backend_capability,
 )
 from shinobi.dataset_closure import ClosureStatus
 from shinobi.exceptions import DatasetLifecycleUnavailableError
+from tests._shared_storage import qualified_storage
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +68,18 @@ def test_distributed_routes_are_explicitly_unavailable_without_a_namespace_mappi
     assert capability.status is DatasetBackendStatus.UNAVAILABLE
     assert capability.namespace_mode is DatasetNamespaceMode.UNPROVEN
     assert "namespace" in capability.reason
+
+
+def test_worker_route_requires_persisted_site_qualification(tmp_path):
+    unavailable = worker_dataset_backend_capability(mutation=True)
+    qualification, _digest = load_shared_storage_qualification(qualified_storage(tmp_path))
+    qualified = worker_dataset_backend_capability(mutation=True, qualification=qualification)
+
+    assert unavailable.status is DatasetBackendStatus.UNAVAILABLE
+    assert unavailable.namespace_mode is DatasetNamespaceMode.UNPROVEN
+    assert qualified.status is DatasetBackendStatus.TESTED
+    assert qualified.namespace_mode is DatasetNamespaceMode.SHARED_IDENTITY
+    assert str(qualification.qualification_id) in qualified.reason
 
 
 def test_unknown_route_is_explicitly_unsupported():

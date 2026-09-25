@@ -27,7 +27,13 @@ from shinobi import __version__
 from shinobi.cache import ExecutionIdentity, get_cache_manifest, resolve_input_keys
 from shinobi.config import AppConfig
 from shinobi.dataset_access import ResolvedDatasetAccess
-from shinobi.dataset_backends import DatasetBackendCapability, DatasetBackendStatus, DatasetNamespaceMode
+from shinobi.dataset_backends import (
+    DatasetBackendCapability,
+    DatasetBackendStatus,
+    SharedStorageQualification,
+    load_shared_storage_qualification,
+    worker_dataset_backend_capability,
+)
 from shinobi.dataset_lifecycle import DatasetLifecycleSnapshot
 from shinobi.offload._codec import BundleError, WireModel, unpack
 from shinobi.offload.bundle import RecipeBundle, Submission, write_new
@@ -83,6 +89,9 @@ class DatasetWorkerPlan(WireModel):
 
     schema_version: Literal[1] = 1
     storage_namespace: str
+    qualification: SharedStorageQualification
+    qualification_path: str
+    qualification_digest: str
     mutation: bool
     capability: DatasetBackendCapability
     tool_capabilities: tuple[DatasetBackendCapability, ...]
@@ -95,13 +104,21 @@ class DatasetWorkerPlan(WireModel):
         namespace = Path(self.storage_namespace)
         if not namespace.is_absolute():
             raise BundleError("a dataset worker plan needs an absolute shared-storage namespace")
-        expected = "contained-native-msv2-mutation/v1" if self.mutation else "contained-native-msv2-read/v1"
-        if (
-            self.capability.backend != "slurm-worker"
-            or self.capability.lifecycle != expected
-            or self.capability.status is not DatasetBackendStatus.TESTED
-            or self.capability.namespace_mode is not DatasetNamespaceMode.SHARED_IDENTITY
+        root = self.qualification.storage_root.resolve()
+        qualification_path = Path(self.qualification_path)
+        cache_dir = Path(self.cache_dir)
+        for label, path in (
+            ("storage namespace", namespace),
+            ("qualification file", qualification_path),
+            ("cache directory", cache_dir),
         ):
+            if not path.is_absolute() or (path.resolve() != root and not path.resolve().is_relative_to(root)):
+                raise BundleError(f"dataset worker {label} {path} is outside qualified shared-storage root {root}")
+        if len(self.qualification_digest) != 64 or any(character not in "0123456789abcdef" for character in self.qualification_digest):
+            raise BundleError("dataset worker qualification digest is not a lowercase sha256")
+        expected = "contained-native-msv2-mutation/v1" if self.mutation else "contained-native-msv2-read/v1"
+        expected_capability = worker_dataset_backend_capability(mutation=self.mutation, qualification=self.qualification)
+        if self.capability != expected_capability or self.capability.lifecycle != expected:
             raise BundleError("dataset worker plan has no tested compute-side lifecycle capability")
         if any(capability.lifecycle != expected or capability.status is not DatasetBackendStatus.TESTED for capability in self.tool_capabilities):
             raise BundleError("dataset worker plan contains an untested tool-backend route")
@@ -111,6 +128,17 @@ class DatasetWorkerPlan(WireModel):
         planned = tuple(access for step in self.steps for access in step.accesses)
         if planned != self.initial_snapshot.accesses:
             raise BundleError("per-step dataset accesses disagree with the frozen workflow snapshot")
+        outside = sorted(
+            {
+                path.resolve()
+                for access in planned
+                for path in ((access.root,) if access.root is not None else ()) + access.resources
+                if path.resolve() != root and not path.resolve().is_relative_to(root)
+            },
+            key=str,
+        )
+        if outside:
+            raise BundleError("dataset worker plan contains paths outside qualified shared storage: " + ", ".join(map(str, outside)))
         return self
 
     def step(self, step_path: str) -> DatasetStepPlan:
@@ -503,6 +531,12 @@ class _WorkerDatasetLifecycle:
 
         contract = plan.dataset_lifecycle
         assert contract is not None
+        qualification, digest = load_shared_storage_qualification(Path(contract.qualification_path))
+        if qualification != contract.qualification or digest != contract.qualification_digest:
+            raise BundleError("compute-node shared-storage qualification differs from the immutable execution plan")
+        qualified_root = qualification.storage_root.resolve()
+        if submission_dir != qualified_root and not submission_dir.is_relative_to(qualified_root):
+            raise BundleError(f"submission directory {submission_dir} is outside qualified shared-storage root {qualified_root}")
         self.contract = contract
         self.workspace = Path(contract.storage_namespace)
         self.cache_dir = contract.cache_dir
@@ -701,7 +735,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         "worker_digest": plan.worker.source_digest,
     }
     dataset_runtime: _WorkerDatasetLifecycle | None = None
-    pending_publications: list = []
+    precommitted_result: StepResult | None = None
 
     def publish_failure(exc: BaseException, *, phase: str = "final") -> None:
         diagnostic = "".join(traceback.format_exception(exc))
@@ -743,16 +777,10 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         candidates = list(sandbox_root.iterdir())
         return str(candidates[0]) if len(candidates) == 1 else None
 
-    def commit_result(result: StepResult, record_cache) -> None:
-        """Publish the worker success oracle before updating its cache index.
+    def precommit_result(result: StepResult) -> None:
+        """Fence the invocation and all pinned identities before S1/S2."""
 
-        SnapshotGuard invokes this between journal commit and trash/marker
-        cleanup.  Once the immutable attempt record is visible, a cache-index
-        failure may cost a future rerun but cannot revoke completed scientific
-        work or turn it into an ambiguous attempt.
-        """
-        if dataset_runtime is not None:
-            dataset_runtime.finish(result)
+        nonlocal precommitted_result
         _require_current_invocation(submission_dir, plan, planned, attempt_id)
         _require_exact_owner(submission_dir, plan)
         result.sandbox_path = result.sandbox_path or retained_sandbox()
@@ -763,6 +791,20 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         result.code_digest = common["code_digest"]
         result.worker_digest = common["worker_digest"]
         result.job_id = job_id
+        precommitted_result = result
+
+    def commit_result(result: StepResult, record_cache) -> None:
+        """Publish the worker success oracle before updating its cache index.
+
+        SnapshotGuard invokes this between journal commit and trash/marker
+        cleanup.  Once the immutable attempt record is visible, a cache-index
+        failure may cost a future rerun but cannot revoke completed scientific
+        work or turn it into an ambiguous attempt.
+        """
+        if precommitted_result is not result:
+            precommit_result(result)
+        if dataset_runtime is not None:
+            dataset_runtime.finish(result)
         terminal = AttemptRecord.from_result(
             result,
             sandbox=result.sandbox_path,
@@ -866,6 +908,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                     reconcile(cache_dir, get_cache_manifest(cache_dir), paths=paths)
             if should_skip(ref, upstream):
                 result = passthrough_result(ref, upstream[ref.loop.prev_step], scope.inputs_model(**prepared))
+                precommit_result(result)
                 commit_result(result, lambda: None)
             else:
                 _check_scratch_filesystems(scope, prepared, Path(bundle.workspace))
@@ -897,15 +940,12 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                     ),
                     _snapshot_success_record=final_path,
                     _snapshot_success_step_path=step_path,
+                    _result_precommit=precommit_result,
                     _result_commit=commit_result,
-                    _publication_gate=(pending_publications.append if dataset_runtime is not None and not dataset_runtime.contract.mutation else None),
                     _workspace_claimed=dataset_runtime is not None,
                     _dataset_lifecycle=dataset_runtime.lifecycle if dataset_runtime is not None else None,
                     **kwargs,
                 )
-                for publish in pending_publications:
-                    publish()
-                pending_publications.clear()
         finally:
             os.chdir(old_cwd)
         if result.success:

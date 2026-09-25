@@ -167,6 +167,7 @@ def _submit(args, label: str, recipe: Recipe, inputs: dict, nodes: dict[str, str
         bundle,
         submission_root=args.root / "submissions",
         worker_python=args.worker_python,
+        dataset_storage_qualification=args.storage_qualification,
         sbatch_opts={"partition": args.partition},
         step_sbatch_opts={name: {"nodelist": node} for name, node in nodes.items()},
     )
@@ -264,6 +265,7 @@ def main() -> int:
     parser.add_argument("--worker-python", type=Path, default=Path("/opt/stimela/bin/python"))
     parser.add_argument("--casacore-python", type=Path, default=Path("/opt/stimela/bin/python"))
     parser.add_argument("--partition", default="dev")
+    parser.add_argument("--storage-qualification", type=Path, required=True)
     parser.add_argument("--nodes", nargs=3, default=("k1", "n1", "n2"))
     args = parser.parse_args()
     return globals()[args.command](args)

@@ -892,6 +892,7 @@ def _dispatch(
     _execution_identity: ExecutionIdentity | None = None,
     _snapshot_success_record: Path | None = None,
     _snapshot_success_step_path: str | None = None,
+    _result_precommit: Callable[[StepResult], None] | None = None,
     _result_commit: Callable[[StepResult, Callable[[], None]], None] | None = None,
     _publication_gate: Callable[[Callable[[], None]], None] | None = None,
     _workspace_claimed: bool = False,
@@ -1148,6 +1149,7 @@ def _dispatch(
                     _execution_identity=_execution_identity,
                     _snapshot_success_record=_snapshot_success_record,
                     _snapshot_success_step_path=_snapshot_success_step_path,
+                    _result_precommit=_result_precommit,
                     _result_commit=_result_commit,
                     # A mutation workflow validates and publishes per leaf:
                     # each writer's successor must be committed before the
@@ -1349,6 +1351,7 @@ def _dispatch(
                     _execution_identity=_execution_identity,
                     _snapshot_success_record=_snapshot_success_record,
                     _snapshot_success_step_path=_snapshot_success_step_path,
+                    _result_precommit=_result_precommit,
                     _result_commit=_result_commit,
                     _publication_gate=_publication_gate,
                     _workspace_claimed=True,
@@ -1530,6 +1533,8 @@ def _dispatch(
             logger.info("step %s: cache hit -- skipping run", cache_path)
 
             def publish_hit() -> None:
+                if _result_precommit is not None:
+                    _result_precommit(hit)
                 if _result_commit is not None:
                     _result_commit(hit, lambda: None)
                 if _cache_path is None and provenance_enabled:
@@ -1670,6 +1675,16 @@ def _dispatch(
 
     def publish_result() -> None:
         if result.success:
+            try:
+                if _result_precommit is not None:
+                    _result_precommit(result)
+            except BaseException as exc:
+                if guard is not None:
+                    guard.after_failure()
+                if strict_leaf is not None:
+                    strict_leaf.fail(guard, f"publication fence failed: {type(exc).__name__}: {exc}")
+                raise
+
             # The five-stage commit lives in the guard so its ordering
             # constraints are enforced in one place -- above all that the tip
             # snapshot (S1) precedes the explicit success oracle (S3), or a
@@ -1711,6 +1726,8 @@ def _dispatch(
                 guard.after_failure()
             if strict_leaf is not None:
                 strict_leaf.fail(guard, f"step returned non-zero status {result.returncode}")
+            if _result_precommit is not None:
+                _result_precommit(result)
             if _result_commit is not None:
                 _result_commit(result, lambda: None)
         if _cache_path is None and provenance_enabled:
