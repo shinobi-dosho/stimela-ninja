@@ -1,11 +1,13 @@
-"""Contained local read and mutation lifecycles for strict MSv2 contracts.
+"""Contained read and mutation lifecycles for strict MSv2 contracts.
 
-This module deliberately implements two small capabilities: a flat local
-workflow may read, and (with exact recovery) write or create, ordinary
-directory-backed MSv2 datasets.  Backend adapters separately prove how each
-execution route sees that contained closure: native and virtualenv processes
-share the controller's namespace, while local containers receive explicit
-identity binds.  The access planner remains authoritative for resource
+This module deliberately implements two small capabilities: a flat workflow
+may read, and (with exact recovery) write or create, ordinary directory-backed
+MSv2 datasets. Local dispatch and short-lived detached workers each run the
+controller in the same namespace as their tool adapter. Backend adapters
+separately prove how each execution route sees that contained closure: native
+and virtualenv processes share the controller's namespace, while local
+containers receive explicit identity binds. The access planner remains
+authoritative for resource
 identities,
 :mod:`shinobi.ownership` remains authoritative for exclusion, and
 :mod:`shinobi.snapshots` remains authoritative for naming, snapshotting and
@@ -411,7 +413,23 @@ class DatasetLifecycle:
         return self.record.capability == DATASET_MUTATION_CAPABILITY
 
     @classmethod
-    def start(cls, *, workspace: Path, attempt_id: str, scope: str, backends: tuple[str, ...], mutation: bool = False) -> "DatasetLifecycle":
+    def start(
+        cls,
+        *,
+        workspace: Path,
+        attempt_id: str,
+        scope: str,
+        backends: tuple[str, ...],
+        mutation: bool = False,
+        store_path: Path | None = None,
+    ) -> "DatasetLifecycle":
+        """Create one durable lifecycle controller.
+
+        Local dispatch uses the workspace attempt store.  A detached worker
+        supplies its per-invocation shared-submission path so retries cannot
+        overwrite one another and the final immutable worker record can embed
+        the exact evidence it observed.
+        """
         reason = f"strict MSv2 {'mutation' if mutation else 'read'} lifecycle planning started"
         event = DatasetLifecycleEvent(phase=DatasetLifecyclePhase.PLANNED, observed_at=time.time(), reason=reason)
         record = DatasetLifecycleAttempt(
@@ -426,7 +444,7 @@ class DatasetLifecycle:
             capability_supported=False,
             reason=reason,
         )
-        store = DatasetLifecycleStore(dataset_attempt_path(workspace, attempt_id))
+        store = DatasetLifecycleStore(store_path or dataset_attempt_path(workspace, attempt_id))
         store.create(record)
         return cls(store, record, workspace=workspace)
 
@@ -437,7 +455,14 @@ class DatasetLifecycle:
         self.store.replace(record)
         self.record = record
 
-    def transition(self, phase: DatasetLifecyclePhase, reason: str, **changes: Any) -> None:
+    def preview(self, phase: DatasetLifecyclePhase, reason: str, **changes: Any) -> DatasetLifecycleAttempt:
+        """Return the validated record `transition` would publish, unpublished.
+
+        A detached worker embeds its COMMITTED evidence in the immutable
+        attempt record, so that evidence must exist before the record is
+        linked -- but persisting it first would claim a commit that a failed
+        link never made.  `adopt` publishes the previewed record afterwards.
+        """
         outcome = {
             DatasetLifecyclePhase.COMMITTED: "committed",
             DatasetLifecyclePhase.REFUSED: "refused",
@@ -445,8 +470,8 @@ class DatasetLifecycle:
         }.get(phase, "pending")
         with self._lock:
             event = DatasetLifecycleEvent(phase=phase, observed_at=time.time(), reason=reason)
-            self._publish(
-                {
+            record = self.record.model_copy(
+                update={
                     "phase": phase,
                     "events": (*self.record.events, event),
                     "outcome": outcome,
@@ -454,6 +479,20 @@ class DatasetLifecycle:
                     **changes,
                 }
             )
+            return DatasetLifecycleAttempt.model_validate(record.model_dump())
+
+    def adopt(self, record: DatasetLifecycleAttempt) -> None:
+        """Publish a record previewed from the current one."""
+
+        with self._lock:
+            if record.events[: len(self.record.events)] != self.record.events:
+                raise ValueError("an adopted dataset lifecycle record must extend the current one")
+            self.store.replace(record)
+            self.record = record
+
+    def transition(self, phase: DatasetLifecyclePhase, reason: str, **changes: Any) -> None:
+        with self._lock:
+            self.adopt(self.preview(phase, reason, **changes))
 
     def amend(self, **changes: Any) -> None:
         """Update evidence without a phase transition (e.g. recovery notes)."""

@@ -15,10 +15,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from uuid import uuid4
 
 from pydantic import BaseModel
 
 from shinobi.cache import CacheManifest
+from shinobi.dataset_backends import SharedStorageQualification
 from shinobi.offload.slurm import parse_sbatch_job_id, status_slurm
 from shinobi.results import StepResult
 from shinobi.snapshots import Chain, ChainJournal
@@ -219,6 +221,22 @@ def check(args) -> int:
         "workers": ready,
         "excluded": {holder: sorted(contenders) for holder, contenders in excluded.items()},
     }
+    storage_root = (args.storage_root or args.root.parent).resolve()
+    probe_root = args.root.resolve()
+    if probe_root != storage_root and not probe_root.is_relative_to(storage_root):
+        raise ValueError(f"physical probe {probe_root} is outside requested storage root {storage_root}")
+    qualification_path = (args.qualification or args.root / "qualification.json").resolve()
+    if qualification_path != storage_root and not qualification_path.is_relative_to(storage_root):
+        raise ValueError(f"qualification {qualification_path} must remain under qualified storage root {storage_root}")
+    qualification = SharedStorageQualification(
+        qualification_id=uuid4(),
+        storage_root=storage_root,
+        verified_at=time.time(),
+        workers=tuple(nodes),
+        evidence=f"physical M2 probe {args.root}; jobs {json.dumps(handle['jobs'], sort_keys=True)}",
+    )
+    qualification_path.write_text(qualification.model_dump_json(indent=2) + "\n")
+    result["qualification"] = str(qualification_path)
     sys.stdout.write(json.dumps(result) + "\n")
     return 0
 
@@ -245,6 +263,8 @@ def main() -> int:
     parser.add_argument("--expected-host", action="append", help="Expected scheduler-node to runtime-hostname mapping, as NODE=HOST")
     parser.add_argument("--participants", type=int, default=len(DEFAULT_NODES))
     parser.add_argument("--iterations", type=int, default=20)
+    parser.add_argument("--qualification", type=Path, help="Where check writes the site qualification (default: ROOT/qualification.json).")
+    parser.add_argument("--storage-root", type=Path, help="Exact shared tree qualified by the probe (default: ROOT's parent).")
     args = parser.parse_args()
     return globals()[args.command](args)
 

@@ -207,6 +207,51 @@ before its final attempt record is committed. Failed tools and harvest errors
 retain the exact shared sandbox path in their diagnostics. Harvesting several
 products is ordered, but is not a filesystem transaction across all products.
 
+Strict ``MeasurementSetV2`` contracts add a compute-side lifecycle around
+that worker path. Preparation freezes the whole-workflow and per-leaf
+resolved accesses, contained closure identities, cache store, tool-backend
+capabilities and an explicit identity mapping for the site's shared storage.
+That mapping is not inferred from path spelling: ``prepare_worker_slurm``
+requires a persisted ``slurm-shared-storage/v1`` qualification emitted by the
+physical M2 checker, and ``ninja compile --worker --submit`` accepts it through
+``--dataset-storage-qualification PATH``. The qualification, its exact byte
+digest and its absolute path are frozen in ``execution.json``. Workspace,
+submission directory, cache and every dataset closure resource must lie under
+the qualified root. Each compute worker re-reads the same file and refuses a
+changed, missing or differently mapped qualification before lifecycle work.
+The qualification is an operator attestation guarded by filesystem
+permissions, not a signed artifact: its digest proves the compute node read
+the bytes the submission host froze, not that the M2 checker wrote them.
+The submission-host observation is evidence, not permission to execute:
+each allocation re-resolves and observes on its compute node under the exact
+durable owner. After the tool exits, and before its successor is snapshotted,
+the worker checks that owner, the newest requeue invocation and the pinned
+image/venv identities once more, and validates every root the leaf only
+reads; read-only roots are observed again when the record is published. That
+fence stops a superseded or unowned invocation from publishing. Requeues
+publish their newer identity before waiting on a persistent per-step
+invocation lock. The predecessor therefore detects supersession and rolls
+back while it still holds the lock; only after it exits may the replacement
+recover and launch. Correctness does not depend on Slurm avoiding an overlap
+between the two batch-script processes.
+
+The immutable version-2 ``AttemptRecord`` embeds terminal dataset lifecycle
+evidence and is the strict mutation marker's detached success oracle. The
+successor snapshot, journal update and committed leaf evidence precede it;
+the reusable cache index and marker cleanup follow it. The finalizer
+reconciles written roots and requires terminal lifecycle evidence before it
+releases ownership. A missing result, corrupt lifecycle file, failed
+recovery, stale invocation or lost claim remains fail-closed. This supports
+contained read, write and create leaves; the legacy argv compiler remains
+planning-only for dataset contracts.
+
+Dataset reconciliation holds a persistent cache-wide recovery lock across the
+complete marker read, physical tree replacement and journal update. This is
+longer-lived than an ordinary metadata transaction by design: concurrent
+manual and scheduled finalizers may reconstruct the same result, but they may
+not operate on the same rollback trash path at once. ``ninja clean --cache``
+preserves this lock inode along with the journal and manifest lock domains.
+
 Scientific-workspace ownership is deliberately coarser than the per-step
 access ordering: one workflow that declares any filesystem write owns the
 canonical workspace from before its first local step or ``sbatch`` call until
@@ -293,7 +338,10 @@ running scientific data, an operator must:
    absolute paths on the submission host and every selected compute node.
 #. Run ``tests/slurm_physical/run_m2.py`` against that exact shared mount.
    The probe must demonstrate cross-node OFD-lock exclusion and lossless
-   concurrent cache/journal transactions in every holder direction.
+   concurrent cache/journal transactions in every holder direction. Its
+   ``check`` command writes the site qualification; retain that file on the
+   qualified mount and pass it as ``--dataset-storage-qualification`` for
+   strict dataset submissions.
 #. Provision the worker environment on the login host, either with
    ``provision_worker_venv`` from the project's locked dependencies or by
    installing a fixed interpreter at the absolute path passed to
@@ -354,6 +402,13 @@ requeues of both pystep modes. The ordinary test suite exhaustively injects the
 remaining S1--S5 publication boundaries; the physical gate verifies that the
 same recovery protocol works through the scheduler, subprocess/container
 boundaries and the site's actual shared filesystem.
+
+Strict ``MeasurementSetV2`` execution has an additional gate:
+``tests/slurm_physical/run_m4_msv2.py`` creates, reads and writes a real
+Casacore MS across compute nodes, then kills a writer before its immutable
+oracle and requires detached-finalizer rollback before ownership release.
+Run it after the M2 storage probe with the ``measurement-set`` development
+dependencies available in the shared worker/tool environment.
 
 When a recipe can be offloaded
 ------------------------------
@@ -501,13 +556,14 @@ sharing an external subtable are ordered consistently in local, dry-run and
 Slurm planning.  The compiled job records retain deterministic reasons such
 as ``write-after-read: observation.ms, MAIN.FLAG``.  Columns remain
 provenance detail: different columns do not authorize parallel writers yet.
-Strict dataset execution and submission remain refused until the lifecycle
-backend is available; this issue only makes their planning contract explicit.
-Legacy compilation and worker-bundle preparation carry a planning-only marker,
-and both submission paths check it before scheduler, log or ownership side
-effects.  A planned ``create`` root can feed downstream readers without being
-materialized during compilation, while an existing ``create`` target is
-refused rather than treated as an implicit replacement.
+The legacy compiler retains a planning-only marker for strict datasets. A
+worker bundle also carries a preparation marker, but
+``prepare_worker_slurm`` replaces it with an executable versioned lifecycle
+plan only after validating the contained closure, shared identity mapping,
+tool routes, cache/recovery policy and ownership access set. A planned
+``create`` root can feed downstream readers without being materialized during
+compilation, while an existing ``create`` target is refused rather than
+treated as an implicit replacement.
 
 Because this works on **resolved values**, it does not care how each step
 spells the path. A step wiring the MS from a recipe input and a step naming

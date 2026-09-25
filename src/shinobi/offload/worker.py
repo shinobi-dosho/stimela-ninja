@@ -3,6 +3,9 @@
 Each invocation executes exactly one declared step.  It never reconstructs a
 recipe from mutable user source: schemas and wiring come from ``bundle.json``
 and pystep code is imported only from the source snapshot staged beside it.
+Strict dataset leaves additionally re-resolve the frozen shared-storage plan,
+observe and recover on the compute node, and embed terminal lifecycle evidence
+in the immutable attempt record before ownership can be released.
 """
 
 from __future__ import annotations
@@ -18,9 +21,20 @@ from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid5
 
+from pydantic import model_validator
+
 from shinobi import __version__
-from shinobi.config import AppConfig
 from shinobi.cache import ExecutionIdentity, get_cache_manifest, resolve_input_keys
+from shinobi.config import AppConfig
+from shinobi.dataset_access import ResolvedDatasetAccess
+from shinobi.dataset_backends import (
+    DatasetBackendCapability,
+    DatasetBackendStatus,
+    SharedStorageQualification,
+    load_shared_storage_qualification,
+    worker_dataset_backend_capability,
+)
+from shinobi.dataset_lifecycle import DatasetLifecycleSnapshot
 from shinobi.offload._codec import BundleError, WireModel, unpack
 from shinobi.offload.bundle import RecipeBundle, Submission, write_new
 from shinobi.offload.code import source_tree_digest
@@ -29,6 +43,7 @@ from shinobi.ownership import WorkspaceAccess
 from shinobi.provenance import RunManifest, build_manifest
 from shinobi.results import StepResult
 from shinobi.snapshots import faults, mutation_paths, reconcile
+from shinobi.storage import SharedFileLock
 from shinobi.steps.dispatch import _dispatch, _prepare_inputs
 from shinobi.steps.loops import passthrough_result, should_skip
 from shinobi.steps.pyfunc import _make_adapter
@@ -63,8 +78,79 @@ class WorkerEnvironment(WireModel):
     distributions_digest: str | None = None
 
 
-class ExecutionPlan(WireModel):
+class DatasetStepPlan(WireModel):
+    """Frozen dataset accesses assigned to one declared worker leaf."""
+
+    step_path: str
+    accesses: tuple[ResolvedDatasetAccess, ...]
+
+
+class DatasetWorkerPlan(WireModel):
+    """Compute-side lifecycle contract for one shared-storage workflow."""
+
     schema_version: Literal[1] = 1
+    storage_namespace: str
+    qualification: SharedStorageQualification
+    qualification_path: str
+    qualification_digest: str
+    mutation: bool
+    capability: DatasetBackendCapability
+    tool_capabilities: tuple[DatasetBackendCapability, ...]
+    initial_snapshot: DatasetLifecycleSnapshot
+    steps: tuple[DatasetStepPlan, ...]
+    cache_dir: str
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "DatasetWorkerPlan":
+        namespace = Path(self.storage_namespace)
+        if not namespace.is_absolute():
+            raise BundleError("a dataset worker plan needs an absolute shared-storage namespace")
+        root = self.qualification.storage_root.resolve()
+        qualification_path = Path(self.qualification_path)
+        cache_dir = Path(self.cache_dir)
+        for label, path in (
+            ("storage namespace", namespace),
+            ("qualification file", qualification_path),
+            ("cache directory", cache_dir),
+        ):
+            if not path.is_absolute() or (path.resolve() != root and not path.resolve().is_relative_to(root)):
+                raise BundleError(f"dataset worker {label} {path} is outside qualified shared-storage root {root}")
+        if len(self.qualification_digest) != 64 or any(character not in "0123456789abcdef" for character in self.qualification_digest):
+            raise BundleError("dataset worker qualification digest is not a lowercase sha256")
+        expected = "contained-native-msv2-mutation/v1" if self.mutation else "contained-native-msv2-read/v1"
+        expected_capability = worker_dataset_backend_capability(mutation=self.mutation, qualification=self.qualification)
+        if self.capability != expected_capability or self.capability.lifecycle != expected:
+            raise BundleError("dataset worker plan has no tested compute-side lifecycle capability")
+        if any(capability.lifecycle != expected or capability.status is not DatasetBackendStatus.TESTED for capability in self.tool_capabilities):
+            raise BundleError("dataset worker plan contains an untested tool-backend route")
+        names = [step.step_path for step in self.steps]
+        if len(names) != len(set(names)):
+            raise BundleError("dataset worker plan repeats a logical step")
+        planned = tuple(access for step in self.steps for access in step.accesses)
+        if planned != self.initial_snapshot.accesses:
+            raise BundleError("per-step dataset accesses disagree with the frozen workflow snapshot")
+        outside = sorted(
+            {
+                path.resolve()
+                for access in planned
+                for path in ((access.root,) if access.root is not None else ()) + access.resources
+                if path.resolve() != root and not path.resolve().is_relative_to(root)
+            },
+            key=str,
+        )
+        if outside:
+            raise BundleError("dataset worker plan contains paths outside qualified shared storage: " + ", ".join(map(str, outside)))
+        return self
+
+    def step(self, step_path: str) -> DatasetStepPlan:
+        try:
+            return next(item for item in self.steps if item.step_path == step_path)
+        except StopIteration as exc:
+            raise BundleError(f"step {step_path!r} is not in the dataset worker plan") from exc
+
+
+class ExecutionPlan(WireModel):
+    schema_version: Literal[1, 2] = 1
     workflow_id: UUID
     bundle_digest: str
     worker: WorkerEnvironment
@@ -74,6 +160,18 @@ class ExecutionPlan(WireModel):
     ownership_registry: str | None = None
     accesses: tuple[WorkspaceAccess, ...] = ()
     execution_blocked_reason: str | None = None
+    dataset_lifecycle: DatasetWorkerPlan | None = None
+
+    @model_validator(mode="after")
+    def _dataset_contract(self) -> "ExecutionPlan":
+        if (self.schema_version == 1) != (self.dataset_lifecycle is None):
+            raise BundleError("dataset worker lifecycle requires execution-plan schema version 2")
+        if self.dataset_lifecycle is not None:
+            if self.execution_blocked_reason is not None:
+                raise BundleError("an executable dataset worker plan cannot also be marked blocked")
+            if not self.ownership_required:
+                raise BundleError("dataset worker lifecycle requires durable workflow ownership")
+        return self
 
     def attempt(self, step_path: str) -> PlannedAttempt:
         try:
@@ -133,6 +231,15 @@ class Finalization(WireModel):
     complete: bool
     steps: tuple[FinalizedStep, ...]
     manifest: str | None = None
+
+
+class DatasetSettlement(WireModel):
+    """Durable authority for releasing a terminal dataset workflow claim."""
+
+    schema_version: Literal[1] = 1
+    workflow_id: UUID
+    bundle_digest: str
+    attempts: tuple[UUID, ...]
 
 
 def worker_platform(
@@ -200,6 +307,66 @@ def _load(submission_dir: Path) -> tuple[Submission, RecipeBundle, ExecutionPlan
 
 def _record_path(submission_dir: Path, attempt_id: UUID, phase: str = "final") -> Path:
     return submission_dir / "attempts" / str(attempt_id) / f"{phase}.json"
+
+
+def _dataset_record_path(submission_dir: Path, attempt_id: UUID) -> Path:
+    return submission_dir / "attempts" / str(attempt_id) / "dataset-lifecycle.json"
+
+
+def _require_exact_owner(submission_dir: Path, plan: ExecutionPlan):
+    """Return the exact live owner frozen for this submission."""
+
+    ownership_path = submission_dir / "ownership.json"
+    if plan.ownership_required and not ownership_path.exists():
+        raise BundleError("write- or dataset-declaring detached workflow has no immutable workspace-ownership requirement")
+    if not ownership_path.exists():
+        return None
+    from shinobi.ownership import WorkspaceOwner, require_workspace_owner
+
+    required = WorkspaceOwner.model_validate_json(ownership_path.read_text())
+    ownership_workspace = Path(plan.ownership_workspace) if plan.ownership_workspace is not None else None
+    if (
+        required.workflow_id != str(plan.workflow_id)
+        or ownership_workspace is None
+        or Path(required.workspace) != ownership_workspace
+        or plan.ownership_registry is None
+        or Path(required.registry) != Path(plan.ownership_registry)
+        or required.accesses != plan.accesses
+    ):
+        raise BundleError("workspace-ownership requirement disagrees with the execution plan")
+    live = require_workspace_owner(ownership_workspace, str(plan.workflow_id))
+    if live != required:
+        raise BundleError("live workspace owner differs from the immutable submission claim")
+    return live
+
+
+def _planned_access_matches(planned: ResolvedDatasetAccess, actual: ResolvedDatasetAccess) -> bool:
+    """Allow a provisional CREATE identity to become its real closure."""
+
+    if planned == actual:
+        return True
+    if planned.closure_status is not None or actual.closure_status is None:
+        return False
+    stable = (
+        "field",
+        "declaration",
+        "requested_path",
+        "root",
+        "mode",
+        "whole_dataset",
+        "path_known",
+        "columns_known",
+        "fallback",
+    )
+    if any(getattr(planned, name) != getattr(actual, name) for name in stable):
+        return False
+    root = actual.root
+    return root is not None and all(resource == root or resource.is_relative_to(root) for resource in actual.resources)
+
+
+def _require_current_invocation(submission_dir: Path, plan: ExecutionPlan, planned: PlannedAttempt, attempt_id: UUID) -> None:
+    if _latest_attempt(submission_dir, planned) != attempt_id:
+        raise BundleError(f"attempt {attempt_id} for {planned.step_path!r} was superseded by a newer scheduler invocation")
 
 
 def _attempt_id_for_restart(planned_attempt_id: UUID, restart_count: int) -> UUID:
@@ -332,6 +499,236 @@ def _check_scratch_filesystems(scope: Scope, prepared: dict, workspace: Path) ->
             )
 
 
+class _WorkerDatasetLifecycle:
+    """Compute-side controller around one frozen worker leaf.
+
+    The submission plan supplies identities and the durable workflow claim;
+    observations and recovery are always repeated by the allocation that is
+    about to execute the tool.  Construction only opens the lifecycle record;
+    `establish` does the checks, so a refusal there is still recorded as
+    terminal evidence by `fail`.
+    """
+
+    def __init__(
+        self,
+        *,
+        submission_dir: Path,
+        plan: ExecutionPlan,
+        attempt_id: UUID,
+        step_path: str,
+        backend: str,
+    ) -> None:
+        from shinobi.dataset_lifecycle import DatasetLifecycle
+
+        contract = plan.dataset_lifecycle
+        assert contract is not None
+        qualification, digest = load_shared_storage_qualification(Path(contract.qualification_path))
+        if qualification != contract.qualification or digest != contract.qualification_digest:
+            raise BundleError("compute-node shared-storage qualification differs from the immutable execution plan")
+        qualified_root = qualification.storage_root.resolve()
+        if submission_dir != qualified_root and not submission_dir.is_relative_to(qualified_root):
+            raise BundleError(f"submission directory {submission_dir} is outside qualified shared-storage root {qualified_root}")
+        self.contract = contract
+        self.workspace = Path(contract.storage_namespace)
+        self.cache_dir = contract.cache_dir
+        self.step_path = step_path
+        self.backend = backend
+        self.expected = contract.step(step_path).accesses
+        # Observe this leaf's own roots and those no leaf in the workflow
+        # writes.  A root only a *sibling* writes may legitimately change
+        # while this leaf runs (independent writers are not ordered), and the
+        # sibling's own lifecycle is what vouches for it.
+        workflow_written = {access.root for access in contract.initial_snapshot.accesses if access.writes and access.root is not None}
+        own = {access.root for access in self.expected if access.root is not None}
+        every = {access.root for access in contract.initial_snapshot.accesses if access.root is not None}
+        self.roots = tuple(sorted(own | (every - workflow_written), key=str))
+        self.written_roots: set[Path] = set()
+        self.lifecycle = DatasetLifecycle.start(
+            workspace=self.workspace,
+            attempt_id=str(attempt_id),
+            scope=step_path,
+            backends=("slurm-worker", backend),
+            mutation=contract.mutation,
+            store_path=_dataset_record_path(submission_dir, attempt_id),
+        )
+
+    def establish(self, *, scope: Scope, prepared: dict, owner) -> None:
+        from shinobi.dataset_backends import dataset_backend_capability
+        from shinobi.dataset_lifecycle import (
+            DatasetLifecyclePhase,
+            DatasetLifecycleSnapshot,
+            claim_covers_accesses,
+            pending_dataset_recovery,
+            resolve_lifecycle_snapshot,
+        )
+
+        contract = self.contract
+        step_path = self.step_path
+        actual_tool = dataset_backend_capability(self.backend, mutation=contract.mutation)
+        expected_tool = contract.tool_capabilities[next(i for i, item in enumerate(contract.steps) if item.step_path == step_path)]
+        if actual_tool != expected_tool:
+            raise BundleError(f"step {step_path!r}: compute-node tool-backend capability differs from the frozen submission plan")
+
+        values = scope.inputs_model(**prepared)
+        self.leaf_snapshot = (
+            resolve_lifecycle_snapshot(scope, values, workspace=self.workspace, mutation=contract.mutation)
+            if self.expected
+            else DatasetLifecycleSnapshot(accesses=(), observations=())
+        )
+        if len(self.expected) != len(self.leaf_snapshot.accesses) or any(
+            not _planned_access_matches(expected, actual) for expected, actual in zip(self.expected, self.leaf_snapshot.accesses)
+        ):
+            raise BundleError(f"step {step_path!r}: compute-node dataset resolution differs from the frozen access plan")
+        uncovered = claim_covers_accesses(owner, self.leaf_snapshot.accesses)
+        if uncovered:
+            raise BundleError(f"step {step_path!r}: live workflow claim does not cover dataset resources: {', '.join(map(str, uncovered))}")
+
+        self.baseline = self._observe()
+        self.lifecycle.transition(
+            DatasetLifecyclePhase.PLANNED,
+            "compute worker re-resolved the frozen shared-storage dataset plan",
+            backends=("slurm-worker", self.backend),
+            backend_capabilities=(contract.capability, actual_tool),
+            capability_supported=True,
+            planned_accesses=contract.initial_snapshot.accesses,
+            pre_observations=self.baseline.observations,
+            absent_roots=self.baseline.absent_roots if contract.mutation else (),
+        )
+        self.lifecycle.transition(
+            DatasetLifecyclePhase.CLAIMED,
+            "verified the exact live detached workflow claim and registry entry",
+            claim=owner,
+        )
+
+        # Re-resolve after reading the claim.  The first observation never
+        # authorizes execution by itself.
+        second_leaf = resolve_lifecycle_snapshot(scope, values, workspace=self.workspace, mutation=contract.mutation) if self.expected else self.leaf_snapshot
+        if second_leaf != self.leaf_snapshot or self._observe() != self.baseline:
+            raise BundleError(f"step {step_path!r}: dataset plan or observation changed while establishing the compute-side lifecycle")
+
+        self.written_roots = {access.root for access in self.leaf_snapshot.accesses if access.writes and access.root is not None}
+        recovery_roots = {
+            access.root
+            for access in self.leaf_snapshot.accesses
+            if access.root is not None and any(candidate.root == access.root and candidate.writes for candidate in contract.initial_snapshot.accesses)
+        }
+        notes = reconcile(self.cache_dir, get_cache_manifest(self.cache_dir), paths=recovery_roots, exact=True) if contract.mutation and recovery_roots else []
+        if notes:
+            self.baseline = self._observe()
+            self.lifecycle.amend(
+                recovery=(*self.lifecycle.record.recovery, *notes),
+                pre_observations=self.baseline.observations,
+                absent_roots=self.baseline.absent_roots,
+            )
+        pending = pending_dataset_recovery(self.cache_dir, self.leaf_snapshot)
+        if pending:
+            raise BundleError(f"step {step_path!r}: unresolved dataset mutation recovery remains: {', '.join(map(str, pending))}")
+        self.lifecycle.transition(
+            DatasetLifecyclePhase.REVALIDATED,
+            "compute-side access plan and observations match under the detached claim",
+        )
+        self.lifecycle.transition(
+            DatasetLifecyclePhase.EXECUTING,
+            "entering detached worker dispatch under the durable workflow claim",
+        )
+
+    @property
+    def evidence(self):
+        return self.lifecycle.record
+
+    def _observe(self):
+        from shinobi.dataset_lifecycle import DatasetLifecycleSnapshot, observe_roots
+
+        observations, absent = observe_roots(self.roots, self.workspace)
+        return DatasetLifecycleSnapshot(
+            accesses=self.contract.initial_snapshot.accesses,
+            observations=observations,
+            absent_roots=absent,
+        )
+
+    def _read_only_changed(self, post) -> tuple[Path, ...]:
+        written = self.written_roots
+        before = {item.root: item for item in self.baseline.observations}
+        after = {item.root: item for item in post.observations}
+        return tuple(
+            root for root in self.roots if root not in written and (before.get(root) != after.get(root) or (root in self.baseline.absent_roots) != (root in post.absent_roots))
+        )
+
+    def validate(self):
+        """Observe now and refuse any change to a root this leaf only reads.
+
+        Called before S1 (so a violating writer is rolled back by its guard
+        before anything is snapshotted or committed) and again at
+        publication, since the dataset is not frozen in between.
+        """
+        from shinobi.exceptions import DatasetLifecycleViolationError
+
+        post = self._observe()
+        changed = self._read_only_changed(post)
+        if changed:
+            raise DatasetLifecycleViolationError("detached MSv2 worker changed a read-only dataset: " + ", ".join(map(str, changed)))
+        return post
+
+    def finish(self, result: StepResult):
+        """Validate a successful leaf; return its unpublished COMMITTED record.
+
+        The caller embeds that record in the immutable attempt record and
+        adopts it only once the attempt record is linked.  Until then the
+        persisted phase stays VALIDATED, so a failed link is still a failure
+        `fail` recovers from.  A failed leaf is recovered here and returns
+        ``None``.
+        """
+        from shinobi.dataset_lifecycle import DatasetLifecyclePhase
+
+        if not result.success:
+            self._recover_failure(f"worker returned non-zero status {result.returncode}")
+            return None
+        post = self.validate()
+        if self.lifecycle.record.phase is DatasetLifecyclePhase.EXECUTING:
+            self.lifecycle.transition(
+                DatasetLifecyclePhase.VALIDATED,
+                "compute-side declared postconditions hold",
+                post_observations=post.observations,
+            )
+        elif self.lifecycle.record.phase is not DatasetLifecyclePhase.VALIDATED:
+            raise BundleError(
+                f"step {self.step_path!r}: detached dataset lifecycle is {self.lifecycle.record.phase.value!r}, expected 'executing' or 'validated' before publication"
+            )
+        return self.lifecycle.preview(DatasetLifecyclePhase.COMMITTED, "immutable detached attempt is ready for publication")
+
+    def _recover_failure(self, reason: str) -> None:
+        from shinobi.dataset_lifecycle import DatasetLifecyclePhase
+
+        notes = reconcile(self.cache_dir, get_cache_manifest(self.cache_dir), paths=self.written_roots, exact=True) if self.contract.mutation and self.written_roots else []
+        post = self._observe()
+        changed = self._read_only_changed(post)
+        detail = reason
+        if notes:
+            detail += "; recovery: " + "; ".join(notes)
+        if changed:
+            detail += "; unrecovered read-only change: " + ", ".join(map(str, changed))
+        self.lifecycle.transition(
+            DatasetLifecyclePhase.FAILED,
+            detail,
+            post_observations=post.observations,
+            recovery=(*self.lifecycle.record.recovery, *notes),
+        )
+
+    def fail(self, exc: BaseException) -> None:
+        from shinobi.dataset_lifecycle import DatasetLifecyclePhase
+
+        if self.lifecycle.record.phase in {
+            DatasetLifecyclePhase.COMMITTED,
+            DatasetLifecyclePhase.REFUSED,
+            DatasetLifecyclePhase.FAILED,
+        }:
+            return
+        if self.lifecycle.record.phase in {DatasetLifecyclePhase.EXECUTING, DatasetLifecyclePhase.VALIDATED}:
+            self._recover_failure(f"execution raised {type(exc).__name__}: {exc}")
+        else:
+            self.lifecycle.transition(DatasetLifecyclePhase.REFUSED, f"{type(exc).__name__}: {exc}")
+
+
 def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
     """Execute one planned step and atomically publish its terminal record."""
     submission_dir = submission_dir.resolve()
@@ -340,6 +737,27 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
     if planned.attempt_id != attempt_id:
         raise BundleError(f"attempt id for {step_path!r} does not match the execution plan")
     attempt_id = _invocation_attempt(submission_dir, planned)
+    if plan.dataset_lifecycle is None:
+        return _execute_step_invocation(submission_dir, step_path, attempt_id, submission, bundle, plan, planned)
+    # A requeue publishes its newer identity before waiting here.  The old
+    # invocation will then fail its publication fence and roll itself back
+    # while still holding this lock; only after it exits may the replacement
+    # inspect/recover the marker and launch.  This removes the overlap window
+    # in which the stale rollback could otherwise revert the new invocation.
+    invocation_lock = submission_dir / "attempts" / str(planned.attempt_id) / "invocation"
+    with SharedFileLock(invocation_lock):
+        return _execute_step_invocation(submission_dir, step_path, attempt_id, submission, bundle, plan, planned)
+
+
+def _execute_step_invocation(
+    submission_dir: Path,
+    step_path: str,
+    attempt_id: UUID,
+    submission: Submission,
+    bundle: RecipeBundle,
+    plan: ExecutionPlan,
+    planned: PlannedAttempt,
+) -> int:
     index = next(i for i, step in enumerate(bundle.steps) if step.name == step_path)
     frozen = bundle.steps[index]
     job_id = os.environ.get("SLURM_JOB_ID")
@@ -357,10 +775,34 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         "code_digest": frozen.code.digest if frozen.code else None,
         "worker_digest": plan.worker.source_digest,
     }
+    dataset_runtime: _WorkerDatasetLifecycle | None = None
+    precommitted_result: StepResult | None = None
 
     def publish_failure(exc: BaseException, *, phase: str = "final") -> None:
         diagnostic = "".join(traceback.format_exception(exc))
-        failure = AttemptRecord(state="failed", error=str(exc), stderr=diagnostic, sandbox=retained_sandbox(), **common)
+        lifecycle = None
+        if dataset_runtime is not None and dataset_runtime.evidence.outcome in ("failed", "refused"):
+            lifecycle = dataset_runtime.evidence
+        failure = AttemptRecord(
+            schema_version=2 if lifecycle is not None else 1,
+            state="failed",
+            error=str(exc),
+            stderr=diagnostic,
+            sandbox=retained_sandbox(),
+            dataset_lifecycle=lifecycle,
+            **common,
+        )
+        try:
+            _require_current_invocation(submission_dir, plan, planned, attempt_id)
+            _require_exact_owner(submission_dir, plan)
+        except BaseException as fence_exc:
+            failure = failure.model_copy(
+                update={
+                    "error": f"{failure.error}; terminal publication refused: {fence_exc}",
+                    "stderr": failure.stderr + "\nPublication fence:\n" + "".join(traceback.format_exception(fence_exc)),
+                }
+            )
+            phase = "publication-error"
         path = _record_path(submission_dir, attempt_id, phase)
         try:
             write_new(path, failure)
@@ -376,6 +818,24 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         candidates = list(sandbox_root.iterdir())
         return str(candidates[0]) if len(candidates) == 1 else None
 
+    def precommit_result(result: StepResult) -> None:
+        """Fence the invocation and all pinned identities before S1/S2."""
+
+        nonlocal precommitted_result
+        _require_current_invocation(submission_dir, plan, planned, attempt_id)
+        _require_exact_owner(submission_dir, plan)
+        result.sandbox_path = result.sandbox_path or retained_sandbox()
+        if frozen.image_digest is not None and result.image_digest != frozen.image_digest:
+            raise BundleError(f"step {step_path!r}: executed image digest {result.image_digest!r} does not match submission pin {frozen.image_digest!r}")
+        if frozen.tool_venv_digest is not None and result.venv_digest != frozen.tool_venv_digest:
+            raise BundleError(f"step {step_path!r}: executed tool venv digest {result.venv_digest!r} does not match submission fingerprint {frozen.tool_venv_digest!r}")
+        if result.success and dataset_runtime is not None:
+            dataset_runtime.validate()
+        result.code_digest = common["code_digest"]
+        result.worker_digest = common["worker_digest"]
+        result.job_id = job_id
+        precommitted_result = result
+
     def commit_result(result: StepResult, record_cache) -> None:
         """Publish the worker success oracle before updating its cache index.
 
@@ -384,15 +844,15 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
         failure may cost a future rerun but cannot revoke completed scientific
         work or turn it into an ambiguous attempt.
         """
-        result.sandbox_path = result.sandbox_path or retained_sandbox()
-        if frozen.image_digest is not None and result.image_digest != frozen.image_digest:
-            raise BundleError(f"step {step_path!r}: executed image digest {result.image_digest!r} does not match submission pin {frozen.image_digest!r}")
-        if frozen.tool_venv_digest is not None and result.venv_digest != frozen.tool_venv_digest:
-            raise BundleError(f"step {step_path!r}: executed tool venv digest {result.venv_digest!r} does not match submission fingerprint {frozen.tool_venv_digest!r}")
-        result.code_digest = common["code_digest"]
-        result.worker_digest = common["worker_digest"]
-        result.job_id = job_id
-        terminal = AttemptRecord.from_result(result, sandbox=result.sandbox_path, **common)
+        if precommitted_result is not result:
+            precommit_result(result)
+        committed_lifecycle = dataset_runtime.finish(result) if dataset_runtime is not None else None
+        terminal = AttemptRecord.from_result(
+            result,
+            sandbox=result.sandbox_path,
+            dataset_lifecycle=committed_lifecycle or (dataset_runtime.evidence if dataset_runtime is not None else None),
+            **common,
+        )
         try:
             terminal.write(submission_dir.parent)
         except BaseException:
@@ -411,6 +871,11 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
             # record. Avoid reporting a failed Slurm job beside that commit;
             # a later disappearance is still handled as unknown, never success.
             logger.warning("terminal record %s is visible but its directory sync could not be confirmed", final_path)
+        if committed_lifecycle is not None:
+            try:
+                dataset_runtime.lifecycle.adopt(committed_lifecycle)
+            except BaseException:  # noqa: BLE001 -- the attempt record is the oracle and embeds this evidence
+                logger.exception("step %s committed, but its dataset lifecycle file could not be advanced to committed", step_path)
         if terminal.committed:
             faults("W_RESULT")
             try:
@@ -420,24 +885,8 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
             faults("W_CACHE")
 
     try:
-        ownership_path = submission_dir / "ownership.json"
-        if plan.ownership_required and not ownership_path.exists():
-            raise BundleError("write-declaring detached workflow has no immutable workspace-ownership requirement")
-        if ownership_path.exists():
-            from shinobi.ownership import WorkspaceOwner, require_workspace_owner
-
-            required = WorkspaceOwner.model_validate_json(ownership_path.read_text())
-            ownership_workspace = Path(plan.ownership_workspace) if plan.ownership_workspace is not None else None
-            if (
-                required.workflow_id != str(plan.workflow_id)
-                or ownership_workspace is None
-                or Path(required.workspace) != ownership_workspace
-                or plan.ownership_registry is None
-                or Path(required.registry) != Path(plan.ownership_registry)
-                or required.accesses != plan.accesses
-            ):
-                raise BundleError("workspace-ownership requirement disagrees with the execution plan")
-            require_workspace_owner(ownership_workspace, str(plan.workflow_id))
+        owner = _require_exact_owner(submission_dir, plan)
+        _require_current_invocation(submission_dir, plan, planned, attempt_id)
         _verify_environment(bundle, plan)
         _verify_tool_environment(frozen)
         if Path(bundle.workspace).stat().st_dev != submission_dir.stat().st_dev:
@@ -480,7 +929,21 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
             )
             cache_dir = bundle.cache_dir_override or scope.cache_dir or recipe.cache_dir or config.cache.dir
             snapshots_active = config.cache.snapshots.mode != "off" and (cache_enabled or bool(recipe.cache) or config.cache.enabled)
-            if snapshots_active:
+            if plan.dataset_lifecycle is not None:
+                resolved_cache_dir = Path(cache_dir)
+                if not resolved_cache_dir.is_absolute():
+                    resolved_cache_dir = Path(bundle.workspace) / resolved_cache_dir
+                if resolved_cache_dir.resolve() != Path(plan.dataset_lifecycle.cache_dir):
+                    raise BundleError("worker cache directory differs from the frozen strict-dataset recovery store")
+                dataset_runtime = _WorkerDatasetLifecycle(
+                    submission_dir=submission_dir,
+                    plan=plan,
+                    attempt_id=attempt_id,
+                    step_path=step_path,
+                    backend=frozen.backend,
+                )
+                dataset_runtime.establish(scope=scope, prepared=prepared, owner=owner)
+            if snapshots_active and plan.dataset_lifecycle is None:
                 paths = {path for values in mutation_paths(scope, prepared).values() for path in values}
                 if paths:
                     # Slurm's inferred mutation dependencies ensure no live
@@ -490,6 +953,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                     reconcile(cache_dir, get_cache_manifest(cache_dir), paths=paths)
             if should_skip(ref, upstream):
                 result = passthrough_result(ref, upstream[ref.loop.prev_step], scope.inputs_model(**prepared))
+                precommit_result(result)
                 commit_result(result, lambda: None)
             else:
                 _check_scratch_filesystems(scope, prepared, Path(bundle.workspace))
@@ -512,6 +976,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                     _run_id=str(attempt_id),
                     _input_keys=input_keys,
                     _wired_fields=set(ref.wiring),
+                    _boundary_fields=frozenset(field for field, source in ref.wiring.items() if isinstance(source, InputRef)),
                     _execution_identity=ExecutionIdentity(
                         code_digest=frozen.code.execution_digest if frozen.code else None,
                         image_digest=frozen.image_digest,
@@ -520,7 +985,10 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                     ),
                     _snapshot_success_record=final_path,
                     _snapshot_success_step_path=step_path,
+                    _result_precommit=precommit_result,
                     _result_commit=commit_result,
+                    _workspace_claimed=dataset_runtime is not None,
+                    _dataset_lifecycle=dataset_runtime.lifecycle if dataset_runtime is not None else None,
                     **kwargs,
                 )
         finally:
@@ -532,6 +1000,8 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                 pass
         return 0 if result.success else max(1, abs(result.returncode))
     except BaseException as exc:
+        # Check the oracle first: once the immutable record is committed,
+        # rolling the dataset back would revert work it vouches for.
         if final_path.exists():
             visible = AttemptRecord.read(
                 final_path,
@@ -547,6 +1017,11 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
                 # failure or make Slurm discard successful dependants.
                 logger.exception("step %s raised after its terminal result committed; preserving the committed result", step_path)
                 return 0
+        if dataset_runtime is not None:
+            try:
+                dataset_runtime.fail(exc)
+            except BaseException as lifecycle_exc:
+                exc.add_note(f"dataset lifecycle failure handling also failed: {type(lifecycle_exc).__name__}: {lifecycle_exc}")
         publish_failure(exc)
         return 1
 
@@ -591,6 +1066,180 @@ def _scheduler_attempt_state(state: str) -> tuple[str, bool]:
     return "unknown", False
 
 
+def _settle_dataset_submission(
+    submission_dir: Path,
+    bundle: RecipeBundle,
+    plan: ExecutionPlan,
+    jobs: dict[str, SubmittedJob],
+) -> bool:
+    """Recover terminal dataset attempts and publish durable failures.
+
+    Scheduler terminality is only the caller's precondition.  Ownership may
+    be released after this function returns true because every mutation
+    marker has been reconciled and every non-committed invocation either has
+    terminal lifecycle evidence or provably never entered the lifecycle.
+    """
+
+    contract = plan.dataset_lifecycle
+    if contract is None:
+        return True
+    settlement_path = submission_dir / "dataset-settlement.json"
+    current_attempts = tuple(_latest_attempt(submission_dir, planned) for planned in plan.attempts)
+    expected_settlement = DatasetSettlement(
+        workflow_id=plan.workflow_id,
+        bundle_digest=plan.bundle_digest,
+        attempts=current_attempts,
+    )
+    if settlement_path.exists():
+        try:
+            return DatasetSettlement.model_validate_json(settlement_path.read_text()) == expected_settlement
+        except (OSError, ValueError):
+            return False
+    try:
+        _require_exact_owner(submission_dir, plan)
+    except BaseException:
+        logger.exception("dataset finalization cannot verify the exact live workflow claim")
+        return False
+
+    from shinobi.dataset_lifecycle import (
+        DatasetLifecycle,
+        DatasetLifecyclePhase,
+        DatasetLifecycleStore,
+        member_fingerprint,
+        observe_roots,
+        structural_signature,
+    )
+    from shinobi.snapshots import HeadStatus, chain_id, get_journal
+
+    written_roots = {access.root for access in contract.initial_snapshot.accesses if access.writes and access.root is not None}
+    try:
+        if contract.mutation and written_roots:
+            notes = reconcile(contract.cache_dir, get_cache_manifest(contract.cache_dir), paths=written_roots, exact=True)
+            for note in notes:
+                logger.warning("dataset finalizer recovery: %s", note)
+        journal = get_journal(contract.cache_dir)
+        for root in written_roots:
+            chain = journal.get(chain_id(root))
+            if chain is not None and (chain.marker is not None or chain.status is not HeadStatus.TRUSTED):
+                raise BundleError(f"dataset recovery for {root} did not reach a trusted marker-free state")
+    except BaseException:
+        logger.exception("dataset finalization could not complete mutation recovery")
+        return False
+
+    frozen_by_name = {step.name: step for step in bundle.steps}
+    safe = True
+    for planned in plan.attempts:
+        attempt_id = _latest_attempt(submission_dir, planned)
+        final_path = _record_path(submission_dir, attempt_id)
+        lifecycle_path = _dataset_record_path(submission_dir, attempt_id)
+        if final_path.exists():
+            try:
+                record = AttemptRecord.read(
+                    final_path,
+                    workflow_id=plan.workflow_id,
+                    attempt_id=attempt_id,
+                    step_path=planned.step_path,
+                    bundle_digest=plan.bundle_digest,
+                )
+            except BaseException:
+                logger.exception("dataset finalization cannot validate %s", final_path)
+                safe = False
+                continue
+            if record.committed:
+                if record.dataset_lifecycle is None or record.dataset_lifecycle.outcome != "committed":
+                    safe = False
+                continue
+
+        lifecycle = None
+        if lifecycle_path.exists():
+            try:
+                store = DatasetLifecycleStore(lifecycle_path)
+                lifecycle = DatasetLifecycle(store, store.attempt(), workspace=Path(contract.storage_namespace))
+                record = lifecycle.record
+                relevant_roots = {access.root for access in contract.step(planned.step_path).accesses if access.root is not None}
+                observations, absent = observe_roots(tuple(sorted(relevant_roots, key=str)), Path(contract.storage_namespace))
+                before = {item.root: item for item in record.pre_observations if item.root in relevant_roots}
+                after = {item.root: item for item in observations}
+                expected_absent = set(record.absent_roots) & relevant_roots
+
+                def matches(root: Path) -> bool:
+                    left, right = before.get(root), after.get(root)
+                    if left is None or right is None:
+                        return left is right
+                    if root in written_roots:
+                        return structural_signature(left) == structural_signature(right) and member_fingerprint(left) == member_fingerprint(right)
+                    return left == right
+
+                # An attempt refused before EXECUTING never launched its tool,
+                # so there is nothing of its own to have recovered (and it may
+                # have been refused before recording any pre-observation).
+                executed = any(event.phase is DatasetLifecyclePhase.EXECUTING for event in record.events)
+                if executed and (any(not matches(root) for root in relevant_roots - expected_absent) or set(absent) != expected_absent):
+                    raise BundleError(f"dataset attempt {planned.step_path!r} did not recover to its recorded predecessor")
+                if record.phase not in {
+                    DatasetLifecyclePhase.COMMITTED,
+                    DatasetLifecyclePhase.REFUSED,
+                    DatasetLifecyclePhase.FAILED,
+                }:
+                    phase = DatasetLifecyclePhase.FAILED if record.phase in {DatasetLifecyclePhase.EXECUTING, DatasetLifecyclePhase.VALIDATED} else DatasetLifecyclePhase.REFUSED
+                    lifecycle.transition(
+                        phase,
+                        "detached finalizer observed terminal scheduler state and verified dataset recovery",
+                        post_observations=observations,
+                        recovery=(*record.recovery, "detached finalizer verified the recorded predecessor"),
+                    )
+            except BaseException:
+                logger.exception("dataset finalization cannot establish terminal lifecycle evidence for %s", planned.step_path)
+                safe = False
+                continue
+
+        if final_path.exists():
+            # A worker-published failure is already immutable. Recovery above
+            # is the additional condition needed for ownership release.
+            continue
+        if lifecycle is None and not _record_path(submission_dir, attempt_id, "started").exists():
+            # The worker never started (e.g. a dependant Slurm cancelled), so
+            # it touched nothing; leave it to scheduler state as "cancelled"
+            # rather than inventing a failure for it.
+            continue
+        frozen = frozen_by_name[planned.step_path]
+        job = jobs.get(planned.step_path)
+        lifecycle_evidence = lifecycle.record if lifecycle is not None and lifecycle.record.outcome in ("failed", "refused") else None
+        failure = AttemptRecord(
+            schema_version=2 if lifecycle_evidence is not None else 1,
+            workflow_id=plan.workflow_id,
+            attempt_id=attempt_id,
+            step_path=planned.step_path,
+            bundle_digest=plan.bundle_digest,
+            state="failed",
+            error="scheduler became terminal before the worker published a final result; dataset recovery was verified",
+            job_id=job.job_id if job is not None else None,
+            code_digest=frozen.code.digest if frozen.code else None,
+            worker_digest=plan.worker.source_digest,
+            dataset_lifecycle=lifecycle_evidence,
+        )
+        try:
+            failure.write(submission_dir.parent)
+        except FileExistsError:
+            try:
+                AttemptRecord.read(
+                    final_path,
+                    workflow_id=plan.workflow_id,
+                    attempt_id=attempt_id,
+                    step_path=planned.step_path,
+                    bundle_digest=plan.bundle_digest,
+                )
+            except BaseException:
+                safe = False
+    if safe:
+        try:
+            _write_or_read(settlement_path, expected_settlement)
+        except BaseException:
+            logger.exception("dataset finalization could not publish release authority")
+            return False
+    return safe
+
+
 def finalize_submission(submission_dir: Path) -> Finalization:
     """Reconstruct ordered status and, for a complete success, a run manifest."""
     submission_dir = submission_dir.resolve()
@@ -622,6 +1271,11 @@ def finalize_submission(submission_dir: Path) -> Finalization:
         if not terminal_context:
             finalizer_state = status_slurm({"__finalizer__": finalizer_job.job_id}).get("__finalizer__", "UNKNOWN")
             _outcome, terminal_context = _scheduler_attempt_state(finalizer_state)
+    jobs_terminal = len(jobs) == len(bundle.steps)
+    for frozen in bundle.steps:
+        _outcome, terminal = _scheduler_attempt_state(scheduler.get(frozen.name, "UNKNOWN"))
+        jobs_terminal = jobs_terminal and (terminal or terminal_context)
+    dataset_settled = not jobs_terminal or _settle_dataset_submission(submission_dir, bundle, plan, jobs)
     finalized: list[FinalizedStep] = []
     results: dict[str, StepResult] = {}
     all_committed = len(jobs) == len(bundle.steps)
@@ -629,7 +1283,7 @@ def finalize_submission(submission_dir: Path) -> Finalization:
     # the submitter can die between scheduler acceptance and durable publish.
     # Neither finalizer context nor terminal state for the recorded subset may
     # turn that ambiguity into permission to release workspace ownership.
-    settled = len(jobs) == len(bundle.steps)
+    settled = len(jobs) == len(bundle.steps) and dataset_settled
     for index, frozen in enumerate(bundle.steps):
         planned = plan.attempt(frozen.name)
         attempt_id = _latest_attempt(submission_dir, planned)

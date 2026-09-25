@@ -946,19 +946,18 @@ def _clear_step_cache(root: Path) -> None:
     """Clear cache contents without ever replacing its lock domains."""
     from shinobi.cache import CacheManifest
     from shinobi.snapshots import ChainJournal
-    from shinobi.storage import sync_directory
+    from shinobi.storage import SharedFileLock, sync_directory
 
     manifest = CacheManifest(root / "manifest.json")
     journal = ChainJournal(root / "snapshots")
-    manifest.reset()
 
     def clear_snapshot_payloads() -> None:
         if not journal.root.exists():
             return
         for entry in journal.root.iterdir():
-            # The transaction inode and run-presence locks are persistent.
-            # Unlinking either while held would split a lock domain.
-            if entry == journal.lock_path or entry.name == "locks":
+            # Transaction, recovery and run-presence lock inodes are
+            # persistent. Unlinking one while held would split its domain.
+            if entry in {journal.lock_path, journal.recovery_lock_path} or entry.name == "locks":
                 continue
             if entry.is_dir() and not entry.is_symlink():
                 shutil.rmtree(entry)
@@ -966,15 +965,19 @@ def _clear_step_cache(root: Path) -> None:
                 entry.unlink(missing_ok=True)
         sync_directory(journal.root)
 
-    journal.reset(clear_snapshot_payloads)
-    for entry in root.iterdir():
-        if entry == manifest.lock_path or entry == journal.root:
-            continue
-        if entry.is_dir() and not entry.is_symlink():
-            shutil.rmtree(entry)
-        else:
-            entry.unlink(missing_ok=True)
-    sync_directory(root)
+    # Cleaning and crash recovery both replace snapshot payloads. Serialize
+    # their complete operations, not only the individual metadata updates.
+    with SharedFileLock(journal.root / "recovery"):
+        manifest.reset()
+        journal.reset(clear_snapshot_payloads)
+        for entry in root.iterdir():
+            if entry == manifest.lock_path or entry == journal.root:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink(missing_ok=True)
+        sync_directory(root)
 
 
 def _unreconciled_trash(config: AppConfig) -> list[Path]:
@@ -1118,6 +1121,12 @@ def _handle_path(workdir: str | None, recipe: str) -> Path:
 @click.option("--worker", is_flag=True, help="Use the experimental frozen-bundle M1 worker lifecycle (requires --submit).")
 @click.option("--submission-root", type=click.Path(path_type=Path), default=None, help="Shared directory for immutable worker submissions.")
 @click.option("--worker-python", type=click.Path(path_type=Path), default=None, help="Absolute compute-visible Python for the staged worker.")
+@click.option(
+    "--dataset-storage-qualification",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Site-issued qualification for the exact shared-storage tree used by a strict dataset worker.",
+)
 @click.option("--code-root", type=click.Path(path_type=Path), multiple=True, help="Python import root for bundled pystep source (repeatable).")
 @click.option(
     "--cache/--no-cache",
@@ -1141,6 +1150,7 @@ def compile_recipe(
     worker: bool,
     submission_root: Path | None,
     worker_python: Path | None,
+    dataset_storage_qualification: Path | None,
     code_root: tuple[Path, ...],
     cache: bool | None,
     cache_dir: str | None,
@@ -1171,6 +1181,8 @@ def compile_recipe(
         raise click.ClickException("--worker currently requires --submit because submission preparation stages immutable source and environment data")
     if not worker and (cache is not None or cache_dir is not None):
         raise click.ClickException("--cache/--no-cache/--cache-dir require --worker; the legacy argv compiler has no runtime cache lifecycle")
+    if not worker and dataset_storage_qualification is not None:
+        raise click.ClickException("--dataset-storage-qualification requires --worker")
 
     def _callback(**kwargs):
         inputs = unflatten_kwargs(recipe.inputs_model, kwargs)
@@ -1190,7 +1202,12 @@ def compile_recipe(
                     cache=cache,
                     cache_dir=cache_dir,
                 )
-                workflow = prepare_worker_slurm(bundle, submission_root=root, worker_python=worker_python)
+                workflow = prepare_worker_slurm(
+                    bundle,
+                    submission_root=root,
+                    worker_python=worker_python,
+                    dataset_storage_qualification=dataset_storage_qualification,
+                )
             except (BundleError, ShinobiError, RecipeNotOffloadableError, OffloadCompileError, RecipeGraphError) as exc:
                 raise click.ClickException(str(exc)) from None
             try:

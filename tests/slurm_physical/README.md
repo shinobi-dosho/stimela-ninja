@@ -34,7 +34,14 @@ Run from the controller against a unique directory::
     python /data/src/stimela-ninja/tests/slurm_physical/run_m2.py submit \
       --root /data/physical-m2-001
     python /data/src/stimela-ninja/tests/slurm_physical/run_m2.py check \
-      --root /data/physical-m2-001
+      --root /data/physical-m2-001 \
+      --storage-root /data
+
+The successful checker writes
+``/data/physical-m2-001/qualification.json``. This persisted, site-issued
+record gates strict dataset worker preparation; its exact bytes are pinned in
+the execution plan and rechecked by every compute allocation. Use
+``--qualification PATH`` to choose another location under the qualified root.
 
 For another cluster, pass ``--nodes NODE...``, ``--partition PARTITION``,
 ``--expected-host NODE=HOST`` once per node when runtime hostnames differ from
@@ -133,3 +140,56 @@ steps ran on ``k1``, image pysteps on ``n1`` and venv pysteps on ``n2``. Job
 their published restart-generation records were the attempts selected by
 finalization. The checker passed every state vector and the final MS was
 exactly ``vis[two]|image[requeued]|venv-requeued[4242]``.
+
+## Physical M4 strict-MSv2 lifecycle probe
+
+``run_m4_msv2.py`` is the release gate for detached strict dataset support.
+Run it only after the M2 shared-metadata probe on the same mount, with a shared
+worker/tool interpreter containing ``python-casacore`` and NumPy. It creates a
+real MSv2 on one node, writes ``SCAN_NUMBER`` on a second, and reads it on a
+third. A separate write is then killed at the pre-oracle ``S2`` boundary; the
+detached finalizer must restore the exact predecessor, publish a failed
+immutable attempt, and release ownership only after recovery. A final retry on
+the third node must commit the intended values::
+
+    python /data/src/stimela-ninja/tests/slurm_physical/run_m4_msv2.py run \
+      --root /data/physical-m4-msv2-001 \
+      --storage-qualification /data/physical-m2-001/qualification.json
+    python /data/src/stimela-ninja/tests/slurm_physical/run_m4_msv2.py check \
+      --root /data/physical-m4-msv2-001 \
+      --storage-qualification /data/physical-m2-001/qualification.json
+
+Use ``--worker-python`` and ``--casacore-python`` when those environments are
+separate, and pass the site's three ``--nodes`` plus ``--partition``. A code
+merge does not by itself establish site support: record a successful fresh-
+process check here, including job and node identities, after running the gate.
+
+Physical M4 passed on 2026-09-25 against the Kudu/Nyala ``physical-dev``
+cluster after M2 jobs 422--424 proved shared metadata and cross-node OFD
+locking. Jobs 431 (create, ``k1``), 432 (write, ``n1``) and 433 (read,
+``n2``) completed, followed by finalizer 434 on ``k1``. The injected S2
+writer was job 435 on ``n1`` and exited ``86:0``; finalizer 436 returned
+``1:0`` for the intentionally failed workflow only after restoring
+``SCAN_NUMBER`` to ``7,7,7,7`` and releasing ownership. Retry job 437 on
+``n2`` and finalizer 438 on ``k1`` completed, and a separate checker process
+verified the final MS contained ``9,9,9,9`` plus all execution, attempt,
+settlement and finalization records.
+
+The review-hardened qualification path passed again on 2026-09-25. M2 jobs
+439--441 produced a persisted ``slurm-shared-storage/v1`` qualification after
+the same three-way exclusion and 60-record check. M4 then consumed that exact
+file: jobs 442 (create, ``k1``), 443 (write, ``n1``), 444 (read, ``n2``) and
+finalizer 445 completed; the injected S2 job 446 on ``n1`` and finalizer 447
+failed as intended after exact recovery; retry 448 on ``n2`` and finalizer 449
+completed. A fresh checker process verified the final ``9,9,9,9`` contents and
+all durable records.
+
+The remaining review findings were verified at commit ``b015df3`` on
+2026-09-25 after adding the per-invocation and recovery locks. Jobs 450
+(create, ``k1``), 451 (write, ``n1``), 452 (read, ``n2``) and finalizer 453
+completed; injected S2 job 454 on ``n1`` and finalizer 455 failed only after
+exact rollback; retry 456 on ``n2`` and finalizer 457 completed. A fresh
+checker verified final ``9,9,9,9`` contents and every durable record. The
+ordinary suite separately races two finalizers through one recovery marker;
+the physical M2 qualification proves that the same persistent OFD lock used
+by that regression excludes peers across these three nodes.

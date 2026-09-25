@@ -1435,7 +1435,7 @@ def test_queued_worker_refuses_to_run_after_ownership_moves_to_a_new_workflow(tm
     attempt = plan.attempts[0]
     assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
     record = AttemptRecord.read(
-        _final_record(workflow, attempt),
+        workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "publication-error.json",
         workflow_id=plan.workflow_id,
         attempt_id=attempt.attempt_id,
         step_path=attempt.step_path,
@@ -1443,6 +1443,7 @@ def test_queued_worker_refuses_to_run_after_ownership_moves_to_a_new_workflow(tm
     )
     assert record.state == "failed"
     assert "owned by workflow new-workflow" in record.error
+    assert not _final_record(workflow, attempt).exists()
 
 
 def test_write_declaring_worker_refuses_a_missing_ownership_requirement(tmp_path):
@@ -1452,13 +1453,14 @@ def test_write_declaring_worker_refuses_a_missing_ownership_requirement(tmp_path
 
     assert _execute_step_impl(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
     record = AttemptRecord.read(
-        _final_record(workflow, attempt),
+        workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "publication-error.json",
         workflow_id=plan.workflow_id,
         attempt_id=attempt.attempt_id,
         step_path=attempt.step_path,
         bundle_digest=bundle.digest,
     )
     assert "no immutable workspace-ownership requirement" in record.error
+    assert not _final_record(workflow, attempt).exists()
 
 
 def test_visible_terminal_record_wins_if_directory_sync_reports_failure(tmp_path, monkeypatch):

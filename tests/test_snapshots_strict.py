@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
 
 import pytest
 
 from shinobi import DatasetAccess, MeasurementSetV2, pystep
+from shinobi.cache import get_cache_manifest
 from shinobi.dataset_lifecycle import (
     DATASET_MUTATION_CAPABILITY,
     DATASET_READ_CAPABILITY,
@@ -35,6 +37,7 @@ from shinobi.snapshots import (
     chain_id,
     faults,
     get_journal,
+    reconcile,
     state_name,
     strict_reuse_issue,
 )
@@ -116,6 +119,138 @@ def test_strict_failure_rolls_back_immediately_and_clears_the_marker(tmp_path):
     assert chain.marker is None and chain.status is HeadStatus.TRUSTED and chain.head.startswith("gen0__")
     assert guard.plans[0].outcome == "rolled-back"
     assert not list(tmp_path.glob("obs.ms.shinobi-trash.*"))
+
+
+def test_strict_reconcile_restores_exact_predecessor_without_a_retry(tmp_path):
+    ms = _dataset(tmp_path)
+    guard = _guard(tmp_path, ms, "a" * 64)
+    guard.before_run()
+    (ms / "table.dat").write_text("unrecorded successor")
+    guard.successor_identities["ms"] = _identity(ms)
+    faults.hooks["S2"] = lambda: (_ for _ in ()).throw(KeyboardInterrupt("hard stop before oracle"))
+    with pytest.raises(KeyboardInterrupt):
+        guard.after_success(lambda: None)
+    faults.hooks.clear()
+
+    notes = reconcile(
+        str(tmp_path / "cache"),
+        get_cache_manifest(str(tmp_path / "cache")),
+        paths={ms},
+        exact=True,
+    )
+
+    assert (ms / "table.dat").read_text() == "v0"
+    chain = get_journal(str(tmp_path / "cache")).get(chain_id(ms))
+    assert chain.marker is None and chain.status is HeadStatus.TRUSTED
+    assert chain.head.startswith("gen0__")
+    assert any("restored exact state" in note for note in notes)
+
+
+def test_concurrent_reconcile_serializes_the_physical_restore(monkeypatch, tmp_path):
+    import shinobi.snapshots as snapshots_module
+
+    ms = _dataset(tmp_path)
+    guard = _guard(tmp_path, ms, "a" * 64)
+    guard.before_run()
+    (ms / "table.dat").write_text("partial")
+    guard.successor_identities["ms"] = _identity(ms)
+    faults.hooks["S2"] = lambda: (_ for _ in ()).throw(KeyboardInterrupt("hard stop before oracle"))
+    with pytest.raises(KeyboardInterrupt):
+        guard.after_success(lambda: None)
+    faults.hooks.clear()
+
+    original = snapshots_module._replace_tree_from_snapshot
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[Path] = []
+
+    def held_replace(path, source, run_id, **kwargs):
+        calls.append(path)
+        entered.set()
+        assert release.wait(timeout=10)
+        return original(path, source, run_id, **kwargs)
+
+    monkeypatch.setattr(snapshots_module, "_replace_tree_from_snapshot", held_replace)
+    outcomes: list[list[str]] = []
+    errors: list[BaseException] = []
+
+    def recover() -> None:
+        try:
+            outcomes.append(reconcile(str(tmp_path / "cache"), get_cache_manifest(str(tmp_path / "cache")), paths={ms}, exact=True))
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    first = threading.Thread(target=recover)
+    second = threading.Thread(target=recover)
+    first.start()
+    assert entered.wait(timeout=10)
+    second.start()
+    release.set()
+    first.join(timeout=10)
+    second.join(timeout=10)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert errors == []
+    assert len(calls) == 1
+    assert sorted(map(len, outcomes)) == [0, 1]
+    assert (ms / "table.dat").read_text() == "v0"
+    chain = get_journal(str(tmp_path / "cache")).get(chain_id(ms))
+    assert chain.marker is None and chain.status is HeadStatus.TRUSTED
+
+
+def test_strict_reconcile_returns_a_mid_chain_rerun_to_the_head_it_found(tmp_path):
+    from shinobi.cache import ProvenanceKey
+
+    ms = _dataset(tmp_path)
+    first = _guard(tmp_path, ms, "a" * 64, step="first")
+    first.before_run()
+    (ms / "table.dat").write_text("A")
+    _commit(first, ms)
+    journal = get_journal(str(tmp_path / "cache"))
+    second = SnapshotGuard(journal, "second", "b" * 64, "run2", {"ms": ms}, {"ms": ProvenanceKey("a" * 64, producer_field="ms")}, {"ms"}, force_copy=True, strict=STRICT)
+    second.before_run()
+    (ms / "table.dat").write_text("B")
+    _commit(second, ms)
+
+    # Re-running the first step restores its predecessor over B; dying
+    # before the oracle must put back B, the head it found, not gen0.
+    rerun = _guard(tmp_path, ms, "a" * 64, step="first", run="run3")
+    rerun.before_run()
+    assert (ms / "table.dat").read_text() == "v0"
+    (ms / "table.dat").write_text("partial")
+    rerun.successor_identities["ms"] = _identity(ms)
+    faults.hooks["S2"] = lambda: (_ for _ in ()).throw(KeyboardInterrupt("hard stop before oracle"))
+    with pytest.raises(KeyboardInterrupt):
+        rerun.after_success(lambda: None)
+    faults.hooks.clear()
+
+    notes = reconcile(str(tmp_path / "cache"), get_cache_manifest(str(tmp_path / "cache")), paths={ms}, exact=True)
+
+    assert (ms / "table.dat").read_text() == "B"
+    chain = journal.get(chain_id(ms))
+    assert chain.marker is None and chain.status is HeadStatus.TRUSTED
+    assert chain.head == state_name("b" * 64, "ms")
+    assert any("restored exact state" in note for note in notes)
+
+
+def test_exact_reconcile_treats_a_marker_without_rollback_state_as_ordinary(tmp_path):
+    # A non-strict Tier 1 crash (or a strict one from before markers froze
+    # their rollback state) must not wedge every later strict run.
+    ms = _dataset(tmp_path)
+    guard = SnapshotGuard(get_journal(str(tmp_path / "cache")), "step", "c" * 64, "run1", {"ms": ms}, {}, set(), force_copy=True)
+    guard.before_run()
+    (ms / "table.dat").write_text("partial")
+    faults.hooks["S2"] = lambda: (_ for _ in ()).throw(KeyboardInterrupt("hard stop before oracle"))
+    with pytest.raises(KeyboardInterrupt):
+        guard.after_success(lambda: None)
+    faults.hooks.clear()
+    assert get_journal(str(tmp_path / "cache")).get(chain_id(ms)).marker.strict_rollback_state is None
+
+    notes = reconcile(str(tmp_path / "cache"), get_cache_manifest(str(tmp_path / "cache")), paths={ms}, exact=True)
+
+    chain = get_journal(str(tmp_path / "cache")).get(chain_id(ms))
+    assert chain.marker is None and chain.status is HeadStatus.UNTRUSTED
+    assert any("partial write" in note for note in notes)
 
 
 def test_strict_refusals_undo_before_launch(tmp_path):

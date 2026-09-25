@@ -227,15 +227,18 @@ Podman connection makes the route ``unavailable``: a daemon resolves bind
 sources in its own host namespace, which might contain different bytes at the
 same spelling.
 
-``slurm`` and ``kubernetes`` are currently ``unavailable`` for strict dataset
-execution.  Submitting from a host does not prove that a Slurm compute node
-sees the same storage namespace, and a Kubernetes ``hostPath`` spelling does
-not prove that the scheduled node names the same storage.  Neither route yet
-runs validation and recovery at the execution authority.  This is a
-pre-launch refusal, not a fallback to an ordinary ``Path``.  A remote CLI
-launch delegates planning to the remote ``ninja`` process, which acquires its
-own claim and selects a capability in the remote namespace. ``backend="remote"``
-is not a step backend and is refused; use the CLI's remote launch option.
+The blocking ``slurm`` step backend and ``kubernetes`` are currently
+``unavailable`` for strict dataset execution.  Submitting one opaque step from
+a host does not prove that its executor sees the same storage namespace or run
+validation and recovery at the execution authority.  This is distinct from
+the detached worker compiler described below: its short-lived compute worker
+is the lifecycle authority and re-resolves the frozen shared-storage mapping
+under the durable workflow claim. This route is available only when submission
+is given a persisted physical-M2 qualification for the exact shared tree; the
+worker verifies the frozen qualification and digest again on the compute node.
+A remote CLI launch likewise delegates
+planning to the remote ``ninja`` process. ``backend="remote"`` is not a step
+backend; use the CLI's remote launch option.
 
 After the backend returns or raises, Shinobi observes again while the claim is
 still held.  A changed dataset, or an observation which can no longer be
@@ -368,6 +371,48 @@ written dataset, a :class:`~shinobi.DatasetMutationRecord`
 ``absent-restored``, ``untrusted`` when a rollback itself failed and the
 dataset stays marked for recovery, or ``refused``).
 
+Detached worker execution
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``ninja compile --worker --submit`` supports the same contained read,
+write and create contracts on a site whose worker, workspace, submission,
+cache, snapshot and ownership paths are proven shared at identical absolute
+paths.  Preparation retains its submission-host observation as evidence and
+freezes the whole-workflow and per-leaf accesses, closure identities, tool
+backend decisions, cache store and the versioned
+``shared-identity`` compute-worker capability.  It does not authorize a job
+from that observation: every allocation re-resolves and observes its leaf on
+the compute node and verifies the exact live ownership record and registry
+entry.  After the tool exits it repeats the ownership, newest-invocation and
+pinned-identity checks once, before the successor snapshot, and refuses any
+change to a root the leaf only reads (again at publication).  A leaf observes
+its own roots and the roots no step writes; a root only a sibling writes may
+change meanwhile, since independent writers are not ordered, and is vouched
+for by that sibling's own lifecycle.  The fence keeps a superseded invocation
+from publishing; that two invocations never mutate concurrently rests on
+Slurm terminating a requeued job's previous run.
+
+The ``slurm-shared-storage/v1`` qualification that admits a site is an
+operator attestation protected by filesystem permissions, not a signed
+artifact: whoever can write it can claim the route.  Its frozen digest proves
+only that every compute node read the bytes the submission host froze.
+
+The immutable worker ``AttemptRecord`` is the detached mutation success
+oracle.  A strict leaf snapshots and journals its successor and commits its
+lifecycle evidence before that record is linked into place; the reusable
+cache index and marker cleanup follow it.  A missing or failed record therefore
+forces exact rollback, while a committed uncached mutation remains committed.
+The terminal finalizer reconciles every written root and verifies terminal
+lifecycle evidence before releasing ownership.  Failed recovery, corrupt
+evidence, a lost claim or a superseded invocation leaves ownership in place
+for inspection instead of inferring safety from Slurm state.
+
+This route does not turn equal path strings into proof of shared bytes.  Run
+the physical shared-metadata and strict MSv2/Casacore gates in
+``tests/slurm_physical`` on the exact site storage before treating the route as
+supported.  The legacy argv compiler remains planning-only for dataset
+contracts.
+
 Re-creating a dataset
 ~~~~~~~~~~~~~~~~~~~~~
 
@@ -408,10 +453,9 @@ step, replacing an existing ``create`` target without ``--overwrite``,
 external closure members (one
 directory rename cannot restore a closure spanning several roots),
 unsupported/opaque closure shapes, nested dataset recipes, dataset scatter,
-orchestration functions, manual ``Scope`` routes, unproven scheduler/storage
-namespaces, and detached/offloaded execution remain strict refusals.
-Dry-run and compilation may still plan dataset-bearing workflows, but legacy
-and worker submission retain their planning-only marker and refuse before
-scheduler records, ownership claims, logs, or ``sbatch``.  Use ``Path`` or the
-legacy loader dtype ``MS`` when one of those unsupported execution routes is
-required.
+orchestration functions, manual ``Scope`` routes, and unproven storage
+namespaces remain strict refusals.  Dry-run and both compilers may still plan
+dataset-bearing workflows.  The legacy compiler retains its planning-only
+marker; worker preparation replaces its bundle marker only after constructing
+the complete compute-side lifecycle plan.  Use ``Path`` or the legacy loader
+dtype ``MS`` when one of the unsupported routes is required.

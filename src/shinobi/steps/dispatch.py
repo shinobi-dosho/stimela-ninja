@@ -828,6 +828,8 @@ def _strict_snapshot_guard(
     boundary_fields: frozenset[str],
     slice_index: int | None,
     config: AppConfig,
+    success_record: Path | None,
+    success_step_path: str | None,
 ) -> SnapshotGuard:
     """Tier 1 under a strict MSv2 policy for one writing leaf.
 
@@ -846,6 +848,7 @@ def _strict_snapshot_guard(
         raise LeafMutationError(
             f"strict MSv2 mutation of {cache_path!r} refused before launch: " + "; ".join(f"'{exclusion.field}' cannot be protected: {exclusion.reason}" for exclusion in blocked)
         )
+    detached_oracle = success_record is not None
     return SnapshotGuard(
         journal=get_journal(cache_dir),
         step_path=cache_path,
@@ -855,10 +858,10 @@ def _strict_snapshot_guard(
         input_keys=input_keys,
         wired_fields=wired,
         force_copy=config.cache.snapshots.mode == "copy",
-        success_record=leaf.lifecycle.store.path,
-        success_step_path=cache_path,
+        success_record=success_record or leaf.lifecycle.store.path,
+        success_step_path=success_step_path or cache_path,
         strict=leaf.policy(),
-        success_kind="dataset-lifecycle",
+        success_kind=None if detached_oracle else "dataset-lifecycle",
     )
 
 
@@ -889,6 +892,7 @@ def _dispatch(
     _execution_identity: ExecutionIdentity | None = None,
     _snapshot_success_record: Path | None = None,
     _snapshot_success_step_path: str | None = None,
+    _result_precommit: Callable[[StepResult], None] | None = None,
     _result_commit: Callable[[StepResult, Callable[[], None]], None] | None = None,
     _publication_gate: Callable[[Callable[[], None]], None] | None = None,
     _workspace_claimed: bool = False,
@@ -1089,7 +1093,7 @@ def _dispatch(
                 # can hold these paths now. Roots it only reads stay under a
                 # shared claim and are left to the check below.
                 written_roots = {access.root for access in revalidated.accesses if access.writes and access.root is not None}
-                notes = reconcile(effective_cache_dir, get_cache_manifest(effective_cache_dir), paths=written_roots) if written_roots else []
+                notes = reconcile(effective_cache_dir, get_cache_manifest(effective_cache_dir), paths=written_roots, exact=True) if written_roots else []
                 if notes:
                     for note in notes:
                         logger.warning("dataset recovery: %s", note)
@@ -1114,7 +1118,7 @@ def _dispatch(
             )
             lifecycle.transition(
                 DatasetLifecyclePhase.EXECUTING,
-                f"entering native local dispatch under the {'exclusive' if mutation else 'shared read'} claim",
+                f"entering contained local dispatch under the {'exclusive' if mutation else 'shared read'} claim",
             )
             planned_roots = tuple(sorted({access.root for access in planned.accesses if access.root is not None}, key=str))
             executing = True
@@ -1145,6 +1149,7 @@ def _dispatch(
                     _execution_identity=_execution_identity,
                     _snapshot_success_record=_snapshot_success_record,
                     _snapshot_success_step_path=_snapshot_success_step_path,
+                    _result_precommit=_result_precommit,
                     _result_commit=_result_commit,
                     # A mutation workflow validates and publishes per leaf:
                     # each writer's successor must be committed before the
@@ -1225,7 +1230,7 @@ def _dispatch(
                     post_observations=final,
                 )
                 if result.success:
-                    lifecycle.transition(DatasetLifecyclePhase.COMMITTED, "native contained MSv2 mutation workflow committed")
+                    lifecycle.transition(DatasetLifecyclePhase.COMMITTED, "contained local MSv2 mutation workflow committed")
                 else:
                     lifecycle.transition(DatasetLifecyclePhase.FAILED, f"native workflow returned non-zero status {result.returncode}")
                 return result
@@ -1260,7 +1265,7 @@ def _dispatch(
             )
             publish_validated_result()
             if result.success:
-                lifecycle.transition(DatasetLifecyclePhase.COMMITTED, "native contained MSv2 read committed")
+                lifecycle.transition(DatasetLifecyclePhase.COMMITTED, "contained local MSv2 read committed")
             else:
                 lifecycle.transition(
                     DatasetLifecyclePhase.FAILED,
@@ -1346,6 +1351,7 @@ def _dispatch(
                     _execution_identity=_execution_identity,
                     _snapshot_success_record=_snapshot_success_record,
                     _snapshot_success_step_path=_snapshot_success_step_path,
+                    _result_precommit=_result_precommit,
                     _result_commit=_result_commit,
                     _publication_gate=_publication_gate,
                     _workspace_claimed=True,
@@ -1434,7 +1440,12 @@ def _dispatch(
         presence = announce_run(cache_dir_value, run_id)
         alone = presence.alone()
         if alone and (reconcile_paths is None or reconcile_paths):
-            for note in reconcile(cache_dir_value, get_cache_manifest(cache_dir_value), paths=reconcile_paths):
+            for note in reconcile(
+                cache_dir_value,
+                get_cache_manifest(cache_dir_value),
+                paths=reconcile_paths,
+                exact=_dataset_lifecycle is not None,
+            ):
                 logger.warning("cache: %s", note)
         elif not alone:
             logger.warning(
@@ -1522,6 +1533,8 @@ def _dispatch(
             logger.info("step %s: cache hit -- skipping run", cache_path)
 
             def publish_hit() -> None:
+                if _result_precommit is not None:
+                    _result_precommit(hit)
                 if _result_commit is not None:
                     _result_commit(hit, lambda: None)
                 if _cache_path is None and provenance_enabled:
@@ -1558,6 +1571,8 @@ def _dispatch(
                 _boundary_fields,
                 _slice_index,
                 config,
+                _snapshot_success_record,
+                _snapshot_success_step_path,
             )
             guard.before_run()
         except BaseException as exc:
@@ -1660,23 +1675,39 @@ def _dispatch(
 
     def publish_result() -> None:
         if result.success:
+            try:
+                if _result_precommit is not None:
+                    _result_precommit(result)
+            except BaseException as exc:
+                if guard is not None:
+                    guard.after_failure()
+                if strict_leaf is not None:
+                    strict_leaf.fail(guard, f"publication fence failed: {type(exc).__name__}: {exc}")
+                raise
+
             # The five-stage commit lives in the guard so its ordering
             # constraints are enforced in one place -- above all that the tip
             # snapshot (S1) precedes the explicit success oracle (S3), or a
             # committed result could name a state with nothing snapshotted.
-            def _record() -> None:
-                if strict_leaf is not None:
-                    # A strict leaf's committed entry is its marker's success
-                    # oracle, so it precedes the reusable cache index.
-                    strict_leaf.commit()
+            def _record_cache() -> None:
                 if cacheable:
                     manifest.record(cache_path, cache_key, result, run_id=run_id)
 
             def _commit() -> None:
                 if _result_commit is None:
-                    _record()
+                    if strict_leaf is not None:
+                        # Local strict dispatch retains the lifecycle leaf as
+                        # its explicit success oracle.
+                        strict_leaf.commit()
+                    _record_cache()
                 else:
-                    _result_commit(result, _record)
+                    if strict_leaf is not None:
+                        # Detached execution uses the immutable AttemptRecord
+                        # as its oracle.  Commit lifecycle evidence first so
+                        # that record can embed it; the reusable cache index
+                        # still follows the immutable record.
+                        strict_leaf.commit()
+                    _result_commit(result, _record_cache)
 
             if guard is not None:
                 try:
@@ -1695,6 +1726,8 @@ def _dispatch(
                 guard.after_failure()
             if strict_leaf is not None:
                 strict_leaf.fail(guard, f"step returned non-zero status {result.returncode}")
+            if _result_precommit is not None:
+                _result_precommit(result)
             if _result_commit is not None:
                 _result_commit(result, lambda: None)
         if _cache_path is None and provenance_enabled:
