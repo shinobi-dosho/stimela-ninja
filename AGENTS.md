@@ -16,6 +16,15 @@ For current behaviour and design, use the maintained material in this order:
 
 Verify all three against the working tree and tests before changing behaviour. If this file conflicts with the docs or a current source contract, do not make the implementation conform to a stale sentence here: update this file, or ask the maintainer when the intended contract is genuinely ambiguous. Historical design notes describe how a feature was arrived at; the maintained docs and docstrings describe what shipped.
 
+## GitHub access
+
+Use the GitHub CLI (`gh`) as the primary interface to GitHub. A sandboxed
+`gh` invocation may report an invalid token or fail to connect even when the
+stored login is valid; when that happens, retry the same read-only command with
+sandbox network access before diagnosing authentication. If `gh` still fails,
+ask the maintainer before switching to the browser, web search, or another
+GitHub interface.
+
 ## Core rule
 
 **A constructed `Recipe` is a declared DAG.** Its `steps` and explicit `InputRef`/`OutputRef` wiring are data that `build_graph()` can validate and render before dispatch. `after` adds an ordering-only edge. `add_loop()` is the deliberately admitted run-time conditional: it unrolls a bounded body while building the recipe, then an already-declared step may short-circuit. Every possible node and edge still exists before execution.
