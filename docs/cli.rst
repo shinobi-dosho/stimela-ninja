@@ -1,6 +1,12 @@
 Command-line interface
 ======================
 
+``ninja state --store DIR export|list|verify|materialize|recover`` manages
+explicit reusable Measurement Set states. All accept ``--json``;
+``verify``/``materialize`` accept ``--representation ID``. ``list`` reports
+metadata only. See :doc:`concepts/states` for syntax, installation, identity,
+ownership, fidelity and recovery contracts.
+
 The ``ninja`` command is the primary way to run cabs and recipes. It takes
 global options followed by a subcommand:
 

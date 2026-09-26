@@ -26,6 +26,15 @@ dependencies = [
 # Structural CASA/MS inspection is explicit and lazy; keep its comparatively
 # specialised binary dependency out of default workflow installations.
 casacore = ["python-casacore>=3.7,<4"]
+state = [
+    "msutils[exact-native] @ git+https://github.com/shinobi-dosho/msutils.git@91675064fbe466369a775286a8e35fccb591d883",
+    "xarray-ms==0.5.8",
+    "xarray==2026.7.0",
+    "arcae==0.5.4",
+    "numcodecs==0.16.5",
+    "zarr==3.1.6; python_version < '3.12'",
+    "zarr==3.3.0; python_version >= '3.12'",
+]
 
 [dependency-groups]
 dev = [
@@ -36,11 +45,10 @@ dev = [
 # Real Measurement Set development and acceptance coverage. Keep this separate
 # from `dev` so ordinary contributors and unsupported platforms retain a light
 # environment, while MS work has one reproducible group that must not silently
-# skip its real-table tests. The pinned xarray-ms/Zarr stack selected by the
-# profile-bounded round-trip experiment will join this group when that work
-# lands.
+# skip its real-table tests. The state extra pins the accepted round-trip stack.
 measurement-set = [
     "python-casacore>=3.7,<4",
+    "stimela-ninja[state]",
 ]
 
 # dosho (the native shinobi cab repository) supplies the real
@@ -96,6 +104,9 @@ ninja = "shinobi.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/shinobi"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.sdist]
 # Anchor patterns to the repo root (leading "/"); unanchored names match at

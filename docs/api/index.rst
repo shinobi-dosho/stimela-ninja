@@ -47,6 +47,31 @@ Supporting types used when defining cabs, not re-exported at the top level.
 Datasets
 --------
 
+.. autoclass:: shinobi.dataset_state.DatasetStateStore
+   :members:
+
+.. py:class:: shinobi.dataset_state.LogicalState
+
+   Strict ``shinobi-logical-state/v1`` manifest: native state ID, native model,
+   hash/profile/structural/closure contracts, and exact-logical fidelity.
+
+.. py:class:: shinobi.dataset_state.StateRepresentation
+
+   Strict ``shinobi-state-representation/v1`` physical inventory, logical
+   bindings, source observation, software versions and export provenance.
+
+.. py:class:: shinobi.dataset_state.StateResult
+
+   State and representation IDs, ``verified`` flag, fidelity, optional native
+   destination and attempt-record path. Provides Pydantic JSON serialization.
+
+.. py:class:: shinobi.dataset_state.StateAttempt
+
+   Versioned durable operation record: ownership, phases, native state,
+   physical representation, staging identities and recovery outcome.
+
+.. autoclass:: shinobi.dataset_state.StateError
+
 .. currentmodule:: shinobi.datasets
 
 .. py:data:: CasaTable

@@ -437,6 +437,29 @@ class JsonFileStore:
             self._unlock(fd)
 
 
+def publish_directory(source: Path, destination: Path) -> None:
+    """Atomically publish a new directory, never replacing an existing entry.
+
+    Linux renameat2 is required. An exists-check followed by rename cannot
+    implement this contract: POSIX rename replaces an existing empty directory.
+    Callers sync the contents before publishing; this syncs both parent entries.
+    """
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(libc, "renameat2", None)
+    if rename is None:
+        raise SharedStorageError("directory publication requires Linux renameat2(RENAME_NOREPLACE)")
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    if rename(-100, os.fsencode(source), -100, os.fsencode(destination), 1):
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(destination))
+    sync_directory(destination.parent)
+    if source.parent != destination.parent:
+        sync_directory(source.parent)
+
+
 class SharedFileLock:
     """A persistent shared-filesystem lock held across a larger operation.
 
