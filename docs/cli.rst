@@ -318,6 +318,8 @@ Run manifests, cache, and sandboxes are selected by default; narrow them with
 default** and require ``--launches``: deleting one does not stop a detached
 job, but destroys ``ninja status``'s local record. ``--workdir DIR`` affects
 only launch discovery; configured run/cache/sandbox paths are unchanged.
+Cleanup refuses any selected target that overlaps ``AppConfig.state.dir``;
+reusable dataset states are never a ``ninja clean`` target.
 
 Cache cleanup resets the manifest and mutation journal while holding their
 exclusive transaction locks, removes snapshot payloads, and deliberately keeps

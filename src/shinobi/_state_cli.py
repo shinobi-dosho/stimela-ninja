@@ -32,16 +32,18 @@ def _run(operation, as_json):
                     click.echo(f"Attempt: {row.attempt}")
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.option("--store", type=click.Path(path_type=Path), help="State store directory (defaults to state.dir).")
 @click.pass_context
 def state(ctx, store):
     """Export, verify and materialize exact-logical local MSv2 states."""
-    config = ctx.find_object(AppConfig) or AppConfig.load()
+    config = ctx.obj or AppConfig.load()
     try:
         ctx.obj = DatasetStateStore(store or config.state.dir, cache_dir=config.cache.dir)
     except StateError as exc:
         raise click.ClickException(str(exc)) from exc
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
 
 
 @state.command("export")

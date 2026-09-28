@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.metadata as metadata
 import json
 import sys
+import threading
 import warnings
 from pathlib import Path
 
@@ -16,6 +17,7 @@ MSUTILS_COMMIT = "91675064fbe466369a775286a8e35fccb591d883"
 ADAPTER = "shinobi-xarray-ms-native/v1"
 MSV4_SCHEMA = "xarray-ms-0.5.8-msv4/v1"
 PACKAGES = ("stimela-ninja", "msutils", "xarray-ms", "xarray", "zarr", "numcodecs", "dask-ms", "arcae", "numpy", "python-casacore", "dask", "pyarrow", "pandas")
+_EXPORT_WARNING_LOCK = threading.Lock()
 
 
 def runtime() -> dict[str, str]:
@@ -24,7 +26,7 @@ def runtime() -> dict[str, str]:
         versions = {name: metadata.version(name) for name in PACKAGES}
         direct = json.loads(metadata.distribution("msutils").read_text("direct_url.json") or "{}")
     except (metadata.PackageNotFoundError, ValueError) as exc:
-        raise ImportError("state operations require the pinned stimela-ninja[state] extra") from exc
+        raise ImportError("state operations require the pinned measurement-set development group") from exc
     required = {
         "msutils": "3.0.0",
         "xarray-ms": "0.5.8",
@@ -35,7 +37,7 @@ def runtime() -> dict[str, str]:
         "zarr": "3.1.6" if sys.version_info < (3, 12) else "3.3.0",
     }
     if any(versions[name] != version for name, version in required.items()) or direct.get("vcs_info", {}).get("commit_id") != MSUTILS_COMMIT:
-        raise ImportError("unqualified state stack: install the pinned stimela-ninja[state] extra (including the msutils commit)")
+        raise ImportError("unqualified state stack: install the pinned measurement-set development group (including the msutils commit)")
     import msutils
 
     if not all(callable(getattr(msutils, name, None)) for name in ("native_logical_id", "capture_native_preservation", "verify_native_preservation", "to_msv2")):
@@ -53,7 +55,9 @@ def export(source: Path, destination: Path) -> list[str]:
     """Export a full MS through xarray-ms; retain irregular-grid/imputation evidence."""
     import xarray as xr
 
-    with warnings.catch_warnings(record=True) as emitted:
+    # warnings.catch_warnings mutates process-global filter state on Python
+    # 3.11, so concurrent exports must not enter it together.
+    with _EXPORT_WARNING_LOCK, warnings.catch_warnings(record=True) as emitted:
         warnings.simplefilter("always")
         with xr.open_datatree(
             source, engine="xarray-ms:msv2", auto_corrs=True, partition_schema=["DATA_DESC_ID", "FIELD_ID"], driver="arcae", driver_kwargs={"cache_size": 64}, chunks={}

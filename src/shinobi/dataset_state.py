@@ -32,6 +32,7 @@ from shinobi.steps.schema import paths_overlap
 LogicalID = Annotated[str, Field(pattern=r"^msutils-logical-hash/v1:[0-9a-f]{64}$")]
 RepresentationID = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
 MAX_METADATA = 64 * 1024 * 1024
+_MSV4_SCHEMA = adapter.MSV4_SCHEMA
 
 
 class StateError(ShinobiError):
@@ -70,7 +71,7 @@ class FileEntry(_Record):
     @classmethod
     def safe_path(cls, value: str) -> str:
         path = PurePosixPath(value)
-        if not value or path.is_absolute() or ".." in path.parts or str(path) != value or "\\" in value:
+        if not value or value == "." or path.is_absolute() or ".." in path.parts or str(path) != value or "\\" in value:
             raise ValueError("ledger paths must be normalized relative POSIX paths")
         return value
 
@@ -96,7 +97,7 @@ class StateRepresentation(_Record):
     payload_id: LogicalID
     preservation_schema: Literal["msutils-native-preservation/v2"] = "msutils-native-preservation/v2"
     adapter: Literal["shinobi-xarray-ms-native/v1"] = adapter.ADAPTER
-    msv4_schema: Literal["xarray-ms-0.5.8-msv4/v1"] = "xarray-ms-0.5.8-msv4/v1"
+    msv4_schema: Literal[_MSV4_SCHEMA] = _MSV4_SCHEMA
     versions: dict[str, str]
     source_spelling: str
     source: Path
@@ -160,6 +161,8 @@ class StateAttempt(_Record):
 def _error(exc: Exception) -> StateError:
     if isinstance(exc, StateError):
         return exc
+    if isinstance(exc, ImportError):
+        return StateError("state-stack", str(exc))
     details = {key: getattr(exc, key) for key in ("table", "column", "row", "reason") if getattr(exc, key, None) is not None}
     return StateError(getattr(exc, "code", "state-operation"), str(exc), details=details)
 
@@ -285,7 +288,10 @@ class DatasetStateStore:
 
     def _representation(self, state_id: str, representation_id: str | None) -> Path:
         state = self._state(state_id)
-        _identity(state)
+        try:
+            _identity(state)
+        except FileNotFoundError as exc:
+            raise StateError("state-not-found", f"no committed state {state_id}") from exc
         directory = state / "representations"
         _identity(directory)
         if representation_id is None:
@@ -584,7 +590,11 @@ class DatasetStateStore:
                 lease.release()
 
     def recover(self, destination: str | Path | None = None) -> list[StateAttempt]:
-        """Settle dead attempts and sweep only their recorded private stage trees."""
+        """Settle dead attempts and sweep only their recorded private stage trees.
+
+        A sweep is all-or-nothing: any live, uncertain or invalid attempt
+        aborts it. Use ``destination`` to recover one target independently.
+        """
         try:
             if destination is not None:
                 spelling = Path(destination).expanduser().absolute()

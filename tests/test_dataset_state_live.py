@@ -14,8 +14,9 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from shinobi import _state_adapter as adapter
-from shinobi.dataset_state import DatasetStateStore, StateAttempt, StateError
+from shinobi.dataset_state import DatasetStateStore, StateAttempt, StateError, StateResult
 from shinobi.ownership import acquire_workspace, inspect_ownership
+from shinobi.snapshots import Chain, Marker, chain_id, get_journal
 from shinobi.storage import JsonFileStore
 
 from ._state_ms import make_state_ms
@@ -55,15 +56,21 @@ def test_exact_round_trip_without_source_and_cli(tmp_path, monkeypatch):
     from shinobi.cli import main
 
     monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "owners.json"))
+    monkeypatch.setenv("SHINOBI_CACHE__DIR", str(tmp_path / "cache"))
     source = make_state_ms(tmp_path / "source.ms")
     store = DatasetStateStore(tmp_path / "store", cache_dir=tmp_path / "cache")
-    exported = store.export(source, block_rows=1)
+    runner = CliRunner()
+    response = runner.invoke(main, ["state", "--store", str(store.root), "export", str(source), "--block-rows", "1", "--json"])
+    assert response.exit_code == 0, response.output
+    exported = StateResult.model_validate_json(response.output)
     assert store.verify(exported.state_id).verified
     physical = store._load(exported.state_id)[2]
     assert any("IrregularBaselineGrid" in item for item in physical.export_warnings)
     assert physical.zarr_metadata
     source.rename(tmp_path / "hidden.ms")
-    result = store.materialize(exported.state_id, tmp_path / "created.ms")
+    response = runner.invoke(main, ["state", "--store", str(store.root), "materialize", exported.state_id, str(tmp_path / "created.ms"), "--json"])
+    assert response.exit_code == 0, response.output
+    result = StateResult.model_validate_json(response.output)
     assert result.fidelity == "exact-logical" and not result.physical_restoration
     assert adapter.native_id(tmp_path / "created.ms") == exported.state_id
     for name in ("DATA", "WEIGHT", "SIGMA", "FLAG_ROW", "TIME", "ANTENNA1", "ANTENNA2"):
@@ -74,9 +81,11 @@ def test_exact_round_trip_without_source_and_cli(tmp_path, monkeypatch):
     assert attempt.phase == "committed" and attempt.finished
     assert not attempt.stage.exists()
     assert inspect_ownership(tmp_path, str(attempt.attempt_id)).liveness == "free"
-    response = CliRunner().invoke(main, ["state", "--store", str(store.root), "verify", exported.state_id, "--json"])
+    response = runner.invoke(main, ["state", "--store", str(store.root), "verify", exported.state_id, "--json"])
     assert response.exit_code == 0, response.output
     assert json.loads(response.output)["verified"]
+    response = runner.invoke(main, ["state", "--store", str(store.root), "recover", "--json"])
+    assert response.exit_code == 0 and json.loads(response.output) == []
 
 
 def test_different_layout_same_native_state(tmp_path, monkeypatch):
@@ -87,6 +96,7 @@ def test_different_layout_same_native_state(tmp_path, monkeypatch):
     second = store.export(source, block_rows=3)
     assert first.state_id == second.state_id
     assert first.representation_id != second.representation_id
+    assert store._load(first.state_id)[0].name == min(first.representation_id, second.representation_id).split(":")[1]
     assert len(store.list()) == 2 and all(not item.verified for item in store.list())
     assert store._load(first.state_id, first.representation_id)[2].payload_id == store._load(second.state_id, second.representation_id)[2].payload_id
     assert store.verify(second.state_id, second.representation_id).verified
@@ -95,6 +105,73 @@ def test_different_layout_same_native_state(tmp_path, monkeypatch):
     with table(str(source), readonly=False, ack=False) as main:
         main.putcell("SCAN_NUMBER", 0, 7)
     assert adapter.native_id(source) != first.state_id
+
+
+def test_targeted_stack_mismatch_reports_stack_version(state, monkeypatch):
+    _, store, result = state
+    qualified = adapter.runtime()
+    monkeypatch.setattr(adapter, "runtime", lambda: {**qualified, "zarr": "0.0"})
+
+    with pytest.raises(StateError) as raised:
+        store.verify(result.state_id)
+
+    assert raised.value.code == "stack-version"
+
+
+def test_missing_stack_and_state_have_stable_codes(state, monkeypatch):
+    _, store, result = state
+
+    def missing_stack():
+        raise ImportError("missing qualified stack")
+
+    monkeypatch.setattr(adapter, "runtime", missing_stack)
+    with pytest.raises(StateError) as raised:
+        store.verify(result.state_id)
+    assert raised.value.code == "state-stack"
+
+    missing = "msutils-logical-hash/v1:" + "f" * 64
+    with pytest.raises(StateError) as raised:
+        store._representation(missing, None)
+    assert raised.value.code == "state-not-found"
+
+
+def test_list_refuses_invalid_metadata(state):
+    _, store, result = state
+    rep, _, _ = store._load(result.state_id)
+    (rep / "representation.json").write_text("{}")
+
+    with pytest.raises(StateError) as raised:
+        store.list()
+
+    assert raised.value.code == "schema-version"
+
+
+def test_argument_and_storage_overlap_refusals(state, tmp_path):
+    _, store, result = state
+    with pytest.raises(StateError) as raised:
+        store.export(store.root, block_rows=1)
+    assert raised.value.code == "source-overlap"
+    with pytest.raises(StateError) as raised:
+        store.export(tmp_path / "absent.ms", block_rows=0)
+    assert raised.value.code == "block-rows"
+    with pytest.raises(StateError) as raised:
+        store.materialize(result.state_id, tmp_path / "target.ms", fidelity="physical")
+    assert raised.value.code == "fidelity"
+
+
+def test_pending_mutation_refuses_export(state):
+    source, store, _ = state
+    info = source.stat()
+    marker = Marker(step_path="pipe.flag", field="ms", cache_key=None, run_id="interrupted", started_at=0.0)
+    get_journal(str(store.cache_dir)).update_chain(
+        chain_id(source),
+        lambda _old: Chain(dev=info.st_dev, ino=info.st_ino, ctime_ns=info.st_ctime_ns, path=str(source), marker=marker),
+    )
+
+    with pytest.raises(StateError) as raised:
+        store.export(source)
+
+    assert raised.value.code == "pending-mutation"
 
 
 @pytest.mark.parametrize("damage", ["chunk", "missing", "extra", "extra-directory", "symlink", "manifest-version", "missing-version", "adapter", "stack", "ledger-path"])

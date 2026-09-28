@@ -5,7 +5,7 @@ Reusable Measurement Set states
 store and creates a fresh runnable MSv2 from it later. It is separate from
 the skip cache and Tier 1 snapshots. Recipes and workers cannot consume
 state IDs in v1; automatic capacity tiers, GC and lossy states remain deferred.
-Install with ``uv sync --group measurement-set`` or the ``state`` extra.
+Install from a source checkout with ``uv sync --group measurement-set``.
 Ordinary imports, help and metadata listing keep optional libraries unloaded.
 
 .. code-block:: console
@@ -52,7 +52,9 @@ are JSON text, preserving non-finite fill values without normalization.
 
 Manifests reject unknown fields/contracts. Reopening requires the exact
 recorded runtime stack and pinned msutils commit, not only nominal version
-3.0.0. There is no implicit migration. The MSv4 adapter contract identifies
+3.0.0. There is no implicit migration: recovery of a published-but-uncommitted
+attempt also needs its original stack, so settle attempts before upgrading.
+The MSv4 adapter contract identifies
 xarray-ms 0.5.8's schema; no universal upstream schema version is invented.
 Verification reads every physical file and both logical trees. This is
 integrity, not authentication, for caller-owned local stores.
@@ -89,6 +91,9 @@ Live/uncertain owners or mismatched directory identities refuse. A crash
 between stage creation and recording its inode also refuses
 automatic deletion. Same-target materialization recovers prior unpublished
 dead attempts; already published destinations require explicit recovery.
+An unqualified recovery sweep is all-or-nothing: one live, uncertain or
+invalid attempt aborts the sweep. Use ``--destination`` to settle an unrelated
+target independently.
 
 v1 is qualified for local Linux and cooperative ownership. Out-of-band writers,
 hostile path replacement, network-filesystem/worker qualification are outside

@@ -5,9 +5,13 @@ from __future__ import annotations
 
 def make_state_ms(path, *, set_category=True):
     import numpy as np
-    from casacore.tables import default_ms, makearrcoldesc, maketabdesc, table
+    import pytest
+    from casacore import tables
 
-    with default_ms(str(path), maketabdesc([makearrcoldesc("DATA", 0j, shape=[4, 4], valuetype="complex")])) as main:
+    if not hasattr(tables, "default_ms"):  # pragma: no cover - depends on installed build
+        pytest.skip("installed python-casacore has no default_ms fixture builder")
+
+    with tables.default_ms(str(path), tables.maketabdesc([tables.makearrcoldesc("DATA", 0j, shape=[4, 4], valuetype="complex")])) as main:
         main.addrows(6)
         for name in ("ARRAY_ID", "OBSERVATION_ID", "PROCESSOR_ID", "FEED1", "FEED2", "DATA_DESC_ID", "FIELD_ID", "STATE_ID", "ANTENNA1"):
             main.putcol(name, np.zeros(6, np.int32))
@@ -29,7 +33,7 @@ def make_state_ms(path, *, set_category=True):
         main.putkeyword("SHINOBI_FIXTURE_PROFILE", "six-row-fixed")
 
     def fill(name, rows):
-        with table(str(path / name), readonly=False, ack=False) as tab:
+        with tables.table(str(path / name), readonly=False, ack=False) as tab:
             tab.addrows(len(rows))
             for index, row in enumerate(rows):
                 for key, value in row.items():

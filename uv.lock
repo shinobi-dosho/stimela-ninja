@@ -1664,15 +1664,6 @@ dependencies = [
 casacore = [
     { name = "python-casacore" },
 ]
-state = [
-    { name = "arcae" },
-    { name = "msutils", extra = ["exact-native"] },
-    { name = "numcodecs" },
-    { name = "xarray" },
-    { name = "xarray-ms" },
-    { name = "zarr", version = "3.1.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "zarr", version = "3.3.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-]
 
 [package.dev-dependencies]
 audit = [
@@ -1693,28 +1684,27 @@ examples = [
     { name = "dosho" },
 ]
 measurement-set = [
+    { name = "arcae" },
+    { name = "msutils", extra = ["exact-native"] },
+    { name = "numcodecs" },
     { name = "python-casacore" },
-    { name = "stimela-ninja", extra = ["state"] },
+    { name = "xarray" },
+    { name = "xarray-ms" },
+    { name = "zarr", version = "3.1.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "zarr", version = "3.3.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "arcae", marker = "extra == 'state'", specifier = "==0.5.4" },
     { name = "click", specifier = ">=8.1" },
-    { name = "msutils", extras = ["exact-native"], marker = "extra == 'state'", git = "https://github.com/shinobi-dosho/msutils.git?rev=91675064fbe466369a775286a8e35fccb591d883" },
-    { name = "numcodecs", marker = "extra == 'state'", specifier = "==0.16.5" },
     { name = "packaging", specifier = ">=23" },
     { name = "pydantic", specifier = ">=2.12" },
     { name = "pydantic-settings", specifier = ">=2.2" },
     { name = "python-casacore", marker = "extra == 'casacore'", specifier = ">=3.7,<4" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.7" },
-    { name = "xarray", marker = "extra == 'state'", specifier = "==2026.7.0" },
-    { name = "xarray-ms", marker = "extra == 'state'", specifier = "==0.5.8" },
-    { name = "zarr", marker = "python_full_version >= '3.12' and extra == 'state'", specifier = "==3.3.0" },
-    { name = "zarr", marker = "python_full_version < '3.12' and extra == 'state'", specifier = "==3.1.6" },
 ]
-provides-extras = ["casacore", "state"]
+provides-extras = ["casacore"]
 
 [package.metadata.requires-dev]
 audit = [{ name = "pip-audit", specifier = ">=2.7" }]
@@ -1730,8 +1720,14 @@ docs = [
 ]
 examples = [{ name = "dosho" }]
 measurement-set = [
+    { name = "arcae", specifier = "==0.5.4" },
+    { name = "msutils", extras = ["exact-native"], git = "https://github.com/shinobi-dosho/msutils.git?rev=91675064fbe466369a775286a8e35fccb591d883" },
+    { name = "numcodecs", specifier = "==0.16.5" },
     { name = "python-casacore", specifier = ">=3.7,<4" },
-    { name = "stimela-ninja", extras = ["state"] },
+    { name = "xarray", specifier = "==2026.7.0" },
+    { name = "xarray-ms", specifier = "==0.5.8" },
+    { name = "zarr", marker = "python_full_version < '3.12'", specifier = "==3.1.6" },
+    { name = "zarr", marker = "python_full_version >= '3.12'", specifier = "==3.3.0" },
 ]
 
 [[package]]

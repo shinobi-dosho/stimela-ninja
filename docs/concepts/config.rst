@@ -44,6 +44,8 @@ Settings
       content_sample: false       # sample file extents into boundary fingerprints
       snapshots:
         mode: auto                # auto | copy | off -- mutation-chain snapshots
+    state:
+      dir: ".shinobi/states"      # reusable MSv2 state store (separate from cache)
     provenance:
       enabled: false              # image pinning + run manifests, off by default
       dir: ".shinobi/runs"        # where run manifests are written
