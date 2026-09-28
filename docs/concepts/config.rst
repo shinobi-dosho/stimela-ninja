@@ -44,6 +44,8 @@ Settings
       content_sample: false       # sample file extents into boundary fingerprints
       snapshots:
         mode: auto                # auto | copy | off -- mutation-chain snapshots
+    state:
+      dir: ".shinobi/states"      # reusable MSv2 state store (separate from cache)
     provenance:
       enabled: false              # image pinning + run manifests, off by default
       dir: ".shinobi/runs"        # where run manifests are written
@@ -156,6 +158,11 @@ ceiling, generous and independent of these two.
 Programmatic runs never write a log file (shinobi's modules only emit
 through the ``shinobi.*`` logger hierarchy); attach your own handler to
 ``logging.getLogger("shinobi")`` instead.
+
+``state.dir`` (default ``.shinobi/states``) selects the explicit reusable
+Measurement Set state store. ``ninja state --store DIR`` overrides it.
+It must not overlap ``cache.dir`` and is independent of skip-cache
+invalidation, eviction and cleanup; see :doc:`states`.
 
 ``cache.enabled`` turns on step-level result caching: a step with an
 unchanged cache key is skipped and its prior result reused. It's off by

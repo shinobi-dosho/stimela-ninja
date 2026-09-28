@@ -1,5 +1,11 @@
 # Step caching beyond skip-if-unchanged: mutation-chain snapshots
 
+The separate explicit `ninja state` facility now exports contained MSv2 data
+through xarray-ms and msutils preservation v2, verifies immutable manifests,
+and materializes fresh MSv2 destinations. See `docs/concepts/states.rst`.
+It does not implement Appendix A's automatic capacity-store/GC integration;
+that Tier 2 design remains deferred.
+
 **Status:** v9 — **Tier 1 local and detached-worker recovery implemented.** Supersedes v8 (and v7 through v1)
 **Context:** step-level caching for shinobi (radio-interferometry pipeline framework)
 

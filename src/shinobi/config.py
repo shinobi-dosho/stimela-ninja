@@ -119,6 +119,12 @@ class CacheConfig(BaseModel):
     content_sample: bool = False
 
 
+class StateConfig(BaseModel):
+    """Explicit reusable dataset state storage, independent of step caching."""
+
+    dir: str = ".shinobi/states"
+
+
 class LogConfig(BaseModel):
     """Settings controlling logging and live output streaming."""
 
@@ -241,6 +247,7 @@ class AppConfig(BaseSettings):
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     log: LogConfig = Field(default_factory=LogConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
+    state: StateConfig = Field(default_factory=StateConfig)
     provenance: ProvenanceConfig = Field(default_factory=ProvenanceConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 

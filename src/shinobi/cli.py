@@ -13,6 +13,7 @@ from pathlib import Path
 import click
 
 import shinobi
+from shinobi._state_cli import state
 from shinobi.backends import registered_backend_names
 from shinobi.backends._stream import TeardownIncomplete, install_signal_handlers, terminate_all
 from shinobi.clickutil import build_options, unflatten_kwargs
@@ -35,7 +36,7 @@ from shinobi.offload import (
 from shinobi.policies import build_argv
 from shinobi.storage import SharedStorageError
 from shinobi.steps.dispatch import _dispatch, _prepare_inputs
-from shinobi.steps.schema import Recipe, Scope, StepRef
+from shinobi.steps.schema import Recipe, Scope, StepRef, paths_overlap
 
 
 @click.group()
@@ -904,6 +905,13 @@ def clean(ctx: click.Context, runs: bool, cache: bool, sandboxes: bool, launches
     if not runs and not cache and not sandboxes and not launches:
         raise click.ClickException("nothing selected: pass --runs/--cache/--sandboxes/--launches")
 
+    state_root = Path(config.state.dir).expanduser().resolve()
+    if state_root.exists():
+        for label, path in targets:
+            canonical = path.expanduser().resolve()
+            if paths_overlap(state_root, canonical):
+                raise click.ClickException(f"refusing to clean {label}: {canonical} overlaps reusable state storage {state_root}")
+
     # Resolved before anything is cleared: the list is derived from the chain
     # journal whose contents are part of that reset.
     pending = _unreconciled_trash(config) if cache else []
@@ -1521,6 +1529,9 @@ def download(cult_cargo: bool, dest_dir: str, version: str) -> None:
     click.echo(f"Downloaded cult-cargo {result['version']}")
     click.echo(f"  Files: {result['file_count']}")
     click.echo(f"  Destination: {result['dest_dir']}")
+
+
+main.add_command(state)
 
 
 if __name__ == "__main__":

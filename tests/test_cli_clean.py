@@ -78,6 +78,22 @@ def test_clean_missing_dirs_is_graceful(tmp_path, monkeypatch):
     assert "nothing at" in result.output
 
 
+def test_clean_refuses_target_overlapping_reusable_state_store(tmp_path, monkeypatch):
+    state = tmp_path / "shared" / "states"
+    state.mkdir(parents=True)
+    (state / "keep").write_text("state")
+    monkeypatch.setenv("SHINOBI_STATE__DIR", str(state))
+    monkeypatch.setenv("SHINOBI_CACHE__DIR", str(tmp_path / "shared"))
+    monkeypatch.setenv("SHINOBI_PROVENANCE__DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(tmp_path / "work"))
+
+    result = CliRunner().invoke(main, ["clean", "--no-runs", "--no-sandboxes"])
+
+    assert result.exit_code != 0
+    assert "overlaps reusable state storage" in result.output
+    assert (state / "keep").read_text() == "state"
+
+
 def test_clean_waits_for_metadata_transaction_and_preserves_lock_domain(tmp_path, monkeypatch):
     _runs, cache = _seed(tmp_path, monkeypatch)
     manifest = CacheManifest(cache / "manifest.json")

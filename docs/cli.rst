@@ -1,6 +1,12 @@
 Command-line interface
 ======================
 
+``ninja state --store DIR export|list|verify|materialize|recover`` manages
+explicit reusable Measurement Set states. All accept ``--json``;
+``verify``/``materialize`` accept ``--representation ID``. ``list`` reports
+metadata only. See :doc:`concepts/states` for syntax, installation, identity,
+ownership, fidelity and recovery contracts.
+
 The ``ninja`` command is the primary way to run cabs and recipes. It takes
 global options followed by a subcommand:
 
@@ -312,6 +318,8 @@ Run manifests, cache, and sandboxes are selected by default; narrow them with
 default** and require ``--launches``: deleting one does not stop a detached
 job, but destroys ``ninja status``'s local record. ``--workdir DIR`` affects
 only launch discovery; configured run/cache/sandbox paths are unchanged.
+Cleanup refuses any selected target that overlaps ``AppConfig.state.dir``;
+reusable dataset states are never a ``ninja clean`` target.
 
 Cache cleanup resets the manifest and mutation journal while holding their
 exclusive transaction locks, removes snapshot payloads, and deliberately keeps

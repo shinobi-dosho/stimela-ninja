@@ -80,6 +80,7 @@ and :doc:`offloading`.
    concepts/config
    concepts/results
    concepts/datasets
+   concepts/states
    concepts/provenance
    concepts/sandbox
 

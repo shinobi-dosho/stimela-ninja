@@ -1,6 +1,9 @@
 CASA and MeasurementSet declarations
 ====================================
 
+Explicit reusable MSv4/Zarr export and fresh native reconstruction are
+documented in :doc:`states`. Stored IDs are not recipe dataset inputs in v1.
+
 ``CasaTable`` and ``MeasurementSetV2`` are explicit, versioned annotations
 for dataset paths:
 
