@@ -2,7 +2,7 @@
 
 `shinobi.offload.ssh` launches `ninja run` on a remote host, and `--venv
 sync` lets it *provision* the environment it launches into rather than
-hoping someone left one at `venv/` (see `docs/design_remote_venv.md`).
+hoping someone left one at `venv/` (see `docs/offloading.rst`).
 This module is the half of that with no side effects: it names an
 environment from its inputs, reads back the one piece of evidence that such
 an environment was fully built, and builds -- as strings -- the commands
@@ -390,9 +390,8 @@ def sentinel_path(remote_path: str, env_id_: str) -> str:
 def staging_dir(remote_path: str, token: str) -> str:
     """Where an in-progress provision lives, before it earns its name.
 
-    The `.partial-` prefix is the convention the snapshot writer already uses
-    (`design_cache_tiers.md` §9), and the leading dot keeps it out of a glob
-    over finished environments.
+    The `.partial-` prefix marks an unpublished staging directory, and the
+    leading dot keeps it out of a glob over finished environments.
     """
     return f"{remote_path}/{VENVS_SUBDIR}/.partial-{token}"
 
