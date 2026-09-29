@@ -70,6 +70,13 @@ Datasets
    Versioned durable operation record: ownership, phases, native state,
    physical representation, staging identities and recovery outcome.
 
+.. py:class:: shinobi.dataset_state.StateProvenance
+
+   Closed logical-state, representation, mapping, reconstruction, fidelity and
+   decision evidence embedded by state-attempt schema v2.
+
+.. autofunction:: shinobi.dataset_state.read_state_attempt
+
 .. autoclass:: shinobi.dataset_state.StateError
 
 .. currentmodule:: shinobi.datasets

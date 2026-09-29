@@ -120,6 +120,16 @@ It freezes the resolved run as a tree of steps:
       "pinned": true
     }
 
+Reusable Measurement Set state provenance is a separate durable record because
+the immutable state store, skip cache, native mutation snapshots and run
+manifest have different identities and lifetimes.  State export and
+materialization write a versioned attempt whose nested closed provenance binds
+the native logical state, selected MSv4/Zarr representation, mapping and schema
+profiles, software stack, reconstruction sidecar, evidence coverage and exact
+fidelity decision.  See :doc:`states`.  Recipes cannot consume state IDs in the
+current profile, so ordinary run replay never substitutes a stored state for a
+recorded path.
+
 A recipe's sub-steps appear, in declaration order, under ``steps``.
 
 ``pinned``

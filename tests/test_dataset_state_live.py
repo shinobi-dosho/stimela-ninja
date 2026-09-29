@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from shinobi import _state_adapter as adapter
-from shinobi.dataset_state import DatasetStateStore, StateAttempt, StateError, StateResult
+from shinobi.dataset_state import DatasetStateStore, StateAttempt, StateError, StateResult, read_state_attempt
 from shinobi.ownership import acquire_workspace, inspect_ownership
 from shinobi.snapshots import Chain, Marker, chain_id, get_journal
 from shinobi.storage import JsonFileStore
@@ -65,6 +65,19 @@ def test_exact_round_trip_without_source_and_cli(tmp_path, monkeypatch):
     exported = StateResult.model_validate_json(response.output)
     assert store.verify(exported.state_id).verified
     physical = store._load(exported.state_id)[2]
+    export_attempt = read_state_attempt(exported.attempt)
+    assert export_attempt.schema_version == "shinobi-state-attempt/v2"
+    assert export_attempt.provenance is not None
+    assert export_attempt.provenance.cache_decision == "store-requested"
+    assert export_attempt.provenance.materialization_decision == "not-requested"
+    assert export_attempt.provenance.replay_decision == "not-requested"
+    assert export_attempt.provenance.state_id == exported.state_id
+    assert export_attempt.provenance.representation_id == exported.representation_id
+    assert export_attempt.provenance.msv4_id == physical.msv4_id
+    assert export_attempt.provenance.payload_id == physical.payload_id
+    assert export_attempt.provenance.mapping_profile == adapter.ADAPTER
+    assert export_attempt.provenance.msv4_schema == adapter.MSV4_SCHEMA
+    assert export_attempt.provenance.producer_versions == physical.versions
     assert any("IrregularBaselineGrid" in item for item in physical.export_warnings)
     assert physical.zarr_metadata
     source.rename(tmp_path / "hidden.ms")
@@ -77,8 +90,14 @@ def test_exact_round_trip_without_source_and_cli(tmp_path, monkeypatch):
         with table(str(tmp_path / "hidden.ms"), ack=False) as original, table(str(result.destination), ack=False) as restored:
             np.testing.assert_array_equal(original.getcol(name), restored.getcol(name))
             assert original.getcolkeywords(name) == restored.getcolkeywords(name)
-    attempt = StateAttempt.model_validate(JsonFileStore(result.attempt).read())
+    attempt = read_state_attempt(result.attempt)
     assert attempt.phase == "committed" and attempt.finished
+    assert attempt.provenance is not None
+    assert attempt.provenance.cache_decision == "selected-representation"
+    assert attempt.provenance.materialization_decision == "validated"
+    assert attempt.provenance.replay_decision == "validated"
+    assert attempt.provenance.requested_fidelity == attempt.provenance.actual_fidelity == "exact-logical"
+    assert attempt.provenance.transformation_decision == "not-requested"
     assert not attempt.stage.exists()
     assert inspect_ownership(tmp_path, str(attempt.attempt_id)).liveness == "free"
     response = runner.invoke(main, ["state", "--store", str(store.root), "verify", exported.state_id, "--json"])
@@ -116,6 +135,19 @@ def test_targeted_stack_mismatch_reports_stack_version(state, monkeypatch):
         store.verify(result.state_id)
 
     assert raised.value.code == "stack-version"
+    with pytest.raises(StateError) as raised:
+        store.materialize(result.state_id, store.root.parent / "target.ms")
+    assert raised.value.code == "stack-version"
+    attempts = [read_state_attempt(path) for path in (store.root / "attempts").glob("*.json")]
+    assert len(attempts) == 1
+    attempt = attempts[0]
+    assert attempt.phase == "refused" and attempt.finished
+    assert attempt.versions == {**qualified, "zarr": "0.0"}
+    assert attempt.provenance is not None
+    assert attempt.provenance.producer_versions == qualified
+    assert attempt.provenance.actual_fidelity is None
+    assert attempt.provenance.materialization_decision == "requested"
+    assert attempt.provenance.replay_decision == "requested"
 
 
 def test_missing_stack_and_state_have_stable_codes(state, monkeypatch):
@@ -207,6 +239,12 @@ def test_corrupt_and_incompatible_state_refuses_before_write(state, tmp_path, da
         store.materialize(result.state_id, tmp_path / "target.ms")
     assert not (tmp_path / "target.ms").exists()
     assert not list(tmp_path.glob(".shinobi-state-*"))
+    attempts = [read_state_attempt(path) for path in (store.root / "attempts").glob("*.json")]
+    assert len(attempts) == 1 and attempts[0].phase == "refused" and attempts[0].finished
+    if attempts[0].provenance is not None:
+        assert attempts[0].provenance.actual_fidelity is None
+        assert attempts[0].provenance.materialization_decision == "requested"
+        assert attempts[0].provenance.replay_decision == "requested"
 
 
 @pytest.mark.parametrize("target_kind", ["empty", "nonempty", "file", "symlink", "dangling", "source", "inside-store", "above-store", "source-alias"])

@@ -80,8 +80,34 @@ There is no overwrite. msutils runs inside a recorded outer stage;
 independent validation and content sync precede Linux
 ``renameat2(RENAME_NOREPLACE)`` publication. A racing empty directory survives.
 
-``shinobi-state-attempt/v1`` records IDs, versions, fidelity, phase events,
-staging/parent/candidate identities and outcome. Recovery uses persistent
+New operations write ``shinobi-state-attempt/v2``.  In addition to IDs,
+versions, phase events, staging/parent/candidate identities and outcome, each
+committed attempt embeds closed ``shinobi-state-provenance/v1`` evidence.  It
+keeps the native logical, MSv4, preservation-payload and representation IDs
+separate; names the MSv2/closure/mapping/MSv4 profiles and complete software
+stack; records exact-logical requested and actual fidelity; and identifies the
+managed native-Zarr preservation sidecar and complete evidence coverage.
+Closed cache, materialization, replay and transformation decisions distinguish
+``store-requested`` from ``selected-representation``, requested work from
+validated reconstruction, and explicit ``not-requested`` behavior.  Producer
+and replay-runtime stacks remain separate and each complete stack contains the
+exact qualified package-key set plus the pinned msutils commit.  Actual fidelity
+is absent until reconstruction validates; a refused or failed request cannot
+claim successful exact replay.  Legacy
+``shinobi-state-attempt/v1`` recovery records remain readable.
+
+Materialization is the reusable-state replay path in v1.  Before writing, it
+strictly reopens the selected representation and rejects different MSv2,
+closure, mapping, MSv4 or preservation profiles, any software-stack mismatch,
+and any fidelity other than exact-logical.  Recipes and detached workers still
+cannot consume state IDs; run-manifest replay therefore cannot silently select
+or downgrade a reusable state.
+
+Use ``read_state_attempt(result.attempt)`` to validate the authoritative synced
+attempt record.  Preflight refusals after the destination parent and store are
+available are durable ``refused`` attempts with the raw requested state,
+representation and fidelity; operational failures remain distinct ``failed``
+attempts. Recovery uses persistent
 operation locks and ownership liveness, never PID age or broad globs. It
 removes only recorded private staging. After a crash following publication,
 it recognizes the candidate inode, revalidates and records success rather
