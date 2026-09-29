@@ -38,18 +38,10 @@ extensions = [
 ]
 
 templates_path = ["_templates"]
-# The design_*.md files are internal design scratch, not user-facing docs --
-# they record how a feature was argued into existence, and the user-facing
-# half lives under concepts/ once it ships. Excluded rather than left out of
-# a toctree, which is what "document isn't included in any toctree" means
-# under `sphinx-build -W`.
 exclude_patterns = [
     "_build",
     "Thumbs.db",
     ".DS_Store",
-    "design_sandbox.md",
-    "design_cache_tiers.md",
-    "design_remote_venv.md",
 ]
 
 # Every cross-reference in this build resolves, so missing ones are reported
