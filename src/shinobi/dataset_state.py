@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from shinobi import _state_adapter as adapter
 from shinobi.dataset_lifecycle import DatasetObservation, member_fingerprint, observe_dataset, structural_signature
@@ -33,6 +33,43 @@ LogicalID = Annotated[str, Field(pattern=r"^msutils-logical-hash/v1:[0-9a-f]{64}
 RepresentationID = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
 MAX_METADATA = 64 * 1024 * 1024
 _MSV4_SCHEMA = adapter.MSV4_SCHEMA
+NativeModel = Literal["msutils-native-model/v1"]
+LogicalHash = Literal["msutils-logical-hash/v1"]
+StateProfile = Literal["fixed-shape-defined-or-empty/v1"]
+StructuralProfile = Literal["msv2-structural/v1"]
+ClosureProfile = Literal["msv2-dataset-closure/v1"]
+StateFidelity = Literal["exact-logical"]
+MappingProfile = Literal["shinobi-xarray-ms-native/v1"]
+PreservationSchema = Literal["msutils-native-preservation/v2"]
+StateEvidence = Literal[
+    "native-logical-id",
+    "msv4-logical-id",
+    "payload-logical-id",
+    "structural-signature",
+    "physical-inventory",
+    "zarr-metadata",
+]
+_STATE_EVIDENCE: tuple[StateEvidence, ...] = (
+    "native-logical-id",
+    "msv4-logical-id",
+    "payload-logical-id",
+    "structural-signature",
+    "physical-inventory",
+    "zarr-metadata",
+)
+
+
+def _complete_state_stack(value: dict[str, str]) -> dict[str, str]:
+    required = {*adapter.PACKAGES, "msutils_commit"}
+    if set(value) != required:
+        missing, extra = sorted(required - set(value)), sorted(set(value) - required)
+        raise ValueError(f"state stack keys disagree with the qualified contract (missing={missing}, extra={extra})")
+    if any(not version for version in value.values()):
+        raise ValueError("state stack versions must be non-empty")
+    return value
+
+
+StateStack = Annotated[dict[str, str], AfterValidator(_complete_state_stack)]
 
 
 class StateError(ShinobiError):
@@ -53,12 +90,12 @@ class LogicalState(_Record):
 
     schema_version: Literal["shinobi-logical-state/v1"] = "shinobi-logical-state/v1"
     state_id: LogicalID
-    native_model: Literal["msutils-native-model/v1"] = "msutils-native-model/v1"
-    hash_algorithm: Literal["msutils-logical-hash/v1"] = "msutils-logical-hash/v1"
-    profile: Literal["fixed-shape-defined-or-empty/v1"] = "fixed-shape-defined-or-empty/v1"
-    structural_profile: Literal["msv2-structural/v1"] = "msv2-structural/v1"
-    closure_profile: Literal["msv2-dataset-closure/v1"] = "msv2-dataset-closure/v1"
-    fidelity: Literal["exact-logical"] = "exact-logical"
+    native_model: NativeModel = "msutils-native-model/v1"
+    hash_algorithm: LogicalHash = "msutils-logical-hash/v1"
+    profile: StateProfile = "fixed-shape-defined-or-empty/v1"
+    structural_profile: StructuralProfile = "msv2-structural/v1"
+    closure_profile: ClosureProfile = "msv2-dataset-closure/v1"
+    fidelity: StateFidelity = "exact-logical"
 
 
 class FileEntry(_Record):
@@ -95,10 +132,10 @@ class StateRepresentation(_Record):
     state_id: LogicalID
     msv4_id: LogicalID
     payload_id: LogicalID
-    preservation_schema: Literal["msutils-native-preservation/v2"] = "msutils-native-preservation/v2"
-    adapter: Literal["shinobi-xarray-ms-native/v1"] = adapter.ADAPTER
+    preservation_schema: PreservationSchema = "msutils-native-preservation/v2"
+    adapter: MappingProfile = adapter.ADAPTER
     msv4_schema: Literal[_MSV4_SCHEMA] = _MSV4_SCHEMA
-    versions: dict[str, str]
+    versions: StateStack
     source_spelling: str
     source: Path
     observation: DatasetObservation
@@ -126,15 +163,94 @@ class StateRepresentation(_Record):
 class StateResult(_Record):
     state_id: LogicalID
     representation_id: RepresentationID
-    fidelity: Literal["exact-logical"] = "exact-logical"
+    fidelity: StateFidelity = "exact-logical"
     physical_restoration: Literal[False] = False
     verified: bool
     destination: Path | None = None
     attempt: Path | None = None
 
 
+class StateProvenance(_Record):
+    """Closed reusable-state evidence attached to one state operation.
+
+    The representation manifest remains the authoritative physical inventory;
+    this deliberately small record freezes the compatibility and fidelity
+    decision needed to interpret an attempt without conflating the logical
+    state, its selected representation, or the native reconstruction sidecar.
+    """
+
+    schema_version: Literal["shinobi-state-provenance/v1"] = "shinobi-state-provenance/v1"
+    state_id: LogicalID
+    representation_id: RepresentationID
+    msv4_id: LogicalID
+    payload_id: LogicalID
+    native_model: NativeModel = "msutils-native-model/v1"
+    hash_algorithm: LogicalHash = "msutils-logical-hash/v1"
+    profile: StateProfile = "fixed-shape-defined-or-empty/v1"
+    structural_profile: StructuralProfile = "msv2-structural/v1"
+    closure_profile: ClosureProfile = "msv2-dataset-closure/v1"
+    mapping_profile: MappingProfile = adapter.ADAPTER
+    msv4_schema: Literal[_MSV4_SCHEMA] = _MSV4_SCHEMA
+    preservation_schema: PreservationSchema = "msutils-native-preservation/v2"
+    producer_versions: StateStack
+    requested_fidelity: StateFidelity = "exact-logical"
+    actual_fidelity: StateFidelity | None = None
+    physical_restoration: Literal[False] = False
+    reconstruction: Literal["native-zarr-preservation-sidecar/v2"] = "native-zarr-preservation-sidecar/v2"
+    cache_decision: Literal["store-requested", "selected-representation"]
+    materialization_decision: Literal["not-requested", "requested", "validated"]
+    replay_decision: Literal["not-requested", "requested", "validated"]
+    transformation_decision: Literal["not-requested"] = "not-requested"
+    structural_signature: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence: tuple[StateEvidence, ...] = _STATE_EVIDENCE
+
+    @classmethod
+    def from_representation(
+        cls,
+        representation: "StateRepresentation",
+        *,
+        operation: Literal["export", "materialize"],
+    ) -> "StateProvenance":
+        export = operation == "export"
+        return cls(
+            state_id=representation.state_id,
+            representation_id=representation.representation_id,
+            msv4_id=representation.msv4_id,
+            payload_id=representation.payload_id,
+            mapping_profile=representation.adapter,
+            msv4_schema=representation.msv4_schema,
+            preservation_schema=representation.preservation_schema,
+            producer_versions=representation.versions,
+            actual_fidelity="exact-logical" if export else None,
+            cache_decision="store-requested" if export else "selected-representation",
+            materialization_decision="not-requested" if export else "requested",
+            replay_decision="not-requested" if export else "requested",
+            structural_signature=representation.structural_signature,
+        )
+
+    def validated_replay(self) -> "StateProvenance":
+        """Record proven reconstruction separately from its earlier request."""
+
+        if self.materialization_decision != "requested" or self.replay_decision != "requested":
+            raise ValueError("only a requested materialization/replay can become validated")
+        return type(self).model_validate(
+            {
+                **self.model_dump(),
+                "actual_fidelity": "exact-logical",
+                "materialization_decision": "validated",
+                "replay_decision": "validated",
+            }
+        )
+
+    @model_validator(mode="after")
+    def complete_evidence(self):
+        if self.evidence != _STATE_EVIDENCE:
+            raise ValueError("exact reusable-state provenance requires complete, unique evidence coverage")
+        return self
+
+
 class StateAttempt(_Record):
-    schema_version: Literal["shinobi-state-attempt/v1"] = "shinobi-state-attempt/v1"
+    schema_version: Literal["shinobi-state-attempt/v1", "shinobi-state-attempt/v2"] = "shinobi-state-attempt/v2"
     attempt_id: uuid.UUID
     operation: Literal["export", "materialize"]
     store: Path
@@ -142,20 +258,64 @@ class StateAttempt(_Record):
     registry: Path
     source: Path | None = None
     destination: Path | None = None
+    requested_state_id: str | None = None
+    requested_representation_id: str | None = None
+    requested_fidelity: str = "exact-logical"
     state_id: LogicalID | None = None
     representation_id: RepresentationID | None = None
     stage: Path
     stage_identity: tuple[int, int] | None = None
     parent_identity: tuple[int, int]
     candidate_identity: tuple[int, int] | None = None
-    versions: dict[str, str]
-    fidelity: Literal["exact-logical"] = "exact-logical"
+    versions: dict[str, str] | None = None
+    fidelity: StateFidelity = "exact-logical"
     physical_restoration: Literal[False] = False
-    phase: Literal["planned", "claimed", "staged", "writing", "validating", "ready", "published", "committed", "failed", "interrupted"] = "planned"
+    phase: Literal["planned", "claimed", "staged", "writing", "validating", "ready", "published", "committed", "refused", "failed", "interrupted"] = "planned"
     finished: bool = False
     events: tuple[str, ...] = ()
     error: str | None = None
     structural_signature: str | None = None
+    provenance: StateProvenance | None = None
+
+    @model_validator(mode="after")
+    def consistent_provenance(self):
+        if self.schema_version == "shinobi-state-attempt/v1":
+            if self.provenance is not None:
+                raise ValueError("state attempt schema v1 cannot carry reusable-state provenance")
+            return self
+        if self.versions is not None:
+            _complete_state_stack(self.versions)
+        if self.phase == "committed":
+            if self.provenance is None or self.versions is None:
+                raise ValueError("a committed state attempt requires reusable-state provenance and a complete runtime stack")
+            if self.structural_signature is None or self.structural_signature != self.provenance.structural_signature:
+                raise ValueError("a committed state attempt requires its matching structural signature")
+            if self.operation == "materialize" and (
+                self.provenance.actual_fidelity != "exact-logical" or self.provenance.materialization_decision != "validated" or self.provenance.replay_decision != "validated"
+            ):
+                raise ValueError("a committed materialization requires validated exact replay provenance")
+        if self.provenance is None:
+            return self
+        evidence = self.provenance
+        if self.state_id != evidence.state_id or self.representation_id != evidence.representation_id:
+            raise ValueError("state attempt and reusable-state provenance identities disagree")
+        if self.operation == "export" and (
+            evidence.cache_decision != "store-requested" or evidence.materialization_decision != "not-requested" or evidence.replay_decision != "not-requested"
+        ):
+            raise ValueError("reusable-state provenance decisions disagree with export")
+        if self.operation == "materialize" and (
+            evidence.cache_decision != "selected-representation" or evidence.materialization_decision == "not-requested" or evidence.replay_decision == "not-requested"
+        ):
+            raise ValueError("reusable-state provenance decisions disagree with materialization")
+        if self.structural_signature is not None and self.structural_signature != evidence.structural_signature:
+            raise ValueError("state attempt and reusable-state provenance structural signatures disagree")
+        return self
+
+
+def read_state_attempt(path: str | Path) -> StateAttempt:
+    """Read and strictly validate a durable reusable-state attempt record."""
+
+    return StateAttempt.model_validate(JsonFileStore(Path(path)).read())
 
 
 def _error(exc: Exception) -> StateError:
@@ -163,6 +323,8 @@ def _error(exc: Exception) -> StateError:
         return exc
     if isinstance(exc, ImportError):
         return StateError("state-stack", str(exc))
+    if isinstance(exc, ValidationError):
+        return StateError("state-contract", str(exc))
     details = {key: getattr(exc, key) for key in ("table", "column", "row", "reason") if getattr(exc, key, None) is not None}
     return StateError(getattr(exc, "code", "state-operation"), str(exc), details=details)
 
@@ -302,7 +464,10 @@ class DatasetStateStore:
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", representation_id):
             raise StateError("representation-id", "expected sha256:<64 lowercase hex digits>")
         result = directory / representation_id.split(":")[1]
-        _identity(result)
+        try:
+            _identity(result)
+        except FileNotFoundError as exc:
+            raise StateError("representation-not-found", f"no committed representation {representation_id} for {state_id}") from exc
         return result
 
     def _load(self, state_id: str, representation_id: str | None = None):
@@ -455,6 +620,7 @@ class DatasetStateStore:
                     zarr_metadata=nodes,
                 )
                 physical = physical.model_copy(update={"representation_id": _digest(physical.model_dump(mode="json", exclude={"representation_id"}))})
+                provenance = StateProvenance.from_representation(physical, operation="export")
                 _write(rep / "representation.json", physical)
                 self._verify_rep(rep, physical)
                 publication = stage / "state"
@@ -462,7 +628,13 @@ class DatasetStateStore:
                 _write(publication / "logical.json", LogicalState(state_id=state_id))
                 rep.rename(publication / "representations" / physical.representation_id.split(":")[1])
                 _sync_tree(stage)
-                attempt = self._save(attempt, phase="ready", representation_id=physical.representation_id)
+                attempt = self._save(
+                    attempt,
+                    phase="ready",
+                    representation_id=physical.representation_id,
+                    structural_signature=physical.structural_signature,
+                    provenance=provenance,
+                )
                 with self._lock("states", state_id):
                     target = self._state(state_id)
                     if target.exists():
@@ -479,6 +651,7 @@ class DatasetStateStore:
                 attempt = self._save(attempt, finished=True)
                 return StateResult(state_id=state_id, representation_id=physical.representation_id, verified=True, attempt=self._attempt_path(operation))
         except Exception as exc:
+            failure = _error(exc)
             if attempt is not None:
                 # As with MS publication, a parent fsync failure can occur
                 # after the no-replace move. Leave its ready intent recoverable.
@@ -486,24 +659,29 @@ class DatasetStateStore:
                     attempt.state_id and attempt.representation_id and (self._state(attempt.state_id) / "representations" / attempt.representation_id.split(":")[1]).exists()
                 )
                 if not published:
-                    attempt = self._save(attempt, phase="failed", error=str(exc))
+                    phase = "failed" if failure.code == "state-operation" else "refused"
+                    attempt = self._save(attempt, phase=phase, error=str(failure))
                     self._cleanup(attempt)
                     if lease is not None:
                         lease.release()
                         lease = None
                     self._save(attempt, finished=True)
-            raise _error(exc) from exc
+            raise failure from exc
         finally:
             if lease is not None:
                 lease.release()
 
-    def _destination(self, destination: str | Path, physical: StateRepresentation) -> Path:
+    def _target(self, destination: str | Path) -> Path:
         spelling = Path(destination).expanduser().absolute()
-        if os.path.lexists(spelling):
-            raise StateError("destination-exists", f"destination already exists (including symlinks): {spelling}")
         parent = spelling.parent.resolve(strict=True)
         target = parent / spelling.name
         _identity(parent)
+        return target
+
+    def _destination(self, destination: str | Path, physical: StateRepresentation) -> Path:
+        target = self._target(destination)
+        if os.path.lexists(target):
+            raise StateError("destination-exists", f"destination already exists (including symlinks): {target}")
         sources = {physical.source, Path(physical.source_spelling).resolve()}
         # Independent exports may capture the same native state at different
         # paths. Every recorded source is protected, not just the selected rep.
@@ -519,15 +697,10 @@ class DatasetStateStore:
         """Create a fresh native MS after independent validation, never overwrite."""
         attempt = lease = None
         try:
-            if fidelity != "exact-logical":
-                raise StateError("fidelity", "only exact-logical is supported; physical restoration is unavailable")
-            versions = adapter.runtime()
-            rep, _, physical = self._load(state_id, representation_id)
-            target = self._destination(destination, physical)
             self._setup()
+            target = self._target(destination)
             with self._lock("destinations", str(target)):
                 self._recover(target)
-                target = self._destination(destination, physical)
                 operation = uuid.uuid4()
                 stage = target.parent / f".shinobi-state-{operation}"
                 attempt = StateAttempt(
@@ -537,14 +710,27 @@ class DatasetStateStore:
                     authority=target.parent,
                     registry=ownership_registry(),
                     destination=target,
-                    state_id=state_id,
-                    representation_id=physical.representation_id,
+                    requested_state_id=state_id,
+                    requested_representation_id=representation_id,
+                    requested_fidelity=fidelity,
                     stage=stage,
                     parent_identity=_identity(target.parent),
-                    versions=versions,
                 )
                 with self._lock("attempts", str(operation)):
                     attempt = self._save(attempt, phase="planned")
+                    if fidelity != "exact-logical":
+                        raise StateError("fidelity", "only exact-logical is supported; physical restoration is unavailable")
+                    versions = adapter.runtime()
+                    attempt = self._save(attempt, versions=versions)
+                    rep, _, physical = self._load(state_id, representation_id)
+                    target = self._destination(destination, physical)
+                    provenance = StateProvenance.from_representation(physical, operation="materialize")
+                    attempt = self._save(
+                        attempt,
+                        state_id=state_id,
+                        representation_id=physical.representation_id,
+                        provenance=provenance,
+                    )
                     lease = acquire_workspace(target.parent, str(operation), kind="local", accesses=[(target, True), (rep, False), (stage, True)], registry=attempt.registry)
                     attempt = self._save(attempt, phase="claimed")
                     if self._destination(destination, physical) != target or _identity(target.parent) != attempt.parent_identity:
@@ -561,7 +747,13 @@ class DatasetStateStore:
                         raise StateError("postcondition", "independent Shinobi structural signature/native logical ID differs from stored state")
                     self._verify_rep(rep, physical)
                     _sync_tree(product)
-                    attempt = self._save(attempt, phase="ready", candidate_identity=_identity(product), structural_signature=signature)
+                    attempt = self._save(
+                        attempt,
+                        phase="ready",
+                        candidate_identity=_identity(product),
+                        structural_signature=signature,
+                        provenance=provenance.validated_replay(),
+                    )
                     if self._destination(destination, physical) != target or _identity(target.parent) != attempt.parent_identity:
                         raise StateError("destination-changed", "destination changed before publication")
                     publish_directory(product, target)
@@ -573,18 +765,20 @@ class DatasetStateStore:
                     self._save(attempt, finished=True)
                     return StateResult(state_id=state_id, representation_id=physical.representation_id, verified=True, destination=target, attempt=self._attempt_path(operation))
         except Exception as exc:
+            failure = _error(exc)
             if attempt is not None:
                 # A rename may have committed even if the following fsync or
                 # metadata write failed. Preserve ready intent for recovery.
                 published = attempt.candidate_identity is not None and _directory_identity(attempt.destination, missing_ok=True) == attempt.candidate_identity
                 if not published:
-                    attempt = self._save(attempt, phase="failed", error=str(exc))
+                    phase = "failed" if failure.code == "state-operation" else "refused"
+                    attempt = self._save(attempt, phase=phase, error=str(failure))
                     self._cleanup(attempt)
                     if lease is not None:
                         lease.release()
                         lease = None
                     self._save(attempt, finished=True)
-            raise _error(exc) from exc
+            raise failure from exc
         finally:
             if lease is not None:
                 lease.release()
@@ -616,11 +810,11 @@ class DatasetStateStore:
         directory = self.root / "attempts"
         paths = set(directory.glob("*.json")) | {path.with_suffix("") for path in directory.glob("*.json.lock")}
         for path in sorted(paths):
-            attempt = StateAttempt.model_validate(JsonFileStore(path).read())
+            attempt = read_state_attempt(path)
             if attempt.finished or (destination is not None and attempt.destination != destination):
                 continue
             with self._lock("attempts", str(attempt.attempt_id), timeout=0.05):
-                attempt = StateAttempt.model_validate(JsonFileStore(path).read())
+                attempt = read_state_attempt(path)
                 if attempt.finished:
                     continue
                 if attempt.store != self.root or path != self._attempt_path(attempt.attempt_id):
@@ -646,8 +840,14 @@ class DatasetStateStore:
                         self._load(attempt.state_id, attempt.representation_id)
                         self.verify(attempt.state_id, attempt.representation_id)
                         committed = True
-                    except FileNotFoundError:
-                        pass
+                    except StateError as exc:
+                        # A ready export can be interrupted before its first
+                        # publication, or before adding a new representation.
+                        # Missing committed storage means the intent did not
+                        # publish; every other validation failure is unsafe to
+                        # classify automatically.
+                        if exc.code not in {"state-not-found", "representation-not-found"}:
+                            raise
                 self._cleanup(attempt)
                 attempt = self._save(attempt, phase="committed" if committed else "interrupted")
                 if evidence.owner is not None:

@@ -80,8 +80,41 @@ There is no overwrite. msutils runs inside a recorded outer stage;
 independent validation and content sync precede Linux
 ``renameat2(RENAME_NOREPLACE)`` publication. A racing empty directory survives.
 
-``shinobi-state-attempt/v1`` records IDs, versions, fidelity, phase events,
-staging/parent/candidate identities and outcome. Recovery uses persistent
+New operations write ``shinobi-state-attempt/v2``.  In addition to IDs,
+versions, phase events, staging/parent/candidate identities and outcome, each
+committed attempt embeds closed ``shinobi-state-provenance/v1`` evidence.  It
+keeps the native logical, MSv4, preservation-payload and representation IDs
+separate; names the MSv2/closure/mapping/MSv4 profiles and complete software
+stack; records exact-logical requested and actual fidelity; and identifies the
+managed native-Zarr preservation sidecar and complete evidence coverage.
+Closed cache, materialization, replay and transformation decisions distinguish
+``store-requested`` from ``selected-representation``, requested work from
+validated reconstruction, and explicit ``not-requested`` behavior.  Producer
+and replay-runtime stacks remain separate and each complete stack contains the
+exact qualified package-key set plus the pinned msutils commit.  Actual fidelity
+is absent until reconstruction validates. A refusal before validation cannot
+claim successful exact replay; a later publication failure may retain the
+validated staged-reconstruction evidence while its attempt remains failed. Legacy
+``shinobi-state-attempt/v1`` recovery records remain readable.
+
+Materialization is the reusable-state replay path for the
+``fixed-shape-defined-or-empty/v1`` state profile. Before writing, it
+strictly reopens the selected representation and rejects different MSv2,
+closure, mapping, MSv4 or preservation profiles, any software-stack mismatch,
+and any fidelity other than exact-logical.  Recipes and detached workers still
+cannot consume state IDs; run-manifest replay therefore cannot silently select
+or downgrade a reusable state. The exact package-key set is part of the v2
+attempt and representation reader contract: changing ``adapter.PACKAGES``
+requires a compatible reader or migration first, otherwise existing v2 records
+and representations are intentionally refused and unfinished attempts cannot
+be settled automatically.
+
+Use ``read_state_attempt(result.attempt)`` to validate the authoritative synced
+attempt record. Once a materialization attempt has been created, deliberate
+contract refusals are durable ``refused`` attempts with the raw requested
+state, representation and fidelity; failures before attempt creation cannot be
+recorded, and unexpected operational exceptions remain distinct ``failed``
+attempts. Recovery uses persistent
 operation locks and ownership liveness, never PID age or broad globs. It
 removes only recorded private staging. After a crash following publication,
 it recognizes the candidate inode, revalidates and records success rather
@@ -90,7 +123,8 @@ publication race is preserved while only recorded private staging is cleaned.
 Live/uncertain owners or mismatched directory identities refuse. A crash
 between stage creation and recording its inode also refuses
 automatic deletion. Same-target materialization recovers prior unpublished
-dead attempts; already published destinations require explicit recovery.
+dead attempts before checking its destination. Use explicit recovery to settle
+an already published destination after an interrupted materialization.
 An unqualified recovery sweep is all-or-nothing: one live, uncertain or
 invalid attempt aborts the sweep. Use ``--destination`` to settle an unrelated
 target independently.
