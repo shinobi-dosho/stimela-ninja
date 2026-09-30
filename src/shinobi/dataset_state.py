@@ -464,7 +464,10 @@ class DatasetStateStore:
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", representation_id):
             raise StateError("representation-id", "expected sha256:<64 lowercase hex digits>")
         result = directory / representation_id.split(":")[1]
-        _identity(result)
+        try:
+            _identity(result)
+        except FileNotFoundError as exc:
+            raise StateError("representation-not-found", f"no committed representation {representation_id} for {state_id}") from exc
         return result
 
     def _load(self, state_id: str, representation_id: str | None = None):
@@ -807,11 +810,11 @@ class DatasetStateStore:
         directory = self.root / "attempts"
         paths = set(directory.glob("*.json")) | {path.with_suffix("") for path in directory.glob("*.json.lock")}
         for path in sorted(paths):
-            attempt = StateAttempt.model_validate(JsonFileStore(path).read())
+            attempt = read_state_attempt(path)
             if attempt.finished or (destination is not None and attempt.destination != destination):
                 continue
             with self._lock("attempts", str(attempt.attempt_id), timeout=0.05):
-                attempt = StateAttempt.model_validate(JsonFileStore(path).read())
+                attempt = read_state_attempt(path)
                 if attempt.finished:
                     continue
                 if attempt.store != self.root or path != self._attempt_path(attempt.attempt_id):
@@ -837,8 +840,14 @@ class DatasetStateStore:
                         self._load(attempt.state_id, attempt.representation_id)
                         self.verify(attempt.state_id, attempt.representation_id)
                         committed = True
-                    except FileNotFoundError:
-                        pass
+                    except StateError as exc:
+                        # A ready export can be interrupted before its first
+                        # publication, or before adding a new representation.
+                        # Missing committed storage means the intent did not
+                        # publish; every other validation failure is unsafe to
+                        # classify automatically.
+                        if exc.code not in {"state-not-found", "representation-not-found"}:
+                            raise
                 self._cleanup(attempt)
                 attempt = self._save(attempt, phase="committed" if committed else "interrupted")
                 if evidence.owner is not None:

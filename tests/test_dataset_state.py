@@ -108,6 +108,17 @@ def test_state_attempt_v2_closes_exact_replay_provenance(tmp_path):
         StateAttempt.model_validate({**attempt.model_dump(), "versions": {**versions, "unexpected": "1"}})
     with pytest.raises(ValidationError, match="matching structural signature"):
         StateAttempt.model_validate({**attempt.model_dump(), "structural_signature": None})
+    with pytest.raises(ValidationError, match="schema v1 cannot carry"):
+        StateAttempt.model_validate({**attempt.model_dump(), "schema_version": "shinobi-state-attempt/v1"})
+    with pytest.raises(ValidationError, match="identities disagree"):
+        StateAttempt.model_validate(
+            {
+                **attempt.model_dump(),
+                "provenance": {**provenance.model_dump(), "state_id": "msutils-logical-hash/v1:" + "f" * 64},
+            }
+        )
+    with pytest.raises(ValueError, match="requested materialization/replay"):
+        provenance.validated_replay()
 
 
 def test_failed_materialization_records_request_not_success(tmp_path):
@@ -146,6 +157,13 @@ def test_failed_materialization_records_request_not_success(tmp_path):
     assert attempt.provenance.actual_fidelity is None
     assert attempt.provenance.materialization_decision == "requested"
     assert attempt.provenance.replay_decision == "requested"
+    with pytest.raises(ValidationError, match="decisions disagree with materialization"):
+        StateAttempt.model_validate(
+            {
+                **attempt.model_dump(),
+                "provenance": {**provenance.model_dump(), "cache_decision": "store-requested"},
+            }
+        )
 
 
 def test_legacy_state_attempt_remains_readable(tmp_path):
