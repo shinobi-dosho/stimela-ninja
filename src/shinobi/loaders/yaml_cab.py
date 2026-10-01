@@ -31,8 +31,14 @@ leaf param from a nested CLI section by whether the mapping has *any* known
 param-spec key, so a spec carrying only an unregistered key is read as a
 section and the field disappears without a word.
 
-Per cab: ``sandbox``, ``harvest`` and ``scratch``, which mirror the `Scope`
-fields of the same names.
+Per cab: ``sandbox``, ``harvest``, ``scratch`` and ``dataset_accesses``,
+which mirror the `Scope` fields of the same names. Access mappings are
+validated by `DatasetAccess`; field references use literal sanitized model
+names (``data.ms`` becomes ``data_ms``). Strict ``MSv2``/``CasaTab`` dtypes
+retain dataset metadata; legacy ``MS`` remains `Path`. Strict containers,
+mixed unions, choices and dynamic patterns are refused for executable cabs, and ``MSv4``
+is reserved. Current dispatch supports the bounded MSv2 lifecycle only;
+``CasaTab`` remains available for declaration and inspection.
 
 ``image:`` may also name a *key* rather than a reference, resolved through the
 caller-supplied ``images`` mapping (see `loads`) -- the same shape as
@@ -152,7 +158,11 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import ValidationError
 
+from shinobi._annotations import walk_annotation
+from shinobi.datasets import DatasetDeclarationError, DatasetType, dataset_declarations
+from shinobi.dataset_access import DatasetAccess
 from shinobi.exceptions import CabLoadError
 from shinobi.loaders._modelgen import (
     COMMON_LEAF_KEYS,
@@ -333,6 +343,35 @@ _LEAF_SPEC_KEYS = COMMON_LEAF_KEYS | {"nom_de_guerre", "mkdir", "element_choices
 
 
 def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path], images: dict[str, str] | None = None) -> Cab:
+    """Build a cab, giving dataset-specific failures loader context."""
+    try:
+        return _build_cab(name, spec, package_roots, images)
+    except DatasetDeclarationError as exc:
+        raise CabLoadError(f"cab '{name}': {exc}") from exc
+    except ValidationError as exc:
+        if any(isinstance(item.get("ctx", {}).get("error"), DatasetDeclarationError) for item in exc.errors()):
+            raise CabLoadError(f"cab '{name}': {exc}") from exc
+        raise
+
+
+def _dataset_accesses(raw: Any, *, cab: str) -> list[DatasetAccess]:
+    """Validate static access data with cab and entry-index diagnostics."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise CabLoadError(f"cab '{cab}': dataset_accesses must be a list of mappings")
+    accesses = []
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise CabLoadError(f"cab '{cab}': dataset_accesses[{index}] must be a mapping")
+        try:
+            accesses.append(DatasetAccess.model_validate(entry))
+        except ValidationError as exc:
+            raise CabLoadError(f"cab '{cab}': dataset_accesses[{index}]: {exc}") from exc
+    return accesses
+
+
+def _build_cab(name: str, spec: dict[str, Any], package_roots: dict[str, Path], images: dict[str, str] | None = None) -> Cab:
     image = spec.get("image")
     if isinstance(image, dict):
         image = image.get("name")
@@ -387,6 +426,10 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
             in_extras[field] = extra
 
     input_patterns = _param_patterns(spec.get("input_patterns"), cab=name, key="input_patterns")
+    inputs_model = build_model(f"{name}_Inputs", in_fields, choices=in_choices, extras=in_extras, allow_extra=bool(input_patterns))
+    outputs_model = build_model(f"{name}_Outputs", out_fields, choices=out_choices)
+    for model in (inputs_model, outputs_model):
+        _validate_dataset_shapes(model)
     return Cab(
         name=name,
         command=spec["command"],
@@ -399,14 +442,9 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
         # names no field declares -- cubical's `g1-solvable`, QuartiCal's
         # `K.time_interval` -- so without it the model rejects every value the
         # pattern was written to match, and the pattern silently does nothing.
-        inputs_model=build_model(
-            f"{name}_Inputs",
-            in_fields,
-            choices=in_choices,
-            extras=in_extras,
-            allow_extra=bool(input_patterns),
-        ),
-        outputs_model=build_model(f"{name}_Outputs", out_fields, choices=out_choices),
+        inputs_model=inputs_model,
+        outputs_model=outputs_model,
+        dataset_accesses=_dataset_accesses(spec.get("dataset_accesses"), cab=name),
         # Output metas merged over input ones, the same way
         # `dosho._builder.define_cab` composes them, so a cab built from a
         # document and the same cab built in Python agree. Without the output
@@ -426,6 +464,24 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
         harvest=list(spec.get("harvest") or []),
         scratch=list(spec.get("scratch") or []),
     )
+
+
+def _validate_dataset_shapes(model: type) -> None:
+    """Executable strict datasets must be one direct Path, optionally None.
+
+    Declaration discovery supplies qualified paths and conflict diagnostics;
+    the shared annotation walk also detects mixed unions whose declaration
+    path alone looks direct, but whose other branch can select a non-Path.
+    """
+    for name in dataset_declarations(model, error=DatasetDeclarationError):
+        if name not in model.model_fields:
+            raise DatasetDeclarationError(f"strict dataset field {name!r} is nested; executable YAML cabs support direct scalar fields only")
+        field = model.model_fields[name]
+        leaves = [node for node in walk_annotation(field.annotation, metadata=tuple(field.metadata)) if node.leaf and node.annotation is not type(None)]
+        if len(leaves) != 1 or leaves[0].path or leaves[0].annotation is not Path or not any(isinstance(item, DatasetType) for item in leaves[0].metadata):
+            raise DatasetDeclarationError(
+                f"strict dataset field {name!r} must be a direct strict scalar optionally combined with None; mixed unions and containers are unsupported"
+            )
 
 
 def _is_section(value: dict) -> bool:

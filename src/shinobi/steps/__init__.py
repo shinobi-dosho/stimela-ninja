@@ -29,7 +29,7 @@ from shinobi.steps.schema import (
     StepRef,
     path_fields,
 )
-from shinobi.datasets import CasaTable, MeasurementSetV2
+from shinobi.datasets import CasaTab, CasaTable, MSv2, MeasurementSetV2
 from shinobi.dataset_access import (
     DatasetAccess,
     DatasetColumns,
@@ -43,6 +43,8 @@ from shinobi.dataset_access import (
 __all__ = [
     "Cab",
     "CasaTable",
+    "CasaTab",
+    "MSv2",
     "DatasetAccess",
     "DatasetColumns",
     "DatasetFallback",

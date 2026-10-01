@@ -4,18 +4,18 @@ CASA and MeasurementSet declarations
 Explicit reusable MSv4/Zarr export and fresh native reconstruction are
 documented in :doc:`states`. Stored IDs are not recipe dataset inputs in v1.
 
-``CasaTable`` and ``MeasurementSetV2`` are explicit, versioned annotations
+``CasaTab`` and ``MSv2`` are explicit, versioned annotations
 for dataset paths:
 
 .. code-block:: python
 
    from pydantic import BaseModel
 
-   from shinobi import MeasurementSetV2
+   from shinobi import MSv2
 
 
    class Inputs(BaseModel):
-       ms: MeasurementSetV2
+       ms: MSv2
 
 
 They remain ordinary :class:`pathlib.Path` values.  Constructing or serializing
@@ -30,6 +30,12 @@ The current named profiles are ``casa-table/v1`` and
 future, stronger contract will not silently change what an existing annotation
 means.  The older cab-loader dtype ``MS`` is unchanged and continues to map to
 a plain ``Path``.
+
+``CasaTable`` and ``MeasurementSetV2`` remain object-identical compatibility
+aliases for ``CasaTab`` and ``MSv2``. YAML dtypes ``CasaTab`` and ``MSv2``
+carry the same strict declarations, case-insensitively. ``MSv4`` is reserved
+and rejected as a dtype, including inside composite types; no MSv4 parameter
+annotation or execution lifecycle is provided.
 
 Explicit structural inspection
 ------------------------------
@@ -77,6 +83,15 @@ are retained including optional and custom columns.
 Dataset declarations nested in Pydantic models, sequences, mappings, and
 unions are discovered recursively.  Diagnostic paths use ``[]`` for a
 sequence item and ``.*`` for a mapping value.
+
+Executable YAML cabs support direct strict scalars, including optional
+``MSv2`` fields with a ``None`` default. Strict containers, mixed unions and nested
+positions, dynamic ``ParamPattern`` attributes and ``choices`` are refused;
+worker/config schemas may retain strict composite metadata. Python model
+declarations can also contain nested metadata, but current dispatch refuses
+those execution shapes. ``CasaTab`` supports declaration and inspection only:
+any atomic input or output with that annotation is refused at dispatch, even
+a referenced subtable carrying ``root_field``.
 
 Physical dataset closure
 ------------------------
@@ -160,6 +175,10 @@ default; only its reservation may cover that interval.  A statically named
 identity before the product exists.  ``create`` means a new dataset: an
 existing target is refused unless the run names the step in ``--overwrite``
 (see "Contained local mutation").
+Omitted accesses are valid for mutable ``MSv2`` inputs: mutability infers a
+whole-dataset write, ordinary inputs infer reads, and new outputs infer
+creates. See :doc:`loaders` for the YAML access syntax and sanitized field
+references.
 Column detail is currently validation and provenance only: it does **not**
 permit concurrent writers, even when they name different columns.  Read/read
 access may overlap; every write or create is ordered against all overlapping

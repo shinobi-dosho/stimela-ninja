@@ -26,6 +26,8 @@ logging.getLogger("shinobi").addHandler(logging.NullHandler())
 from shinobi.steps import (  # noqa: E402
     Cab,
     CasaTable,
+    CasaTab,
+    MSv2,
     DatasetAccess,
     DatasetColumns,
     DatasetFallback,
@@ -77,6 +79,8 @@ from shinobi.exceptions import DatasetLifecycleUnavailableError, DatasetLifecycl
 __all__ = [
     "Cab",
     "CasaTable",
+    "CasaTab",
+    "MSv2",
     "DatasetClosure",
     "DatasetAccess",
     "DatasetAccessError",
