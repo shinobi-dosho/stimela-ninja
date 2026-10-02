@@ -147,7 +147,7 @@ def test_hazards_and_read_read_are_deterministic(monkeypatch, tmp_path):
     assert second.reasons["write-1"] == ("write-after-write: observation.ms, MAIN.FLAG",)
 
 
-@pytest.mark.parametrize("kind", ["same-output", "mutable", "write-path"])
+@pytest.mark.parametrize("kind", ["same-output", "write-path"])
 def test_read_contract_cannot_hide_schema_declared_writes(kind, monkeypatch, tmp_path):
     ms = tmp_path / "observation.ms"
     ms.mkdir()
@@ -156,8 +156,6 @@ def test_read_contract_cannot_hide_schema_declared_writes(kind, monkeypatch, tmp
     outputs = Empty
     if kind == "same-output":
         outputs = MSIn
-    elif kind == "mutable":
-        kwargs["input_mutability"] = {"ms": Mutability.MUTABLE}
     else:
         kwargs["field_meta"] = {"ms": ParamMeta(write_path=True)}
     scope = Scope(
@@ -170,6 +168,17 @@ def test_read_contract_cannot_hide_schema_declared_writes(kind, monkeypatch, tmp
 
     with pytest.raises(DatasetAccessError, match="schema also declares a filesystem write"):
         ResolvedAccessPlanner(tmp_path).order_after(kind, scope, {"ms": ms})
+
+
+def test_mutable_read_contract_is_refused_before_planning():
+    with pytest.raises(ValidationError, match=r"dataset_accesses\[0\].*mutable input field 'ms'.*only read"):
+        Scope(
+            name="mutable",
+            inputs_model=MSIn,
+            outputs_model=Empty,
+            input_mutability={"ms": Mutability.MUTABLE},
+            dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("DATA",)))],
+        )
 
 
 def test_dataset_contract_keeps_generic_parent_write_for_sibling_ordering(monkeypatch, tmp_path):

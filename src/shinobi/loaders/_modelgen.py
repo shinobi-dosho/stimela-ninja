@@ -6,8 +6,9 @@ every loader dialect builds its own resolution order on top of.
 Cab dtypes are strings (cult-cargo/stimela-classic convention): scalar
 names (`str`/`int`/`float`/`bool`), file-like names (`File`/`MS`/
 `Directory`/`URI`, all mapped to `pathlib.Path` so `path_fields` picks
-them up for bind-mounting), strict dataset names (`MSv2`/`CasaTab`, preserving
-their versioned annotation metadata), `list:<inner>` (cult-cargo/classic colon
+them up for bind-mounting), strict dataset names (`MSv2`/`CasaTab`, plus the
+compatibility spellings `MeasurementSetV2`/`CasaTable`, preserving their
+versioned annotation metadata), `list:<inner>` (cult-cargo/classic colon
 syntax) and `List[<inner>]` (newer bracket syntax seen in both newer
 cult-cargo cabs and caracal2's scabha-dialect config schemas) for lists,
 and `Tuple[<a>, <b>, ...]`/`Union[<a>, <b>, ...]` (both bracket syntax,
@@ -115,7 +116,7 @@ _SCALAR_TYPES: dict[str, type] = {
 }
 
 _FILE_TYPES: dict[str, Any] = dict.fromkeys(("file", "ms", "directory", "dir", "uri", "url"), Path)
-_FILE_TYPES.update(msv2=MSv2, casatab=CasaTab)
+_FILE_TYPES.update(msv2=MSv2, measurementsetv2=MSv2, casatab=CasaTab, casatable=CasaTab)
 
 
 def is_file_dtype(dtype: str) -> bool:
@@ -158,7 +159,8 @@ def _split_top_level(spec: str) -> list[str]:
 
 def dtype_to_type(dtype: str) -> Any:
     """Map a cab dtype string to a Python type. File-like dtypes become
-    `pathlib.Path`, except `MSv2`/`CasaTab` which preserve strict metadata.
+    `pathlib.Path`, except the `MSv2`/`CasaTab` concise and compatibility
+    spellings which preserve strict metadata.
     Reserved `MSv4` raises a dataset declaration error at any depth.
     `list:<inner>` or `List[<inner>]` becomes
     `list[<inner>]`; `Tuple[<a>, <b>, ...]` becomes `tuple[<a>, <b>, ...]`;

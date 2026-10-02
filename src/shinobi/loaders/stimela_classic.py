@@ -59,6 +59,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from shinobi.datasets import DatasetDeclarationError
 from shinobi.exceptions import CabLoadError
 from shinobi.loaders._modelgen import build_model, sanitize_unique, validate_choices
 from shinobi.steps.schema import Cab, ParamMeta
@@ -105,16 +106,19 @@ def _build_cabdef(spec: dict[str, Any]) -> Cab:
 
     choices = {field: meta.choices for field, meta in metas.items() if meta.choices}
 
-    return Cab(
-        name=name,
-        command=spec.get("binary", name),
-        info=spec.get("description"),
-        image=base or None,
-        flavour=flavour,
-        inputs_model=build_model(f"{name}_Inputs", fields, choices=choices),
-        outputs_model=build_model(f"{name}_Outputs", {}),
-        field_meta=metas,
-    )
+    try:
+        return Cab(
+            name=name,
+            command=spec.get("binary", name),
+            info=spec.get("description"),
+            image=base or None,
+            flavour=flavour,
+            inputs_model=build_model(f"{name}_Inputs", fields, choices=choices),
+            outputs_model=build_model(f"{name}_Outputs", {}),
+            field_meta=metas,
+        )
+    except DatasetDeclarationError as exc:
+        raise CabLoadError(f"cab {name!r}: {exc}") from exc
 
 
 def _build_param(param: dict[str, Any], *, original: str, field: str) -> tuple[tuple[str, bool, Any], ParamMeta | None]:
