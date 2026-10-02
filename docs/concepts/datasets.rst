@@ -32,10 +32,10 @@ means.  The older cab-loader dtype ``MS`` is unchanged and continues to map to
 a plain ``Path``.
 
 ``CasaTable`` and ``MeasurementSetV2`` remain object-identical compatibility
-aliases for ``CasaTab`` and ``MSv2``. YAML dtypes ``CasaTab`` and ``MSv2``
-carry the same strict declarations, case-insensitively. ``MSv4`` is reserved
-and rejected as a dtype, including inside composite types; no MSv4 parameter
-annotation or execution lifecycle is provided.
+aliases for ``CasaTab`` and ``MSv2``. Those four names also work as
+case-insensitive YAML dtypes and carry the same strict declarations. ``MSv4``
+is reserved and rejected as a dtype, including inside composite types; no MSv4
+parameter annotation or execution lifecycle is provided.
 
 Explicit structural inspection
 ------------------------------

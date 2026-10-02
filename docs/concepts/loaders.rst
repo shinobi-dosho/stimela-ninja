@@ -79,9 +79,10 @@ Strict dataset declarations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Case-insensitive ``dtype: MSv2`` and ``dtype: CasaTab`` preserve the same
-versioned dataset metadata as their Python annotations. Legacy ``MS`` remains
-a plain ``Path``, including ``List[MS]``. ``MSv4`` is reserved and unsupported,
-even inside a list, tuple or union.
+versioned dataset metadata as their Python annotations. The compatibility
+spellings ``MeasurementSetV2`` and ``CasaTable`` do likewise. Legacy ``MS``
+remains a plain ``Path``, including ``List[MS]``. ``MSv4`` is reserved and
+unsupported, even inside a list, tuple or union.
 
 Cab-level ``dataset_accesses`` is a list of mappings validated by
 :class:`~shinobi.DatasetAccess`. For example:
@@ -113,7 +114,10 @@ access declarations.
 
 Omitting accesses on a mutable ``MSv2`` input is valid and conservatively
 reserves a whole-dataset write. Ordinary inputs infer reads and new outputs
-infer creates. Explicit path or alias contradictions are checked by planning.
+infer creates. An explicit access list may refine a mutable field, but cannot
+declare only reads for it; construction refuses that contradiction. Path and
+alias contradictions that require resolved filesystem identities are checked
+by planning.
 Column creation/removal requires ``allow_schema_change: true``; creating a
 new dataset with ``mode: create`` alone does not require that flag.
 
@@ -125,7 +129,10 @@ Legacy ``MS`` containers, patterns and choices retain their existing behavior.
 ``CasaTab`` can be loaded and structurally inspected, but current dispatch
 supports only the bounded MSv2 lifecycle. Any ``CasaTab`` field in an atomic
 input or output is refused at execution, including a subtable with
-``root_field``. See :doc:`datasets` for the execution boundary.
+``root_field``. A strict cab must also enter through the top-level dataset
+lifecycle: dispatch refuses strict declarations beneath a cache path or an
+already claimed workspace rather than letting nested execution bypass claims,
+validation or recovery. See :doc:`datasets` for the execution boundary.
 
 Stimela classic parameter files
 --------------------------------

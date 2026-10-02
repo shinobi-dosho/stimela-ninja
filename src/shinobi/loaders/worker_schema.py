@@ -69,6 +69,7 @@ from typing import Annotated, Any
 import yaml
 from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter, ValidationError, create_model
 
+from shinobi.datasets import DatasetDeclarationError
 from shinobi.exceptions import ConfigLoadError
 from shinobi.loaders._modelgen import (
     COMMON_LEAF_KEYS,
@@ -348,8 +349,11 @@ def _mapping_field(model_name: str, value: dict[str, Any]) -> tuple[Any, Any]:
 
 
 def _leaf_field(value: dict[str, Any]) -> tuple[Any, Any]:
-    py_type = dtype_to_type(value.get("dtype", "str"))
-    py_type = narrow_choices(py_type, validate_choices(value.get("choices"), error=ConfigLoadError))
+    try:
+        py_type = dtype_to_type(value.get("dtype", "str"))
+        py_type = narrow_choices(py_type, validate_choices(value.get("choices"), error=ConfigLoadError))
+    except DatasetDeclarationError as exc:
+        raise ConfigLoadError(str(exc)) from exc
 
     implicit = value.get("implicit")
     required = bool(value.get("required", False)) and implicit is None

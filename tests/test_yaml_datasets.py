@@ -35,11 +35,27 @@ def test_concise_names_are_identical_public_compatibility_aliases():
         assert module.MSv2 is module.MeasurementSetV2 is MSv2
         assert module.CasaTab is module.CasaTable is CasaTab
         assert not hasattr(module, "MSv4")
-    model = build_model("Strict", {"ms": ("mSv2", True, None), "tab": ("cAsAtAb", False, None)})
-    assert dataset_declarations(model) == {"ms": MSV2_STRUCTURAL_V1, "tab": CASA_TABLE_V1}
+    model = build_model(
+        "Strict",
+        {
+            "ms": ("mSv2", True, None),
+            "long_ms": ("MeasurementSetV2", False, None),
+            "tab": ("cAsAtAb", False, None),
+            "long_tab": ("CasaTable", False, None),
+        },
+    )
+    assert dataset_declarations(model) == {
+        "ms": MSV2_STRUCTURAL_V1,
+        "long_ms": MSV2_STRUCTURAL_V1,
+        "tab": CASA_TABLE_V1,
+        "long_tab": CASA_TABLE_V1,
+    }
     schema = model.model_json_schema()
     assert schema["properties"]["ms"]["x-shinobi-dataset"]["profile"] == "msv2-structural/v1"
-    assert model(ms="future.ms").model_dump(mode="json") == {"ms": "future.ms", "tab": None}
+    assert model(ms="future.ms").model_dump(mode="json") == {"ms": "future.ms", "long_ms": None, "tab": None, "long_tab": None}
+    loaded = load_cab(inputs={"ms": {"dtype": "MeasurementSetV2"}, "tab": {"dtype": "CasaTable"}})
+    assert dataset_declarations(loaded.inputs_model) == {"ms": MSV2_STRUCTURAL_V1, "tab": CASA_TABLE_V1}
+    assert path_fields(loaded.inputs_model) == {"ms", "tab"}
 
 
 @pytest.mark.parametrize("dtype", ["MSv4", "list:MSv4", "List[MSv4]", "Tuple[int, MSv4]", "Union[MS, List[MSv4]]"])
@@ -56,7 +72,7 @@ def test_registry_keeps_atomic_file_detection_and_config_composites(tmp_path):
     assert dtype_to_type("MSv2") is MSv2
     assert dtype_to_type("CasaTab") is CasaTab
     assert dtype_to_type("List[MSv2]") == list[MSv2]
-    for dtype in ("MS", " mSv2 ", "CasaTab"):
+    for dtype in ("MS", " mSv2 ", "MeasurementSetV2", "CasaTab", "CasaTable"):
         assert is_file_dtype(dtype)
     assert not is_file_dtype("List[MSv2]")
     source = tmp_path / "config.yaml"
@@ -110,7 +126,7 @@ def test_yaml_matches_python_accesses_and_argv_with_sanitized_names():
         ({}, "dataset_accesses must be a list"),
         ([None], r"dataset_accesses\[0\].*mapping"),
         ([{"field": "ms", "mode": "read"}, {"field": "ms", "mode": "bogus"}], r"dataset_accesses\[1\]"),
-        ([{"field": "data.ms", "mode": "read"}], r"dataset_accesses\[0\].*unknown field 'data.ms'"),
+        ([{"field": "data.ms", "mode": "read"}], r"dataset_accesses\[0\].*unknown field 'data.ms'.*data_ms"),
         ([{"field": "data_ms", "mode": "read", "root_field": "data.ms"}], r"dataset_accesses\[0\].*unknown root_field"),
     ],
 )
@@ -123,6 +139,20 @@ def test_dataset_errors_name_cab_and_index(raw, message):
 def test_unrelated_cab_validation_errors_keep_their_type():
     with pytest.raises(ValidationError):
         load_cab(sandbox="invalid")
+
+
+def test_mutable_field_cannot_be_downgraded_to_explicit_read():
+    with pytest.raises(CabLoadError, match=r"dataset_accesses\[0\].*mutable input field 'ms'.*only read"):
+        load_cab(
+            inputs={"ms": {"dtype": "MSv2", "mutable": True}},
+            dataset_accesses=[{"field": "ms", "mode": "read"}],
+        )
+
+    loaded = load_cab(
+        inputs={"ms": {"dtype": "MSv2", "mutable": True}},
+        dataset_accesses=[{"field": "ms", "mode": "read"}, {"field": "ms", "mode": "write", "table": "ANTENNA"}],
+    )
+    assert [access.mode for access in loaded.dataset_accesses] == [DatasetMode.READ, DatasetMode.WRITE]
 
 
 @pytest.mark.parametrize("dtype", ["List[MSv2]", "list:CasaTab", "Tuple[int, MSv2]", "Union[MSv2, List[MSv2]]"])

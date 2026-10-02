@@ -247,6 +247,10 @@ def validate_scope_dataset_accesses(scope: Any) -> None:
 
     fields = set(scope.inputs_model.model_fields) | set(scope.outputs_model.model_fields)
 
+    def unknown_field(name: str) -> str:
+        aliases = [field for field, meta in getattr(scope, "field_meta", {}).items() if meta.nom_de_guerre == name]
+        return f"; use sanitized field name {aliases[0]!r}" if len(aliases) == 1 else ""
+
     def direct_path(model: type[BaseModel], name: str) -> bool:
         field = model.model_fields.get(name)
         if field is None:
@@ -262,14 +266,15 @@ def validate_scope_dataset_accesses(scope: Any) -> None:
         return direct_path(scope.inputs_model, name) or direct_path(scope.outputs_model, name)
 
     seen: set[tuple[str, DatasetTable]] = set()
+    non_read_fields = {access.field for access in scope.dataset_accesses if access.mode is not DatasetMode.READ}
     for index, access in enumerate(scope.dataset_accesses):
         context = f"scope {scope.name!r} dataset_accesses[{index}]"
         if access.field not in fields:
-            raise DatasetDeclarationError(f"{context}: dataset access names unknown field {access.field!r}")
+            raise DatasetDeclarationError(f"{context}: dataset access names unknown field {access.field!r}{unknown_field(access.field)}")
         if not path_compatible(access.field):
             raise DatasetDeclarationError(f"{context}: dataset access field {access.field!r} must be a direct Path or MS-compatible field")
         if access.root_field is not None and access.root_field not in fields:
-            raise DatasetDeclarationError(f"{context}: dataset access names unknown root_field {access.root_field!r}")
+            raise DatasetDeclarationError(f"{context}: dataset access names unknown root_field {access.root_field!r}{unknown_field(access.root_field)}")
         if access.root_field is not None and not path_compatible(access.root_field):
             raise DatasetDeclarationError(f"{context}: dataset access root_field {access.root_field!r} must be a direct Path or MS-compatible field")
         if access.root_field == access.field:
@@ -278,6 +283,9 @@ def validate_scope_dataset_accesses(scope: Any) -> None:
         if key in seen:
             raise DatasetDeclarationError(f"{context}: repeats dataset access for {access.field!r}, table {access.table.value}")
         seen.add(key)
+        mutability = getattr(scope, "input_mutability", {}).get(access.field)
+        if access.mode is DatasetMode.READ and getattr(mutability, "value", mutability) == "mutable" and access.field not in non_read_fields:
+            raise DatasetDeclarationError(f"{context}: mutable input field {access.field!r} cannot declare only read dataset access")
 
 
 def _canonical(value: Any, workspace: Path) -> Path:

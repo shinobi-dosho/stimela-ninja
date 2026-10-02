@@ -66,6 +66,20 @@ MSUTILS_JSON = json.dumps(
     }
 )
 
+
+@pytest.mark.parametrize(
+    "parameter",
+    [
+        {"name": "ms", "dtype": "MSv4"},
+        {"name": "ms", "dtype": "MSv2", "choices": ["one.ms"]},
+    ],
+)
+def test_strict_dataset_dtype_failures_are_cab_load_errors(parameter):
+    document = json.dumps({"task": "bad", "binary": "bad", "parameters": [parameter]})
+    with pytest.raises(CabLoadError, match="MSv4|strict dataset choices"):
+        loads(document)
+
+
 NO_BINARY_JSON = json.dumps({"task": "bare", "parameters": []})
 
 

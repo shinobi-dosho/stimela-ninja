@@ -240,6 +240,20 @@ def test_scalar_choices_raises_instead_of_exploding_into_per_character_literal(t
         load_worker_schema(bad)
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "x: {dtype: MSv4}",
+        "x: {dtype: MSv2, choices: [one.ms]}",
+    ],
+)
+def test_strict_dataset_dtype_failures_are_config_load_errors(tmp_path, field):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(f"name: bad\ninputs:\n  {field}\n")
+    with pytest.raises(ConfigLoadError, match="MSv4|strict dataset choices"):
+        load_worker_schema(bad)
+
+
 def test_list_top_level_document_raises_config_load_error(tmp_path):
     bad = tmp_path / "bad.yaml"
     bad.write_text("- a\n- b\n")
