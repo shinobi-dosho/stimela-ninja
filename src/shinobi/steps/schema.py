@@ -859,6 +859,20 @@ class Cab(Scope):
     # regex -> list of wrangler action strings
     wranglers: dict[str, list[str]] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _patterns_have_no_dataset_declarations(self) -> "Cab":
+        """Dynamic names cannot participate in static dataset discovery."""
+        from shinobi.datasets import DatasetDeclarationError, annotation_has_dataset
+        from shinobi.loaders._modelgen import dtype_to_type
+
+        for key in ("input_patterns", "output_patterns"):
+            for index, pattern in enumerate(getattr(self, key)):
+                for segment in pattern.segments:
+                    for attr, meta in (segment.attrs or {}).items():
+                        if annotation_has_dataset(dtype_to_type(meta.dtype or "str")):
+                            raise DatasetDeclarationError(f"{key}[{index}] attr {attr!r}: strict dataset patterns are unsupported; declare a literal field")
+        return self
+
     def param_name(self, field: str) -> str:
         """Resolve the tool-facing name for a declared input field.
 

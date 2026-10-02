@@ -6,7 +6,8 @@ every loader dialect builds its own resolution order on top of.
 Cab dtypes are strings (cult-cargo/stimela-classic convention): scalar
 names (`str`/`int`/`float`/`bool`), file-like names (`File`/`MS`/
 `Directory`/`URI`, all mapped to `pathlib.Path` so `path_fields` picks
-them up for bind-mounting), `list:<inner>` (cult-cargo/classic colon
+them up for bind-mounting), strict dataset names (`MSv2`/`CasaTab`, preserving
+their versioned annotation metadata), `list:<inner>` (cult-cargo/classic colon
 syntax) and `List[<inner>]` (newer bracket syntax seen in both newer
 cult-cargo cabs and caracal2's scabha-dialect config schemas) for lists,
 and `Tuple[<a>, <b>, ...]`/`Union[<a>, <b>, ...]` (both bracket syntax,
@@ -26,6 +27,8 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from pydantic import ConfigDict, Field, create_model
+
+from shinobi.datasets import CasaTab, DatasetDeclarationError, MSv2, annotation_has_dataset
 
 
 class ResolutionCycleGuard:
@@ -111,7 +114,8 @@ _SCALAR_TYPES: dict[str, type] = {
     "boolean": bool,
 }
 
-_FILE_LIKE = {"file", "ms", "directory", "dir", "uri", "url"}
+_FILE_TYPES: dict[str, Any] = dict.fromkeys(("file", "ms", "directory", "dir", "uri", "url"), Path)
+_FILE_TYPES.update(msv2=MSv2, casatab=CasaTab)
 
 
 def is_file_dtype(dtype: str) -> bool:
@@ -121,7 +125,7 @@ def is_file_dtype(dtype: str) -> bool:
     dynamically pattern-matched param (no declared field/type annotation
     for `path_fields` to inspect) as needing a bind mount.
     """
-    return str(dtype).strip().lower() in _FILE_LIKE
+    return str(dtype).strip().lower() in _FILE_TYPES
 
 
 _BRACKET_LIST_RE = re.compile(r"^list\[(?P<inner>.+)\]$", re.IGNORECASE)
@@ -154,13 +158,17 @@ def _split_top_level(spec: str) -> list[str]:
 
 def dtype_to_type(dtype: str) -> Any:
     """Map a cab dtype string to a Python type. File-like dtypes become
-    `pathlib.Path`; `list:<inner>` or `List[<inner>]` becomes
+    `pathlib.Path`, except `MSv2`/`CasaTab` which preserve strict metadata.
+    Reserved `MSv4` raises a dataset declaration error at any depth.
+    `list:<inner>` or `List[<inner>]` becomes
     `list[<inner>]`; `Tuple[<a>, <b>, ...]` becomes `tuple[<a>, <b>, ...]`;
     `Union[<a>, <b>, ...]` becomes `<a> | <b> | ...`; anything unrecognised
     falls back to `str`.
     """
     dtype = str(dtype).strip()
     lower = dtype.lower()
+    if lower == "msv4":
+        raise DatasetDeclarationError("MSv4 is reserved and unsupported as a dataset dtype")
     if lower.startswith("list:"):
         return list[dtype_to_type(dtype[5:])]
     if m := _BRACKET_LIST_RE.match(dtype):
@@ -173,8 +181,8 @@ def dtype_to_type(dtype: str) -> Any:
         if items:
             return functools.reduce(operator.or_, items)
         return str
-    if is_file_dtype(dtype):
-        return Path
+    if lower in _FILE_TYPES:
+        return _FILE_TYPES[lower]
     return _SCALAR_TYPES.get(lower, str)
 
 
@@ -201,6 +209,8 @@ def narrow_choices(py_type: Any, choices: list[Any] | None) -> Any:
     """
     if not choices:
         return py_type
+    if annotation_has_dataset(py_type):
+        raise DatasetDeclarationError("strict dataset choices are unsupported; choices would erase dataset metadata")
     return Literal[tuple(choices)]
 
 

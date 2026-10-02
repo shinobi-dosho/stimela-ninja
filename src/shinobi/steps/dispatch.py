@@ -243,14 +243,15 @@ def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: 
             raise DatasetLifecycleUnavailableError(
                 "strict dataset annotations remain declarative for manual Scope execution; use a Cab or @pystep for the contained native lifecycle"
             )
-        declarations = {
-            **dataset_declarations(current.inputs_model),
-            **dataset_declarations(current.outputs_model),
-        }
+        input_declarations = dataset_declarations(current.inputs_model)
+        output_declarations = dataset_declarations(current.outputs_model)
+        declarations = input_declarations | output_declarations
         if any(token in name for name in declarations for token in (".", "[]", ".*")):
             names = ", ".join(sorted(declarations))
             raise DatasetLifecycleUnavailableError(f"contained MSv2 execution refused: nested dataset fields are not direct: {names}")
-        unsupported = sorted(name for name, declaration in declarations.items() if declaration.kind is not DatasetKind.MEASUREMENT_SET_V2)
+        unsupported = sorted(
+            {name for fields in (input_declarations, output_declarations) for name, declaration in fields.items() if declaration.kind is not DatasetKind.MEASUREMENT_SET_V2}
+        )
         if unsupported:
             raise DatasetLifecycleUnavailableError(
                 "strict dataset contract cannot execute until validation, staging and recovery support this route; "

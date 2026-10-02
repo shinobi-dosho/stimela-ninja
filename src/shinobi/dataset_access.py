@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from shinobi._annotations import walk_annotation
 from shinobi.dataset_closure import ClosureStatus, resolve_dataset_closure
-from shinobi.datasets import DatasetKind, dataset_declarations
+from shinobi.datasets import DatasetDeclarationError, DatasetKind, dataset_declarations
 from shinobi.exceptions import ShinobiError
 
 
@@ -262,20 +262,21 @@ def validate_scope_dataset_accesses(scope: Any) -> None:
         return direct_path(scope.inputs_model, name) or direct_path(scope.outputs_model, name)
 
     seen: set[tuple[str, DatasetTable]] = set()
-    for access in scope.dataset_accesses:
+    for index, access in enumerate(scope.dataset_accesses):
+        context = f"scope {scope.name!r} dataset_accesses[{index}]"
         if access.field not in fields:
-            raise ValueError(f"scope {scope.name!r} dataset access names unknown field {access.field!r}")
+            raise DatasetDeclarationError(f"{context}: dataset access names unknown field {access.field!r}")
         if not path_compatible(access.field):
-            raise ValueError(f"scope {scope.name!r} dataset access field {access.field!r} must be a direct Path or MS-compatible field")
+            raise DatasetDeclarationError(f"{context}: dataset access field {access.field!r} must be a direct Path or MS-compatible field")
         if access.root_field is not None and access.root_field not in fields:
-            raise ValueError(f"scope {scope.name!r} dataset access names unknown root_field {access.root_field!r}")
+            raise DatasetDeclarationError(f"{context}: dataset access names unknown root_field {access.root_field!r}")
         if access.root_field is not None and not path_compatible(access.root_field):
-            raise ValueError(f"scope {scope.name!r} dataset access root_field {access.root_field!r} must be a direct Path or MS-compatible field")
+            raise DatasetDeclarationError(f"{context}: dataset access root_field {access.root_field!r} must be a direct Path or MS-compatible field")
         if access.root_field == access.field:
-            raise ValueError(f"scope {scope.name!r} dataset access root_field must differ from field {access.field!r}")
+            raise DatasetDeclarationError(f"{context}: dataset access root_field must differ from field {access.field!r}")
         key = access.field, access.table
         if key in seen:
-            raise ValueError(f"scope {scope.name!r} repeats dataset access for {access.field!r}, table {access.table.value}")
+            raise DatasetDeclarationError(f"{context}: repeats dataset access for {access.field!r}, table {access.table.value}")
         seen.add(key)
 
 

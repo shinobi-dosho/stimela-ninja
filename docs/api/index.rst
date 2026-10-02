@@ -81,13 +81,21 @@ Datasets
 
 .. currentmodule:: shinobi.datasets
 
-.. py:data:: CasaTable
+.. py:data:: CasaTab
 
    A path annotated with the versioned ``casa-table/v1`` declaration.
 
-.. py:data:: MeasurementSetV2
+.. py:data:: MSv2
 
    A path annotated with the versioned ``msv2-structural/v1`` declaration.
+
+.. py:data:: CasaTable
+
+   Object-identical compatibility alias for :data:`CasaTab`.
+
+.. py:data:: MeasurementSetV2
+
+   Object-identical compatibility alias for :data:`MSv2`.
 
 .. autoclass:: shinobi.datasets.DatasetType
 

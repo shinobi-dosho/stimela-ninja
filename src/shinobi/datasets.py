@@ -1,6 +1,6 @@
 """Declarative CASA-table types and bounded structural inspection.
 
-``CasaTable`` and ``MeasurementSetV2`` are path-compatible annotations:
+``CasaTab`` and ``MSv2`` are path-compatible annotations:
 Pydantic validates and serializes their values exactly as ``pathlib.Path``.
 The attached :class:`DatasetType` is a declaration only.  It deliberately
 performs no filesystem or casacore work while a parameter model is built or
@@ -23,7 +23,7 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema
 
-from shinobi._annotations import walk_model_annotations
+from shinobi._annotations import walk_annotation, walk_model_annotations
 
 CASA_TABLE_PROFILE = "casa-table/v1"
 MSV2_STRUCTURAL_PROFILE = "msv2-structural/v1"
@@ -69,11 +69,26 @@ def _json_schema(declaration: DatasetType) -> WithJsonSchema:
     )
 
 
-CasaTable = Annotated[Path, CASA_TABLE_V1, _json_schema(CASA_TABLE_V1)]
+CasaTab = Annotated[Path, CASA_TABLE_V1, _json_schema(CASA_TABLE_V1)]
 """A path declared to contain a readable CASA table (profile v1)."""
 
-MeasurementSetV2 = Annotated[Path, MSV2_STRUCTURAL_V1, _json_schema(MSV2_STRUCTURAL_V1)]
+MSv2 = Annotated[Path, MSV2_STRUCTURAL_V1, _json_schema(MSV2_STRUCTURAL_V1)]
 """A path declared to satisfy the bounded MSv2 structural profile v1."""
+
+CasaTable = CasaTab
+"""Object-identical compatibility alias for :data:`CasaTab`."""
+MeasurementSetV2 = MSv2
+"""Object-identical compatibility alias for :data:`MSv2`."""
+
+
+class DatasetDeclarationError(ValueError):
+    """A dataset declaration cannot be represented by the supported contract."""
+
+
+def annotation_has_dataset(annotation: Any) -> bool:
+    """Whether an annotation contains dataset metadata at any depth."""
+
+    return any(isinstance(item, DatasetType) for node in walk_annotation(annotation) for item in node.metadata)
 
 
 class DatasetStatus(str, Enum):
@@ -238,7 +253,7 @@ _MSV2_REQUIRED_SUBTABLE_COLUMNS = {
 }
 
 
-def dataset_declarations(model: type[BaseModel]) -> dict[str, DatasetType]:
+def dataset_declarations(model: type[BaseModel], *, error: type[Exception] = TypeError) -> dict[str, DatasetType]:
     """Find every dataset declaration reachable from a Pydantic model.
 
     Returned keys are qualified field paths.  ``[]`` denotes a sequence item
@@ -246,6 +261,9 @@ def dataset_declarations(model: type[BaseModel]) -> dict[str, DatasetType]:
     models and unions are traversed recursively.  An ancestor stack prevents
     self-referential models from recursing forever without suppressing the
     same model used independently by two fields.
+
+    ``error`` selects the exception for declaration conflicts at a loader
+    boundary; ordinary Python callers retain the default ``TypeError``.
 
     Raises:
         TypeError: If one qualified path contains conflicting declarations.
@@ -256,7 +274,7 @@ def dataset_declarations(model: type[BaseModel]) -> dict[str, DatasetType]:
     def record(path: str, declaration: DatasetType) -> None:
         previous = result.get(path)
         if previous is not None and previous != declaration:
-            raise TypeError(f"field {model.__name__}.{path} has conflicting dataset declarations: {(previous, declaration)!r}")
+            raise error(f"field {model.__name__}.{path} has conflicting dataset declarations: {(previous, declaration)!r}")
         result[path] = declaration
 
     for node in walk_model_annotations(model):
@@ -493,13 +511,13 @@ def inspect_dataset(
 
 
 def inspect_casa_table(path: str | Path, *, limits: InspectionLimits | None = None) -> DatasetDescriptor:
-    """Inspect ``path`` against :data:`CasaTable`'s current profile."""
+    """Inspect ``path`` against :data:`CasaTab`'s current profile."""
 
     return inspect_dataset(path, CASA_TABLE_V1, limits=limits)
 
 
 def inspect_measurement_set_v2(path: str | Path, *, limits: InspectionLimits | None = None) -> DatasetDescriptor:
-    """Inspect ``path`` against :data:`MeasurementSetV2`'s current profile."""
+    """Inspect ``path`` against :data:`MSv2`'s current profile."""
 
     return inspect_dataset(path, MSV2_STRUCTURAL_V1, limits=limits)
 
@@ -510,6 +528,9 @@ __all__ = [
     "MSV2_STRUCTURAL_PROFILE",
     "MSV2_STRUCTURAL_V1",
     "CasaTable",
+    "CasaTab",
+    "MSv2",
+    "DatasetDeclarationError",
     "DatasetDescriptor",
     "DatasetKind",
     "DatasetStatus",
@@ -517,6 +538,7 @@ __all__ = [
     "InspectionLimits",
     "MeasurementSetV2",
     "dataset_declarations",
+    "annotation_has_dataset",
     "dataset_fields",
     "inspect_casa_table",
     "inspect_dataset",

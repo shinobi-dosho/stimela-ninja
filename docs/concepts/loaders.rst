@@ -75,6 +75,58 @@ computing something:
   using it loads with a warning and whatever static ``inputs:``/``outputs:``
   it carries. See the module docstring and ``SECURITY.md``.
 
+Strict dataset declarations
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Case-insensitive ``dtype: MSv2`` and ``dtype: CasaTab`` preserve the same
+versioned dataset metadata as their Python annotations. Legacy ``MS`` remains
+a plain ``Path``, including ``List[MS]``. ``MSv4`` is reserved and unsupported,
+even inside a list, tuple or union.
+
+Cab-level ``dataset_accesses`` is a list of mappings validated by
+:class:`~shinobi.DatasetAccess`. For example:
+
+.. code-block:: yaml
+
+    cabs:
+      flag:
+        command: flag-tool
+        inputs:
+          data.ms:
+            dtype: MSv2
+            required: true
+            mutable: true
+        dataset_accesses:
+          - field: data_ms
+            mode: write
+            table: MAIN
+            columns:
+              read: [DATA]
+              write: [FLAG]
+
+``field`` and ``root_field`` use literal sanitized model names: ``data.ms``
+becomes ``data_ms``. The loader does not rewrite references or propagate
+aliases. Malformed declarations report the cab and ``dataset_accesses[i]``.
+``_include`` and ``_use`` replace access lists when overridden; they do not
+append or merge individual entries. An absent or null list means no explicit
+access declarations.
+
+Omitting accesses on a mutable ``MSv2`` input is valid and conservatively
+reserves a whole-dataset write. Ordinary inputs infer reads and new outputs
+infer creates. Explicit path or alias contradictions are checked by planning.
+Column creation/removal requires ``allow_schema_change: true``; creating a
+new dataset with ``mode: create`` alone does not require that flag.
+
+Executable YAML cabs support direct strict dataset scalars, including
+optional scalars with a ``None`` default. Strict datasets inside containers,
+mixed unions or nested models, strict dynamic patterns, and strict ``choices`` are
+refused. Worker/config schemas may retain strict composite annotations.
+Legacy ``MS`` containers, patterns and choices retain their existing behavior.
+``CasaTab`` can be loaded and structurally inspected, but current dispatch
+supports only the bounded MSv2 lifecycle. Any ``CasaTab`` field in an atomic
+input or output is refused at execution, including a subtable with
+``root_field``. See :doc:`datasets` for the execution boundary.
+
 Stimela classic parameter files
 --------------------------------
 
