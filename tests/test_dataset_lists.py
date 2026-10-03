@@ -13,28 +13,11 @@ from shinobi.datasets import DatasetDeclarationError, dataset_declarations, exec
 from shinobi.exceptions import DatasetLifecycleViolationError
 from shinobi.loaders.yaml_cab import loads
 from shinobi.steps.schema import Mutability, ParamMeta, Recipe, StepRef
-
-
-def make_ms(path):
-    from tests.test_dataset_mutation import make_ms as build
-
-    return build(path)
-
-
-def attempts(path):
-    from tests.test_dataset_mutation import attempts as read
-
-    return read(path)
+from tests._dataset_fixtures import attempts, make_ms, set_scans
 
 
 def run_kwargs(path):
     return {"cache": True, "cache_dir": str(path / "cache")}
-
-
-def set_scans(path, value):
-    from tests.test_dataset_mutation import set_scans as write
-
-    write(path, value)
 
 
 class Inputs(BaseModel):
@@ -357,7 +340,7 @@ def test_supported_list_access_preserves_unrelated_composite_metadata(tmp_path, 
     assert read_dataset_attempt(records[0]).outcome == "refused"
 
 
-def test_optional_list_none_execution_requires_another_concrete_access(tmp_path, monkeypatch):
+def test_optional_list_none_execution_without_concrete_access_is_refused(tmp_path, monkeypatch):
     from shinobi.exceptions import DatasetLifecycleUnavailableError
 
     monkeypatch.chdir(tmp_path)
@@ -365,6 +348,10 @@ def test_optional_list_none_execution_requires_another_concrete_access(tmp_path,
     with pytest.raises(DatasetLifecycleUnavailableError, match="no concrete dataset access"):
         optional(**run_kwargs(tmp_path))
     assert attempts(tmp_path)[-1].outcome == "refused"
+
+
+def test_optional_list_none_execution_with_scalar_access(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
 
     class Mixed(BaseModel):
         ms: list[MSv2] | None = None

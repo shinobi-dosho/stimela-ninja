@@ -8,7 +8,6 @@ observations and signatures are the real ones rather than stand-ins.
 
 from __future__ import annotations
 
-import os
 import threading
 from pathlib import Path
 
@@ -21,9 +20,7 @@ from shinobi.config import AppConfig
 from shinobi.dataset_access import DatasetColumns
 from shinobi.dataset_lifecycle import (
     DATASET_MUTATION_CAPABILITY,
-    DatasetLifecycleAttempt,
     DatasetLifecyclePhase,
-    DatasetLifecycleStore,
     DatasetMutationOutcome,
     dataset_signature,
     mutation_committed,
@@ -32,13 +29,12 @@ from shinobi.exceptions import DatasetLifecycleUnavailableError, DatasetLifecycl
 from shinobi.snapshots import Chain, HeadStatus, chain_id, faults, get_journal, state_name
 from shinobi.steps.dispatch import _dispatch
 from shinobi.steps.schema import InputRef
+from tests._dataset_fixtures import ROWS, attempts, make_ms, scans, set_scans
 
 tables = pytest.importorskip("casacore.tables")
-np = pytest.importorskip("numpy")  # installed with casacore, not by default
+pytest.importorskip("numpy")  # installed with casacore, not by default
 if not hasattr(tables, "default_ms"):  # pragma: no cover - depends on the installed build
     pytest.skip("installed python-casacore has no default_ms fixture builder", allow_module_level=True)
-
-ROWS = 4
 
 
 class MSInput(BaseModel):
@@ -47,32 +43,6 @@ class MSInput(BaseModel):
 
 class Empty(BaseModel):
     pass
-
-
-def make_ms(path: Path, *, scan: int = 1) -> Path:
-    """A minimal valid MSv2: default subtables, a DATA column and a few rows."""
-
-    ms = tables.default_ms(str(path))
-    ms.addcols(tables.maketabdesc([tables.makearrcoldesc("DATA", 0j, ndim=2)]))
-    ms.addrows(ROWS)
-    ms.putcol("SCAN_NUMBER", np.full(ROWS, scan, dtype=np.int32))
-    ms.close()
-    return path
-
-
-def scans(path: Path) -> list[int]:
-    with tables.table(str(path), ack=False) as ms:
-        return [int(value) for value in ms.getcol("SCAN_NUMBER")]
-
-
-def set_scans(path: Path, value: int) -> None:
-    with tables.table(str(path), readonly=False, ack=False) as ms:
-        ms.putcol("SCAN_NUMBER", np.full(ms.nrows(), value, dtype=np.int32))
-
-
-def attempts(workspace: Path) -> list[DatasetLifecycleAttempt]:
-    paths = sorted((workspace / ".shinobi" / "dataset-attempts").glob("*.json"), key=os.path.getmtime)
-    return [DatasetLifecycleStore(path).attempt() for path in paths]
 
 
 def run_kwargs(tmp_path: Path, **extra) -> dict:
