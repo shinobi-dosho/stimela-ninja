@@ -1,7 +1,7 @@
 # shinobi -- repository guardrails
 
-Spiritual successor to Stimela classic, reacting against Stimela 2.0's
-YAML-recipe complexity. Organisation-wide conventions live in
+Spiritual successor to Stimela classic, using Python to declare workflow DAGs.
+Organisation-wide conventions live in
 [`shinobi-dosho/.github`](https://github.com/shinobi-dosho/.github/blob/main/AGENTS.md);
 this file contains only `stimela-ninja`-specific rules and wins on conflict.
 
@@ -9,8 +9,8 @@ this file contains only `stimela-ninja`-specific rules and wins on conflict.
 
 Use current material in this order:
 
-1. Maintained documentation under [`docs/`](docs/), especially
-   [`docs/design.rst`](docs/design.rst) and the relevant concept page.
+1. Maintained documentation under [`docs/`](docs/), especially the relevant
+   concept pages.
 2. Public and module docstrings describing the implementation contract.
 3. Tests and the working implementation.
 4. This file for cross-cutting guardrails.

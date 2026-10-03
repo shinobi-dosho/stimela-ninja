@@ -6,12 +6,11 @@ reproducible radio astronomy pipelines.
 
 A spiritual successor to `Stimela classic
 <https://github.com/ratt-ru/Stimela-classic>`_, built around the same core
-philosophy (see :doc:`design` for the full rationale). Recipes are declared
-directed acyclic graphs built in Python: typed references wire a step's inputs
+philosophy. Recipes are declared directed acyclic graphs built in Python:
+typed references wire a step's inputs
 to recipe inputs or earlier step outputs, and the resulting graph can be
-validated and rendered before execution. There is no YAML
-expression/substitution language, alias-propagation system, or second set of
-control-flow semantics hidden in configuration.
+validated and rendered before execution. Python builders select which nodes
+to declare, and typed wiring records their data dependencies.
 
 The execution layer is usable end to end: native, virtualenv, container,
 Slurm, and Kubernetes backends; concurrent and resource-aware scheduling;
@@ -101,7 +100,6 @@ and :doc:`offloading`.
    :maxdepth: 2
    :caption: Project
 
-   design
    security
    contributing
 

@@ -1,14 +1,11 @@
 """Load YAML cab definitions in the scabha dialect into shinobi `Cab` objects.
 
-**Lineage.** shinobi's cab schema is borrowed from scabha, the schema library
-underneath Stimela 2.0, and the vocabulary here is deliberately scabha's:
+**Lineage.** shinobi's cab schema uses the scabha dialect, also used by
+Stimela 2.0. It supports the same vocabulary:
 `inputs`/`outputs` with `dtype`/`required`/`default`/`info`/`choices`,
-`policies`, `management.wranglers`, `image`, `flavour`, `command`. Reusing it
-was a design decision, not an accident of history -- the cab schema is the part
-of stimela2 that got it right, and shinobi's own `Cab` mirrors it closely
-enough that loading a scabha cab is a translation rather than an
-interpretation. What shinobi drops is the layer *above* the cab: stimela2's
-recipe, alias and expression machinery (see stimela-ninja's `AGENTS.md`).
+`policies`, `management.wranglers`, `image`, `flavour`, `command`. The loader
+translates static cab definitions into shinobi `Cab` objects; recipes are
+declared separately in Python (see stimela-ninja's `AGENTS.md`).
 
 cult-cargo is the largest published library of cabs written in this dialect and
 is what this loader is usually pointed at, but the dialect is scabha's and
@@ -35,8 +32,9 @@ Per cab: ``sandbox``, ``harvest``, ``scratch`` and ``dataset_accesses``,
 which mirror the `Scope` fields of the same names. Access mappings are
 validated by `DatasetAccess`; field references use literal sanitized model
 names (``data.ms`` becomes ``data_ms``). Strict ``MSv2``/``CasaTab`` dtypes
-retain dataset metadata; legacy ``MS`` remains `Path`. Strict containers,
-mixed unions, choices and dynamic patterns are refused for executable cabs, and ``MSv4``
+retain dataset metadata; legacy ``MS`` remains `Path`. Direct read-only
+``List[MSv2]`` inputs are supported. Other strict containers, mixed unions,
+choices and dynamic patterns are refused for executable cabs, and ``MSv4``
 is reserved. Current dispatch supports the bounded MSv2 lifecycle only;
 ``CasaTab`` remains available for declaration and inspection.
 
@@ -61,15 +59,12 @@ make every field of every cab differ from its Python-authored equivalent; a
 pattern attr has no model field at all, which is the reason
 `ParamMeta.dtype` exists.
 
-**Support is deliberately partial.** This reads the static, declarative subset
-and refuses the parts that are a programming language wearing YAML. The
-boundary is drawn once, here and in SECURITY.md, and the sections below say
-exactly where it falls: composition mechanisms this implements, then the
-scabha features it does not.
+**Supported scope.** This reads static cab definitions and resolves the
+composition mechanisms below. Expression evaluation and executable schema
+generation are outside its supported scope; see SECURITY.md for the
+execution boundary.
 
-Composition mechanisms, implemented in a deliberately minimal form -- real
-scabha cab files are not self-contained and rely on stimela2's config system
-for these:
+Composition mechanisms for sharing and combining scabha cab definitions:
 
 * ``_include: [file, ...]`` -- merges other YAML files in (relative to the
   including file), most often to pull in a shared ``vars:``/``lib:``
@@ -104,9 +99,7 @@ for these:
   ``_include`` naming a package with no registered root raises a clear
   ``CabLoadError``.
 
-Deliberately NOT implemented (this is the boundary -- see SECURITY.md). Each of
-these is a place where scabha stops describing a tool and starts computing
-something, which is the line shinobi does not cross in a cab:
+The following features are not evaluated by the loader (see SECURITY.md):
 
 * **Expressions and substitutions.** The ``=config.x.y`` / ``=recipe.ms`` /
   ``${...}`` / ``=IFSET(...)`` language scabha values can contain. Left as
@@ -121,10 +114,9 @@ something, which is the line shinobi does not cross in a cab:
   it belongs in the Python that calls the step, where it is visible to the
   reader and to the DAG.
 
-* **Aliases and propagation.** stimela2 propagates parameter values up and down
-  between recipe and step level, which is what forces its expression language
-  to exist. shinobi wires steps with typed `InputRef`/`OutputRef` objects
-  instead, so there is nothing to propagate.
+* **Aliases and propagation.** Recipe-to-step parameter propagation is not
+  implemented. shinobi wires steps with typed `InputRef`/`OutputRef` objects
+  to declare parameter sources and data dependencies explicitly.
 * ``dynamic_schema: dotted.path`` -- a reference to a Python function that
   would need importing and *calling* to get a cab's real schema (real
   cult-cargo's ``wsclean.yml``/``cubical.yml``/``quartical.yml`` use this).
@@ -143,10 +135,8 @@ something, which is the line shinobi does not cross in a cab:
   ``cubical.py``/``quartical.py`` for that knowledge now, and prefer
   porting a cab there over reintroducing a table here.
 
-Building the expression language out, or actually executing a cab's own
-``dynamic_schema``, would mean re-deriving stimela2's config engine (or
-its code-execution trust model) -- exactly what this project exists to
-avoid unless a real cab actually needs it.
+The loader reads static schemas. It does not evaluate
+recipe-level expressions or execute ``dynamic_schema``.
 """
 
 from __future__ import annotations
@@ -160,8 +150,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from shinobi._annotations import walk_annotation
-from shinobi.datasets import DatasetDeclarationError, DatasetType, dataset_declarations
+from shinobi.datasets import DatasetDeclarationError
 from shinobi.dataset_access import DatasetAccess
 from shinobi.exceptions import CabLoadError
 from shinobi.loaders._modelgen import (
@@ -467,21 +456,10 @@ def _build_cab(name: str, spec: dict[str, Any], package_roots: dict[str, Path], 
 
 
 def _validate_dataset_shapes(model: type) -> None:
-    """Executable strict datasets must be one direct Path, optionally None.
+    """Executable strict datasets support direct scalars and MSv2 read lists."""
+    from shinobi.datasets import executable_dataset_fields
 
-    Declaration discovery supplies qualified paths and conflict diagnostics;
-    the shared annotation walk also detects mixed unions whose declaration
-    path alone looks direct, but whose other branch can select a non-Path.
-    """
-    for name in dataset_declarations(model, error=DatasetDeclarationError):
-        if name not in model.model_fields:
-            raise DatasetDeclarationError(f"strict dataset field {name!r} is nested; executable YAML cabs support direct scalar fields only")
-        field = model.model_fields[name]
-        leaves = [node for node in walk_annotation(field.annotation, metadata=tuple(field.metadata)) if node.leaf and node.annotation is not type(None)]
-        if len(leaves) != 1 or leaves[0].path or leaves[0].annotation is not Path or not any(isinstance(item, DatasetType) for item in leaves[0].metadata):
-            raise DatasetDeclarationError(
-                f"strict dataset field {name!r} must be a direct strict scalar optionally combined with None; mixed unions and containers are unsupported"
-            )
+    executable_dataset_fields(model)
 
 
 def _is_section(value: dict) -> bool:

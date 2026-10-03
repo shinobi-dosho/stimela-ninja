@@ -349,6 +349,7 @@ def _planned_access_matches(planned: ResolvedDatasetAccess, actual: ResolvedData
         return False
     stable = (
         "field",
+        "element_index",
         "declaration",
         "requested_path",
         "root",

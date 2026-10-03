@@ -606,6 +606,21 @@ def observe_roots(roots: tuple[Path, ...], workspace: Path) -> tuple[tuple[Datas
     return tuple(observations), tuple(absent)
 
 
+def _validate_disjoint_roots(roots: tuple[Path, ...], prefix: str) -> None:
+    for index, left in enumerate(roots):
+        for right in roots[index + 1 :]:
+            if left.is_relative_to(right) or right.is_relative_to(left):
+                raise DatasetLifecycleUnavailableError(f"{prefix}: dataset roots {left} and {right} are nested")
+
+
+def _validate_observed_resources(accesses, observations, prefix: str) -> None:
+    for observation in observations:
+        observed = {resource.path for resource in observation.closure.resources}
+        planned = {resource for access in accesses if access.root == observation.root for resource in access.resources}
+        if observed != planned:
+            raise DatasetLifecycleUnavailableError(f"{prefix}: access plan and closure observation disagree for {observation.root}")
+
+
 def resolve_lifecycle_snapshot(
     scope: Scope,
     values: BaseModel,
@@ -616,9 +631,8 @@ def resolve_lifecycle_snapshot(
 ) -> DatasetLifecycleSnapshot:
     """Resolve the shared access plan and inspect its contained MSv2 roots.
 
-    A read lifecycle accepts exactly one root. A mutation lifecycle accepts
-    several pairwise-disjoint contained roots, and observes a CREATE target
-    as absent.
+    Both lifecycles accept pairwise-disjoint contained roots. A mutation
+    lifecycle observes a CREATE target as absent.
     """
 
     if mutation:
@@ -643,13 +657,9 @@ def resolve_lifecycle_snapshot(
     if any(not access.path_known or access.root is None or access.closure_status is not ClosureStatus.VALID for access in accesses):
         raise DatasetLifecycleUnavailableError("contained MSv2 read refused: every access must resolve to a validated local closure")
     roots = tuple(sorted({access.root for access in accesses if access.root is not None}, key=str))
-    if len(roots) != 1:
-        raise DatasetLifecycleUnavailableError(f"contained MSv2 read refused: exactly one closure root is supported, resolved {len(roots)}")
+    _validate_disjoint_roots(roots, "contained MSv2 read refused")
     observations = tuple(_observe_root(root, workspace) for root in roots)
-    resources = {resource.path for observation in observations for resource in observation.closure.resources}
-    planned_resources = {resource for access in accesses for resource in access.resources}
-    if resources != planned_resources:
-        raise DatasetLifecycleUnavailableError("contained MSv2 read refused: access plan and closure observation disagree")
+    _validate_observed_resources(accesses, observations, "contained MSv2 read refused")
     return DatasetLifecycleSnapshot(accesses=accesses, observations=observations)
 
 
@@ -675,20 +685,13 @@ def _resolve_mutation_snapshot(
         if access.closure_status is not ClosureStatus.VALID and access.root not in created:
             raise DatasetLifecycleUnavailableError(f"{prefix}: dataset field {access.field!r} does not resolve to a validated local closure")
     roots = tuple(sorted({access.root for access in accesses if access.root is not None}, key=str))
-    for index, left in enumerate(roots):
-        for right in roots[index + 1 :]:
-            if left.is_relative_to(right) or right.is_relative_to(left):
-                raise DatasetLifecycleUnavailableError(f"{prefix}: dataset roots {left} and {right} are nested")
+    _validate_disjoint_roots(roots, prefix)
     existing = tuple(root for root in roots if root not in created)
     observations = tuple(_observe_root(root, workspace) for root in existing)
     for root in created:
         if root.exists() or root.is_symlink():
             raise DatasetLifecycleUnavailableError(f"{prefix}: CREATE target {root} already exists")
-    for observation in observations:
-        observed = {resource.path for resource in observation.closure.resources}
-        planned = {resource for access in accesses if access.root == observation.root for resource in access.resources}
-        if observed != planned:
-            raise DatasetLifecycleUnavailableError(f"{prefix}: access plan and closure observation disagree for {observation.root}")
+    _validate_observed_resources(accesses, observations, prefix)
     return DatasetLifecycleSnapshot(accesses=accesses, observations=observations, absent_roots=tuple(sorted(created, key=str)))
 
 
@@ -922,13 +925,13 @@ class StrictLeaf:
         keys = input_keys or {}
         lines = []
         for access in self.accesses:
-            if access.field in mutated or access.mode is DatasetMode.CREATE:
+            if access.declaration.field in mutated or access.mode is DatasetMode.CREATE:
                 lines.append(
                     f"{access.field}: {access.mode.value} target; path string only (content excluded from the key), "
                     "its state tracked by the snapshot journal with a structural signature"
                 )
-            elif access.field in keys:
-                lines.append(f"{access.field}: wired; identified by producer lineage {keys[access.field]}")
+            elif access.declaration.field in keys:
+                lines.append(f"{access.field}: wired; identified by producer lineage {keys[access.declaration.field]}")
             else:
                 lines.append(f"{access.field}: unwired boundary; path plus per-file (relative path, mtime_ns, size) fingerprint")
         return tuple(dict.fromkeys(lines))

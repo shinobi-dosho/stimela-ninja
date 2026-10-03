@@ -253,7 +253,7 @@ def contained_access_issues(
     reach a member the closure's observations never examine.
     """
 
-    from shinobi.datasets import dataset_declarations
+    from shinobi.datasets import executable_dataset_fields
 
     root = workspace.resolve()
     issues: list[str] = []
@@ -275,8 +275,8 @@ def contained_access_issues(
         step_inputs=step_inputs,
         validated_steps=validated_steps,
     ):
-        dataset_inputs = set(dataset_declarations(leaf.inputs_model))
-        dataset_outputs = set(dataset_declarations(leaf.outputs_model))
+        dataset_inputs = set(executable_dataset_fields(leaf.inputs_model))
+        dataset_outputs = set(executable_dataset_fields(leaf.outputs_model))
         created_dataset_roots: set[Path] = set()
         if dataset_outputs or dataset_inputs:
             from shinobi.dataset_access import DatasetAccessError, DatasetMode, resolve_scope_dataset_accesses

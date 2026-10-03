@@ -4,18 +4,17 @@ Loaders
 For executable cabs, ``shinobi`` reuses definitions from two established
 formats, each producing the same :class:`~shinobi.Cab` objects you would build
 by hand. A related loader builds pydantic models from CARACal worker config
-schemas without pretending those schemas are executable cabs.
+schemas for validating configuration.
 
 YAML cabs (the scabha dialect)
 -------------------------------
 
-shinobi's cab schema is **borrowed from scabha**, the schema library
-underneath Stimela 2.0. The vocabulary is deliberately scabha's --
+shinobi's cab schema uses the scabha dialect, also used by Stimela 2.0.
+It supports the same vocabulary --
 ``inputs``/``outputs`` with ``dtype``/``required``/``default``/``info``/
 ``choices``, plus ``policies``, ``management.wranglers``, ``image``,
-``flavour`` and ``command`` -- so loading a scabha cab is a translation, not an
-interpretation. What shinobi drops is the layer *above* the cab: stimela2's
-recipe, alias and expression machinery.
+``flavour`` and ``command``. The loader translates static cab definitions into
+shinobi objects; recipes are declared separately in Python.
 
 `cult-cargo <https://github.com/caracal-pipeline/cult-cargo>`_ is the largest
 published library of cabs written in this dialect, and is what the loader is
@@ -38,8 +37,9 @@ file.
 What is supported
 ~~~~~~~~~~~~~~~~~
 
-Support is **deliberately partial**: the static, declarative subset is read,
-and the parts that are a programming language wearing YAML are refused.
+The loader supports static cab definitions and the composition mechanisms
+listed below. Expression evaluation and executable schema generation are
+outside its supported scope.
 
 Implemented, verified against real upstream cab files:
 
@@ -51,11 +51,10 @@ Implemented, verified against real upstream cab files:
   imports a cab package to find its data directory, which would execute
   arbitrary ``__init__.py`` code; see ``SECURITY.md``.
 
-Not implemented, and not by omission
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Unsupported features
+~~~~~~~~~~~~~~~~~~~~
 
-Each of these is a point where scabha stops describing a tool and starts
-computing something:
+The following features are not evaluated by the loader:
 
 * **Expressions and substitutions** (``=config.x.y``, ``=recipe.ms``,
   ``${...}``, ``=IFSET(...)``) -- kept as literal strings, so a value carrying
@@ -68,8 +67,7 @@ computing something:
   reader and to the DAG.
 * **Aliases and value propagation** between recipe and step level -- shinobi
   wires steps with typed :class:`~shinobi.InputRef`/:class:`~shinobi.OutputRef`
-  objects, so there is nothing to propagate, and no need for the expression
-  language that propagation forces into existence.
+  objects to declare parameter sources and data dependencies explicitly.
 * **``dynamic_schema``** -- a dotted reference to a Python function that would
   have to be imported *and called* to produce the cab's real schema. A cab
   using it loads with a warning and whatever static ``inputs:``/``outputs:``
@@ -122,9 +120,13 @@ Column creation/removal requires ``allow_schema_change: true``; creating a
 new dataset with ``mode: create`` alone does not require that flag.
 
 Executable YAML cabs support direct strict dataset scalars, including
-optional scalars with a ``None`` default. Strict datasets inside containers,
-mixed unions or nested models, strict dynamic patterns, and strict ``choices`` are
-refused. Worker/config schemas may retain strict composite annotations.
+optional scalars with a ``None`` default, and direct read-only input
+``List[MSv2]`` (also ``list:MSv2``). Optional list fields may default to ``None``;
+concrete lists must be non-empty. One base ``dataset_accesses`` read declaration
+applies to every element. List outputs, explicit or inferred writes and creates,
+other strict containers, mixed unions or nested models, strict dynamic patterns,
+and strict ``choices`` are refused. See :doc:`datasets` for indexed records,
+closure overlap refusals and the multi-root execution boundary. Worker/config schemas may retain strict composite annotations.
 Legacy ``MS`` containers, patterns and choices retain their existing behavior.
 ``CasaTab`` can be loaded and structurally inspected, but current dispatch
 supports only the bounded MSv2 lifecycle. Any ``CasaTab`` field in an atomic

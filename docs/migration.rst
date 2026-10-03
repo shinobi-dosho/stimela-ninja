@@ -1,8 +1,7 @@
 Migrating from CARACal / Stimela 2
 ==================================
 
-If you have a CARACal pipeline, the thing to understand first is what this
-project asks of you and what it doesn't.
+This guide maps CARACal worker schemas and Python modules to shinobi recipes.
 
 **Your cab definitions carry over.** cult-cargo YAML is loaded as-is,
 including ``_include`` and ``_use`` (:doc:`concepts/loaders`). Two
@@ -11,12 +10,11 @@ exceptions are documented below.
 **Your worker configuration does not port automatically.** A CARACal worker
 is a YAML schema plus a Python module that reads it; shinobi has no worker
 concept and no ``enable:`` machinery. What replaces both is a function that
-builds a :class:`~shinobi.Recipe`. There is no converter, and this page is
-not pretending otherwise -- it is a mapping guide, and the port is manual.
+builds a :class:`~shinobi.Recipe`. Worker bodies are ported manually; this
+page describes the corresponding constructs.
 
-The honest summary: you are trading a declarative worker config for Python
-you write yourself. That is a real cost, paid once per worker, and it buys
-you ordinary control flow instead of a config language.
+Existing worker schemas can be retained, while Python builders select the
+steps and declare their wiring. Each worker body requires its own port.
 
 .. note::
 
@@ -169,10 +167,9 @@ In shinobi, they are just ``if`` statements in a function that returns a
         recipe.set_output("ms", current_ms)
         return recipe
 
-The ``current_ms`` variable is doing the work that CARACal's
-label/alias-propagation machinery does: each enabled segment rebinds it, so
-the next step wires from whatever actually ran. That is the whole
-substitution mechanism, and it is a local variable.
+The ``current_ms`` variable tracks the dataset reference after each enabled
+segment. Rebinding it wires the next step to the most recently declared
+producer.
 
 A second worker: ``flag``
 -------------------------
@@ -230,11 +227,10 @@ There is no cleverness to find here, and that is the point -- porting a
 worker is mechanical once the pattern is in hand. Three things are worth
 noticing:
 
-**"Executed in the same order in which they are given below."** CARACal's
-``flag`` schema has to promise that in prose, because the order lives in the
-framework. Here the order *is* the order you wrote the ``if`` statements in,
-and ``current_ms`` threading through them is what makes it real rather than
-conventional.
+**Preserve execution order with explicit dependencies.** Thread
+``current_ms`` through the enabled flagging segments to preserve their
+sequence. Each step wires to the previous producer, recording the order in
+the DAG.
 
 **A segment can depend on more than its own flag.** ``flag_time`` only runs
 when it was enabled *and* actually given a range:
@@ -244,8 +240,8 @@ when it was enabled *and* actually given a range:
     if config.flag_time.enable and config.flag_time.timerange:
         ...
 
-In a config language that is a second schema rule someone has to express and
-enforce. In Python it is ``and``.
+The builder can combine the enable flag and the validated time range in one
+Python condition.
 
 .. _migration-inplace-outputs:
 
@@ -254,14 +250,11 @@ place* -- but its step declares ``vis`` as an **output** as well as an input,
 so each segment wires from the previous one's ``vis`` rather than all of them
 naming the same file independently.
 
-Do this. It is the single most valuable habit to carry into a port, because
-it turns an in-place mutation into a real edge in the graph:
+This wiring records in-place mutations as dependencies in the graph:
 
-* the scheduler orders the segments because they are genuinely dependent,
-  not because they happen to be declared in that sequence;
+* the scheduler orders the segments using their dependency edges;
 * ``ninja run --dryrun`` shows the chain;
-* the recipe stays offloadable to a cluster, where declaration order means
-  nothing and only edges do (:doc:`offloading`).
+* the cluster scheduler uses the same dependencies (:doc:`offloading`).
 
 The alternative -- every segment taking ``vis=recipe.inputs.ms`` and relying
 on in-place mutation -- also works locally at the default

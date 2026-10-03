@@ -392,7 +392,7 @@ def plan_dataset_backend(
     current leaf's exact declared subset (and defaults to ``accesses`` for
     direct callers). Every existing workflow root is mounted read-only, then
     only roots written or created by this leaf are upgraded. The lifecycle
-    has already restricted execution to contained single-root closures, but
+    has already restricted execution to contained pairwise-disjoint closures, but
     this function validates that invariant again at the adapter boundary:
     mounting an incomplete closure would turn a policy bug into a successful
     tool run against the wrong dataset.
