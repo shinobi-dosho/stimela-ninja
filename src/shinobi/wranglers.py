@@ -3,8 +3,7 @@ by matching each line against the cab's configured regexes.
 
 Only the ``PARSE_OUTPUT`` action is implemented for now -- enough to pull
 named values out of a tool's console output. Display-oriented actions from
-stimela2 (HIGHLIGHT, SUPPRESS, SEVERITY, ...) are deliberately left out of
-this scaffold; add them to this module if/when a real cab needs them.
+Stimela 2 (HIGHLIGHT, SUPPRESS, SEVERITY, ...) are currently unsupported.
 """
 
 from __future__ import annotations

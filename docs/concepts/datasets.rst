@@ -84,14 +84,44 @@ Dataset declarations nested in Pydantic models, sequences, mappings, and
 unions are discovered recursively.  Diagnostic paths use ``[]`` for a
 sequence item and ``.*`` for a mapping value.
 
-Executable YAML cabs support direct strict scalars, including optional
-``MSv2`` fields with a ``None`` default. Strict containers, mixed unions and nested
-positions, dynamic ``ParamPattern`` attributes and ``choices`` are refused;
+Executable YAML cabs support direct strict scalars and read-only input
+``List[MSv2]`` fields, including optional fields with a ``None`` default.
+Other strict containers, mixed unions and nested positions, dynamic
+``ParamPattern`` attributes and ``choices`` are refused;
 worker/config schemas may retain strict composite metadata. Python model
 declarations can also contain nested metadata, but current dispatch refuses
 those execution shapes. ``CasaTab`` supports declaration and inspection only:
 any atomic input or output with that annotation is refused at dispatch, even
 a referenced subtable carrying ``root_field``.
+
+Read-only MSv2 lists
+-------------------
+
+A direct Python ``list[MSv2]`` or YAML ``List[MSv2]`` input can read several
+contained datasets in one step, as required by WSClean. One base declaration,
+for example ``DatasetAccess(field="ms", mode="read")``, applies its columns
+and selection to every element. Omitting it infers whole-dataset reads.
+Resolution retains input order and records ``ms[0]``, ``ms[1]``, and so on,
+with a non-negative ``element_index`` and the unchanged base declaration.
+Scalar records retain ``element_index=None`` and accept existing serialized
+records without that field. Each root contributes its own closure resources,
+shared read claim, and pre/post observations. A change to any root prevents
+success publication. Local container routes mount every root read-only, and
+qualified detached workers freeze and revalidate the same indexed accesses.
+
+Concrete lists must be non-empty and contain strict MSv2 elements; duplicate
+canonical roots, aliases or overlapping closure resources within a leaf are
+refused. Reusing a root in different recipe leaves remains supported. An
+optional whole-list ``None`` declares no access. The strict execution lifecycle
+still requires at least one concrete MSv2 access: an all-``None`` invocation
+is refused, while an omitted optional list alongside a concrete scalar or list
+is supported. An unresolved whole list may
+reserve one path envelope for planning, but execution requires concrete roots.
+Element-level ``None``, mixed unions, nested lists, tuples, sets, mappings and
+abstract sequences remain unsupported. List outputs, writes, creates,
+``MUTABLE``, ``write_path`` and same-name input/output declarations are refused;
+transactional list mutation and recovery remain future work. Scalar writers
+may precede list readers in a flat recipe under the existing mutation lifecycle.
 
 Physical dataset closure
 ------------------------
@@ -149,8 +179,9 @@ their explicit ``allow_row_count_change`` and ``allow_keyword_change`` flags.
 Selections are bounded data (half-open row ranges and finite standard ID
 sets), not TaQL or executable expressions.
 
-``field`` and ``root_field`` must name direct path/MS-compatible fields.
-Containers, nested models and scalar fields are rejected at definition time;
+``field`` names a direct path/MS-compatible field or a read-only MSv2 list
+input. ``root_field`` remains scalar-only and is not supported on list accesses.
+Other containers, nested models and non-path scalar fields are rejected at definition time;
 scatter and nested dataset recipes have their separate bounded refusals below.
 An explicit ``read`` declaration must also agree with the ordinary filesystem
 schema.  A same-named input/output, ``MUTABLE`` path or ``write_path`` marker
@@ -203,7 +234,7 @@ Contained read execution
 ------------------------
 
 ``contained-native-msv2-read/v1`` is the first executable strict-dataset
-capability.  It accepts one ordinary, directory-backed MSv2 closure read by a
+capability.  It accepts one or more pairwise-disjoint ordinary, directory-backed MSv2 closures read by a
 direct atomic ``Cab`` or ``@pystep``, or by atomic leaves in one flat recipe,
 through a backend route proven by the separate ``msv2-backend-route/v1``
 capability profile. Recipe boundary models may carry the same annotation;

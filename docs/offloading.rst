@@ -27,6 +27,12 @@ captured user code or resolving network-dependent image pins. It records:
 * validated recipe inputs, step constants and the resolved configuration
   snapshot, plus each step's selected tool backend and shared tool-venv path.
 
+Direct read-only ``list[MSv2]`` inputs retain their ordered values and indexed
+resolved accesses through freezing, preparation and worker execution. Qualified
+workers claim and observe every contained root, and refuse a change to any
+read-only element before publishing success. List outputs and mutations remain
+unsupported, as described in :doc:`concepts/datasets`.
+
 Known step inputs are checked during freezing. Inputs wired from a producing
 step remain references, **not fabricated values**; the worker must validate
 them once that producer commits its result. Relative paths retain their
