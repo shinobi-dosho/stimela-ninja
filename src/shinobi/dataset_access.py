@@ -14,11 +14,11 @@ import os
 from pathlib import Path
 from typing import Any, Iterable
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shinobi._annotations import walk_annotation
 from shinobi.dataset_closure import ClosureStatus, resolve_dataset_closure
-from shinobi.datasets import DatasetDeclarationError, DatasetKind, dataset_declarations
+from shinobi.datasets import DatasetDeclarationError, DatasetKind, dataset_declarations, executable_dataset_fields, executable_dataset_list_fields
 from shinobi.exceptions import ShinobiError
 
 
@@ -175,6 +175,7 @@ class ResolvedDatasetAccess(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     field: str
+    element_index: int | None = Field(default=None, strict=True, ge=0)
     declaration: DatasetAccess
     requested_path: Path | None
     root: Path | None
@@ -189,7 +190,10 @@ class ResolvedDatasetAccess(BaseModel):
 
     @model_validator(mode="after")
     def _consistent(self) -> "ResolvedDatasetAccess":
-        if self.field != self.declaration.field or self.mode is not self.declaration.mode:
+        expected_field = self.declaration.field if self.element_index is None else f"{self.declaration.field}[{self.element_index}]"
+        if self.element_index is not None and (not self.path_known or self.mode is not DatasetMode.READ):
+            raise ValueError("indexed dataset access requires a concrete read-only path")
+        if self.field != expected_field or self.mode is not self.declaration.mode:
             raise ValueError("resolved field/mode must agree with its dataset declaration")
         if not self.resources:
             raise ValueError("resolved dataset access requires at least one resource identity")
@@ -265,13 +269,27 @@ def validate_scope_dataset_accesses(scope: Any) -> None:
     def path_compatible(name: str) -> bool:
         return direct_path(scope.inputs_model, name) or direct_path(scope.outputs_model, name)
 
+    # Unsupported Python composites may still be constructed as metadata.
+    # Validate executable shapes only when explicit access targets one.
+    list_fields = executable_dataset_list_fields(scope.inputs_model) | executable_dataset_list_fields(scope.outputs_model)
+    if list_fields:
+        from shinobi.steps.schema import mutated_path_fields, write_path_fields
+
+        writes = mutated_path_fields(scope) | write_path_fields(scope) | set(scope.outputs_model.model_fields)
+        for name in list_fields & writes:
+            raise DatasetDeclarationError(f"strict dataset list field {name!r} is read-only; list outputs and filesystem writes are unsupported")
     seen: set[tuple[str, DatasetTable]] = set()
     non_read_fields = {access.field for access in scope.dataset_accesses if access.mode is not DatasetMode.READ}
     for index, access in enumerate(scope.dataset_accesses):
         context = f"scope {scope.name!r} dataset_accesses[{index}]"
         if access.field not in fields:
             raise DatasetDeclarationError(f"{context}: dataset access names unknown field {access.field!r}{unknown_field(access.field)}")
-        if not path_compatible(access.field):
+        is_list = access.field in list_fields
+        if is_list:
+            shape = executable_dataset_fields(scope.inputs_model, reject_unsupported=False).get(access.field)
+            if shape is None or not shape.is_list or access.mode is not DatasetMode.READ or access.root_field is not None:
+                raise DatasetDeclarationError(f"{context}: strict dataset lists support read-only inputs without root_field")
+        if not is_list and not path_compatible(access.field):
             raise DatasetDeclarationError(f"{context}: dataset access field {access.field!r} must be a direct Path or MS-compatible field")
         if access.root_field is not None and access.root_field not in fields:
             raise DatasetDeclarationError(f"{context}: dataset access names unknown root_field {access.root_field!r}{unknown_field(access.root_field)}")
@@ -310,6 +328,109 @@ def _declaration_label(dataset: str, declaration: DatasetAccess) -> str:
     return f"{dataset}, {target}.{names[0]}" if names else f"{dataset}, {target}"
 
 
+def _resolve_known_access(
+    scope: Any,
+    values: dict[str, Any],
+    declaration: DatasetAccess,
+    fallback: DatasetFallback | None,
+    value: Any,
+    *,
+    workspace: Path,
+    planned_roots: dict[Path, tuple[Path, ...]],
+    allow_existing_create: bool,
+    element_index: int | None = None,
+) -> ResolvedDatasetAccess:
+    """Resolve one concrete path for both scalar and list declarations."""
+    resolved_field = declaration.field if element_index is None else f"{declaration.field}[{element_index}]"
+    try:
+        requested = _canonical(value, workspace)
+    except DatasetAccessError as exc:
+        raise DatasetAccessError(f"scope {scope.name!r} dataset field {resolved_field!r}: {exc}") from exc
+    if declaration.mode is DatasetMode.CREATE:
+        spelled = Path(os.fspath(value))
+        spelled = spelled if spelled.is_absolute() else workspace / spelled
+        if allow_existing_create and spelled.is_symlink():
+            # The canonical path is the link's *target*: deleting it to
+            # "overwrite" the link would remove data the caller never
+            # named. Refused here, where the spelling is still visible.
+            raise DatasetAccessError(
+                f"scope {scope.name!r} CREATE dataset field {resolved_field!r} is a symlink ({spelled} -> {requested}); overwrite refuses it, remove or replace the link yourself"
+            )
+        if (requested.exists() or requested.is_symlink()) and not allow_existing_create:
+            raise DatasetAccessError(
+                f"scope {scope.name!r} CREATE dataset field {resolved_field!r} already exists at {requested}; "
+                "re-run with --overwrite <step> (overwrite_steps=[...] in Python) to delete it and invalidate the cache downstream"
+            )
+        return ResolvedDatasetAccess(
+            field=resolved_field,
+            element_index=element_index,
+            declaration=declaration,
+            requested_path=requested,
+            root=requested,
+            resources=(requested,),
+            mode=declaration.mode,
+            whole_dataset=declaration.columns is None,
+            path_known=True,
+            columns_known=declaration.columns is not None,
+            fallback=fallback,
+            reason=(f"{fallback.value} access; create whole dataset: {requested}" if fallback is not None else f"create {declaration.table.value}: {requested}"),
+        )
+
+    if declaration.root_field is not None and values.get(declaration.root_field) is not None:
+        root_candidate = _canonical(values[declaration.root_field], workspace)
+    elif declaration.table is not DatasetTable.MAIN and requested.name == declaration.table.value:
+        root_candidate = requested.parent
+    else:
+        root_candidate = requested
+    planned = next(((root, resources) for root, resources in planned_roots.items() if root_candidate == root), None)
+    if planned is not None:
+        planned_root, resources = planned
+        return ResolvedDatasetAccess(
+            field=resolved_field,
+            element_index=element_index,
+            declaration=declaration,
+            requested_path=requested,
+            root=planned_root,
+            resources=resources,
+            mode=declaration.mode,
+            whole_dataset=declaration.columns is None,
+            path_known=True,
+            columns_known=declaration.columns is not None,
+            fallback=fallback,
+            reason=(
+                f"{fallback.value} access; {declaration.mode.value} planned whole dataset: {planned_root}"
+                if fallback is not None
+                else f"{declaration.mode.value} planned {_declaration_label(planned_root.name or declaration.field, declaration)}"
+            ),
+        )
+    closure = resolve_dataset_closure(root_candidate, storage_namespace=workspace)
+    if not closure.valid:
+        raise DatasetAccessError(f"scope {scope.name!r} cannot resolve dataset field {resolved_field!r}: {closure.status.value}: {closure.message}")
+    if declaration.table is not DatasetTable.MAIN and not any(declaration.table.value in resource.members for resource in closure.resources):
+        raise DatasetAccessError(f"scope {scope.name!r} dataset field {resolved_field!r} targets absent subtable {declaration.table.value}")
+    resources = tuple(resource.path for resource in closure.resources)
+    reason = (
+        f"{fallback.value} access; {declaration.mode.value} whole dataset: {closure.root}"
+        if fallback is not None
+        else f"{declaration.mode.value} {_declaration_label(closure.root.name if closure.root is not None else declaration.field, declaration)}"
+    )
+    return ResolvedDatasetAccess(
+        field=resolved_field,
+        element_index=element_index,
+        declaration=declaration,
+        requested_path=requested,
+        root=closure.root,
+        resources=resources,
+        mode=declaration.mode,
+        whole_dataset=declaration.columns is None,
+        path_known=True,
+        columns_known=declaration.columns is not None,
+        fallback=fallback,
+        closure_status=closure.status,
+        reason=reason,
+    )
+
+
 def resolve_scope_dataset_accesses(
     scope: Any,
     values: dict[str, Any],
@@ -334,11 +455,12 @@ def resolve_scope_dataset_accesses(
 
     values = {**values, **static_output_values(scope, values, unresolved_inputs=unresolved_inputs)}
     planned_roots = planned_roots or {}
-    inputs = dataset_declarations(scope.inputs_model)
-    outputs = dataset_declarations(scope.outputs_model)
-    for name in (*inputs, *outputs):
-        if any(token in name for token in (".", "[]", ".*")):
-            raise DatasetAccessError(f"scope {scope.name!r} has nested dataset field {name!r}; access planning supports direct fields only")
+    input_shapes = executable_dataset_fields(scope.inputs_model, error=DatasetAccessError)
+    output_shapes = executable_dataset_fields(scope.outputs_model, error=DatasetAccessError)
+    inputs = {name: shape.declaration for name, shape in input_shapes.items()}
+    outputs = {name: shape.declaration for name, shape in output_shapes.items()}
+    shapes = input_shapes | output_shapes
+    validate_scope_dataset_accesses(scope)
     declarations = [(item, DatasetFallback.UNKNOWN_COLUMNS if item.columns is None else None) for item in scope.dataset_accesses]
     covered = {item.field for item, _fallback in declarations}
     for field, dataset in {**inputs, **outputs}.items():
@@ -391,96 +513,37 @@ def resolve_scope_dataset_accesses(
             )
             continue
 
-        requested = _canonical(value, workspace)
-        if declaration.mode is DatasetMode.CREATE:
-            spelled = Path(os.fspath(value))
-            spelled = spelled if spelled.is_absolute() else workspace / spelled
-            if allow_existing_create and spelled.is_symlink():
-                # The canonical path is the link's *target*: deleting it to
-                # "overwrite" the link would remove data the caller never
-                # named. Refused here, where the spelling is still visible.
-                raise DatasetAccessError(
-                    f"scope {scope.name!r} CREATE dataset field {declaration.field!r} is a symlink ({spelled} -> {requested}); "
-                    "overwrite refuses it, remove or replace the link yourself"
-                )
-            if (requested.exists() or requested.is_symlink()) and not allow_existing_create:
-                raise DatasetAccessError(
-                    f"scope {scope.name!r} CREATE dataset field {declaration.field!r} already exists at {requested}; "
-                    "re-run with --overwrite <step> (overwrite_steps=[...] in Python) to delete it and invalidate the cache downstream"
-                )
-            resolved.append(
-                ResolvedDatasetAccess(
-                    field=declaration.field,
-                    declaration=declaration,
-                    requested_path=requested,
-                    root=requested,
-                    resources=(requested,),
-                    mode=declaration.mode,
-                    whole_dataset=declaration.columns is None,
-                    path_known=True,
-                    columns_known=declaration.columns is not None,
-                    fallback=fallback,
-                    reason=(f"{fallback.value} access; create whole dataset: {requested}" if fallback is not None else f"create {declaration.table.value}: {requested}"),
-                )
-            )
-            continue
-
-        if declaration.root_field is not None and values.get(declaration.root_field) is not None:
-            root_candidate = _canonical(values[declaration.root_field], workspace)
-        elif declaration.table is not DatasetTable.MAIN and requested.name == declaration.table.value:
-            root_candidate = requested.parent
+        shape = shapes.get(declaration.field)
+        if shape is not None and shape.is_list:
+            if not isinstance(value, list) or not value:
+                raise DatasetAccessError(f"scope {scope.name!r} dataset list {declaration.field!r} must be a non-empty concrete list")
+            elements = enumerate(value)
         else:
-            root_candidate = requested
-        planned = next(((root, resources) for root, resources in planned_roots.items() if root_candidate == root), None)
-        if planned is not None:
-            planned_root, resources = planned
+            elements = [(None, value)]
+        for element_index, item in elements:
             resolved.append(
-                ResolvedDatasetAccess(
-                    field=declaration.field,
-                    declaration=declaration,
-                    requested_path=requested,
-                    root=planned_root,
-                    resources=resources,
-                    mode=declaration.mode,
-                    whole_dataset=declaration.columns is None,
-                    path_known=True,
-                    columns_known=declaration.columns is not None,
-                    fallback=fallback,
-                    reason=(
-                        f"{fallback.value} access; {declaration.mode.value} planned whole dataset: {planned_root}"
-                        if fallback is not None
-                        else f"{declaration.mode.value} planned {_declaration_label(planned_root.name or declaration.field, declaration)}"
-                    ),
+                _resolve_known_access(
+                    scope,
+                    values,
+                    declaration,
+                    fallback,
+                    item,
+                    workspace=workspace,
+                    planned_roots=planned_roots,
+                    allow_existing_create=allow_existing_create,
+                    element_index=element_index,
                 )
             )
-            continue
-        closure = resolve_dataset_closure(root_candidate, storage_namespace=workspace)
-        if not closure.valid:
-            raise DatasetAccessError(f"scope {scope.name!r} cannot resolve dataset field {declaration.field!r}: {closure.status.value}: {closure.message}")
-        if declaration.table is not DatasetTable.MAIN and not any(declaration.table.value in resource.members for resource in closure.resources):
-            raise DatasetAccessError(f"scope {scope.name!r} dataset field {declaration.field!r} targets absent subtable {declaration.table.value}")
-        resources = tuple(resource.path for resource in closure.resources)
-        reason = (
-            f"{fallback.value} access; {declaration.mode.value} whole dataset: {closure.root}"
-            if fallback is not None
-            else f"{declaration.mode.value} {_declaration_label(closure.root.name if closure.root is not None else declaration.field, declaration)}"
-        )
-        resolved.append(
-            ResolvedDatasetAccess(
-                field=declaration.field,
-                declaration=declaration,
-                requested_path=requested,
-                root=closure.root,
-                resources=resources,
-                mode=declaration.mode,
-                whole_dataset=declaration.columns is None,
-                path_known=True,
-                columns_known=declaration.columns is not None,
-                fallback=fallback,
-                closure_status=closure.status,
-                reason=reason,
-            )
-        )
+    from shinobi.steps.schema import paths_overlap
+
+    for index, left in enumerate(resolved):
+        for right in resolved[index + 1 :]:
+            if left.element_index is None and right.element_index is None:
+                continue
+            if left.field == right.field:
+                continue  # repeated table declarations for the same element
+            if any(paths_overlap(a, b) for a in left.resources for b in right.resources):
+                raise DatasetAccessError(f"scope {scope.name!r} dataset fields {left.field!r} and {right.field!r} have duplicate or overlapping closure resources")
     return tuple(resolved)
 
 

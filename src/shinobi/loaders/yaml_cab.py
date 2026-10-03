@@ -35,8 +35,9 @@ Per cab: ``sandbox``, ``harvest``, ``scratch`` and ``dataset_accesses``,
 which mirror the `Scope` fields of the same names. Access mappings are
 validated by `DatasetAccess`; field references use literal sanitized model
 names (``data.ms`` becomes ``data_ms``). Strict ``MSv2``/``CasaTab`` dtypes
-retain dataset metadata; legacy ``MS`` remains `Path`. Strict containers,
-mixed unions, choices and dynamic patterns are refused for executable cabs, and ``MSv4``
+retain dataset metadata; legacy ``MS`` remains `Path`. Direct read-only
+``List[MSv2]`` inputs are supported. Other strict containers, mixed unions,
+choices and dynamic patterns are refused for executable cabs, and ``MSv4``
 is reserved. Current dispatch supports the bounded MSv2 lifecycle only;
 ``CasaTab`` remains available for declaration and inspection.
 
@@ -160,8 +161,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from shinobi._annotations import walk_annotation
-from shinobi.datasets import DatasetDeclarationError, DatasetType, dataset_declarations
+from shinobi.datasets import DatasetDeclarationError
 from shinobi.dataset_access import DatasetAccess
 from shinobi.exceptions import CabLoadError
 from shinobi.loaders._modelgen import (
@@ -467,21 +467,10 @@ def _build_cab(name: str, spec: dict[str, Any], package_roots: dict[str, Path], 
 
 
 def _validate_dataset_shapes(model: type) -> None:
-    """Executable strict datasets must be one direct Path, optionally None.
+    """Executable strict datasets support direct scalars and MSv2 read lists."""
+    from shinobi.datasets import executable_dataset_fields
 
-    Declaration discovery supplies qualified paths and conflict diagnostics;
-    the shared annotation walk also detects mixed unions whose declaration
-    path alone looks direct, but whose other branch can select a non-Path.
-    """
-    for name in dataset_declarations(model, error=DatasetDeclarationError):
-        if name not in model.model_fields:
-            raise DatasetDeclarationError(f"strict dataset field {name!r} is nested; executable YAML cabs support direct scalar fields only")
-        field = model.model_fields[name]
-        leaves = [node for node in walk_annotation(field.annotation, metadata=tuple(field.metadata)) if node.leaf and node.annotation is not type(None)]
-        if len(leaves) != 1 or leaves[0].path or leaves[0].annotation is not Path or not any(isinstance(item, DatasetType) for item in leaves[0].metadata):
-            raise DatasetDeclarationError(
-                f"strict dataset field {name!r} must be a direct strict scalar optionally combined with None; mixed unions and containers are unsupported"
-            )
+    executable_dataset_fields(model)
 
 
 def _is_section(value: dict) -> bool:

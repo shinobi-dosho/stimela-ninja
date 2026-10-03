@@ -155,10 +155,25 @@ def test_mutable_field_cannot_be_downgraded_to_explicit_read():
     assert [access.mode for access in loaded.dataset_accesses] == [DatasetMode.READ, DatasetMode.WRITE]
 
 
-@pytest.mark.parametrize("dtype", ["List[MSv2]", "list:CasaTab", "Tuple[int, MSv2]", "Union[MSv2, List[MSv2]]"])
+@pytest.mark.parametrize("dtype", ["list:CasaTab", "Tuple[int, MSv2]", "Union[MSv2, List[MSv2]]"])
 def test_executable_strict_containers_are_refused(dtype):
     with pytest.raises(CabLoadError, match="strict dataset field.*(nested|containers)"):
         load_cab(inputs={"ms": {"dtype": dtype}})
+
+
+@pytest.mark.parametrize("dtype", ["List[MSv2]", "list:MSv2"])
+def test_optional_strict_lists_preserve_path_metadata_and_argv(dtype):
+    loaded = load_cab(
+        inputs={"ms": {"dtype": dtype, "default": None, "policies": {"positional": True, "repeat": "list"}}},
+        dataset_accesses=[{"field": "ms", "mode": "read", "columns": {"read": ["DATA"]}}],
+    )
+    assert loaded.inputs_model().ms is None
+    values = loaded.inputs_model(ms=["first.ms", "second.ms"])
+    assert values.ms == [Path("first.ms"), Path("second.ms")]
+    assert values.model_dump(mode="json") == {"ms": ["first.ms", "second.ms"]}
+    assert dataset_declarations(loaded.inputs_model) == {"ms[]": MSV2_STRUCTURAL_V1}
+    assert build_argv(loaded, {"ms": values.ms})[-2:] == ["first.ms", "second.ms"]
+    assert resolve_scope_dataset_accesses(loaded, {}, workspace=Path.cwd()) == ()
 
 
 @pytest.mark.parametrize("dtype", ["Union[str, MSv2]", "Union[MSv2, File]", "Union[CasaTab, int]"])

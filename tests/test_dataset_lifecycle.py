@@ -483,7 +483,7 @@ def test_nested_and_scattered_dataset_recipes_remain_refused(tmp_path, monkeypat
         scattered(ms=[ms])
 
 
-def test_multi_root_external_and_unsupported_closures_remain_refused(tmp_path, monkeypatch):
+def test_multi_root_reads_and_external_unsupported_closure_refusals(tmp_path, monkeypatch):
     left = tmp_path / "left.ms"
     right = tmp_path / "right.ms"
     external = tmp_path / "shared" / "ANTENNA"
@@ -499,8 +499,10 @@ def test_multi_root_external_and_unsupported_closures_remain_refused(tmp_path, m
 
     values = read.step.inputs_model(ms=left)
     monkeypatch.setattr(lifecycle_module, "resolve_scope_dataset_accesses", lambda *args, **kwargs: (left_access, right_access))
-    with pytest.raises(DatasetLifecycleUnavailableError, match="exactly one closure root"):
-        resolve_lifecycle_snapshot(read.step, values, workspace=tmp_path)
+    monkeypatch.setattr(lifecycle_module, "_observe_root", lambda root, workspace: _snapshot(root).observations[0])
+    assert len(resolve_lifecycle_snapshot(read.step, values, workspace=tmp_path).observations) == 2
+    monkeypatch.undo()
+    monkeypatch.setattr(lifecycle_module, "resolve_scope_dataset_accesses", lambda *args, **kwargs: (left_access,))
 
     external_resource = _snapshot(external).observations[0].closure.resources[0].model_copy(update={"members": ("ANTENNA",), "external_to_root": True})
     external_closure = _snapshot(left).observations[0].closure.model_copy(update={"resources": (*_snapshot(left).observations[0].closure.resources, external_resource)})

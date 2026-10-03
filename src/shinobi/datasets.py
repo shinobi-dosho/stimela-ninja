@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema
 
@@ -281,6 +281,60 @@ def dataset_declarations(model: type[BaseModel], *, error: type[Exception] = Typ
         for declaration in dict.fromkeys(item for item in node.metadata if isinstance(item, DatasetType)):
             record(node.path, declaration)
     return result
+
+
+@dataclass(frozen=True)
+class ExecutableDatasetField:
+    """A direct executable dataset field, retaining its base model identity."""
+
+    declaration: DatasetType
+    is_list: bool = False
+
+
+def _executable_dataset_shape(field: Any, qualified: str, name: str, declaration: DatasetType, error: type[Exception]) -> ExecutableDatasetField:
+    nodes = list(walk_annotation(field.annotation, metadata=tuple(field.metadata)))
+    leaves = [node for node in nodes if node.leaf and node.annotation is not type(None)]
+    is_list = qualified == name + "[]"
+    list_nodes = [node for node in nodes if node.path == "" and node.annotation is not type(None) and not node.leaf]
+    valid = len(leaves) == 1 and leaves[0].annotation is Path and any(isinstance(item, DatasetType) for item in leaves[0].metadata)
+    if is_list:
+        valid = valid and leaves[0].path == "[]" and any(get_origin(node.annotation) is list for node in list_nodes)
+        valid = valid and all(node.annotation is not type(None) for node in nodes if node.path == "[]")
+        valid = valid and declaration.kind is DatasetKind.MEASUREMENT_SET_V2
+    else:
+        valid = valid and not leaves[0].path
+    if not valid:
+        raise error(
+            f"strict dataset field {qualified!r} must be a direct strict scalar or MSv2 list optionally combined with None; mixed unions and other containers are unsupported"
+        )
+    return ExecutableDatasetField(declaration, is_list)
+
+
+def executable_dataset_fields(model: type[BaseModel], *, error: type[Exception] = DatasetDeclarationError, reject_unsupported: bool = True) -> dict[str, ExecutableDatasetField]:
+    """Discover strict scalars and direct MSv2 lists; refuse other shapes.
+
+    Recursive declaration discovery remains available for metadata models.
+    This narrower helper is used only at executable boundaries. Discovery-only
+    callers set reject_unsupported=False to retain unsupported recursive keys
+    until the authoritative execution boundary rejects them.
+    """
+    result = {}
+    for qualified, declaration in dataset_declarations(model, error=error).items():
+        name = qualified.removesuffix("[]")
+        try:
+            if name not in model.model_fields:
+                raise error(f"strict dataset field {qualified!r} is nested; execution supports direct scalar or MSv2 list fields only")
+            result[name] = _executable_dataset_shape(model.model_fields[name], qualified, name, declaration, error)
+        except error:
+            if reject_unsupported:
+                raise
+            result[qualified] = ExecutableDatasetField(declaration)
+    return result
+
+
+def executable_dataset_list_fields(model: type[BaseModel]) -> set[str]:
+    """Supported lists for definition checks; retain unsupported metadata."""
+    return {name for name, shape in executable_dataset_fields(model, reject_unsupported=False).items() if shape.is_list}
 
 
 def dataset_fields(model: type[BaseModel]) -> dict[str, DatasetType]:

@@ -126,11 +126,11 @@ def _leaf_dataset_writes(scope: Scope) -> set[str]:
     """
 
     from shinobi.dataset_access import DatasetMode
-    from shinobi.datasets import dataset_declarations
+    from shinobi.datasets import executable_dataset_fields
     from shinobi.steps.schema import mutated_path_fields, write_path_fields
 
-    inputs = dataset_declarations(scope.inputs_model)
-    outputs = dataset_declarations(scope.outputs_model)
+    inputs = executable_dataset_fields(scope.inputs_model, reject_unsupported=False)
+    outputs = executable_dataset_fields(scope.outputs_model, reject_unsupported=False)
     declared = {access.field for access in scope.dataset_accesses if access.mode is not DatasetMode.READ}
     inferred = (set(outputs) - set(inputs)) | ((mutated_path_fields(scope) | write_path_fields(scope)) & (set(inputs) | set(outputs)))
     explicit_reads = {access.field for access in scope.dataset_accesses if access.mode is DatasetMode.READ}
@@ -203,7 +203,7 @@ def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: 
     """
 
     from shinobi.dataset_access import scope_has_dataset_contract, scope_tree_has_dataset_contract
-    from shinobi.datasets import DatasetKind, dataset_declarations
+    from shinobi.datasets import DatasetKind, executable_dataset_fields
     from shinobi.steps.pyfunc import PystepCallable
 
     backends: set[str] = set()
@@ -243,14 +243,15 @@ def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: 
             raise DatasetLifecycleUnavailableError(
                 "strict dataset annotations remain declarative for manual Scope execution; use a Cab or @pystep for the contained native lifecycle"
             )
-        input_declarations = dataset_declarations(current.inputs_model)
-        output_declarations = dataset_declarations(current.outputs_model)
-        declarations = input_declarations | output_declarations
-        if any(token in name for name in declarations for token in (".", "[]", ".*")):
-            names = ", ".join(sorted(declarations))
-            raise DatasetLifecycleUnavailableError(f"contained MSv2 execution refused: nested dataset fields are not direct: {names}")
+        input_declarations = executable_dataset_fields(current.inputs_model, error=DatasetLifecycleUnavailableError)
+        output_declarations = executable_dataset_fields(current.outputs_model, error=DatasetLifecycleUnavailableError)
         unsupported = sorted(
-            {name for fields in (input_declarations, output_declarations) for name, declaration in fields.items() if declaration.kind is not DatasetKind.MEASUREMENT_SET_V2}
+            {
+                name
+                for fields in (input_declarations, output_declarations)
+                for name, declaration in fields.items()
+                if declaration.declaration.kind is not DatasetKind.MEASUREMENT_SET_V2
+            }
         )
         if unsupported:
             raise DatasetLifecycleUnavailableError(
@@ -1041,7 +1042,7 @@ def _dispatch(
                 (
                     f"resolved {len(planned.observations) + len(planned.absent_roots)} contained ordinary MSv2 root(s) for mutation"
                     if mutation
-                    else "resolved one contained ordinary MSv2 read closure"
+                    else f"resolved {len(planned.observations)} contained ordinary MSv2 read root(s)"
                 ),
                 backends=backends,
                 backend_capabilities=backend_capabilities,
