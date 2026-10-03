@@ -95,7 +95,7 @@ any atomic input or output with that annotation is refused at dispatch, even
 a referenced subtable carrying ``root_field``.
 
 Read-only MSv2 lists
--------------------
+--------------------
 
 A direct Python ``list[MSv2]`` or YAML ``List[MSv2]`` input can read several
 contained datasets in one step, as required by WSClean. One base declaration,
@@ -178,6 +178,28 @@ written, created or removed.  Column creation/removal requires
 their explicit ``allow_row_count_change`` and ``allow_keyword_change`` flags.
 Selections are bounded data (half-open row ranges and finite standard ID
 sets), not TaQL or executable expressions.
+
+Column entries may use ``str.format`` placeholders for the step's own direct
+string inputs, for example ``DatasetColumns(read=("{input_column}",),
+create=("{column}",))``. Literal prefixes and suffixes are allowed, as in
+``"MODEL_{suffix}"``. Placeholders use sanitized model field names and may
+refer to optional strings or finite string choices. Unknown fields, output-only
+fields, non-string inputs, attribute/index access, conversions and format
+specifications are refused at definition time.
+
+The scope retains its templates. Resolution uses its validated inputs and
+stores a copy of the declaration with concrete names in
+``ResolvedDatasetAccess.declaration``. Every result must be a valid CASA
+column name; errors identify the scope and dataset field. If any referenced
+input is missing, unresolved or ``None``, the entire access falls back to
+``unknown-columns`` whole-dataset intent, rather than recording a partial or
+default column set. A ``None`` dataset input still omits its access.
+
+A column named under ``create`` may already exist: with
+``allow_schema_change=True``, the step may populate it or create it when absent.
+The postcondition requires that named column to exist afterward and refuses
+other undeclared additions. This differs from ``mode="create"``, which creates
+a new dataset and retains its existing-target refusal.
 
 ``field`` names a direct path/MS-compatible field or a read-only MSv2 list
 input. ``root_field`` remains scalar-only and is not supported on list accesses.
@@ -414,7 +436,8 @@ unchanged.  A failed mutation's record also names the state it left on disk
 reusable state is a separate identity and never replaces the native
 predecessor snapshot as the rollback source.
 
-Mutation attempts are schema version 2 records: the version 1 fields plus
+Reader and mutation attempts with strict leaf evidence are schema version 2
+records: the version 1 fields plus
 ``absent_roots``, crash ``recovery`` notes and one ``leaves`` entry per strict
 step with its accesses, cache decision, pre/post observations and, per
 written dataset, a :class:`~shinobi.DatasetMutationRecord`
@@ -423,6 +446,15 @@ written dataset, a :class:`~shinobi.DatasetMutationRecord`
 (the head the run found is back, after a mid-chain re-run failed),
 ``absent-restored``, ``untrusted`` when a rollback itself failed and the
 dataset stays marked for recovery, or ``refused``).
+Readers have no mutation records or recovery authority. Each strict atomic
+leaf re-resolves its validated inputs before cache lookup or execution, so
+``leaves[*].accesses`` records concrete runtime column names even when a
+selector's output supplies them. ``planned_accesses`` retains the original
+conservative workflow plan, including ``unknown-columns`` for an unresolved
+selector. A cached reader also records its resolved accesses and cache
+decision. Refused runtime resolution records an empty-access leaf with its
+diagnostic. Historical version 1 reader records remain readable; inserting
+the first leaf upgrades an attempt to version 2 atomically with that evidence.
 
 Detached worker execution
 ~~~~~~~~~~~~~~~~~~~~~~~~~
