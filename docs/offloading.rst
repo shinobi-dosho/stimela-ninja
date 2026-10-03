@@ -33,6 +33,15 @@ workers claim and observe every contained root, and refuse a change to any
 read-only element before publishing success. List outputs and mutations remain
 unsupported, as described in :doc:`concepts/datasets`.
 
+Column templates are retained in the frozen scope and resolved from the
+worker's validated step inputs. A column input wired from a producer reserves
+whole-dataset column intent until its value is known. The worker may refine
+that reservation to concrete names while preserving every other declaration,
+dataset identity and claimed resource. Its attempt records preserve the frozen
+whole-workflow reservation in ``planned_accesses``, including every other
+step's original plan, and record concrete runtime names in
+``leaves[*].accesses`` for committed and cached readers alike.
+
 Known step inputs are checked during freezing. Inputs wired from a producing
 step remain references, **not fabricated values**; the worker must validate
 them once that producer commits its result. Relative paths retain their

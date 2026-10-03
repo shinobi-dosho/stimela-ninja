@@ -262,9 +262,8 @@ class DatasetOverwrite(BaseModel):
 class DatasetLifecycleAttempt(BaseModel):
     """Versioned durable provenance for one contained strict workflow.
 
-    Schema 1 is the read-only baseline. Schema 2 adds per-leaf records and
-    is required for the mutation capability; a v2 read-only attempt is also
-    valid, so readers inside a mutation workflow share the leaf format.
+    Schema 1 is the historical read-only baseline. Schema 2 adds per-leaf
+    records for readers and writers, and is required for mutation capability.
     ``backend_capabilities`` records the versioned namespace/lifecycle
     decision for every effective backend in the claimed flat workflow.
     """
@@ -505,7 +504,7 @@ class DatasetLifecycle:
 
         with self._lock:
             leaves = [existing for existing in self.record.leaves if existing.step_path != leaf.step_path]
-            self._publish({"leaves": (*leaves, leaf)})
+            self._publish({"schema_version": 2, "leaves": (*leaves, leaf)})
 
     def leaf(self, step_path: str) -> DatasetLeafAttempt | None:
         with self._lock:
@@ -715,6 +714,32 @@ def claim_covers_accesses(owner: WorkspaceOwner, accesses: tuple[ResolvedDataset
     return tuple(sorted({resource for access in accesses for resource in access.resources if not _claimed_for(owner, resource, access.writes)}, key=str))
 
 
+def resolve_claimed_leaf_accesses(
+    lifecycle: DatasetLifecycle,
+    scope: Scope,
+    prepared: dict[str, Any],
+    *,
+    planned_roots: dict[Path, tuple[Path, ...]] | None = None,
+) -> tuple[ResolvedDatasetAccess, ...]:
+    """Resolve a leaf's current inputs and require coverage by its workflow claim.
+
+    Backend mount planning may reuse already observed closure resources via
+    ``planned_roots``. Leaf bookkeeping otherwise resolves the full closure.
+    Unannotated leaves still require the enclosing workflow's claim.
+    """
+
+    from shinobi.dataset_access import scope_has_dataset_contract
+
+    accesses = resolve_scope_dataset_accesses(scope, prepared, workspace=lifecycle.workspace, planned_roots=planned_roots) if scope_has_dataset_contract(scope) else ()
+    claim = lifecycle.record.claim
+    if claim is None:
+        raise DatasetLifecycleUnavailableError(f"strict leaf {scope.name!r} has no workflow claim")
+    uncovered = claim_covers_accesses(claim, accesses)
+    if uncovered:
+        raise DatasetLifecycleUnavailableError(f"strict leaf {scope.name!r} needs dataset resources its workflow claim does not cover: {', '.join(map(str, uncovered))}")
+    return accesses
+
+
 # -- strict leaves ---------------------------------------------------------
 
 
@@ -876,35 +901,37 @@ def leaf_postcondition_issues(
 
 
 class StrictLeaf:
-    """One strict leaf's observations and records inside a mutation lifecycle.
+    """One strict leaf's observations and records inside a dataset lifecycle.
 
     Created by dispatch for every leaf that carries a dataset contract. The
     call order is fixed: :meth:`decide_reuse` on a cache hit, otherwise
-    :meth:`policy` for the snapshot guard, :meth:`observe_before` after the
-    guard has restored the predecessor, :meth:`validate` after the tool
-    exits zero, :meth:`commit` at S3 as the marker's success oracle, and
-    :meth:`fail` on any other ending.
+    :meth:`policy` for a writer's snapshot guard, :meth:`observe_before`
+    after any predecessor restore, :meth:`validate` after the tool exits zero,
+    :meth:`commit` before success publication, and :meth:`fail` on any other
+    ending. Readers receive no mutation or recovery authority.
     """
 
     def __init__(self, lifecycle: DatasetLifecycle, step_path: str, scope: Scope, prepared: dict[str, Any]):
         self.lifecycle = lifecycle
         self.step_path = step_path
         self.scope = scope
-        workspace = lifecycle.workspace
-        self.accesses = resolve_scope_dataset_accesses(scope, prepared, workspace=workspace)
-        claim = lifecycle.record.claim
-        if claim is None:
-            raise DatasetLifecycleUnavailableError(f"strict leaf {step_path!r} has no workflow claim")
-        uncovered = claim_covers_accesses(claim, self.accesses)
-        if uncovered:
-            raise DatasetLifecycleUnavailableError(f"strict leaf {step_path!r} needs dataset resources its workflow claim does not cover: {', '.join(map(str, uncovered))}")
-        self.fields, self.creates = strict_mutation_targets(scope, self.accesses)
-        self.roots = tuple(sorted({access.root for access in self.accesses if access.root is not None}, key=str))
+        self.accesses: tuple[ResolvedDatasetAccess, ...] = ()
         self.cache_key: str | None = None
         self.pre: dict[Path, DatasetObservation] = {}
         self.absent: tuple[Path, ...] = ()
         self.cache: DatasetCacheDecision | None = None
         self.mutations: dict[str, DatasetMutationRecord] = {}
+        try:
+            accesses = resolve_claimed_leaf_accesses(lifecycle, scope, prepared)
+        except BaseException as exc:
+            try:
+                self._record("refused", f"access resolution refused before launch: {type(exc).__name__}: {exc}")
+            except BaseException as record_exc:
+                exc.add_note(f"recording refused dataset leaf also failed: {type(record_exc).__name__}: {record_exc}")
+            raise
+        self.accesses = accesses
+        self.fields, self.creates = strict_mutation_targets(scope, self.accesses)
+        self.roots = tuple(sorted({access.root for access in self.accesses if access.root is not None}, key=str))
 
     @property
     def writes(self) -> bool:
@@ -958,7 +985,9 @@ class StrictLeaf:
             cache_key=cache_key,
             identity="skip-cache key: tool identity, effective parameters and upstream provenance",
             dataset_coverage=self.coverage(input_keys),
-            reason="skip-cache hit; the journal vouches for every written dataset" if accepted else "; ".join(problems),
+            reason=("skip-cache hit; the journal vouches for every written dataset" if self.writes else "skip-cache hit; reader inputs match under the workflow read claim")
+            if accepted
+            else "; ".join(problems),
         )
         self._record("reused" if accepted else "pending", self.cache.reason)
         return accepted
@@ -1055,7 +1084,12 @@ class StrictLeaf:
     def commit(self) -> None:
         for field, record in self.mutations.items():
             self.mutations[field] = record.model_copy(update={"outcome": DatasetMutationOutcome.COMMITTED})
-        self._record("committed", "successor snapshotted and journalled; this record is the success oracle", post=getattr(self, "_post", ()))
+        reason = (
+            "successor snapshotted and journalled; this record is the success oracle"
+            if self.writes
+            else "declared read postconditions hold; this record precedes success publication"
+        )
+        self._record("committed", reason, post=getattr(self, "_post", ()))
 
     def fail(self, guard: Any | None, reason: str, *, refused: bool = False) -> None:
         plans = {plan.field: plan for plan in guard.plans} if guard is not None else {}
@@ -1285,6 +1319,7 @@ __all__ = [
     "pending_dataset_recovery",
     "read_dataset_attempt",
     "resolve_lifecycle_snapshot",
+    "resolve_claimed_leaf_accesses",
     "strict_mutation_targets",
     "structural_signature",
 ]

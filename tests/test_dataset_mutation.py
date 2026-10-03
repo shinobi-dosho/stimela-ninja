@@ -237,6 +237,47 @@ def test_undeclared_schema_change_is_rolled_back_exactly(tmp_path):
     assert chain.marker is None
 
 
+@pytest.mark.parametrize("column", ["CUSTOM_DATA", "DATA"])
+def test_templated_column_creation_records_the_nondefault_or_existing_name(tmp_path, column):
+    ms = make_ms(tmp_path / "templated.ms")
+    access = DatasetAccess(field="ms", mode="write", columns=DatasetColumns(create=("{column}",)), allow_schema_change=True)
+
+    @pystep(dataset_accesses=[access])
+    def populate(ms: MeasurementSetV2, column: str = "MODEL_DATA") -> None:
+        import numpy as np
+
+        with tables.table(str(ms), readonly=False, ack=False) as table:
+            if column not in table.colnames():
+                table.addcols(tables.maketabdesc([tables.makearrcoldesc(column, 0j, ndim=2)]))
+            table.putcell(column, 0, np.array([[1 + 2j]]))
+
+    assert populate(ms=ms, column=column, **run_kwargs(tmp_path)).success
+    [record] = attempts(tmp_path)
+    assert record.outcome == "committed"
+    assert record.planned_accesses[0].declaration.columns.create == (column,)
+    assert record.leaves[0].accesses[0].declaration.columns.create == (column,)
+    with tables.table(str(ms), ack=False) as table:
+        assert column in table.colnames()
+        assert table.getcell(column, 0)[0, 0] == 1 + 2j
+    assert populate.step.dataset_accesses[0].columns.create == ("{column}",)
+
+
+def test_templated_column_creation_refuses_and_restores_an_undeclared_column(tmp_path):
+    ms = make_ms(tmp_path / "templated.ms")
+    access = DatasetAccess(field="ms", mode="write", columns=DatasetColumns(create=("{column}",)), allow_schema_change=True)
+
+    @pystep(dataset_accesses=[access])
+    def wrong_column(ms: MeasurementSetV2, column: str) -> None:
+        with tables.table(str(ms), readonly=False, ack=False) as table:
+            table.addcols(tables.maketabdesc([tables.makearrcoldesc(column, 0j, ndim=2), tables.makearrcoldesc("UNDECLARED", 0j, ndim=2)]))
+
+    with pytest.raises(DatasetLifecycleViolationError, match="undeclared column.*UNDECLARED"):
+        wrong_column(ms=ms, column="CUSTOM_DATA", **run_kwargs(tmp_path))
+    assert attempts(tmp_path)[-1].outcome == "failed"
+    with tables.table(str(ms), ack=False) as table:
+        assert "CUSTOM_DATA" not in table.colnames() and "UNDECLARED" not in table.colnames()
+
+
 def test_declared_column_creation_is_accepted_and_verified(tmp_path):
     ms = make_ms(tmp_path / "obs.ms")
     access = DatasetAccess(field="ms", mode="write", columns=DatasetColumns(create=("MODEL_DATA",)), allow_schema_change=True)

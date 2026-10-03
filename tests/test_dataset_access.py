@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 import pytest
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -778,3 +778,116 @@ def test_real_casacore_access_resolution_when_available(tmp_path):
     assert resolved[0].closure_status is ClosureStatus.VALID
     assert resolved[0].root == ms_path.resolve()
     assert any(resource.name == "ANTENNA" for resource in resolved[0].resources)
+
+
+class ColumnInputs(BaseModel):
+    ms: MeasurementSetV2
+    column: str = "DATA"
+    input_column: str | None = None
+    prefix: str = "CUSTOM_"
+
+
+def test_column_templates_resolve_all_roles_without_changing_the_scope(tmp_path, monkeypatch):
+    monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda root, **kwargs: _closure(Path(root), tmp_path))
+    columns = DatasetColumns(read=("{input_column}",), write=("{prefix}{column}",), create=("{column}",), remove=("OLD_{column}",))
+    declaration = DatasetAccess(field="ms", mode="write", columns=columns, allow_schema_change=True)
+    scope = Scope(name="templated", inputs_model=ColumnInputs, outputs_model=Empty, dataset_accesses=[declaration])
+    values = ColumnInputs(ms=tmp_path / "obs.ms", column="VIS", input_column="DATA").model_dump()
+    [resolved] = resolve_scope_dataset_accesses(scope, values, workspace=tmp_path)
+    assert resolved.declaration.columns == DatasetColumns(read=("DATA",), write=("CUSTOM_VIS",), create=("VIS",), remove=("OLD_VIS",))
+    assert scope.dataset_accesses[0] == declaration and declaration.columns == columns
+    assert resolved.columns_known and not resolved.whole_dataset and resolved.fallback is None
+    assert ResolvedDatasetAccess.model_validate_json(resolved.model_dump_json()) == resolved
+    with pytest.raises(ValidationError, match="concrete CASA column names"):
+        ResolvedDatasetAccess.model_validate({**resolved.model_dump(), "declaration": declaration})
+
+
+@pytest.mark.parametrize("values, unresolved", [({}, set()), ({"column": None}, set()), ({"column": "DEFAULT"}, {"column"})])
+def test_missing_column_template_inputs_reserve_the_whole_dataset(tmp_path, monkeypatch, values, unresolved):
+    monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda root, **kwargs: _closure(Path(root), tmp_path))
+    scope = Scope(
+        name="templated",
+        inputs_model=ColumnInputs,
+        outputs_model=Empty,
+        dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("DATA", "{column}")))],
+    )
+    [resolved] = resolve_scope_dataset_accesses(scope, {"ms": tmp_path / "obs.ms", **values}, workspace=tmp_path, unresolved_inputs=unresolved)
+    assert resolved.declaration.columns is None and resolved.whole_dataset and not resolved.columns_known
+    assert resolved.fallback is DatasetFallback.UNKNOWN_COLUMNS
+    assert "unknown-columns" in resolved.reason
+    assert scope.dataset_accesses[0].columns.read == ("DATA", "{column}")
+
+
+@pytest.mark.parametrize("template", ["{a.b}", "{a[0]}", "{a!s}", "{a:>8}", "{a:}", "{}", "{0}", "{ column }", "{{column}}", "BAD-{column}", "{column"])
+def test_column_templates_refuse_formatting_and_expression_syntax(template):
+    with pytest.raises(ValidationError, match="invalid CASA column name"):
+        DatasetColumns(read=(template,))
+
+
+@pytest.mark.parametrize("annotation", [int, Path, list[str], dict[str, str], str | int])
+def test_column_template_inputs_must_be_direct_strings(annotation):
+    from pydantic import create_model
+
+    model = create_model("NotString", ms=(MeasurementSetV2, ...), column=(annotation, ...))
+    with pytest.raises(ValidationError, match=r"scope 'templated'.*dataset_accesses\[0\].*direct string input 'column'"):
+        Scope(name="templated", inputs_model=model, outputs_model=Empty, dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("{column}",)))])
+
+
+def test_column_templates_cannot_address_unknown_or_output_only_fields():
+    class Outputs(BaseModel):
+        output_column: str
+
+    for name in ("missing", "output_column"):
+        with pytest.raises(ValidationError, match=f"unknown input field '{name}'"):
+            Scope(
+                name="templated",
+                inputs_model=ColumnInputs,
+                outputs_model=Outputs,
+                dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=(f"{{{name}}}",)))],
+            )
+
+
+def test_column_templates_accept_string_choices_and_nullable_string_inputs(tmp_path, monkeypatch):
+    class Choices(BaseModel):
+        ms: MeasurementSetV2
+        column: Literal["DATA", "CORRECTED_DATA"] | None = None
+
+    monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda root, **kwargs: _closure(Path(root), tmp_path))
+    scope = Scope(name="choice", inputs_model=Choices, outputs_model=Empty, dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("{column}",)))])
+    [resolved] = resolve_scope_dataset_accesses(scope, Choices(ms=tmp_path / "obs.ms", column="CORRECTED_DATA").model_dump(), workspace=tmp_path)
+    assert resolved.declaration.columns.read == ("CORRECTED_DATA",)
+    [unknown] = resolve_scope_dataset_accesses(scope, Choices(ms=tmp_path / "obs.ms").model_dump(), workspace=tmp_path)
+    assert unknown.fallback is DatasetFallback.UNKNOWN_COLUMNS
+
+
+@pytest.mark.parametrize("value", ["", "BAD-NAME", "A B", "{field}", "DATA\n", "DATA;other", 17])
+def test_invalid_resolved_column_names_report_the_scope_and_dataset_field(tmp_path, value):
+    scope = Scope(
+        name="templated", inputs_model=ColumnInputs, outputs_model=Empty, dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("{column}",)))]
+    )
+    with pytest.raises(DatasetAccessError, match=r"scope 'templated'.*dataset field 'ms'.*columns.read.*(invalid CASA|must be strings)"):
+        resolve_scope_dataset_accesses(scope, {"ms": tmp_path / "obs.ms", "column": value}, workspace=tmp_path)
+
+
+def test_column_templates_apply_to_each_read_list_element(tmp_path, monkeypatch):
+    class Lists(BaseModel):
+        ms: list[MeasurementSetV2]
+        column: str
+
+    monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda root, **kwargs: _closure(Path(root), tmp_path))
+    scope = Scope(name="list", inputs_model=Lists, outputs_model=Empty, dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("{column}",)))])
+    roots = [tmp_path / "left.ms", tmp_path / "right.ms"]
+    resolved = resolve_scope_dataset_accesses(scope, Lists(ms=roots, column="CORRECTED_DATA").model_dump(), workspace=tmp_path)
+    assert [access.field for access in resolved] == ["ms[0]", "ms[1]"]
+    assert all(access.declaration.columns.read == ("CORRECTED_DATA",) for access in resolved)
+
+
+def test_absent_optional_dataset_does_not_resolve_its_column_template(tmp_path):
+    class OptionalDataset(BaseModel):
+        ms: MeasurementSetV2 | None = None
+        column: str
+
+    scope = Scope(
+        name="optional", inputs_model=OptionalDataset, outputs_model=Empty, dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("{column}",)))]
+    )
+    assert resolve_scope_dataset_accesses(scope, {"ms": None, "column": "BAD-NAME"}, workspace=tmp_path) == ()

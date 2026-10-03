@@ -119,6 +119,30 @@ by planning.
 Column creation/removal requires ``allow_schema_change: true``; creating a
 new dataset with ``mode: create`` alone does not require that flag.
 
+Column names can be templated from the cab's own validated string inputs:
+
+.. code-block:: yaml
+
+    inputs:
+      ms:
+        dtype: MSv2
+        required: true
+      column:
+        dtype: str
+        default: MODEL_DATA
+    dataset_accesses:
+      - field: ms
+        mode: write
+        allow_schema_change: true
+        columns:
+          create: ["{column}"]
+
+Templates use direct sanitized input names, with no attribute/index access,
+conversion or format specification. The same syntax works on Python-authored
+``DatasetColumns``. Missing or ``None`` values use whole-dataset column intent;
+resolved names are validated and recorded. See :doc:`datasets` for the full
+contract, including existing columns named under ``create``.
+
 Executable YAML cabs support direct strict dataset scalars, including
 optional scalars with a ``None`` default, and direct read-only input
 ``List[MSv2]`` (also ``list:MSv2``). Optional list fields may default to ``None``;

@@ -26,7 +26,7 @@ from pydantic import model_validator
 from shinobi import __version__
 from shinobi.cache import ExecutionIdentity, get_cache_manifest, resolve_input_keys
 from shinobi.config import AppConfig
-from shinobi.dataset_access import ResolvedDatasetAccess
+from shinobi.dataset_access import DatasetFallback, ResolvedDatasetAccess
 from shinobi.dataset_backends import (
     DatasetBackendCapability,
     DatasetBackendStatus,
@@ -341,7 +341,21 @@ def _require_exact_owner(submission_dir: Path, plan: ExecutionPlan):
 
 
 def _planned_access_matches(planned: ResolvedDatasetAccess, actual: ResolvedDatasetAccess) -> bool:
-    """Allow a provisional CREATE identity to become its real closure."""
+    """Allow provisional closures and whole-dataset column reservations to refine."""
+
+    if planned.fallback is DatasetFallback.UNKNOWN_COLUMNS and actual.columns_known and actual.fallback is None:
+        # A producer may supply this step's column input only at execution.
+        # Narrowing its whole-dataset reservation keeps the same claims;
+        # every other declaration and identity must still match below.
+        actual = actual.model_copy(
+            update={
+                "declaration": actual.declaration.model_copy(update={"columns": None}),
+                "whole_dataset": True,
+                "columns_known": False,
+                "fallback": planned.fallback,
+                "reason": planned.reason,
+            }
+        )
 
     if planned == actual:
         return True
