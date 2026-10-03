@@ -11,11 +11,11 @@ import shinobi.dataset_lifecycle as lifecycle_module
 import shinobi.dataset_access as access_module
 import shinobi.ownership as ownership_module
 import shinobi.steps.dispatch as dispatch_module
-from shinobi import Cab, DatasetAccess, DatasetBackendStatus, DatasetMode, DatasetNamespaceMode, MeasurementSetV2, Recipe, pystep, read_dataset_attempt
+from shinobi import Cab, DatasetAccess, DatasetBackendStatus, DatasetColumns, DatasetMode, DatasetNamespaceMode, MeasurementSetV2, Recipe, pystep, read_dataset_attempt
 from shinobi.backends.recording import RecordingBackend
 from shinobi.cache import get_cache_manifest
 from shinobi.config import AppConfig
-from shinobi.dataset_access import DatasetFallback, ResolvedDatasetAccess
+from shinobi.dataset_access import DatasetAccessError, DatasetFallback, ResolvedDatasetAccess
 from shinobi.dataset_closure import ClosureCapabilities, ClosureRequirement, ClosureResource, ClosureStatus, DatasetClosure
 from shinobi.dataset_lifecycle import (
     DatasetFileObservation,
@@ -25,6 +25,7 @@ from shinobi.dataset_lifecycle import (
     DatasetLifecycleSnapshot,
     DatasetLifecycleStore,
     DatasetObservation,
+    StrictLeaf,
     resolve_lifecycle_snapshot,
 )
 from shinobi.datasets import DatasetDescriptor, DatasetStatus, MSV2_STRUCTURAL_V1
@@ -50,6 +51,14 @@ class RuntimeReport(BaseModel):
 
 class DefaultReport(BaseModel):
     report: Path = Path("claimed-safe.txt")
+
+
+class SelectedColumn(BaseModel):
+    column: str | None
+
+
+class ColumnInput(MSInput):
+    column: str | None
 
 
 def _snapshot(root: Path, *, size: int = 4) -> DatasetLifecycleSnapshot:
@@ -131,12 +140,7 @@ def _install_lifecycle(monkeypatch, workspace: Path, snapshots: list[DatasetLife
 
     root = snapshots[0].accesses[0].root
     assert root is not None
-    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(workspace / "registry.json"))
-    monkeypatch.setattr(
-        ownership_module,
-        "scope_path_accesses",
-        lambda *args, **kwargs: ([(root, False)], None),
-    )
+    _install_real_resolution(monkeypatch, workspace, root)
     monkeypatch.setattr(lifecycle_module, "resolve_lifecycle_snapshot", resolve)
 
 
@@ -189,7 +193,11 @@ def test_direct_native_reader_commits_versioned_baseline_and_releases_lease(tmp_
 
     assert result.success
     attempt = _attempts(tmp_path)[0]
-    assert attempt.schema_version == 1
+    assert attempt.schema_version == 2
+    [leaf] = attempt.leaves
+    assert leaf.outcome == "committed"
+    assert leaf.mutations == ()
+    assert leaf.accesses == access_module.resolve_scope_dataset_accesses(read.step, {"ms": ms}, workspace=tmp_path)
     assert attempt.phase is DatasetLifecyclePhase.COMMITTED
     assert attempt.outcome == "committed"
     assert attempt.capability_supported
@@ -209,6 +217,174 @@ def test_direct_native_reader_commits_versioned_baseline_and_releases_lease(tmp_
     ]
     assert WorkspaceOwnershipStore(tmp_path).read().get("owners") == {}
     assert WorkspaceRegistryStore(tmp_path / "registry.json").read().get("owners") == {}
+
+
+def test_historical_version_one_read_attempt_roundtrips(tmp_path, monkeypatch):
+    ms = tmp_path / "observation.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("data")
+    _install_real_resolution(monkeypatch, tmp_path, ms)
+    monkeypatch.chdir(tmp_path)
+
+    @pystep()
+    def read(ms: MeasurementSetV2) -> None:
+        pass
+
+    assert read(ms=ms).success
+    historical = _attempts(tmp_path)[0].model_dump(mode="json")
+    historical["schema_version"] = 1
+    for field in ("leaves", "absent_roots", "recovery"):
+        historical.pop(field)
+    attempt = DatasetLifecycleAttempt.model_validate(historical)
+    assert attempt.schema_version == 1
+    assert attempt.leaves == ()
+    store = DatasetLifecycleStore(tmp_path / "historical.json")
+    store.create(attempt)
+    assert read_dataset_attempt(store.path) == attempt
+
+
+@pytest.mark.parametrize("route", ["pystep-native", "cab-native", "cab-docker"])
+@pytest.mark.parametrize("column", ["DATA", None, "BAD-NAME"])
+def test_runtime_reader_columns_resolve_before_execution_and_cache(tmp_path, monkeypatch, route, column):
+    ms = tmp_path / "observation.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("data")
+    _install_real_resolution(monkeypatch, tmp_path, ms)
+    _install_local_container_configuration(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    cache_dir = tmp_path / "cache"
+    called = []
+    checks = []
+    backend = RecordingBackend()
+    backend_name = "docker" if route == "cab-docker" else "native"
+    monkeypatch.setitem(dispatch_module._STEP_BACKENDS, backend_name, backend)
+    declaration = DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("{column}",)))
+
+    @pystep()
+    def select() -> SelectedColumn:
+        return SelectedColumn(column=column)
+
+    if route == "pystep-native":
+
+        @pystep(dataset_accesses=[declaration])
+        def reader(ms: MeasurementSetV2, column: str | None) -> None:
+            called.append(column)
+    else:
+        reader = Cab(
+            name="reader",
+            command="read-tool",
+            image="reader:latest" if backend_name == "docker" else None,
+            backend=backend_name,
+            inputs_model=ColumnInput,
+            outputs_model=Empty,
+            dataset_accesses=[declaration],
+        )
+
+    recipe = Recipe(name="dynamic-reader", inputs_model=MSInput, outputs_model=Empty)
+    recipe.add_step("select", select)
+    recipe.add_step("read", reader, ms=InputRef(field="ms"), column=OutputRef(step="select", field="column"))
+    manifest = get_cache_manifest(str(cache_dir))
+    original_check = manifest.check
+
+    def check(step_path, *args, **kwargs):
+        checks.append(step_path)
+        return original_check(step_path, *args, **kwargs)
+
+    monkeypatch.setattr(manifest, "check", check)
+    if column == "BAD-NAME":
+        with pytest.raises(DatasetAccessError, match="column|BAD-NAME"):
+            recipe(ms=ms, cache=True, cache_dir=str(cache_dir))
+        [attempt] = _attempts(tmp_path)
+        [leaf] = attempt.leaves
+        assert leaf.outcome == "refused"
+        assert leaf.accesses == ()
+        assert "BAD-NAME" in leaf.reason
+        assert not called and not backend.calls
+        assert "dynamic-reader.read" not in checks
+        assert manifest.entry("dynamic-reader.read") is None
+        return
+
+    assert recipe(ms=ms, cache=True, cache_dir=str(cache_dir)).success
+    assert recipe(ms=ms, cache=True, cache_dir=str(cache_dir)).success
+    records = _attempts(tmp_path)
+    assert len(records) == 2
+    assert {record.leaves[0].outcome for record in records} == {"committed", "reused"}
+    for attempt in records:
+        assert attempt.schema_version == 2
+        [planned] = attempt.planned_accesses
+        assert planned.declaration.columns is None
+        assert planned.fallback is DatasetFallback.UNKNOWN_COLUMNS
+        [leaf] = attempt.leaves
+        [resolved] = leaf.accesses
+        assert resolved.declaration.columns == (DatasetColumns(read=(column,)) if column is not None else None)
+        assert resolved.fallback is (None if column is not None else DatasetFallback.UNKNOWN_COLUMNS)
+        assert leaf.mutations == ()
+        assert "journal" not in leaf.reason and "snapshot" not in leaf.reason
+        assert leaf.cache.decision in {"hit", "miss"}
+    if route == "pystep-native":
+        assert called == [column]
+    else:
+        assert len(backend.calls) == 1
+        [plan] = backend.dataset_plans
+        assert all(not mount.writable for mount in plan.mounts)
+        if backend_name == "docker":
+            assert [mount.source for mount in plan.mounts] == [ms.resolve()]
+
+
+def test_runtime_reader_resolution_exception_survives_refused_leaf_record_failure(tmp_path, monkeypatch):
+    ms = tmp_path / "observation.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("data")
+    _install_real_resolution(monkeypatch, tmp_path, ms)
+    monkeypatch.chdir(tmp_path)
+
+    @pystep()
+    def select() -> SelectedColumn:
+        return SelectedColumn(column="BAD-NAME")
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("{column}",)))])
+    def reader(ms: MeasurementSetV2, column: str | None) -> None:
+        pytest.fail("refused reader executed")
+
+    def unavailable(*args, **kwargs):
+        raise OSError("leaf store unavailable")
+
+    monkeypatch.setattr(DatasetLifecycle, "record_leaf", unavailable)
+    recipe = Recipe(name="dynamic-reader", inputs_model=MSInput, outputs_model=Empty)
+    recipe.add_step("select", select)
+    recipe.add_step("read", reader, ms=InputRef(field="ms"), column=OutputRef(step="select", field="column"))
+    with pytest.raises(DatasetAccessError, match="BAD-NAME") as caught:
+        recipe(ms=ms, cache=False)
+    assert any("leaf store unavailable" in note for note in caught.value.__cause__.__notes__)
+
+
+@pytest.mark.parametrize("claim_present", [False, True])
+def test_reader_claim_refusal_records_no_unclaimed_accesses(tmp_path, monkeypatch, claim_present):
+    ms = tmp_path / "observation.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("data")
+    _install_real_resolution(monkeypatch, tmp_path, ms)
+
+    @pystep()
+    def reader(ms: MeasurementSetV2) -> None:
+        pass
+
+    lifecycle = DatasetLifecycle.start(workspace=tmp_path, attempt_id="claim-refusal", scope="reader", backends=("native",))
+    lease = acquire_workspace(tmp_path, "unrelated", kind="local", accesses=[(tmp_path / "unrelated.ms", False)]) if claim_present else None
+    try:
+        if lease is not None:
+            lifecycle.amend(claim=lease.owner)
+        with pytest.raises(DatasetLifecycleUnavailableError, match="no workflow claim|does not cover"):
+            StrictLeaf(lifecycle, "reader", reader.step, {"ms": ms})
+        attempt = read_dataset_attempt(lifecycle.store.path)
+        assert attempt.schema_version == 2
+        [leaf] = attempt.leaves
+        assert leaf.accesses == ()
+        assert leaf.outcome == "refused"
+        assert "claim" in leaf.reason
+    finally:
+        if lease is not None:
+            lease.release()
 
 
 def test_flat_recipe_with_annotated_boundary_executes_under_one_read_claim(tmp_path, monkeypatch):

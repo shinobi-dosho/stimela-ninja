@@ -12,7 +12,8 @@ from dataclasses import dataclass, field as dc_field
 from enum import Enum
 import os
 from pathlib import Path
-from typing import Any, Iterable
+import re
+from typing import Any, Iterable, Literal, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -23,7 +24,15 @@ from shinobi.exceptions import ShinobiError
 
 
 _COLUMN_NAME = r"^[A-Za-z_][A-Za-z0-9_]*$"
+_COLUMN_PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _MAX_SELECTION_VALUES = 4096
+
+
+def _column_template_fields(name: str) -> tuple[str, ...]:
+    """Accept literal CASA names and direct, undecorated input placeholders."""
+    if re.fullmatch(_COLUMN_NAME, _COLUMN_PLACEHOLDER.sub("COLUMN", name)) is None:
+        raise ValueError(f"invalid CASA column name or input template {name!r}; use literal names or {{input_field}} without attribute/index access, conversions, or format specs")
+    return tuple(_COLUMN_PLACEHOLDER.findall(name))
 
 
 class DatasetAccessError(ShinobiError, ValueError):
@@ -76,6 +85,9 @@ class DatasetColumns(BaseModel):
     every concurrent access to the associated resolved dataset closure.
     ``None`` on :class:`DatasetAccess` means the columns are unknown and
     therefore requests the conservative whole-dataset fallback.
+    Entries may format direct string inputs of their own scope, for example
+    ``"{column}"`` or ``"MODEL_{suffix}"``. Only undecorated field names are
+    allowed; a missing or None input makes the entire access's columns unknown.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -87,11 +99,8 @@ class DatasetColumns(BaseModel):
 
     @model_validator(mode="after")
     def _valid_names(self) -> "DatasetColumns":
-        import re
-
         for name in (*self.read, *self.write, *self.create, *self.remove):
-            if re.fullmatch(_COLUMN_NAME, name) is None:
-                raise ValueError(f"invalid CASA column name {name!r}")
+            _column_template_fields(name)
         return self
 
 
@@ -170,7 +179,12 @@ class DatasetAccess(BaseModel):
 
 
 class ResolvedDatasetAccess(BaseModel):
-    """Serializable resolution of one dataset access declaration."""
+    """Serializable resolution of one dataset access declaration.
+
+    ``declaration`` is the effective copy with concrete column names, or
+    ``columns=None`` when input values are unavailable. The scope retains
+    its original templates; existing literal-column records are unchanged.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -201,6 +215,10 @@ class ResolvedDatasetAccess(BaseModel):
             raise ValueError("resolved dataset resource identities must be absolute")
         if self.columns_known != (self.declaration.columns is not None):
             raise ValueError("columns_known must agree with the dataset declaration")
+        if self.declaration.columns is not None and any(
+            _column_template_fields(name) for group in DatasetColumns.model_fields for name in getattr(self.declaration.columns, group)
+        ):
+            raise ValueError("resolved dataset access requires concrete CASA column names")
         if self.path_known:
             if self.requested_path is None or self.root is None:
                 raise ValueError("a known dataset path requires requested_path and root")
@@ -282,6 +300,24 @@ def validate_scope_dataset_accesses(scope: Any) -> None:
     non_read_fields = {access.field for access in scope.dataset_accesses if access.mode is not DatasetMode.READ}
     for index, access in enumerate(scope.dataset_accesses):
         context = f"scope {scope.name!r} dataset_accesses[{index}]"
+        if access.columns is not None:
+            for group in DatasetColumns.model_fields:
+                for name in getattr(access.columns, group):
+                    for placeholder in _column_template_fields(name):
+                        field = scope.inputs_model.model_fields.get(placeholder)
+                        if field is None:
+                            raise DatasetDeclarationError(f"{context}: column template {name!r} names unknown input field {placeholder!r}{unknown_field(placeholder)}")
+                        leaves = [
+                            node
+                            for node in walk_annotation(field.annotation, metadata=tuple(field.metadata), descend_mappings=False, descend_models=False)
+                            if node.leaf and node.annotation is not type(None)
+                        ]
+                        if not leaves or any(
+                            node.path
+                            or not (node.annotation is str or (get_origin(node.annotation) is Literal and all(isinstance(value, str) for value in get_args(node.annotation))))
+                            for node in leaves
+                        ):
+                            raise DatasetDeclarationError(f"{context}: column template {name!r} requires direct string input {placeholder!r}, optionally None or string choices")
         if access.field not in fields:
             raise DatasetDeclarationError(f"{context}: dataset access names unknown field {access.field!r}{unknown_field(access.field)}")
         is_list = access.field in list_fields
@@ -312,6 +348,29 @@ def _canonical(value: Any, workspace: Path) -> Path:
     except TypeError as exc:
         raise DatasetAccessError(f"dataset path value must be path-compatible, got {type(value).__name__}") from exc
     return (path if path.is_absolute() else workspace / path).resolve()
+
+
+def _resolve_columns(scope: Any, declaration: DatasetAccess, values: dict[str, Any], unresolved_inputs: set[str] | frozenset[str]) -> DatasetAccess:
+    """Copy the declaration with concrete columns, or whole-dataset intent."""
+    if declaration.columns is None:
+        return declaration
+    groups: dict[str, list[str]] = {}
+    unknown = False
+    for group in DatasetColumns.model_fields:
+        names = groups[group] = []
+        for template in getattr(declaration.columns, group):
+            fields = _column_template_fields(template)
+            if any(field in unresolved_inputs or values.get(field) is None for field in fields):
+                unknown = True
+                continue
+            context = f"scope {scope.name!r} dataset field {declaration.field!r} columns.{group} template {template!r}"
+            if any(not isinstance(values[field], str) for field in fields):
+                raise DatasetAccessError(f"{context}: input values must be strings")
+            name = template.format(**{field: values[field] for field in fields})
+            if re.fullmatch(_COLUMN_NAME, name) is None:
+                raise DatasetAccessError(f"{context}: resolved invalid CASA column name {name!r}")
+            names.append(name)
+    return declaration.model_copy(update={"columns": None if unknown else DatasetColumns(**groups)})
 
 
 def _access_label(access: ResolvedDatasetAccess) -> str:
@@ -493,6 +552,10 @@ def resolve_scope_dataset_accesses(
                 # or an output whose implicit template could not resolve, is
                 # still unknown and must reserve an envelope below.
                 continue
+        declaration = _resolve_columns(scope, declaration, values, unresolved_inputs)
+        if declaration.columns is None and fallback is None:
+            fallback = DatasetFallback.UNKNOWN_COLUMNS
+        if value is None:
             if declaration.reservation is None:
                 raise DatasetAccessError(f"scope {scope.name!r} dataset field {declaration.field!r} has an unknown path and no reservation envelope")
             envelope = _canonical(declaration.reservation, workspace)

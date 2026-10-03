@@ -184,6 +184,118 @@ def _record(workflow, plan) -> AttemptRecord:
     )
 
 
+def test_worker_resolves_column_input_from_a_committed_producer(monkeypatch, tmp_path):
+    class SelectorInputs(BaseModel):
+        script: str
+
+    class SelectorOutputs(BaseModel):
+        column: str
+
+    class ReaderInputs(BaseModel):
+        script: str
+        ms: MeasurementSetV2
+        column: str = "MODEL_DATA"
+
+    root = tmp_path / "data.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    selector = Cab(
+        name="select-column",
+        command=f"{sys.executable} -c",
+        inputs_model=SelectorInputs,
+        outputs_model=SelectorOutputs,
+        field_meta={"script": ParamMeta(positional_head=True)},
+        wranglers={r"^COLUMN=(?P<column>\w+)$": ["PARSE_OUTPUT:column:str"]},
+    )
+    reader = Cab(
+        name="reader",
+        command=f"{sys.executable} -c",
+        inputs_model=ReaderInputs,
+        outputs_model=Empty,
+        field_meta={"script": ParamMeta(positional_head=True), "ms": ParamMeta(positional=True), "column": ParamMeta(positional=True)},
+        dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("{column}",)))],
+    )
+    recipe = Recipe(
+        name="dynamic-column-worker",
+        inputs_model=StrictMS,
+        outputs_model=Empty,
+        cache=True,
+        cache_dir=str(tmp_path / "cache"),
+        steps=[
+            StepRef(name="select", step=selector, params={"script": "print('COLUMN=DATA')"}),
+            StepRef(
+                name="read",
+                step=reader,
+                params={"script": "from pathlib import Path;import sys;assert sys.argv[2]=='DATA';Path(sys.argv[1],'table.dat').read_text()"},
+                wiring={"ms": InputRef(field="ms"), "column": OutputRef(step="select", field="column")},
+            ),
+        ],
+    )
+    for expected_outcome in ("committed", "reused"):
+        workflow, plan, lease = _prepared(tmp_path, recipe, root)
+        try:
+            [reserved] = plan.dataset_lifecycle.step("read").accesses
+            assert reserved.whole_dataset and not reserved.columns_known
+            assert reserved.declaration.columns is None
+            assert reserved.fallback is access_module.DatasetFallback.UNKNOWN_COLUMNS
+            bundle = RecipeBundle.read(workflow.submission_dir / "bundle.json")
+            assert "{column}" in bundle.model_dump_json()
+            for name in ("select", "read"):
+                attempt = plan.attempt(name)
+                assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 0
+            record = AttemptRecord.read(
+                workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "final.json",
+                workflow_id=plan.workflow_id,
+                attempt_id=attempt.attempt_id,
+                step_path=attempt.step_path,
+                bundle_digest=bundle.digest,
+            )
+            assert record.committed and record.dataset_lifecycle.outcome == "committed"
+            assert record.dataset_lifecycle.planned_accesses == plan.dataset_lifecycle.initial_snapshot.accesses == (reserved,)
+            [leaf] = record.dataset_lifecycle.leaves
+            assert leaf.outcome == expected_outcome
+            [actual] = leaf.accesses
+            assert actual.columns_known and actual.declaration.columns.read == ("DATA",)
+            assert not actual.whole_dataset and actual.fallback is None
+            assert (root / "table.dat").read_text() == "raw"
+        finally:
+            lease.release()
+
+
+def test_column_refinement_cannot_change_frozen_worker_identities(monkeypatch, tmp_path):
+    from shinobi.dataset_access import resolve_scope_dataset_accesses
+    from shinobi.offload.worker import _planned_access_matches
+
+    class Columns(BaseModel):
+        ms: MeasurementSetV2
+        column: str
+
+    root = tmp_path / "data.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    scope = Cab(
+        name="column",
+        command="true",
+        inputs_model=Columns,
+        outputs_model=Empty,
+        dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("{column}",)))],
+    )
+    [reserved] = resolve_scope_dataset_accesses(scope, {"ms": root}, workspace=tmp_path)
+    [actual] = resolve_scope_dataset_accesses(scope, {"ms": root, "column": "DATA"}, workspace=tmp_path)
+    assert _planned_access_matches(reserved, actual)
+    for change in (
+        {"resources": (*actual.resources, tmp_path / "another.ms")},
+        {"declaration": actual.declaration.model_copy(update={"selection": {"scan_numbers": (1,)}})},
+        {"root": tmp_path / "another.ms"},
+    ):
+        assert not _planned_access_matches(reserved, actual.model_copy(update=change))
+    [changed] = resolve_scope_dataset_accesses(scope, {"ms": root, "column": "CORRECTED_DATA"}, workspace=tmp_path)
+    assert not _planned_access_matches(actual, changed)
+    assert not _planned_access_matches(actual, reserved)
+
+
 def test_read_worker_commits_compute_side_lifecycle(monkeypatch, tmp_path):
     root = tmp_path / "data.ms"
     root.mkdir()
@@ -600,7 +712,7 @@ def test_read_worker_rejects_dataset_change_before_generic_snapshot_commit(monke
         assert record.state == "failed"
         assert record.dataset_lifecycle is not None
         assert record.dataset_lifecycle.outcome == "failed"
-        assert "changed a read-only dataset" in (record.error or "")
+        assert "read-only access changed the dataset" in (record.error or "")
         assert report.read_text() == "reported"
         assert get_journal(str(tmp_path / "cache")).get(chain_id(report.resolve())) is None
     finally:

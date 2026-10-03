@@ -146,12 +146,18 @@ def test_real_list_pystep_and_second_root_violation(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     roots = [make_ms(tmp_path / f"{i}.ms") for i in range(2)]
 
-    @pystep()
-    def reader(ms: list[MSv2]) -> None:
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("{column}",)))])
+    def reader(ms: list[MSv2], column: str = "SCAN_NUMBER") -> None:
         assert all(path.is_dir() for path in ms)
 
     assert reader(ms=roots, **run_kwargs(tmp_path)).success
-    assert len(attempts(tmp_path)[-1].planned_accesses) == 2
+    record = attempts(tmp_path)[-1]
+    assert record.schema_version == 2
+    assert len(record.planned_accesses) == 2
+    [leaf] = record.leaves
+    assert leaf.mutations == ()
+    assert [access.element_index for access in leaf.accesses] == [0, 1]
+    assert [access.declaration.columns for access in leaf.accesses] == [DatasetColumns(read=("SCAN_NUMBER",))] * 2
 
     @pystep()
     def bad_reader(ms: list[MSv2]) -> None:

@@ -557,35 +557,20 @@ class ExecContext:
         covered by that claim. Every workflow root is then re-asserted
         read-only for the container, upgraded only for roots this leaf
         declares write/create access to; an unannotated leaf gets no upgrade.
-        The mutation lifecycle's strict-leaf wrapper performs the same claim
-        check for its bookkeeping. Keeping plan construction here gives cab
+        The strict-leaf wrapper uses the same resolution and claim helper
+        for its bookkeeping. Keeping plan construction here gives cab
         and pystep container launchers one shared adapter.
         """
 
         if self._dataset_lifecycle is None or isinstance(self.scope, Recipe):
             return None
-        from shinobi.dataset_access import resolve_scope_dataset_accesses, scope_has_dataset_contract
         from shinobi.dataset_backends import plan_dataset_backend
-        from shinobi.dataset_lifecycle import claim_covers_accesses
+        from shinobi.dataset_lifecycle import resolve_claimed_leaf_accesses
 
         workflow_accesses = self._dataset_lifecycle.record.planned_accesses
-        if scope_has_dataset_contract(self.scope):
-            values = prepared if prepared is not None else self.prepare_inputs()
-            planned_roots = {access.root: access.resources for access in workflow_accesses if access.root is not None}
-            accesses = resolve_scope_dataset_accesses(
-                self.scope,
-                values,
-                workspace=self._dataset_lifecycle.workspace,
-                planned_roots=planned_roots,
-            )
-        else:
-            accesses = ()
-        claim = self._dataset_lifecycle.record.claim
-        if claim is None:
-            raise DatasetLifecycleUnavailableError("strict dataset backend planning requires the workflow claim")
-        uncovered = claim_covers_accesses(claim, accesses)
-        if uncovered:
-            raise DatasetLifecycleUnavailableError("strict dataset backend planning found closure resources outside the workflow claim: " + ", ".join(map(str, uncovered)))
+        values = prepared if prepared is not None else self.prepare_inputs()
+        planned_roots = {access.root: access.resources for access in workflow_accesses if access.root is not None}
+        accesses = resolve_claimed_leaf_accesses(self._dataset_lifecycle, self.scope, values, planned_roots=planned_roots)
         return plan_dataset_backend(
             backend_name,
             workflow_accesses,
@@ -1487,10 +1472,10 @@ def _dispatch(
         else:
             _publication_gate(action)
 
-    # A leaf carrying a strict dataset contract inside a mutation lifecycle:
+    # A leaf carrying a strict dataset contract inside a dataset lifecycle:
     # it records its own cache decision, observations and outcomes.
     strict_leaf = None
-    if _dataset_lifecycle is not None and getattr(_dataset_lifecycle, "mutation", False) and not isinstance(scope, Recipe):
+    if _dataset_lifecycle is not None and not isinstance(scope, Recipe):
         from shinobi.dataset_access import scope_has_dataset_contract
 
         if scope_has_dataset_contract(scope):

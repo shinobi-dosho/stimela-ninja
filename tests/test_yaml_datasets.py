@@ -27,6 +27,33 @@ def load_cab(**spec):
     return loads(yaml.safe_dump({"cabs": {"tool": {"command": "true", **spec}}}))["tool"]
 
 
+def test_column_template_yaml_and_python_resolve_and_freeze_equivalently(tmp_path, monkeypatch):
+    from shinobi import DatasetColumns
+    from tests.test_dataset_access import _closure
+    import shinobi.dataset_access as access_module
+
+    loaded = load_cab(
+        inputs={"ms": {"dtype": "MSv2", "required": True}, "data.column": {"dtype": "str", "default": "DATA", "choices": ["DATA", "CORRECTED_DATA"]}},
+        dataset_accesses=[{"field": "ms", "mode": "read", "columns": {"read": ["{data_column}"]}}],
+    )
+    manual = Cab(
+        name="tool",
+        command="true",
+        inputs_model=loaded.inputs_model,
+        outputs_model=loaded.outputs_model,
+        dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("{data_column}",)))],
+    )
+    restored = ScopeSpec.model_validate_json(ScopeSpec.capture(loaded).model_dump_json()).restore()
+    assert restored.dataset_accesses == manual.dataset_accesses == loaded.dataset_accesses
+    monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda root, **kwargs: _closure(Path(root), tmp_path))
+    values = loaded.inputs_model(ms=tmp_path / "obs.ms", data_column="CORRECTED_DATA").model_dump()
+    resolved = [resolve_scope_dataset_accesses(scope, values, workspace=tmp_path) for scope in (loaded, manual, restored)]
+    assert resolved[0] == resolved[1] == resolved[2]
+    assert resolved[0][0].declaration.columns.read == ("CORRECTED_DATA",)
+    with pytest.raises(CabLoadError, match="invalid CASA column name.*attribute/index access"):
+        load_cab(inputs={"ms": {"dtype": "MSv2"}, "data.column": {"dtype": "str"}}, dataset_accesses=[{"field": "ms", "mode": "read", "columns": {"read": ["{data.column}"]}}])
+
+
 def test_concise_names_are_identical_public_compatibility_aliases():
     import shinobi.datasets as datasets
     import shinobi.steps as steps
