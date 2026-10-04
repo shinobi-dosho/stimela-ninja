@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from shinobi import DatasetAccess, MeasurementSetV2, Recipe, pystep
 from shinobi.cache import get_cache_manifest
 from shinobi.config import AppConfig
-from shinobi.dataset_access import DatasetColumns
+from shinobi.dataset_access import DatasetAccessError, DatasetColumns
 from shinobi.dataset_lifecycle import (
     DATASET_MUTATION_CAPABILITY,
     DatasetLifecyclePhase,
@@ -28,8 +28,8 @@ from shinobi.dataset_lifecycle import (
 from shinobi.exceptions import DatasetLifecycleUnavailableError, DatasetLifecycleViolationError
 from shinobi.snapshots import Chain, HeadStatus, chain_id, faults, get_journal, state_name
 from shinobi.steps.dispatch import _dispatch
-from shinobi.steps.schema import InputRef
-from tests._dataset_fixtures import ROWS, attempts, make_ms, scans, set_scans
+from shinobi.steps.schema import InputRef, OutputRef
+from tests._dataset_fixtures import QUALITY_TABLES, ROWS, add_quality_table, attempts, make_ms, quality_values, scans, set_scans
 
 tables = pytest.importorskip("casacore.tables")
 pytest.importorskip("numpy")  # installed with casacore, not by default
@@ -77,6 +77,171 @@ def chain_recipe(first: int = 10, by: int = 1) -> Recipe:
 
 
 # -- the normal path ---------------------------------------------------------
+
+
+def test_reserved_main_table_keyword_refuses_before_writer_dispatch(tmp_path):
+    ms = make_ms(tmp_path / "reserved.ms")
+    extra = add_quality_table(ms, "MAIN", directory="EXTRA")
+    ran = []
+
+    @pystep(dataset_accesses=[WRITE_SCANS])
+    def overwrite_extra(ms: MeasurementSetV2) -> None:
+        ran.append(True)
+        with tables.table(str(ms / "EXTRA"), readonly=False, ack=False) as table:
+            table.putcell("VALUE", 0, 99)
+
+    with pytest.raises(DatasetAccessError, match="reserved root closure identity"):
+        overwrite_extra(ms=ms, **run_kwargs(tmp_path))
+    assert ran == []
+    assert scans(ms) == [1] * ROWS
+    with tables.table(str(extra), ack=False) as table:
+        assert table.getcell("VALUE", 0) == 1
+
+
+def test_quality_tables_read_and_exact_snapshot_rerun_rollback(tmp_path):
+    ms = make_ms(tmp_path / "quality.ms")
+    for name in QUALITY_TABLES:
+        add_quality_table(ms, name)
+    with tables.table(str(ms), ack=False) as main:
+        original_links = {name: main.getkeyword(name) for name in QUALITY_TABLES}
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="read")])
+    def inspect_quality(ms: MeasurementSetV2) -> None:
+        assert quality_values(ms) == dict.fromkeys(QUALITY_TABLES, 1)
+
+    assert inspect_quality(ms=ms, **run_kwargs(tmp_path)).success
+    assert renumber(ms=ms, value=7, **run_kwargs(tmp_path)).success
+    mutation = attempts(tmp_path)[-1].leaves[0].mutations[0]
+    assert quality_values(mutation.predecessor_snapshot) == dict.fromkeys(QUALITY_TABLES, 1)
+    assert quality_values(mutation.successor_snapshot) == dict.fromkeys(QUALITY_TABLES, 1)
+    assert renumber(ms=ms, value=8, **run_kwargs(tmp_path)).success
+    assert quality_values(ms) == dict.fromkeys(QUALITY_TABLES, 1)
+
+    @pystep(dataset_accesses=[WRITE_SCANS])
+    def bad_quality(ms: MeasurementSetV2) -> None:
+        with tables.table(str(ms / QUALITY_TABLES[0]), readonly=False, ack=False) as quality:
+            quality.putcell("VALUE", 0, 99)
+
+    with pytest.raises(DatasetLifecycleViolationError, match="allow_subtable_change"):
+        bad_quality(ms=ms, **run_kwargs(tmp_path))
+    assert scans(ms) == [8] * ROWS
+    assert quality_values(ms) == dict.fromkeys(QUALITY_TABLES, 1)
+    with tables.table(str(ms), ack=False) as main:
+        assert {name: main.getkeyword(name) for name in QUALITY_TABLES} == original_links
+
+
+@pytest.mark.parametrize("action", ["create", "remove", "replace", "mutate"])
+@pytest.mark.parametrize("allowed", [False, True])
+def test_opaque_subtable_changes_require_named_permission(tmp_path, action, allowed):
+    import shutil
+
+    ms = make_ms(tmp_path / "quality.ms")
+    name = QUALITY_TABLES[0]
+    if action != "create":
+        add_quality_table(ms, name)
+    access = DatasetAccess(field="ms", mode="write", allow_schema_change=not allowed, allow_keyword_change=not allowed, allow_subtable_change=(name,) if allowed else ())
+
+    @pystep(dataset_accesses=[access])
+    def change_quality(ms: MeasurementSetV2) -> None:
+        if action == "create":
+            add_quality_table(ms, name)
+        elif action == "remove":
+            with tables.table(str(ms), readonly=False, ack=False) as main:
+                main.removekeyword(name)
+            shutil.rmtree(ms / name)
+        elif action == "replace":
+            add_quality_table(ms, name, value=2, directory="replacement")
+            shutil.rmtree(ms / name)
+        else:
+            with tables.table(str(ms / name), readonly=False, ack=False) as table:
+                table.putcell("VALUE", 0, 2)
+
+    if allowed:
+        assert change_quality(ms=ms, **run_kwargs(tmp_path)).success
+        with tables.table(str(ms), ack=False) as main:
+            assert (name in main.keywordnames()) == (action != "remove")
+    else:
+        with pytest.raises(DatasetLifecycleViolationError, match="allow_subtable_change"):
+            change_quality(ms=ms, **run_kwargs(tmp_path))
+        with tables.table(str(ms), ack=False) as main:
+            assert (name in main.keywordnames()) == (action != "create")
+        assert not (ms / "replacement").exists()
+
+
+def test_inferred_writer_cannot_modify_an_opaque_subtable(tmp_path):
+    ms = make_ms(tmp_path / "quality.ms")
+    add_quality_table(ms, QUALITY_TABLES[0])
+
+    from shinobi.steps.schema import Mutability
+
+    @pystep()
+    def inferred(ms: MeasurementSetV2) -> None:
+        with tables.table(str(ms / QUALITY_TABLES[0]), readonly=False, ack=False) as table:
+            table.putcell("VALUE", 0, 2)
+
+    inferred.step.input_mutability = {"ms": Mutability.MUTABLE}
+
+    with pytest.raises(DatasetLifecycleViolationError, match="allow_subtable_change"):
+        inferred(ms=ms, **run_kwargs(tmp_path))
+
+
+def test_historical_v1_observation_remains_readable(tmp_path):
+    from shinobi.dataset_lifecycle import DatasetObservation, observe_dataset
+
+    ms = make_ms(tmp_path / "old.ms")
+    record = observe_dataset(ms, tmp_path).model_dump(mode="json")
+    record["closure_profile"] = record["closure"]["profile"] = "msv2-dataset-closure/v1"
+    assert DatasetObservation.model_validate(record).closure_profile == "msv2-dataset-closure/v1"
+
+
+def test_predicted_output_ref_is_revalidated_before_consumer(tmp_path):
+    ms = make_ms(tmp_path / "planned.ms")
+    other = make_ms(tmp_path / "other.ms")
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="write")])
+    def misdirect(ms: MeasurementSetV2) -> MSInput:
+        return MSInput(ms=other)
+
+    recipe = Recipe(name="revalidate", inputs_model=MSInput, outputs_model=Empty)
+    recipe.add_step("producer", misdirect, ms=InputRef(field="ms"))
+    recipe.add_step("write", renumber, ms=OutputRef(step="producer", field="ms"), value=7)
+    with pytest.raises(DatasetLifecycleUnavailableError, match="workflow claim does not cover"):
+        recipe(ms=ms, **run_kwargs(tmp_path))
+    assert scans(other) == [1] * ROWS
+
+
+@pytest.mark.parametrize("path_only_output", [False, True])
+@pytest.mark.parametrize("reverse_declaration", [False, True])
+def test_create_then_write_output_ref_executes_one_root(tmp_path, path_only_output, reverse_declaration):
+    from shinobi.dataset_access import plan_recipe_accesses
+
+    class PathOutput(BaseModel):
+        ms: Path
+
+    output_model = PathOutput if path_only_output else MSInput
+
+    def create(ms: MeasurementSetV2):
+        return output_model(ms=make_ms(ms))
+
+    create.__annotations__["return"] = output_model
+    create = pystep(dataset_accesses=[DatasetAccess(field="ms", mode="create")])(create)
+
+    ms = tmp_path / "obs.ms"
+    recipe = Recipe(name="lineage", inputs_model=MSInput, outputs_model=Empty)
+    if reverse_declaration:
+        recipe.add_step("write", renumber, ms=OutputRef(step="create", field="ms"), value=7)
+    recipe.add_step("create", create, ms=InputRef(field="ms"))
+    if not reverse_declaration:
+        recipe.add_step("write", renumber, ms=OutputRef(step="create", field="ms"), value=7)
+    plan = plan_recipe_accesses(recipe, {"ms": ms}, workspace=tmp_path)
+    assert plan.accesses["create"][0].root == plan.accesses["write"][0].root == ms
+    assert recipe(ms=ms, **run_kwargs(tmp_path)).success
+    assert scans(ms) == [7] * ROWS
+    [attempt] = attempts(tmp_path)
+    assert attempt.outcome == "committed"
+    assert {access.root for access in attempt.planned_accesses} == {ms}
+    assert len(attempt.leaves) == 2
+    assert all(leaf.mutations[0].outcome is DatasetMutationOutcome.COMMITTED for leaf in attempt.leaves)
 
 
 def test_writer_commits_named_predecessor_and_successor(tmp_path):

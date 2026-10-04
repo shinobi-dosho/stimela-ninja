@@ -118,6 +118,16 @@ alias contradictions that require resolved filesystem identities are checked
 by planning.
 Column creation/removal requires ``allow_schema_change: true``; creating a
 new dataset with ``mode: create`` alone does not require that flag.
+MAIN writers may specify ``allow_subtable_change: [QUALITY_BASELINE_STATISTIC]``
+to permit changes to named opaque keyword-linked tables; generic schema or
+keyword permission does not permit those changes. See :doc:`datasets`.
+
+A cab may set ``cache: true``, ``cache: false`` or ``cache: null``. Omission
+and null inherit the existing cache policy; false makes the cab execute on
+every run, including when a containing recipe enables caching. ``_include``
+and ``_use`` preserve this setting with ordinary override precedence. A direct
+call-time cache argument overrides the cab setting. Strict MSv2 writers retain
+their requirement for cache-backed recovery and refuse explicit false.
 
 Column names can be templated from the cab's own validated string inputs:
 

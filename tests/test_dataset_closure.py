@@ -92,6 +92,43 @@ def test_external_shared_resource_is_allowed(tmp_path, monkeypatch):
     assert source.external_to_root
 
 
+def test_opaque_table_keywords_join_closure_but_plain_strings_do_not(tmp_path, monkeypatch):
+    root = tmp_path / "obs.ms"
+    quality = root / "QUALITY_BASELINE_STATISTIC"
+    quality.mkdir(parents=True)
+    install_tables(monkeypatch, root, {"QUALITY_BASELINE_STATISTIC": "Table: QUALITY_BASELINE_STATISTIC", "QUALITY_NOTE": "not-a-table"})
+    closure = resolve_dataset_closure(root, storage_namespace=tmp_path)
+    assert closure.valid
+    assert closure.profile == "msv2-dataset-closure/v2"
+    assert [resource.members for resource in closure.resources] == [("MAIN",), ("QUALITY_BASELINE_STATISTIC",)]
+
+
+def test_real_main_keyword_cannot_reuse_the_root_closure_identity(tmp_path):
+    from tests._dataset_fixtures import add_quality_table, make_ms
+
+    root = make_ms(tmp_path / "obs.ms")
+    extra = add_quality_table(root, "MAIN", directory="EXTRA")
+    closure = resolve_dataset_closure(root, storage_namespace=tmp_path)
+    assert closure.status is ClosureStatus.UNSUPPORTED
+    assert "reserved root closure identity" in closure.message
+    assert closure.resources == ()
+    tables = pytest.importorskip("casacore.tables")
+    with tables.table(str(extra), ack=False) as table:
+        assert table.getcell("VALUE", 0) == 1
+
+
+def test_real_non_table_main_keyword_remains_metadata(tmp_path):
+    from tests._dataset_fixtures import make_ms
+
+    tables = pytest.importorskip("casacore.tables")
+    root = make_ms(tmp_path / "obs.ms")
+    with tables.table(str(root), readonly=False, ack=False) as main:
+        main.putkeyword("MAIN", "ordinary metadata")
+    closure = resolve_dataset_closure(root, storage_namespace=tmp_path)
+    assert closure.valid
+    assert [resource.path for resource in closure.resources if "MAIN" in resource.members] == [root]
+
+
 @pytest.mark.parametrize("kind,status", [("missing", ClosureStatus.DANGLING_REFERENCE), ("escape", ClosureStatus.ESCAPED_NAMESPACE), ("cycle", ClosureStatus.CYCLIC_REFERENCE)])
 def test_reference_failures_have_distinct_statuses(tmp_path, monkeypatch, kind, status):
     namespace = tmp_path / "store"

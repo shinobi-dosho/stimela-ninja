@@ -162,6 +162,7 @@ class DatasetAccess(BaseModel):
     allow_row_count_change: bool = False
     allow_schema_change: bool = False
     allow_keyword_change: bool = False
+    allow_subtable_change: tuple[str, ...] = ()
     root_field: str | None = None
     reservation: Path | None = None
 
@@ -171,8 +172,15 @@ class DatasetAccess(BaseModel):
         if self.mode is DatasetMode.READ:
             if columns is not None and (columns.write or columns.create or columns.remove):
                 raise ValueError("read dataset access cannot write, create, or remove columns")
-            if self.allow_row_count_change or self.allow_schema_change or self.allow_keyword_change:
-                raise ValueError("read dataset access cannot permit row-count, schema, or keyword changes")
+            if self.allow_row_count_change or self.allow_schema_change or self.allow_keyword_change or self.allow_subtable_change:
+                raise ValueError("read dataset access cannot permit row-count, schema, keyword, or subtable changes")
+        if self.allow_subtable_change and self.table is not DatasetTable.MAIN:
+            raise ValueError("allow_subtable_change belongs on a MAIN access")
+        for name in self.allow_subtable_change:
+            if re.fullmatch(_COLUMN_NAME, name) is None or name in DatasetTable._value2member_map_:
+                raise ValueError(f"allow_subtable_change requires an opaque subtable keyword name, got {name!r}")
+        if len(set(self.allow_subtable_change)) != len(self.allow_subtable_change):
+            raise ValueError("allow_subtable_change requires unique names")
         if columns is not None and (columns.create or columns.remove) and not self.allow_schema_change:
             raise ValueError("creating or removing columns requires allow_schema_change=True")
         return self
@@ -736,7 +744,7 @@ def plan_recipe_accesses(
     from pydantic_core import PydanticUndefined
 
     from shinobi.graph import RecipeGraph, build_graph
-    from shinobi.steps.schema import InputRef, OutputRef, Recipe, static_output_values
+    from shinobi.steps.schema import Recipe, static_output_values, static_wiring_values
 
     if recipe.dataset_accesses:
         raise DatasetAccessError(f"recipe {recipe.name!r} declares dataset access metadata; attach access to the atomic steps that touch the dataset")
@@ -768,24 +776,7 @@ def plan_recipe_accesses(
         if ref.scatter is not None and scope_has_dataset_contract(ref.step):
             raise DatasetAccessError(f"step {ref.name!r} scatters a dataset contract; declare bounded non-scattered steps instead")
 
-        known = dict(ref.params)
-        unresolved_fields: set[str] = set()
-        for field_name, source in ref.wiring.items():
-            sources = source if isinstance(source, list) else [source]
-            found: list[Any] = []
-            complete = True
-            for item in sources:
-                if isinstance(item, InputRef):
-                    found.append(recipe_inputs[item.field])
-                elif isinstance(item, OutputRef) and item.field in outputs.get(item.step, {}):
-                    found.append(outputs[item.step][item.field])
-                else:
-                    complete = False
-            if complete:
-                known[field_name] = found if isinstance(source, list) else found[0]
-            else:
-                known.pop(field_name, None)
-                unresolved_fields.add(field_name)
+        known, unresolved_fields = static_wiring_values(ref, recipe_inputs, outputs)
         for field_name, model_field in ref.step.inputs_model.model_fields.items():
             if field_name not in known and field_name not in unresolved_fields and model_field.default is not PydanticUndefined:
                 known[field_name] = model_field.default

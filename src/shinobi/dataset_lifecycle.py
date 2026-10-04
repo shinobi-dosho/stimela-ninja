@@ -116,7 +116,7 @@ class DatasetObservation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     structural_profile: Literal["msv2-structural/v1"] = MSV2_STRUCTURAL_PROFILE
-    closure_profile: Literal["msv2-dataset-closure/v1"] = DATASET_CLOSURE_PROFILE
+    closure_profile: Literal["msv2-dataset-closure/v1", "msv2-dataset-closure/v2"] = DATASET_CLOSURE_PROFILE
     root: Path
     descriptor: DatasetDescriptor
     closure: DatasetClosure
@@ -548,7 +548,7 @@ def _observe_root(root: Path, workspace: Path) -> DatasetObservation:
         paths.add(resource.path)
         paths.update(resource.path / name for name in resource.table_files)
     files = tuple(_file_observation(path) for path in sorted(paths, key=str))
-    return DatasetObservation(root=closure.root, descriptor=descriptor, closure=closure, files=files)
+    return DatasetObservation(root=closure.root, descriptor=descriptor, closure=closure, closure_profile=closure.profile, files=files)
 
 
 def observe_dataset(root: Path, workspace: Path) -> DatasetObservation:
@@ -867,6 +867,7 @@ def leaf_postcondition_issues(
         allow_rows = any(access.declaration.allow_row_count_change for access in writers)
         allow_schema = any(access.declaration.allow_schema_change for access in writers)
         allow_keywords = any(access.declaration.allow_keyword_change for access in writers)
+        allowed_subtables = {name for access in writers for name in access.declaration.allow_subtable_change}
         if not allow_rows and before.descriptor.nrows != after.descriptor.nrows:
             issues.append(f"{label}: MAIN row count changed {before.descriptor.nrows} -> {after.descriptor.nrows} without allow_row_count_change")
         added = set(after.descriptor.columns) - set(before.descriptor.columns)
@@ -883,18 +884,25 @@ def leaf_postcondition_issues(
         subtables_changed = set(before.descriptor.subtables) ^ set(after.descriptor.subtables)
         if subtables_changed and not allow_schema:
             issues.append(f"{label}: subtable set changed without allow_schema_change")
-        before_members = {str(resource.path.relative_to(root)) for resource in before.closure.resources if resource.path.is_relative_to(root)}
-        after_members = {str(resource.path.relative_to(root)) for resource in after.closure.resources if resource.path.is_relative_to(root)}
+        before_members = {member: resource.path for resource in before.closure.resources for member in resource.members}
+        after_members = {member: resource.path for resource in after.closure.resources for member in resource.members}
+        linked_subtables_changed = (set(before_members) ^ set(after_members)) - {"MAIN"}
+        before_members = {member: path for member, path in before_members.items() if member not in allowed_subtables}
+        after_members = {member: path for member, path in after_members.items() if member not in allowed_subtables}
         if before_members != after_members and not allow_schema:
             issues.append(f"{label}: closure membership changed without allow_schema_change")
         # A subtable is linked by a MAIN keyword of the same name, so that
         # part of a keyword change is the schema change judged above.
-        keywords_changed = (set(before.descriptor.keywords) ^ set(after.descriptor.keywords)) - subtables_changed
+        keywords_changed = (set(before.descriptor.keywords) ^ set(after.descriptor.keywords)) - subtables_changed - linked_subtables_changed
         if keywords_changed and not allow_keywords:
             issues.append(f"{label}: MAIN keyword name(s) changed without allow_keyword_change: {', '.join(sorted(keywords_changed))}")
+        changed_tables = _changed_tables(before, after)
+        opaque_changes = changed_tables - {table.value for table in DatasetTable} - allowed_subtables
+        if opaque_changes:
+            issues.append(f"{label}: opaque subtable(s) changed without allow_subtable_change: {', '.join(sorted(opaque_changes))}")
         if not any(access.fallback is DatasetFallback.UNDECLARED for access in writers):
-            declared_tables = {access.declaration.table.value for access in writers}
-            touched = sorted(_changed_tables(before, after) - declared_tables)
+            declared_tables = {access.declaration.table.value for access in writers} | allowed_subtables
+            touched = sorted(changed_tables - declared_tables)
             if touched:
                 issues.append(f"{label}: undeclared table(s) changed: {', '.join(touched)} (declared: {', '.join(sorted(declared_tables))})")
     return issues

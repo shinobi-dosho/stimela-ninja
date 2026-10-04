@@ -107,6 +107,27 @@ def test_exact_round_trip_without_source_and_cli(tmp_path, monkeypatch):
     assert response.exit_code == 0 and json.loads(response.output) == []
 
 
+def test_opaque_quality_tables_exact_state_round_trip(tmp_path, monkeypatch):
+    from casacore import tables
+    from tests._dataset_fixtures import QUALITY_TABLES, add_quality_table, quality_values
+
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "owners.json"))
+    source = make_state_ms(tmp_path / "quality.ms")
+    for name in QUALITY_TABLES:
+        add_quality_table(source, name)
+    store = DatasetStateStore(tmp_path / "store", cache_dir=tmp_path / "cache")
+    exported = store.export(source, block_rows=2)
+    assert read_state_attempt(exported.attempt).provenance.closure_profile == "msv2-dataset-closure/v2"
+    source.rename(tmp_path / "hidden.ms")
+    restored = store.materialize(exported.state_id, tmp_path / "restored.ms")
+    assert quality_values(restored.destination) == dict.fromkeys(QUALITY_TABLES, 1)
+    assert adapter.native_id(restored.destination) == exported.state_id
+    with tables.table(str(restored.destination), ack=False) as main:
+        for name in QUALITY_TABLES:
+            with tables.table(main.getkeyword(name), ack=False) as quality:
+                assert quality.getcell("VALUE", 0) == 1
+
+
 def test_different_layout_same_native_state(tmp_path, monkeypatch):
     monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "owners.json"))
     source = make_state_ms(tmp_path / "source.ms")

@@ -168,6 +168,80 @@ def test_unrelated_cab_validation_errors_keep_their_type():
         load_cab(sandbox="invalid")
 
 
+@pytest.mark.parametrize("cache", [False, True, None])
+def test_cache_policy_matches_python_and_survives_worker_capture(cache):
+    loaded = load_cab(cache=cache)
+    native = Cab(name="tool", command="true", inputs_model=loaded.inputs_model, outputs_model=loaded.outputs_model, cache=cache)
+    restored = ScopeSpec.model_validate_json(ScopeSpec.capture(loaded).model_dump_json()).restore()
+    assert loaded.cache is native.cache is restored.cache is cache
+    assert load_cab().cache is None
+
+
+@pytest.mark.parametrize("cache", ["false", 0, 1, [], {}])
+def test_cache_policy_rejects_non_booleans(cache):
+    with pytest.raises(CabLoadError, match="cab 'tool'.*cache.*true, false or null"):
+        load_cab(cache=cache)
+
+
+def test_cache_policy_composition(tmp_path):
+    from shinobi.loaders.yaml_cab import load_file
+
+    base = tmp_path / "base.yaml"
+    base.write_text("lib: {base: {command: 'true', cache: false}}\ncabs: {inherited: {_use: lib.base}}\n")
+    source = tmp_path / "tool.yaml"
+    source.write_text("_include: base.yaml\ncabs: {overridden: {_use: lib.base, cache: true}, inherited: {cache: true}}\n")
+    assert loads(base.read_text())["inherited"].cache is False
+    assert {name: cab.cache for name, cab in load_file(source).items()} == {"inherited": True, "overridden": True}
+
+
+def test_uncached_yaml_reader_recreates_deleted_sidecar(tmp_path, monkeypatch):
+    import shutil
+    from shinobi import Recipe
+    from shinobi.config import AppConfig
+    from shinobi.steps import InputRef
+    from tests._dataset_fixtures import attempts, make_ms
+
+    root = make_ms(tmp_path / "obs.ms")
+    monkeypatch.chdir(tmp_path)
+    loaded = load_cab(
+        cache=False,
+        command=f"{sys.executable} -c",
+        inputs={
+            "script": {
+                "dtype": "str",
+                "default": "import sys; from pathlib import Path; p=Path(sys.argv[1]+'.flagversions'); p.mkdir(exist_ok=True); (p/'flags.pre').write_text('backup')",
+                "policies": {"positional_head": True},
+            },
+            "ms": {"dtype": "MSv2", "required": True, "policies": {"positional": True}},
+        },
+        dataset_accesses=[{"field": "ms", "mode": "read"}],
+    )
+    recipe = Recipe(name="backup", inputs_model=loaded.inputs_model, outputs_model=loaded.outputs_model, cache=True)
+    recipe.add_step("save", loaded, ms=InputRef(field="ms"))
+    config = AppConfig(cache={"enabled": True, "dir": str(tmp_path / "cache")})
+    sidecar = root.with_name(root.name + ".flagversions")
+    assert recipe(ms=root, config=config).success
+    assert (sidecar / "flags.pre").read_text() == "backup"
+    shutil.rmtree(sidecar)
+    assert recipe(ms=root, config=config).success
+    assert (sidecar / "flags.pre").read_text() == "backup"
+    assert all(attempt.leaves[0].cache.decision == "disabled" for attempt in attempts(tmp_path))
+    # An explicit call-time override still has precedence over the cab.
+    assert loaded(ms=root, config=config, cache=True).success
+    assert attempts(tmp_path)[-1].leaves[0].cache.decision == "miss"
+
+
+def test_uncached_yaml_writer_uses_existing_runtime_refusal(tmp_path, monkeypatch):
+    from tests._dataset_fixtures import make_ms
+
+    root = make_ms(tmp_path / "obs.ms")
+    monkeypatch.chdir(tmp_path)
+    loaded = load_cab(cache=False, inputs={"ms": {"dtype": "MSv2", "required": True, "mutable": True}})
+    with pytest.raises(DatasetLifecycleUnavailableError, match="caching.*disabled|cache=False"):
+        loaded(ms=root)
+    assert loaded(ms=root, cache=True, cache_dir=str(tmp_path / "cache")).success
+
+
 def test_mutable_field_cannot_be_downgraded_to_explicit_read():
     with pytest.raises(CabLoadError, match=r"dataset_accesses\[0\].*mutable input field 'ms'.*only read"):
         load_cab(

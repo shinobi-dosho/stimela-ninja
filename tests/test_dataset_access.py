@@ -181,6 +181,20 @@ def test_mutable_read_contract_is_refused_before_planning():
         )
 
 
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        {"mode": "read", "allow_subtable_change": ("QUALITY_TIME_STATISTIC",)},
+        {"mode": "write", "table": "ANTENNA", "allow_subtable_change": ("QUALITY_TIME_STATISTIC",)},
+        {"mode": "write", "allow_subtable_change": ("ANTENNA",)},
+        {"mode": "write", "allow_subtable_change": ("QUALITY_TIME_STATISTIC", "QUALITY_TIME_STATISTIC")},
+    ],
+)
+def test_opaque_subtable_permission_is_a_named_main_writer_contract(declaration):
+    with pytest.raises(ValidationError):
+        DatasetAccess(field="ms", **declaration)
+
+
 def test_dataset_contract_keeps_generic_parent_write_for_sibling_ordering(monkeypatch, tmp_path):
     ms = tmp_path / "observation.ms"
     sibling = tmp_path / "other.txt"
@@ -561,6 +575,10 @@ def test_unresolved_output_ref_does_not_fall_back_to_consumer_default(tmp_path):
     assert access.requested_path is None
     with pytest.raises(DatasetAccessError, match="unknown path and no reservation"):
         plan_recipe_accesses(recipe_with(None), {}, workspace=tmp_path)
+    from shinobi.ownership import scope_path_accesses
+
+    with pytest.raises(DatasetAccessError, match="unknown path and no reservation"):
+        scope_path_accesses(recipe_with(None), {}, workspace=tmp_path)
 
 
 def _create_then_read_recipe() -> Recipe:
@@ -607,6 +625,13 @@ def test_planned_create_identity_flows_to_reader_and_all_planners(monkeypatch, t
     assert read.resources == (target.resolve(),)
     assert read.closure_status is None
     assert plan.reasons[("read", "create")] == ("read-after-write: future.ms, MAIN.DATA",)
+    from shinobi.ownership import contained_access_issues, scope_path_accesses
+
+    owned, snapshots = scope_path_accesses(recipe, {"target": target}, workspace=tmp_path)
+    assert (target.resolve(), True) in owned
+    assert snapshots[id(recipe.steps[1])][0].ms == target
+    assert not snapshots[id(recipe.steps[1])][1]  # execution validates the actual producer output
+    assert contained_access_issues(recipe, {"target": target}, workspace=tmp_path, dataset_resources={target}, validated_steps=snapshots) == ()
     assert "read-after-write: future.ms, MAIN.DATA" in render_dag(graph_nodes(recipe, {"target": target}, workspace=tmp_path))
 
     legacy = compile_slurm(recipe, {"target": target}, workdir=str(tmp_path), container_runtime=None)

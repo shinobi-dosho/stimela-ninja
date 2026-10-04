@@ -88,6 +88,8 @@ def test_state_attempt_v2_closes_exact_replay_provenance(tmp_path):
     path.write_text(attempt.model_dump_json())
     assert read_state_attempt(path) == attempt
     assert provenance.state_id != provenance.representation_id
+    assert provenance.closure_profile == "msv2-dataset-closure/v1"
+    assert StateProvenance.model_validate({**provenance.model_dump(), "closure_profile": "msv2-dataset-closure/v2"}).closure_profile == "msv2-dataset-closure/v2"
     assert provenance.requested_fidelity == provenance.actual_fidelity == "exact-logical"
     assert provenance.transformation_decision == "not-requested" and not provenance.physical_restoration
 

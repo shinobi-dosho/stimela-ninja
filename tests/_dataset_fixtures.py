@@ -12,6 +12,30 @@ from shinobi.dataset_lifecycle import DatasetLifecycleAttempt, DatasetLifecycleS
 ROWS = 4
 
 
+QUALITY_TABLES = ("QUALITY_BASELINE_STATISTIC", "QUALITY_FREQUENCY_STATISTIC", "QUALITY_TIME_STATISTIC", "QUALITY_KIND_NAME")
+
+
+def add_quality_table(ms: Path, name: str, *, value: int = 1, directory: str | None = None) -> Path:
+    """Attach a small opaque AOFlagger-style table by a real MAIN keyword."""
+    tables = pytest.importorskip("casacore.tables", reason="requires measurement-set group")
+    path = ms / (directory or name)
+    with tables.table(str(path), tables.maketabdesc([tables.makescacoldesc("VALUE", 0)]), nrow=1, readonly=False, ack=False) as table:
+        table.putcell("VALUE", 0, value)
+    with tables.table(str(ms), readonly=False, ack=False) as main:
+        main.putkeyword(name, f"Table: {path}")
+    return path
+
+
+def quality_values(ms: Path) -> dict[str, int]:
+    tables = pytest.importorskip("casacore.tables", reason="requires measurement-set group")
+    return {name: _quality_value(ms / name, tables) for name in QUALITY_TABLES}
+
+
+def _quality_value(path: Path, tables) -> int:
+    with tables.table(str(path), ack=False) as table:
+        return int(table.getcell("VALUE", 0))
+
+
 def make_ms(path: Path, *, scan: int = 1) -> Path:
     """A minimal valid MSv2: default subtables, a DATA column and a few rows."""
     tables = pytest.importorskip("casacore.tables", reason="requires measurement-set group")

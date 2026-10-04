@@ -128,9 +128,15 @@ Physical dataset closure
 
 After structural validation, :func:`~shinobi.dataset_closure.resolve_dataset_closure`
 can produce a separate, serializable observation of the physical tables that
-must travel together.  Its versioned ``msv2-dataset-closure/v1`` profile
+must travel together.  Its versioned ``msv2-dataset-closure/v2`` profile
 contains the canonical main table plus the actual keyword-referenced mandatory
-and supported optional subtables.  Symlink aliases and duplicate member
+and supported optional subtables, plus any MAIN string keyword beginning with
+``Table:`` followed by a space. Extra tables such as AOFlagger's ``QUALITY_*`` tables are opaque
+closure members: Shinobi protects their files and links without interpreting
+their schemas. A table-reference keyword named ``MAIN`` is refused because
+that name identifies the root closure member. Ordinary string metadata,
+including non-table ``MAIN`` values, remains supported. Historical v1
+records remain readable. Symlink aliases and duplicate member
 references collapse to one resource.  A subtable may be outside the MS
 directory and shared by several MS roots, but every resource must remain in
 the explicit storage namespace.
@@ -201,6 +207,14 @@ The postcondition requires that named column to exist afterward and refuses
 other undeclared additions. This differs from ``mode="create"``, which creates
 a new dataset and retains its existing-target refusal.
 
+An explicit MAIN writer can name opaque keyword-linked tables with
+``allow_subtable_change=("QUALITY_BASELINE_STATISTIC",)``. Each named permission
+allows creation, removal, replacement and changes to that table. Other opaque
+members remain protected even with ``allow_schema_change=True`` or
+``allow_keyword_change=True``, and even for an inferred whole-dataset writer.
+Read accesses and accesses to standard subtables cannot carry this permission.
+New-dataset CREATE may include opaque members in its initial product.
+
 ``field`` names a direct path/MS-compatible field or a read-only MSv2 list
 input. ``root_field`` remains scalar-only and is not supported on list accesses.
 Other containers, nested models and non-path scalar fields are rejected at definition time;
@@ -222,7 +236,10 @@ Unknown columns and omitted access metadata conservatively mean the whole
 dataset.  The resolved record distinguishes ``unknown-columns``,
 ``undeclared`` and ``unknown-path`` fallbacks.  A path which is not statically
 known must provide a ``reservation`` path envelope or planning refuses it.
-An unresolved ``OutputRef`` remains unknown even when the consumer input has a
+Statically resolvable ``OutputRef`` paths (including implicit outputs computed
+from known producer inputs) carry the same path through planning and ownership,
+in dependency order. Their actual runtime values are validated again before
+dispatch. An unresolved ``OutputRef`` remains unknown even when the consumer input has a
 default; only its reservation may cover that interval.  A statically named
 ``create`` followed by a wired reader is planned through one provisional root
 identity before the product exists.  ``create`` means a new dataset: an
@@ -270,7 +287,7 @@ compatible claims concurrently.  A reader may still produce ordinary
 non-dataset reports or images through the existing output lifecycle, but a
 generic write overlapping the MSv2 closure is refused.  Every generic path
 must be concrete at the ownership boundary and covered by the claim; runtime
-``Path`` returns, path-valued ``OutputRef`` inputs, output default factories,
+``Path`` returns, unresolved path-valued ``OutputRef`` inputs, output default factories,
 glob-selected products, and generic in-place mutation are bounded refusals.
 An unannotated generic path may not alias the strict closure.  Mixed
 read/output claims retain the conservative exclusive workspace authority. Any

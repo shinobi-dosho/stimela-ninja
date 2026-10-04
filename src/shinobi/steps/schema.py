@@ -420,6 +420,34 @@ class StaticOutputResolutionError(ValueError):
         self.template = template
 
 
+def static_wiring_values(
+    ref: StepRef,
+    recipe_inputs: dict[str, Any],
+    outputs: dict[str, dict[str, Any]],
+    *,
+    unresolved_inputs: set[str] | frozenset[str] = frozenset(),
+) -> tuple[dict[str, Any], set[str]]:
+    """Resolve complete wired values, retaining unknowns instead of defaults."""
+    known = dict(ref.params)
+    unresolved: set[str] = set()
+    for field, source in ref.wiring.items():
+        sources = source if isinstance(source, list) else [source]
+        found: list[Any] = []
+        for item in sources:
+            if isinstance(item, InputRef) and item.field in recipe_inputs and item.field not in unresolved_inputs:
+                found.append(recipe_inputs[item.field])
+            elif isinstance(item, OutputRef) and item.field in outputs.get(item.step, {}):
+                found.append(outputs[item.step][item.field])
+            else:
+                break
+        if len(found) == len(sources):
+            known[field] = found if isinstance(source, list) else found[0]
+        else:
+            known.pop(field, None)
+            unresolved.add(field)
+    return known, unresolved
+
+
 def static_output_values(
     scope: Scope,
     prepared: dict[str, Any],
