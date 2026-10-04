@@ -37,7 +37,7 @@ NativeModel = Literal["msutils-native-model/v1"]
 LogicalHash = Literal["msutils-logical-hash/v1"]
 StateProfile = Literal["fixed-shape-defined-or-empty/v1"]
 StructuralProfile = Literal["msv2-structural/v1"]
-ClosureProfile = Literal["msv2-dataset-closure/v1"]
+ClosureProfile = Literal["msv2-dataset-closure/v1", "msv2-dataset-closure/v2"]
 StateFidelity = Literal["exact-logical"]
 MappingProfile = Literal["shinobi-xarray-ms-native/v1"]
 PreservationSchema = Literal["msutils-native-preservation/v2"]
@@ -217,6 +217,7 @@ class StateProvenance(_Record):
             representation_id=representation.representation_id,
             msv4_id=representation.msv4_id,
             payload_id=representation.payload_id,
+            closure_profile=representation.observation.closure_profile,
             mapping_profile=representation.adapter,
             msv4_schema=representation.msv4_schema,
             preservation_schema=representation.preservation_schema,
@@ -625,7 +626,7 @@ class DatasetStateStore:
                 self._verify_rep(rep, physical)
                 publication = stage / "state"
                 (publication / "representations").mkdir(parents=True)
-                _write(publication / "logical.json", LogicalState(state_id=state_id))
+                _write(publication / "logical.json", LogicalState(state_id=state_id, closure_profile=before.closure_profile))
                 rep.rename(publication / "representations" / physical.representation_id.split(":")[1])
                 _sync_tree(stage)
                 attempt = self._save(

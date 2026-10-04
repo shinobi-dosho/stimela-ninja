@@ -28,7 +28,7 @@ leaf param from a nested CLI section by whether the mapping has *any* known
 param-spec key, so a spec carrying only an unregistered key is read as a
 section and the field disappears without a word.
 
-Per cab: ``sandbox``, ``harvest``, ``scratch`` and ``dataset_accesses``,
+Per cab: ``cache``, ``sandbox``, ``harvest``, ``scratch`` and ``dataset_accesses``,
 which mirror the `Scope` fields of the same names. Access mappings are
 validated by `DatasetAccess`; field references use literal sanitized model
 names (``data.ms`` becomes ``data_ms``). Strict ``MSv2``/``CasaTab`` dtypes
@@ -361,6 +361,9 @@ def _dataset_accesses(raw: Any, *, cab: str) -> list[DatasetAccess]:
 
 
 def _build_cab(name: str, spec: dict[str, Any], package_roots: dict[str, Path], images: dict[str, str] | None = None) -> Cab:
+    cache = spec.get("cache")
+    if cache is not None and not isinstance(cache, bool):
+        raise CabLoadError(f"cab '{name}': 'cache' must be true, false or null")
     image = spec.get("image")
     if isinstance(image, dict):
         image = image.get("name")
@@ -452,6 +455,7 @@ def _build_cab(name: str, spec: dict[str, Any], package_roots: dict[str, Path], 
         sandbox=spec.get("sandbox"),
         harvest=list(spec.get("harvest") or []),
         scratch=list(spec.get("scratch") or []),
+        cache=cache,
     )
 
 

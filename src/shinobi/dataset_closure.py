@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict
 
 from shinobi.datasets import DatasetStatus, _load_table_factory, inspect_measurement_set_v2
 
-DATASET_CLOSURE_PROFILE = "msv2-dataset-closure/v1"
+DATASET_CLOSURE_PROFILE = "msv2-dataset-closure/v2"
 _OPTIONAL_SUBTABLES = frozenset({"DOPPLER", "FREQ_OFFSET", "SOURCE", "SYSCAL", "WEATHER"})
 _MANDATORY_SUBTABLES = frozenset(
     {"ANTENNA", "DATA_DESCRIPTION", "FEED", "FIELD", "FLAG_CMD", "HISTORY", "OBSERVATION", "POINTING", "POLARIZATION", "PROCESSOR", "SPECTRAL_WINDOW", "STATE"}
@@ -263,7 +263,14 @@ def resolve_dataset_closure(path: str | Path, *, storage_namespace: str | Path, 
         main = table_factory(str(root), readonly=True, ack=False)
         try:
             keywords, root_managers = _plain_table_metadata(main)
-            reference_paths = {member: _keyword_path(main.getkeyword(member), root) for member in sorted((_MANDATORY_SUBTABLES | _OPTIONAL_SUBTABLES).intersection(keywords))}
+            reference_paths = {}
+            for member in keywords:
+                value = main.getkeyword(member)
+                table_reference = isinstance(value, str) and value.startswith("Table: ")
+                if member == "MAIN" and table_reference:
+                    raise ValueError("table-reference keyword 'MAIN' conflicts with the reserved root closure identity")
+                if member in _MANDATORY_SUBTABLES | _OPTIONAL_SUBTABLES or table_reference:
+                    reference_paths[member] = _keyword_path(value, root)
         finally:
             main.close()
     except OverflowError as exc:

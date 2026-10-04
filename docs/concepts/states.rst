@@ -72,6 +72,11 @@ Export takes a shared READ claim in the workflow ownership registry and
 checks a contained single-directory source before and after export/capture.
 Source changes and pending mutation markers in the configured cache refuse.
 Readers coexist; declared writers conflict. External/multi-root closures refuse.
+The v2 dataset closure includes opaque MAIN ``Table:`` keyword members, so
+contained extra tables participate in observation and source-change checks.
+New state provenance records the observed closure profile; historical v1
+state records remain readable. Export and materialization still require the
+state adapter's supported table schemas and exact logical validation.
 
 Materialization takes an exclusive CREATE claim for destination and private
 sibling staging. The parent must exist. Existing files/directories/dangling

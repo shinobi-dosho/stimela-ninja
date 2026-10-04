@@ -25,7 +25,7 @@ from shinobi.exceptions import ShinobiError
 from shinobi.storage import JsonFileStore, SharedStorageError, ofd_lock
 from shinobi.steps.schema import (
     Cab,
-    InputRef,
+    OutputRef,
     Recipe,
     Scope,
     declares_path_writes,
@@ -33,6 +33,8 @@ from shinobi.steps.schema import (
     path_accesses,
     path_fields,
     paths_overlap,
+    static_output_values,
+    static_wiring_values,
     unresolved_output_path_fields,
     write_path_fields,
 )
@@ -132,9 +134,10 @@ def _resolved_leaf_inputs(
     """Yield each leaf with the inputs knowable at a workflow boundary.
 
     ``step_inputs`` collects each successfully validated StepRef model. Its
-    boolean says whether every value was knowable at the ownership boundary;
-    an unresolved ``OutputRef`` makes that step and everything below a nested
-    recipe runtime-dependent. Fully knowable models are handed to dispatch
+    boolean says whether the model can be reused at execution. Statically
+    known ``OutputRef`` values inform the claim, but their actual returned
+    values are validated at runtime. Unresolved references make that step
+    and everything below a nested recipe runtime-dependent. Other models are handed to dispatch
     unchanged, so both default factories and custom validators run exactly
     once. Runtime-dependent models still supply their already-evaluated
     defaults, but execution validates the final upstream values normally.
@@ -162,19 +165,16 @@ def _resolved_leaf_inputs(
         except Exception:  # input validation reports the authoritative error in dispatch
             recipe_inputs = dict(values)
 
-    for ref in scope.steps:
-        known = dict(ref.params)
-        runtime_dependent = False
-        unresolved_fields: set[str] = set()
-        for field, source in ref.wiring.items():
-            sources = source if isinstance(source, list) else [source]
-            if all(isinstance(item, InputRef) and item.field in recipe_inputs for item in sources):
-                resolved = [recipe_inputs[item.field] for item in sources]
-                known[field] = resolved if isinstance(source, list) else resolved[0]
-            elif any(not isinstance(item, InputRef) for item in sources):
-                runtime_dependent = True
-                known.pop(field, None)
-                unresolved_fields.add(field)
+    from shinobi.graph import build_graph
+
+    outputs: dict[str, dict[str, Any]] = {}
+    for index in build_graph(scope).topological_indices():
+        ref = scope.steps[index]
+        known, unresolved_fields = static_wiring_values(ref, recipe_inputs, outputs, unresolved_inputs=unresolved_inputs)
+        runtime_dependent = bool(unresolved_fields)
+        # A statically predicted OutputRef still needs its actual returned
+        # value validated at execution against the workflow's claim.
+        output_wired = any(isinstance(item, OutputRef) for source in ref.wiring.values() for item in (source if isinstance(source, list) else [source]))
         validated = None
         prior = validated_steps.get(id(ref)) if validated_steps is not None else None
         try:
@@ -182,15 +182,17 @@ def _resolved_leaf_inputs(
             known = {name: getattr(validated, name) for name in ref.step.inputs_model.model_fields}
             for name in unresolved_fields:
                 known.pop(name, None)
-            reuse_model = reusable and not runtime_dependent and ref.scatter is None
+            reuse_model = reusable and not runtime_dependent and not output_wired and ref.scatter is None
             step_inputs[id(ref)] = (validated, reuse_model)
         except Exception:
             pass
+        if not isinstance(ref.step, Recipe) and ref.scatter is None:
+            outputs[ref.name] = static_output_values(ref.step, known, unresolved_inputs=unresolved_fields)
         yield from _resolved_leaf_inputs(
             ref.step,
             validated if validated is not None and not runtime_dependent else known,
             step_inputs=step_inputs,
-            reusable=reusable and validated is not None and not runtime_dependent and ref.scatter is None,
+            reusable=reusable and validated is not None and not runtime_dependent and not output_wired and ref.scatter is None,
             unresolved_inputs=unresolved_fields,
             validated_steps=validated_steps,
         )
@@ -278,7 +280,9 @@ def contained_access_issues(
         dataset_inputs = set(executable_dataset_fields(leaf.inputs_model))
         dataset_outputs = set(executable_dataset_fields(leaf.outputs_model))
         created_dataset_roots: set[Path] = set()
-        if dataset_outputs or dataset_inputs:
+        # Only creators need the absent-root alias exception. Resolving a
+        # reader here would inspect a wired product before its creator runs.
+        if (dataset_outputs - dataset_inputs) or any(access.mode.value == "create" for access in leaf.dataset_accesses):
             from shinobi.dataset_access import DatasetAccessError, DatasetMode, resolve_scope_dataset_accesses
 
             try:
