@@ -1478,3 +1478,44 @@ def test_call_level_cache_off_outranks_a_steps_own_cache_true(tmp_path, monkeypa
     recipe(cache_dir=cache_dir)
     recipe(cache_dir=cache_dir)
     assert calls == [1, 1, 1]
+
+
+def test_subtable_writer_contract_migration_preserves_other_keys(tmp_path, monkeypatch):
+    from shinobi import DatasetAccess, DatasetColumns, MSv2
+    from shinobi.dataset_access import DatasetTable
+
+    class DatasetInputs(BaseModel):
+        ms: MSv2
+        column: str = "CUSTOM"
+
+    def cab(accesses):
+        return Cab(name="columns", command="columns", inputs_model=DatasetInputs, outputs_model=Outputs, dataset_accesses=accesses)
+
+    prepared = {"ms": tmp_path / "absent.ms", "column": "CUSTOM"}
+    legacy = compute_cache_key(cab([]), None, prepared)
+    main = DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("DATA",)))
+    assert compute_cache_key(cab([main]), None, prepared) == legacy
+    antenna_read = main.model_copy(update={"table": DatasetTable.ANTENNA})
+    assert compute_cache_key(cab([antenna_read]), None, prepared) == legacy
+    writer = DatasetAccess(field="ms", table="ANTENNA", mode="write", columns=DatasetColumns(create=("{column}",)), allow_schema_change=True)
+    # Capture the actual parts and reconstruct the exact historical key by
+    # omitting only the newly conditional component.
+    import hashlib
+    import json
+
+    dumps = json.dumps
+    captured = []
+
+    def capture(parts, **kwargs):
+        captured.append(parts)
+        return dumps(parts, **kwargs)
+
+    monkeypatch.setattr(cache.json, "dumps", capture)
+    key = compute_cache_key(cab([writer]), None, prepared)
+    parts = captured[-1]
+    old_parts = [part for part in parts if not (isinstance(part, list) and part and part[0] == "__msv2_subtable_columns_v1__")]
+    old_key = hashlib.sha256(dumps(old_parts, default=str, sort_keys=True).encode()).hexdigest()
+    assert key != old_key
+    # Contract changes and resolved runtime parameters both affect the new key.
+    assert key != compute_cache_key(cab([writer.model_copy(update={"columns": DatasetColumns(create=("OTHER",))})]), None, prepared)
+    assert key != compute_cache_key(cab([writer]), None, {**prepared, "column": "OTHER"})

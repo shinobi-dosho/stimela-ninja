@@ -207,3 +207,41 @@ def test_no_replace_including_empty_directory(tmp_path):
     publish_directory(source, target)
     assert (target / "content").read_text() == "new"
     assert not source.exists()
+
+
+def test_historical_nested_observation_digest_loads_unchanged(tmp_path):
+    from datetime import datetime, timezone
+    from shinobi.dataset_lifecycle import structural_signature
+    from shinobi.dataset_state import StateRepresentation, _digest
+    from tests.test_dataset_lifecycle import _snapshot
+
+    observation = _snapshot(tmp_path / "source.ms").observations[0]
+    state_id = "msutils-logical-hash/v1:" + "a" * 64
+    physical = StateRepresentation(
+        representation_id="sha256:" + "0" * 64,
+        state_id=state_id,
+        msv4_id="msutils-logical-hash/v1:" + "b" * 64,
+        payload_id="msutils-logical-hash/v1:" + "c" * 64,
+        versions=_versions(),
+        source_spelling=str(observation.root),
+        source=observation.root,
+        observation=observation,
+        structural_signature=structural_signature(observation),
+        capture_attempt=uuid.uuid4(),
+        captured_at=datetime.now(timezone.utc),
+        files=(),
+        zarr_metadata={},
+    )
+    historical = physical.model_dump(mode="json", exclude={"representation_id"})
+    assert "table_columns" not in historical["observation"]
+    representation_id = _digest(historical)
+    historical["representation_id"] = representation_id
+    store = DatasetStateStore(tmp_path / "store")
+    state = store._state(state_id)
+    rep = state / "representations" / representation_id.removeprefix("sha256:")
+    rep.mkdir(parents=True)
+    (state / "logical.json").write_text(LogicalState(state_id=state_id).model_dump_json())
+    (rep / "representation.json").write_text(json.dumps(historical))
+    _, _, loaded = store._load(state_id, representation_id)
+    assert loaded.model_dump(mode="json") == historical
+    assert _digest(loaded.model_dump(mode="json", exclude={"representation_id"})) == representation_id

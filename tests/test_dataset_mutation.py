@@ -1089,3 +1089,210 @@ def test_call_level_cache_off_outranks_a_writers_own_cache_setting(tmp_path):
     with pytest.raises(DatasetLifecycleUnavailableError, match="caching explicitly disabled"):
         recipe(ms=ms, cache=False, cache_dir=str(tmp_path / "cache"))
     assert scans(ms) == [1] * ROWS
+
+
+@pytest.mark.parametrize("target", ["MAIN", "ANTENNA", "SOURCE"])
+@pytest.mark.parametrize("action", ["create-missing", "remove-lingering", "undeclared-add", "undeclared-remove", "no-permission"])
+def test_per_table_column_contract_refuses_and_restores(tmp_path, target, action):
+    ms = make_ms(tmp_path / "columns.ms")
+    if target == "SOURCE":
+        with tables.table(str(ms / target), tables.required_ms_desc(target), ack=False):
+            pass
+        with tables.table(str(ms), readonly=False, ack=False) as main:
+            main.putkeyword(target, f"Table: {ms / target}")
+    path = ms if target == "MAIN" else ms / target
+    with tables.table(str(path), readonly=False, ack=False) as table:
+        table.addcols(tables.maketabdesc([tables.makescacoldesc("EXISTING_CUSTOM", 0)]))
+        original = tuple(table.colnames())
+    columns = (
+        DatasetColumns(create=("PROMISED",))
+        if action == "create-missing"
+        else DatasetColumns(remove=("EXISTING_CUSTOM",))
+        if action == "remove-lingering"
+        else DatasetColumns(write=("EXISTING_CUSTOM",))
+    )
+    access = DatasetAccess(field="ms", mode="write", table=target, columns=columns, allow_schema_change=action != "no-permission")
+
+    @pystep(dataset_accesses=[access])
+    def writer(ms: MeasurementSetV2) -> None:
+        path = ms if target == "MAIN" else ms / target
+        with tables.table(str(path), readonly=False, ack=False) as table:
+            if action in {"undeclared-add", "no-permission"}:
+                table.addcols(tables.maketabdesc([tables.makescacoldesc("UNDECLARED", 0)]))
+            elif action == "undeclared-remove":
+                table.removecols("EXISTING_CUSTOM")
+
+    with pytest.raises(DatasetLifecycleViolationError, match="column"):
+        writer(ms=ms, **run_kwargs(tmp_path))
+    with tables.table(str(path), ack=False) as table:
+        assert tuple(table.colnames()) == original
+    assert attempts(tmp_path)[-1].outcome == "failed"
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_subtable_templated_create_remove_and_descendant_cache_reuse(tmp_path, existing):
+    ms = make_ms(tmp_path / "columns.ms")
+    if existing:
+        with tables.table(str(ms / "ANTENNA"), readonly=False, ack=False) as table:
+            table.addcols(tables.maketabdesc([tables.makescacoldesc("CUSTOM", 0)]))
+    ran = []
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", table="ANTENNA", mode="write", columns=DatasetColumns(create=("{column}",)), allow_schema_change=True)])
+    def create(ms: MeasurementSetV2, column: str) -> None:
+        ran.append("create")
+        with tables.table(str(ms / "ANTENNA"), readonly=False, ack=False) as table:
+            if column not in table.colnames():
+                table.addcols(tables.maketabdesc([tables.makescacoldesc(column, 0)]))
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", table="ANTENNA", mode="write", columns=DatasetColumns(remove=("CUSTOM",)), allow_schema_change=True)])
+    def remove(ms: MeasurementSetV2) -> None:
+        ran.append("remove")
+        with tables.table(str(ms / "ANTENNA"), readonly=False, ack=False) as table:
+            table.removecols("CUSTOM")
+
+    recipe = Recipe(name="columns", inputs_model=MSInput, outputs_model=Empty)
+    recipe.add_step("create", create, ms=InputRef(field="ms"), column="CUSTOM")
+    recipe.add_step("remove", remove, ms=InputRef(field="ms"))
+    assert recipe(ms=ms, **run_kwargs(tmp_path)).success
+    assert recipe(ms=ms, **run_kwargs(tmp_path)).success
+    assert ran == ["create", "remove"]
+    with tables.table(str(ms / "ANTENNA"), ack=False) as table:
+        assert "CUSTOM" not in table.colnames()
+
+
+def test_old_unchecked_subtable_success_reruns_and_refuses(tmp_path, monkeypatch):
+    import shinobi.cache as cache_module
+    import shinobi.dataset_lifecycle as lifecycle_module
+    import shinobi.steps.dispatch as dispatch_module
+
+    ms = make_ms(tmp_path / "unchecked.ms")
+    ran = []
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", table="ANTENNA", mode="write", columns=DatasetColumns(create=("PROMISED",)), allow_schema_change=True)])
+    def forgetful(ms: MeasurementSetV2) -> None:
+        ran.append(True)
+
+    original_key = dispatch_module.compute_cache_key
+    original_dumps = cache_module.json.dumps
+
+    def historical_key(*args, **kwargs):
+        def historical_dump(parts, **options):
+            parts = [part for part in parts if not (isinstance(part, list) and part and part[0] == "__msv2_subtable_columns_v1__")]
+            return original_dumps(parts, **options)
+
+        with monkeypatch.context() as legacy:
+            legacy.setattr(cache_module.json, "dumps", historical_dump)
+            return original_key(*args, **kwargs)
+
+    with monkeypatch.context() as legacy:
+        legacy.setattr(dispatch_module, "compute_cache_key", historical_key)
+        legacy.setattr(lifecycle_module, "_table_column_issues", lambda *args: [])
+        assert forgetful(ms=ms, **run_kwargs(tmp_path)).success
+        assert forgetful(ms=ms, **run_kwargs(tmp_path)).cached
+    with pytest.raises(DatasetLifecycleViolationError, match="ANTENNA declared created column.*PROMISED"):
+        forgetful(ms=ms, **run_kwargs(tmp_path))
+    assert ran == [True, True]
+    assert attempts(tmp_path)[-1].outcome == "failed"
+
+
+def test_keyword_linked_optional_source_runtime_rename_succeeds(tmp_path):
+    ms = make_ms(tmp_path / "source.ms")
+    source_path = ms / "OPTIONAL_SOURCES"
+    with tables.table(str(source_path), tables.required_ms_desc("SOURCE"), ack=False) as source:
+        source.addcols(tables.maketabdesc([tables.makescacoldesc("OLD_CUSTOM", 0)]))
+    with tables.table(str(ms), readonly=False, ack=False) as main:
+        main.putkeyword("SOURCE", f"Table: {source_path}")
+
+    @pystep(
+        dataset_accesses=[DatasetAccess(field="ms", table="SOURCE", mode="write", columns=DatasetColumns(create=("{column}",), remove=("OLD_CUSTOM",)), allow_schema_change=True)]
+    )
+    def rename(ms: MeasurementSetV2, column: str = "DEFAULT_CUSTOM") -> None:
+        with tables.table(str(ms / "OPTIONAL_SOURCES"), readonly=False, ack=False) as source:
+            source.renamecol("OLD_CUSTOM", column)
+
+    assert rename(ms=ms, column="ACTUAL_CUSTOM", **run_kwargs(tmp_path)).success
+    assert rename(ms=ms, column="ACTUAL_CUSTOM", **run_kwargs(tmp_path)).cached
+    [record] = attempts(tmp_path)[:1]
+    assert record.leaves[0].post_observations[0].table_columns["SOURCE"]
+    with tables.table(str(source_path), ack=False) as source:
+        assert "ACTUAL_CUSTOM" in source.colnames() and "OLD_CUSTOM" not in source.colnames()
+
+
+def test_oversized_optional_source_evidence_only_refuses_applicable_writer(tmp_path):
+    from shinobi.dataset_closure import ClosureStatus, resolve_dataset_closure
+    from shinobi.dataset_lifecycle import observe_dataset
+    from shinobi.datasets import DatasetStatus, InspectionLimits, inspect_measurement_set_v2
+
+    ms = make_ms(tmp_path / "large_source.ms")
+    source_path = ms / "OPTIONAL_SOURCES"
+    with tables.table(str(source_path), tables.required_ms_desc("SOURCE"), ack=False) as source:
+        source.addcols(tables.maketabdesc([tables.makescacoldesc(f"CUSTOM_{i}", 0) for i in range(InspectionLimits().max_columns + 1)]))
+        original_columns = tuple(source.colnames())
+    with tables.table(str(ms), readonly=False, ack=False) as main:
+        main.putkeyword("SOURCE", f"Table: {source_path}")
+    assert inspect_measurement_set_v2(ms).status is DatasetStatus.VALID
+    assert resolve_dataset_closure(ms, storage_namespace=tmp_path).status is ClosureStatus.VALID
+    assert "SOURCE" not in observe_dataset(ms, tmp_path).table_columns
+    ran = []
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("SCAN_NUMBER",)))])
+    def reader(ms: MeasurementSetV2) -> None:
+        ran.append("read")
+        assert scans(ms) == [1] * ROWS
+
+    @pystep(dataset_accesses=[WRITE_SCANS])
+    def main_writer(ms: MeasurementSetV2) -> None:
+        ran.append("main")
+        set_scans(ms, 7)
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", table="SOURCE", mode="write", columns=DatasetColumns(create=("NEW_CUSTOM",)), allow_schema_change=True)])
+    def source_writer(ms: MeasurementSetV2) -> None:
+        ran.append("source")
+        with tables.table(str(ms / "OPTIONAL_SOURCES"), readonly=False, ack=False) as source:
+            source.addcols(tables.maketabdesc([tables.makescacoldesc("NEW_CUSTOM", 0)]))
+
+    assert reader(ms=ms, **run_kwargs(tmp_path)).success
+    assert main_writer(ms=ms, **run_kwargs(tmp_path)).success
+    with pytest.raises(DatasetLifecycleViolationError, match="SOURCE column metadata evidence is missing"):
+        source_writer(ms=ms, **run_kwargs(tmp_path))
+    assert ran == ["read", "main", "source"]
+    assert scans(ms) == [7] * ROWS
+    with tables.table(str(source_path), ack=False) as source:
+        assert tuple(source.colnames()) == original_columns
+    assert attempts(tmp_path)[-1].outcome == "failed"
+
+
+@pytest.mark.parametrize("known_first", [False, True])
+def test_mixed_mutation_workflow_reader_root_allows_evidence_availability_change(tmp_path, monkeypatch, known_first):
+    import shinobi.dataset_lifecycle as lifecycle_module
+
+    written = make_ms(tmp_path / "written.ms")
+    read = make_ms(tmp_path / "read.ms")
+    original = lifecycle_module._observe_root
+    observations = []
+
+    def observe(root, workspace):
+        observation = original(root, workspace)
+        if root.resolve() == read.resolve():
+            observations.append(True)
+            known = (len(observations) == 1) == known_first
+            observation = observation.model_copy(update={"table_columns": {"ANTENNA": ("NAME",)} if known else {}})
+        return observation
+
+    monkeypatch.setattr(lifecycle_module, "_observe_root", observe)
+
+    class MixedInputs(BaseModel):
+        written: MeasurementSetV2
+        read: MeasurementSetV2
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="read")])
+    def reader(ms: MeasurementSetV2) -> None:
+        assert scans(ms) == [1] * ROWS
+
+    recipe = Recipe(name="mixed_evidence", inputs_model=MixedInputs, outputs_model=Empty)
+    recipe.add_step("write", renumber, ms=InputRef(field="written"), value=7)
+    recipe.add_step("read", reader, ms=InputRef(field="read"))
+    assert recipe(written=written, read=read, **run_kwargs(tmp_path)).success
+    assert len(observations) >= 4
+    assert scans(written) == [7] * ROWS
+    assert scans(read) == [1] * ROWS

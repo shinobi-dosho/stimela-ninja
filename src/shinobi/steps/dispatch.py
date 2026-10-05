@@ -908,6 +908,8 @@ def _dispatch(
             DatasetLifecyclePhase,
             claim_covers_accesses,
             claim_covers_snapshot,
+            dataset_observation_matches,
+            dataset_snapshot_matches,
             observe_roots,
             overwrite_created_datasets,
             pending_dataset_recovery,
@@ -1071,7 +1073,7 @@ def _dispatch(
             )
             revalidated = resolve_snapshot()
             covered = not claim_covers_accesses(lease.owner, revalidated.accesses) if mutation else claim_covers_snapshot(lease.owner, revalidated)
-            if revalidated != planned or not covered:
+            if not dataset_snapshot_matches(planned, revalidated) or not covered:
                 raise DatasetLifecycleUnavailableError(f"contained MSv2 {noun} refused before backend execution: the access plan or observation changed after claim")
             if mutation:
                 # Crash recovery for the datasets this workflow writes, under
@@ -1179,7 +1181,7 @@ def _dispatch(
                         violation,
                     )
                     raise violation from exc
-                if post != planned:
+                if not dataset_snapshot_matches(planned, post):
                     violation = DatasetLifecycleViolationError("strict MSv2 reader changed its dataset before failing")
                     transition_preserving(
                         DatasetLifecyclePhase.FAILED,
@@ -1206,7 +1208,10 @@ def _dispatch(
                 # declared a write to must be exactly as planned.
                 written = {access.root for access in planned.accesses if access.writes}
                 baseline = {observation.root: observation for observation in planned.observations}
-                changed = sorted((observation.root for observation in final if observation.root not in written and baseline.get(observation.root) != observation), key=str)
+                changed = sorted(
+                    (observation.root for observation in final if observation.root not in written and not dataset_observation_matches(baseline.get(observation.root), observation)),
+                    key=str,
+                )
                 if changed:
                     violation = DatasetLifecycleViolationError("strict MSv2 workflow changed a dataset it declared only as read: " + ", ".join(map(str, changed)))
                     transition_preserving(DatasetLifecyclePhase.FAILED, str(violation), violation, post_observations=final)
@@ -1236,7 +1241,7 @@ def _dispatch(
                     violation,
                 )
                 raise violation from exc
-            if post != planned:
+            if not dataset_snapshot_matches(planned, post):
                 violation = DatasetLifecycleViolationError("strict MSv2 reader changed its dataset")
                 transition_preserving(
                     DatasetLifecyclePhase.FAILED,
