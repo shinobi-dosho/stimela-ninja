@@ -186,6 +186,18 @@ class DatasetAccess(BaseModel):
         return self
 
 
+@dataclass(frozen=True)
+class DatasetAddress:
+    """Typed field/element identity; labels are for diagnostics only."""
+
+    field: str
+    element_index: int | None = None
+
+    @property
+    def label(self) -> str:
+        return self.field if self.element_index is None else f"{self.field}[{self.element_index}]"
+
+
 class ResolvedDatasetAccess(BaseModel):
     """Serializable resolution of one dataset access declaration.
 
@@ -213,8 +225,8 @@ class ResolvedDatasetAccess(BaseModel):
     @model_validator(mode="after")
     def _consistent(self) -> "ResolvedDatasetAccess":
         expected_field = self.declaration.field if self.element_index is None else f"{self.declaration.field}[{self.element_index}]"
-        if self.element_index is not None and (not self.path_known or self.mode is not DatasetMode.READ):
-            raise ValueError("indexed dataset access requires a concrete read-only path")
+        if self.element_index is not None and (not self.path_known or self.mode is DatasetMode.CREATE):
+            raise ValueError("indexed dataset access requires a concrete read or write path")
         if self.field != expected_field or self.mode is not self.declaration.mode:
             raise ValueError("resolved field/mode must agree with its dataset declaration")
         if not self.resources:
@@ -251,6 +263,10 @@ class ResolvedDatasetAccess(BaseModel):
         if not self.reason:
             raise ValueError("resolved dataset access requires an inspectable reason")
         return self
+
+    @property
+    def address(self) -> DatasetAddress:
+        return DatasetAddress(self.declaration.field, self.element_index)
 
     @property
     def writes(self) -> bool:
@@ -297,13 +313,20 @@ def validate_scope_dataset_accesses(scope: Any) -> None:
 
     # Unsupported Python composites may still be constructed as metadata.
     # Validate executable shapes only when explicit access targets one.
+    input_shapes = executable_dataset_fields(scope.inputs_model, reject_unsupported=False)
+    output_shapes = executable_dataset_fields(scope.outputs_model, reject_unsupported=False)
     list_fields = executable_dataset_list_fields(scope.inputs_model) | executable_dataset_list_fields(scope.outputs_model)
-    if list_fields:
-        from shinobi.steps.schema import mutated_path_fields, write_path_fields
+    if list_fields and not hasattr(scope, "steps"):
+        from shinobi.steps.schema import write_path_fields
 
-        writes = mutated_path_fields(scope) | write_path_fields(scope) | set(scope.outputs_model.model_fields)
-        for name in list_fields & writes:
-            raise DatasetDeclarationError(f"strict dataset list field {name!r} is read-only; list outputs and filesystem writes are unsupported")
+        explicit_writes = {access.field for access in scope.dataset_accesses if access.mode is DatasetMode.WRITE}
+        for name in list_fields:
+            mutability = getattr(scope, "input_mutability", {}).get(name)
+            if getattr(mutability, "value", mutability) == "mutable" or name in write_path_fields(scope):
+                raise DatasetDeclarationError(f"strict dataset list field {name!r} requires explicit DatasetAccess WRITE; MUTABLE and write_path are unsupported")
+            if name in output_shapes:
+                if name not in explicit_writes or name not in input_shapes or input_shapes[name] != output_shapes[name]:
+                    raise DatasetDeclarationError(f"strict dataset list output {name!r} requires a compatible same-name input and explicit DatasetAccess WRITE passthrough")
     seen: set[tuple[str, DatasetTable]] = set()
     non_read_fields = {access.field for access in scope.dataset_accesses if access.mode is not DatasetMode.READ}
     for index, access in enumerate(scope.dataset_accesses):
@@ -331,8 +354,8 @@ def validate_scope_dataset_accesses(scope: Any) -> None:
         is_list = access.field in list_fields
         if is_list:
             shape = executable_dataset_fields(scope.inputs_model, reject_unsupported=False).get(access.field)
-            if shape is None or not shape.is_list or access.mode is not DatasetMode.READ or access.root_field is not None:
-                raise DatasetDeclarationError(f"{context}: strict dataset lists support read-only inputs without root_field")
+            if shape is None or not shape.is_list or access.mode is DatasetMode.CREATE or access.root_field is not None:
+                raise DatasetDeclarationError(f"{context}: strict dataset lists support explicit read or write inputs without root_field")
         if not is_list and not path_compatible(access.field):
             raise DatasetDeclarationError(f"{context}: dataset access field {access.field!r} must be a direct Path or MS-compatible field")
         if access.root_field is not None and access.root_field not in fields:
@@ -611,6 +634,8 @@ def resolve_scope_dataset_accesses(
         for right in resolved[index + 1 :]:
             if left.element_index is None and right.element_index is None:
                 continue
+            if left.field == right.field and left.address != right.address:
+                raise DatasetAccessError(f"scope {scope.name!r} dataset addresses have colliding diagnostic labels {left.field!r}")
             if left.field == right.field:
                 continue  # repeated table declarations for the same element
             if any(paths_overlap(a, b) for a in left.resources for b in right.resources):

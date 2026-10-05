@@ -241,3 +241,22 @@ cache) with :ref:`ninja clean <ninja-clean>`:
 
     $ ninja clean --no-cache        # just the run manifests
     $ ninja clean --dry-run         # preview without deleting
+
+Strict list mutation lineage
+----------------------------
+
+A strict ``list[MSv2]`` passthrough retains an ordered producer key per element,
+including its original raw producer field and optional element index. Whole-list
+wiring, scalar producer assembly, recipe reexports and cache hits preserve those
+addresses. Missing keys remain positional and cannot authorize a strict write
+from an unknown producer. The key's string value stays the invocation's skip
+cache key; indexed upstream addresses additionally contribute to downstream
+cache identity. Scalar-only cache keys and snapshot names are unchanged.
+
+Indexed snapshot names use a separate namespace containing the full hash of
+the raw field and the element index, including index zero for a singleton list.
+They cannot collide with sanitized scalar field names. These names are
+provenance states, not reusable dataset-state IDs, observed fingerprints or
+worker attempt IDs. A same-key reexecution can require a separately frozen
+physical rollback copy; its identity is not replaced by the new generation's
+observation until the invocation's exact success oracle decides the outcome.

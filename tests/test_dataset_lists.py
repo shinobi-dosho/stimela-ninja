@@ -91,19 +91,18 @@ def test_optional_empty_unknown_and_alias(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"dataset_accesses": [DatasetAccess(field="ms", mode="write")]},
         {"dataset_accesses": [DatasetAccess(field="ms", mode="create")]},
         {"input_mutability": {"ms": Mutability.MUTABLE}},
         {"field_meta": {"ms": ParamMeta(write_path=True)}},
     ],
 )
 def test_list_writes_refused(kwargs):
-    with pytest.raises((DatasetDeclarationError, ValidationError), match="read-only"):
+    with pytest.raises((DatasetDeclarationError, ValidationError), match="strict dataset list"):
         cab(**kwargs)
 
 
 def test_list_outputs_refused():
-    with pytest.raises((DatasetDeclarationError, ValidationError), match="read-only"):
+    with pytest.raises((DatasetDeclarationError, ValidationError), match="strict dataset list"):
         Cab(name="output", command="true", inputs_model=Empty, outputs_model=Inputs)
 
 
@@ -296,7 +295,7 @@ def test_overlapping_list_closures_refuse_distinct_identities(tmp_path, monkeypa
 
 
 def test_same_input_output_and_root_field_list_refusals():
-    with pytest.raises(ValidationError, match="read-only"):
+    with pytest.raises(ValidationError, match="strict dataset list"):
         Cab(name="inplace", command="true", inputs_model=Inputs, outputs_model=Inputs)
 
     class Mixed(BaseModel):

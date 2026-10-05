@@ -193,3 +193,137 @@ checker verified final ``9,9,9,9`` contents and every durable record. The
 ordinary suite separately races two finalizers through one recovery marker;
 the physical M2 qualification proves that the same persistent OFD lock used
 by that regression excludes peers across these three nodes.
+
+## Physical M5 joint MSv2 prediction and recovery probe
+
+`run_m5_lists.py` is an optional, bounded real-data gate for explicit
+`list[MSv2]` writes. Supply two distinct, already selected seed MSs and an
+actual nonzero WSClean model FITS file under a unique test root. The harness
+never selects or writes the original observation. It deep-copies the seeds
+with Casacore, checks that each copy's closure is contained, and removes only
+the copies' `MODEL_DATA` to exercise schema-changing prediction. Each mode
+has its own copies, model input, and cache. The supplied seeds remain read-only.
+
+Run a fresh M2 qualification on the exact shared mount first. Provision a
+shared WSClean executable (including its libraries on every node) and shared
+Python interpreters with Casacore and NumPy. Stage the current source; the
+worker captures that source rather than using an older checkout. The FITS
+model must match the selected real data's phase centre, frequency and image
+geometry. An all-zero model cannot pass the scientific check.
+
+For the Kudu/Nyala setup, run inside the controller, adjusting these paths::
+
+    export BASE=/data/issue177-live-20261005-3f0a6b0e
+    export SOURCE="$BASE/source"
+    export ROOT="$BASE/final"
+    export PYTHONPATH="$SOURCE/src:$SOURCE"
+    export PYTHON=/data/venv-issue18/bin/python
+    export OPTIONS='["-no-reorder","-j","2","-abs-mem","0.2","-size","64","64","-scale","120asec","-pol","I","-data-column","DATA"]'
+
+    srun --partition dev --nodelist k1 --cpus-per-task 2 --mem 2G \
+      "$PYTHON" -m tests.slurm_physical.run_m5_lists run \
+      --mode native --root "$ROOT" \
+      --seed-ms "$ROOT/seeds/part-0.ms" "$ROOT/seeds/part-1.ms" \
+      --model-prefix "$ROOT/model/point" \
+      --wsclean "$BASE/tools/wsclean/run-wsclean" \
+      --wsclean-options-json "$OPTIONS"
+    "$PYTHON" -m tests.slurm_physical.run_m5_lists check \
+      --mode native --root "$ROOT"
+
+    "$PYTHON" -m tests.slurm_physical.run_m5_lists run \
+      --mode slurm --root "$ROOT" \
+      --seed-ms "$ROOT/seeds/part-0.ms" "$ROOT/seeds/part-1.ms" \
+      --model-prefix "$ROOT/model/point" \
+      --wsclean "$BASE/tools/wsclean/run-wsclean" \
+      --wsclean-options-json "$OPTIONS" \
+      --storage-qualification "$BASE/m2/qualification.json" \
+      --nodes k1 n1 n2 --partition dev
+    "$PYTHON" -m tests.slurm_physical.run_m5_lists check \
+      --mode slurm --root "$ROOT" \
+      --storage-qualification "$BASE/m2/qualification.json"
+
+`--model-file` can explicitly select the single `*-model.fits` input without
+`--model-prefix`. The
+trusted binary adapter derives WSClean's naming prefix from that declared
+file and passes both positional MS roots to one exec-form WSClean command.
+`--wsclean-options-json`, `--worker-python`, `--casacore-python`, `--timeout`,
+`--nodes`, `--partition`, `--cpus-per-task` (default 2), and `--mem`
+(default 2G) expose site/runtime differences; the adapter adds
+`-predict` and `-name` itself. No core argv policy or custom collection is
+introduced. Model files, targets, reports, caches, submissions and ownership
+records are contained under the test root.
+
+Launch native mode inside an allocation with at least two CPUs and 2 GiB,
+so scientific work runs on a worker rather than in the controller. Native
+mode proves actual prediction and an unchanged cache hit. Slurm mode
+pins prediction to the first node and its whole-list `OutputRef` read checker
+to the second; the unchanged prediction runs cached on the third. Separate
+recovery copies start with `SCAN_NUMBER` constants `[101, 202]`. A genuine
+worker `os._exit(86)` at S2 after writing `[301, 402]` must finalize failed and
+restore both baseline roots. A retry on another node commits `[301, 402]`.
+An S3 exit after publishing `[501, 602]` uses a single-leaf workflow: the
+immutable success wins over the scheduler's FAILED status. A final unchanged
+run must cache-hit with both roots marker-free.
+
+Phase evidence is written immediately under `evidence/`, before later writes
+replace those cells. Each phase checks journal heads against immutable producer
+identities; S2 rollback must restore both baseline head names. The fresh check
+compares current heads with the terminal phase and checks historical snapshots
+for earlier phases. The actual whole-list reader artifact, including its cached
+reuse, must report the ordered writer roots and match independently read full
+column digests. The fresh checker reads actual cells and snapshots,
+requires finite, nonzero `MODEL_DATA` in both roots, verifies full column
+digests with one-row memory bounds, and protects the original DATA/FLAG/WEIGHT/
+UVW/TIME/SCAN_NUMBER values. Recovery expectations are fixed constants, not
+values inferred from captured reports. It also checks schema-3 ordered
+producer indexes 0/1, mutation roots and state names, immutable execution/
+attempt/finalization identities, dataset settlement, released exact ownership,
+pinned M2 bytes, and actual `sacct` node/state/exit records. These bounded
+checks qualify the supplied data and runtime; they do not establish
+full-observation scaling. Record actual successful job identities separately
+only after both fresh checks pass. DDFacet prediction can be exercised as a
+separate declared joint-write Cab when its image/configuration differs from
+WSClean; this harness does not claim a DDFacet run.
+
+Completed live evidence on 2026-10-05 under
+`/data/issue177-live-20261005-3f0a6b0e` includes fresh M2 jobs 525 (`k1`),
+526 (`n1`) and 527 (`n2`), with all 60 updates and exclusion checks passing.
+Actual WSClean native prediction, cached repetition and the fresh checker
+passed on two 2016-row MS selections with 506 channels. A separate declared
+DDFacet joint-write probe passed native job 534 (`k1`), detached job 535
+(`n1`, finalizer 536 on `k1`), and cached job 537 (`n2`, finalizer 538 on
+`k1`). Its fresh checker verified protected columns, snapshots, indexed keys,
+cleared markers, settlement and released ownership. DDFacet used the first
+32 channels, natural weighting and 65 pixels to fit the containers' 64 MiB
+shared memory. Independent source-selection and preservation reports verified
+the seeds against the original observation and all 95 original files' sizes
+and modification times; the approximately 16 GiB original remained untouched.
+
+Final M5 qualification passed on 2026-10-05 in the physical `dev` partition
+on `k1`, `n1` and `n2`, under
+`/data/issue177-live-20261005-3f0a6b0e/final`. Actual WSClean 3.0 native
+job 555 (`k1`) passed prediction, cached repetition and the fresh check.
+The complete Slurm sequence used these jobs (finalizers ran on `k1`):
+
+| Phase | Worker jobs | Finalizer | Required result |
+| --- | --- | --- | --- |
+| Joint prediction and reader | 556 (`k1`), 557 (`n1`) | 558 | Committed prediction and matching reader artifact |
+| Cached prediction and reader | 559 (`n2`), 560 (`n1`) | 561 | Both cached |
+| Recovery baseline | 562 (`k1`) | 563 | `[101, 202]` committed |
+| S2 interruption | 564 (`n1`), exit 86 | 565, exit 1 | Both baseline roots and heads restored |
+| Retry | 566 (`n2`) | 567 | `[301, 402]` committed |
+| S3 interruption | 568 (`n2`), exit 86 | 569, exit 0 | Immutable commit preserves `[501, 602]` despite failed worker job |
+| Cached recovery | 570 (`n1`) | 571 | Cached, with both markers cleared |
+
+`final/m5-native-check.log` and `final/m5-slurm-check.log` both report
+`complete: true` and `fresh_check: true`. The fresh Slurm checker verified
+all seven phases, actual reader artifacts, frozen permissions, historical
+snapshots, terminal heads, settlement, released ownership, pinned M2 evidence
+and scheduler node/state/exit records. The independent
+`selection-verification.json` proves both 2016-row seeds match their recorded
+selections from the original observation; `original-preservation.json`
+confirms all 95 original files retained their sizes and modification times
+after the scientific runs. The final WSClean gate used all 506 channels;
+the separate DDFacet 1.0.0.0 qualification above used 32 channels. Local
+fake-predictor smoke checks validate the adapter contract only; the physical
+qualification used the actual scientific executables.

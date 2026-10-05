@@ -38,7 +38,7 @@ from shinobi.dataset_lifecycle import DatasetLifecycleSnapshot
 from shinobi.offload._codec import BundleError, WireModel, unpack
 from shinobi.offload.bundle import RecipeBundle, Submission, write_new
 from shinobi.offload.code import source_tree_digest
-from shinobi.offload.records import AttemptRecord
+from shinobi.offload.records import AttemptRecord, attempt_record_version
 from shinobi.ownership import WorkspaceAccess
 from shinobi.provenance import RunManifest, build_manifest
 from shinobi.results import StepResult
@@ -799,7 +799,7 @@ def _execute_step_invocation(
         if dataset_runtime is not None and dataset_runtime.evidence.outcome in ("failed", "refused"):
             lifecycle = dataset_runtime.evidence
         failure = AttemptRecord(
-            schema_version=2 if lifecycle is not None else 1,
+            schema_version=attempt_record_version(lifecycle),
             state="failed",
             error=str(exc),
             stderr=diagnostic,
@@ -870,16 +870,20 @@ def _execute_step_invocation(
         )
         try:
             terminal.write(submission_dir.parent)
-        except BaseException:
+        except BaseException as publication_exc:
             if not final_path.exists():
                 raise
-            visible = AttemptRecord.read(
-                final_path,
-                workflow_id=plan.workflow_id,
-                attempt_id=attempt_id,
-                step_path=step_path,
-                bundle_digest=plan.bundle_digest,
-            )
+            try:
+                visible = AttemptRecord.read(
+                    final_path,
+                    workflow_id=plan.workflow_id,
+                    attempt_id=attempt_id,
+                    step_path=step_path,
+                    bundle_digest=plan.bundle_digest,
+                )
+            except (OSError, ValueError) as oracle_exc:
+                publication_exc.add_note(f"could not verify the published terminal oracle: {oracle_exc}")
+                raise publication_exc
             if visible != terminal:
                 raise
             # The atomic link is visible and contains the exact terminal
@@ -992,6 +996,9 @@ def _execute_step_invocation(
                     _input_keys=input_keys,
                     _wired_fields=set(ref.wiring),
                     _boundary_fields=frozenset(field for field, source in ref.wiring.items() if isinstance(source, InputRef)),
+                    _boundary_elements=frozenset(
+                        (field, index) for field, source in ref.wiring.items() if isinstance(source, list) for index, one in enumerate(source) if isinstance(one, InputRef)
+                    ),
                     _execution_identity=ExecutionIdentity(
                         code_digest=frozen.code.execution_digest if frozen.code else None,
                         image_digest=frozen.image_digest,
@@ -1017,7 +1024,7 @@ def _execute_step_invocation(
     except BaseException as exc:
         # Check the oracle first: once the immutable record is committed,
         # rolling the dataset back would revert work it vouches for.
-        if final_path.exists():
+        try:
             visible = AttemptRecord.read(
                 final_path,
                 workflow_id=plan.workflow_id,
@@ -1025,13 +1032,19 @@ def _execute_step_invocation(
                 step_path=step_path,
                 bundle_digest=plan.bundle_digest,
             )
-            if visible.committed:
-                # The immutable result is the success oracle. A crash or
-                # cleanup error after that point may leave a snapshot marker
-                # for reconciliation, but must not publish a contradictory
-                # failure or make Slurm discard successful dependants.
-                logger.exception("step %s raised after its terminal result committed; preserving the committed result", step_path)
-                return 0
+        except FileNotFoundError:
+            visible = None
+        except (OSError, ValueError) as oracle_exc:
+            exc.add_note(f"terminal success oracle is unavailable; retaining dataset fences: {oracle_exc}")
+            logger.exception("step %s raised and its terminal oracle is unreadable; preserving the original error and pending recovery", step_path)
+            return 1
+        if visible is not None and visible.committed:
+            # The immutable result is the success oracle. A crash or
+            # cleanup error after that point may leave a snapshot marker
+            # for reconciliation, but must not publish a contradictory
+            # failure or make Slurm discard successful dependants.
+            logger.exception("step %s raised after its terminal result committed; preserving the committed result", step_path)
+            return 0
         if dataset_runtime is not None:
             try:
                 dataset_runtime.fail(exc)
@@ -1221,7 +1234,7 @@ def _settle_dataset_submission(
         job = jobs.get(planned.step_path)
         lifecycle_evidence = lifecycle.record if lifecycle is not None and lifecycle.record.outcome in ("failed", "refused") else None
         failure = AttemptRecord(
-            schema_version=2 if lifecycle_evidence is not None else 1,
+            schema_version=attempt_record_version(lifecycle_evidence),
             workflow_id=plan.workflow_id,
             attempt_id=attempt_id,
             step_path=planned.step_path,

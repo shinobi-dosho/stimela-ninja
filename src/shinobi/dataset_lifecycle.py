@@ -47,7 +47,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shinobi.dataset_access import DatasetAccessError, DatasetFallback, DatasetMode, DatasetTable, ResolvedDatasetAccess, plan_recipe_accesses, resolve_scope_dataset_accesses
 from shinobi.dataset_backends import DATASET_MUTATION_CAPABILITY, DATASET_READ_CAPABILITY, DatasetBackendCapability
@@ -55,7 +55,7 @@ from shinobi.dataset_closure import DATASET_CLOSURE_PROFILE, ClosureStatus, Data
 from shinobi.datasets import DatasetDescriptor, DatasetStatus, MSV2_STRUCTURAL_PROFILE, inspect_measurement_set_v2
 from shinobi.exceptions import DatasetLifecycleUnavailableError
 from shinobi.ownership import WorkspaceOwner
-from shinobi.storage import JsonFileStore
+from shinobi.storage import JsonFileStore, SharedStorageError
 from shinobi.steps.schema import Recipe, Scope
 
 
@@ -201,6 +201,7 @@ class DatasetMutationRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     field: str
+    element_index: int | None = Field(default=None, strict=True, ge=0, exclude_if=lambda value: value is None)
     mode: DatasetMode
     root: Path
     predecessor_state: str | None
@@ -348,6 +349,10 @@ def dataset_attempt_path(workspace: Path, attempt_id: str) -> Path:
     return workspace.resolve() / ".shinobi" / "dataset-attempts" / f"{attempt_id}.json"
 
 
+class _MissingDatasetAttempt(DatasetLifecycleUnavailableError):
+    """The authoritative store has no logical attempt record."""
+
+
 class DatasetLifecycleStore(JsonFileStore):
     """Transactionally update one lifecycle attempt."""
 
@@ -360,10 +365,12 @@ class DatasetLifecycleStore(JsonFileStore):
         self.update(update)
 
     def attempt(self) -> DatasetLifecycleAttempt:
-        value = self.read().get("record")
-        if value is None:
-            raise DatasetLifecycleUnavailableError(f"dataset lifecycle attempt record is missing: {self.path}")
-        return DatasetLifecycleAttempt.model_validate(value)
+        data = self.read()
+        if not isinstance(data, dict):
+            raise DatasetLifecycleUnavailableError(f"dataset lifecycle attempt store is not a mapping: {self.path}")
+        if "record" not in data:
+            raise _MissingDatasetAttempt(f"dataset lifecycle attempt record is missing: {self.path}")
+        return DatasetLifecycleAttempt.model_validate(data["record"])
 
     def replace(self, record: DatasetLifecycleAttempt) -> None:
         self.update(lambda data: data.__setitem__("record", record.model_dump(mode="json")))
@@ -375,23 +382,36 @@ def read_dataset_attempt(path: Path) -> DatasetLifecycleAttempt:
     return DatasetLifecycleStore(path).attempt()
 
 
-def mutation_committed(path: Path, *, attempt_id: str, step_path: str, cache_key: str | None) -> bool:
+def mutation_committed(path: Path, *, attempt_id: str, step_path: str, cache_key: str | None, participants: list[dict[str, Any]] | None = None, strict: bool = False) -> bool:
     """Whether a strict attempt record committed this exact leaf invocation.
 
     This is the success oracle a strict mutation's in-flight marker names
     (``Marker.success_kind == "dataset-lifecycle"``). The leaf entry is
     written at S3, after the successor snapshot and journal commit, so a
     crash on either side of it is decided correctly by reconciliation. An
-    unreadable record is not success.
+    unreadable record is not success. Strict recovery also refuses to decide
+    noncommit from unreadable evidence, retaining the in-flight fences.
     """
 
     try:
+        # Replay the authoritative transaction log. The materialized JSON
+        # can be absent, stale or corrupt without changing the commit.
         record = DatasetLifecycleStore(path).attempt()
-    except (OSError, ValueError, DatasetLifecycleUnavailableError):
+    except _MissingDatasetAttempt:
         return False
-    if record.attempt_id != attempt_id or cache_key is None:
+    except (OSError, ValueError, SharedStorageError, DatasetLifecycleUnavailableError) as exc:
+        if strict:
+            raise DatasetLifecycleUnavailableError("strict success oracle is unreadable or malformed") from exc
         return False
-    return any(leaf.step_path == step_path and leaf.outcome == "committed" and leaf.cache is not None and leaf.cache.cache_key == cache_key for leaf in record.leaves)
+    from shinobi.snapshots import _validate_group_evidence
+
+    leaves = [leaf for leaf in record.leaves if leaf.step_path == step_path and leaf.outcome == "committed"]
+    committed = record.attempt_id == attempt_id and cache_key is not None
+    matched = [leaf for leaf in leaves if committed and leaf.cache is not None and leaf.cache.cache_key == cache_key]
+    complete = any(participants is None or _validate_group_evidence(leaf, participants) for leaf in matched)
+    if strict and participants is not None and leaves and not complete:
+        raise DatasetLifecycleUnavailableError("strict group success oracle lacks complete matching participant evidence")
+    return complete
 
 
 class DatasetLifecycle:
@@ -770,7 +790,7 @@ def strict_mutation_targets(scope: Scope, accesses: tuple[ResolvedDatasetAccess,
                 f"strict MSv2 mutation of {scope.name!r} field {access.field!r} addresses {access.requested_path}, not its dataset root {access.root}; "
                 "declare the subtable with DatasetAccess.table and pass the MS root"
             )
-        if access.mode is DatasetMode.WRITE and access.field not in mutated:
+        if access.mode is DatasetMode.WRITE and access.declaration.field not in mutated:
             raise LeafMutationError(f"strict MSv2 write field {access.field!r} of {scope.name!r} is not an in-place mutation input")
         previous = fields.get(access.field)
         if previous is not None and previous != access.root:
@@ -939,6 +959,13 @@ class StrictLeaf:
             raise
         self.accesses = accesses
         self.fields, self.creates = strict_mutation_targets(scope, self.accesses)
+        self.addresses = {access.field: access.address for access in self.accesses if access.writes}
+        from shinobi.datasets import executable_dataset_list_fields
+
+        self.passthrough_roots = {
+            field: tuple(root for _, root in sorted({access.element_index: access.root for access in self.accesses if access.declaration.field == field}.items()))
+            for field in executable_dataset_list_fields(scope.outputs_model)
+        }
         self.roots = tuple(sorted({access.root for access in self.accesses if access.root is not None}, key=str))
 
     @property
@@ -984,7 +1011,7 @@ class StrictLeaf:
             except DatasetLifecycleUnavailableError as exc:
                 problems.append(f"{field}: {exc}")
                 continue
-            issue = strict_reuse_issue(journal, root, state_name(cache_key, field), live)
+            issue = strict_reuse_issue(journal, root, state_name(cache_key, self.addresses[field].field, self.addresses[field].element_index), live)
             if issue is not None:
                 problems.append(f"{field}: {issue}")
         accepted = not problems
@@ -1034,17 +1061,18 @@ class StrictLeaf:
             assert self.cache_key is not None
             self.mutations[field] = DatasetMutationRecord(
                 field=field,
+                element_index=self.addresses[field].element_index,
                 mode=DatasetMode.CREATE if field in self.creates else DatasetMode.WRITE,
                 root=root,
                 predecessor_state=required,
                 predecessor_signature=structural_signature(before) if before is not None else None,
                 predecessor_fingerprint=member_fingerprint(before) if before is not None else None,
                 predecessor_snapshot=guard.journal.snapshot_dir(required) if guard is not None and required is not None else None,
-                successor_state=state_name(self.cache_key, field),
+                successor_state=state_name(self.cache_key, self.addresses[field].field, self.addresses[field].element_index),
             )
         self._record("pending", "predecessor observed under the workflow claim")
 
-    def validate(self, guard: Any | None) -> None:
+    def validate(self, guard: Any | None, outputs: BaseModel | None = None) -> None:
         """Declared postconditions; hands successor signatures to the guard."""
 
         from shinobi.exceptions import DatasetLifecycleViolationError
@@ -1065,6 +1093,20 @@ class StrictLeaf:
         unobservable = {root for root in self.roots if post[root] is None and (root.exists() or root.is_symlink())}
         judged = tuple(access for access in self.accesses if access.root not in unobservable)
         issues = failures + leaf_postcondition_issues(judged, self.pre, post)
+        if outputs is not None:
+            from shinobi.datasets import executable_dataset_list_fields
+
+            for field in executable_dataset_list_fields(self.scope.outputs_model):
+                original = self.passthrough_roots[field] or None
+                actual = getattr(outputs, field)
+
+                def canonical(values):
+                    if values is None:
+                        return None
+                    return tuple((path if path.is_absolute() else self.lifecycle.workspace / path).resolve() for path in values)
+
+                if canonical(original) != canonical(actual):
+                    issues.append(f"{field}: list output must preserve exact ordered input roots")
         observed = tuple(observation for observation in post.values() if observation is not None)
         if issues:
             reason = "postcondition failed: " + "; ".join(issues)

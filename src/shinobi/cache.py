@@ -402,8 +402,9 @@ class ProvenanceKey(str):
     """
 
     producer_field: str | None = None
+    element_index: int | None = None
 
-    def __new__(cls, value: str, producer_field: str | None = None) -> "ProvenanceKey":
+    def __new__(cls, value: str, producer_field: str | None = None, element_index: int | None = None) -> "ProvenanceKey":
         """Build a key naming `value` as produced by output `producer_field`.
 
         Args:
@@ -413,6 +414,7 @@ class ProvenanceKey(str):
         """
         obj = str.__new__(cls, value)
         obj.producer_field = producer_field
+        obj.element_index = element_index
         return obj
 
 
@@ -427,6 +429,8 @@ def as_provenance_key(key: Any, producer_field: str | None) -> Any:
     state at every hop and break the one-state-one-name invariant. `None`
     (no provenance) passes through as `None`.
     """
+    if isinstance(key, list):
+        return [as_provenance_key(one, producer_field) for one in key]
     if key is None or isinstance(key, ProvenanceKey):
         return key
     return ProvenanceKey(key, producer_field)
@@ -567,6 +571,17 @@ def compute_cache_key(
         if name in input_paths and name not in mutated_paths and name not in wired and value is not None:
             values = value if isinstance(value, (list, tuple)) else [value]
             parts.append([name, repr(value), [_hash_path(Path(v)) for v in values]])
+        elif (
+            name in input_paths
+            and name not in mutated_paths
+            and isinstance(value, list)
+            and isinstance((input_keys or {}).get(name), list)
+            and any(key is None for key in input_keys[name])
+        ):
+            # Partly wired lists retain each boundary element's fingerprint;
+            # another element's producer key cannot vouch for its bytes.
+            keys = input_keys[name]
+            parts.append([name, repr(value), [_hash_path(Path(one)) if key is None else None for one, key in zip(value, keys)]])
         else:
             # A wired path still contributes its *value* here (the path
             # string), which the `__upstream__` part below does not cover --
@@ -575,6 +590,16 @@ def compute_cache_key(
             parts.append([name, repr(value)])
     if input_keys:
         parts.append(["__upstream__", [[name, input_keys[name]] for name in sorted(input_keys)]])
+
+        def indexed(key):
+            if isinstance(key, list):
+                return [indexed(one) for one in key]
+            index = getattr(key, "element_index", None)
+            return [getattr(key, "producer_field", None), index] if index is not None else None
+
+        addresses = [[name, indexed(input_keys[name])] for name in sorted(input_keys)]
+        if any(value is not None and (not isinstance(value, list) or any(one is not None for one in value)) for _, value in addresses):
+            parts.append(["__indexed_upstream__", addresses])
 
     blob = json.dumps(parts, default=str, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()

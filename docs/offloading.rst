@@ -27,11 +27,18 @@ captured user code or resolving network-dependent image pins. It records:
 * validated recipe inputs, step constants and the resolved configuration
   snapshot, plus each step's selected tool backend and shared tool-venv path.
 
-Direct read-only ``list[MSv2]`` inputs retain their ordered values and indexed
+Direct ``list[MSv2]`` inputs retain their ordered values and indexed
 resolved accesses through freezing, preparation and worker execution. Qualified
 workers claim and observe every contained root, and refuse a change to any
-read-only element before publishing success. List outputs and mutations remain
-unsupported, as described in :doc:`concepts/datasets`.
+read-only element before publishing success. Explicit WRITE inputs use the
+same joint transaction and exact participant recovery as local execution.
+Compatible same-name outputs preserve the exact ordered roots. Indexed producer
+keys and ordered key arrays travel in attempt-record schema version 3;
+historical scalar version 1/2 records retain their wire shape and readability.
+The immutable worker attempt remains the commit oracle: a mutable lifecycle
+leaf cannot commit a failed immutable publication. Finalization retains the
+workflow claim until every participant is trusted and marker-free. See
+:doc:`concepts/datasets` for the bounded list contract.
 
 Column templates are retained in the frozen scope and resolved from the
 worker's validated step inputs. A column input wired from a producer reserves
