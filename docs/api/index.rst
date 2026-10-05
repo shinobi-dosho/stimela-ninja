@@ -47,6 +47,9 @@ Supporting types used when defining cabs, not re-exported at the top level.
 Datasets
 --------
 
+.. autoclass:: shinobi.dataset_access.DatasetAddress
+   :members:
+
 .. autoclass:: shinobi.dataset_state.DatasetStateStore
    :members:
 

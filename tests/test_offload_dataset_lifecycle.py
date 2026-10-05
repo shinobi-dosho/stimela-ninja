@@ -327,6 +327,19 @@ def test_write_worker_uses_immutable_attempt_as_success_oracle(monkeypatch, tmp_
         assert record.committed
         assert record.dataset_lifecycle is not None
         assert record.dataset_lifecycle.leaves[0].outcome == "committed"
+        # The nested scalar schema-2 payload must remain readable by the
+        # historical extra=forbid mutation schema, which has no index field.
+        import json
+        from pydantic import ConfigDict, create_model
+        from shinobi.dataset_lifecycle import DatasetMutationRecord
+
+        mutation_fields = {name: (field.annotation, field.default) for name, field in DatasetMutationRecord.model_fields.items() if name != "element_index"}
+        legacy_mutation = create_model("LegacyScalarMutation", __config__=ConfigDict(extra="forbid"), **mutation_fields)
+        assert record.schema_version == 2
+        for payload in (record.model_dump(mode="json"), json.loads(record.model_dump_json())):
+            mutation = payload["dataset_lifecycle"]["leaves"][0]["mutations"][0]
+            assert "element_index" not in mutation
+            legacy_mutation.model_validate(mutation)
         assert (root / "table.dat").read_text() == "raw|written"
         assert get_journal(str(tmp_path / "cache")).get(chain_id(root)).marker is None
     finally:

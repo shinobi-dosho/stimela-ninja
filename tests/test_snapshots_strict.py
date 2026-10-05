@@ -121,16 +121,119 @@ def test_strict_failure_rolls_back_immediately_and_clears_the_marker(tmp_path):
     assert not list(tmp_path.glob("obs.ms.shinobi-trash.*"))
 
 
-def test_strict_reconcile_restores_exact_predecessor_without_a_retry(tmp_path):
+def _freeze_after_s2(guard, monkeypatch):
+    """Persist the interrupted state without caught-exception rollback.
+
+    Real process death is covered by the real-MS subprocess tests; here the
+    injected plain-file identity keeps recovery and concurrency casacore-free.
+    """
+    import shinobi.dataset_lifecycle as lifecycle
+
+    monkeypatch.setattr(lifecycle, "dataset_identity", lambda path, _workspace: _identity(path))
+    for plan in guard.plans:
+        guard._strict_rule_b(plan)
+        guard._commit_generation(plan)
+
+
+@pytest.mark.parametrize("stage", ["S1", "S2"])
+def test_caught_interrupt_rolls_back_immediately_without_explicit_oracle(tmp_path, stage):
+    ms = _dataset(tmp_path)
+    guard = _guard(tmp_path, ms, "a" * 64)
+    guard.before_run()
+    (ms / "table.dat").write_text("partial")
+    guard.successor_identities["ms"] = _identity(ms)
+    faults.hooks[stage] = lambda: (_ for _ in ()).throw(KeyboardInterrupt("original interruption"))
+    with pytest.raises(KeyboardInterrupt, match="original interruption"):
+        guard.after_success(lambda: None)
+    chain = guard.journal.get(chain_id(ms))
+    assert chain.marker is None and chain.status is HeadStatus.TRUSTED
+    assert (ms / "table.dat").read_text() == "v0"
+
+
+@pytest.mark.parametrize("publish_then_raise", [False, True])
+def test_durable_oracle_survives_callback_or_s3_interrupt(tmp_path, monkeypatch, publish_then_raise):
+    import shinobi.snapshots as snapshots
+
+    ms = _dataset(tmp_path)
+    guard = _guard(tmp_path, ms, "a" * 64)
+    guard.before_run()
+    (ms / "table.dat").write_text("committed")
+    guard.successor_identities["ms"] = _identity(ms)
+    original = snapshots._marker_completed
+
+    def publish():
+        if publish_then_raise:
+            manifest = get_cache_manifest(str(tmp_path / "cache"))
+            manifest.update(lambda data: data.update({guard.step_path: {"cache_key": guard.cache_key, "run_id": guard.run_id}}))
+            raise KeyboardInterrupt("published then interrupted")
+        # A returned success callback is already durable evidence, even if
+        # an optional no-record guard cannot subsequently reread that oracle.
+        monkeypatch.setattr(snapshots, "_marker_completed", lambda *_: (_ for _ in ()).throw(OSError("oracle unavailable")))
+
+    if not publish_then_raise:
+        faults.hooks["S3"] = lambda: (_ for _ in ()).throw(KeyboardInterrupt("interrupted at S3"))
+    with pytest.raises(KeyboardInterrupt):
+        guard.after_success(publish)
+    assert guard.oracle_durable
+    assert (ms / "table.dat").read_text() == "committed"
+    assert guard.journal.get(chain_id(ms)).marker is not None
+    monkeypatch.setattr(snapshots, "_marker_completed", original)
+
+
+@pytest.mark.parametrize("published", [False, True])
+def test_oracle_read_failure_preserves_original_interrupt_and_fences(tmp_path, monkeypatch, published):
+    ms = _dataset(tmp_path)
+    guard = _guard(tmp_path, ms, "a" * 64)
+    guard.before_run()
+    (ms / "table.dat").write_text("successor")
+    guard.successor_identities["ms"] = _identity(ms)
+    manifest = get_cache_manifest(str(tmp_path / "cache"))
+    original_entry = manifest.entry
+
+    def publish():
+        if published:
+            manifest.update(lambda data: data.update({guard.step_path: {"cache_key": guard.cache_key, "run_id": guard.run_id}}))
+        monkeypatch.setattr(manifest, "entry", lambda *_: (_ for _ in ()).throw(OSError("oracle unavailable")))
+        raise KeyboardInterrupt("original callback interruption")
+
+    with pytest.raises(KeyboardInterrupt, match="original callback interruption") as raised:
+        guard.after_success(publish)
+    assert any("oracle unavailable" in note for note in raised.value.__notes__)
+    assert guard.oracle_unknown and not guard.oracle_durable
+    guard.after_failure()  # An outer unwind must not undo undecided publication.
+    assert (ms / "table.dat").read_text() == "successor"
+    marker = guard.journal.get(chain_id(ms)).marker
+    assert marker is not None and Path(marker.strict_rollback_source).exists()
+    with pytest.raises(OSError, match="oracle unavailable"):
+        reconcile(str(tmp_path / "cache"), manifest, paths={ms}, exact=True)
+    assert guard.journal.get(chain_id(ms)).marker is not None
+    monkeypatch.setattr(manifest, "entry", original_entry)
+    monkeypatch.setattr("shinobi.dataset_lifecycle.dataset_identity", lambda path, _workspace: _identity(path))
+    reconcile(str(tmp_path / "cache"), manifest, paths={ms}, exact=True)
+    assert (ms / "table.dat").read_text() == ("successor" if published else "v0")
+    assert guard.journal.get(chain_id(ms)).marker is None
+
+
+def test_known_missing_oracle_rolls_back_callback_failure(tmp_path):
+    ms = _dataset(tmp_path)
+    guard = _guard(tmp_path, ms, "a" * 64)
+    guard.before_run()
+    (ms / "table.dat").write_text("partial")
+    guard.successor_identities["ms"] = _identity(ms)
+    with pytest.raises(KeyboardInterrupt, match="callback did not publish"):
+        guard.after_success(lambda: (_ for _ in ()).throw(KeyboardInterrupt("callback did not publish")))
+    assert not guard.oracle_unknown
+    assert (ms / "table.dat").read_text() == "v0"
+    assert guard.journal.get(chain_id(ms)).marker is None
+
+
+def test_strict_reconcile_restores_exact_predecessor_without_a_retry(tmp_path, monkeypatch):
     ms = _dataset(tmp_path)
     guard = _guard(tmp_path, ms, "a" * 64)
     guard.before_run()
     (ms / "table.dat").write_text("unrecorded successor")
     guard.successor_identities["ms"] = _identity(ms)
-    faults.hooks["S2"] = lambda: (_ for _ in ()).throw(KeyboardInterrupt("hard stop before oracle"))
-    with pytest.raises(KeyboardInterrupt):
-        guard.after_success(lambda: None)
-    faults.hooks.clear()
+    _freeze_after_s2(guard, monkeypatch)
 
     notes = reconcile(
         str(tmp_path / "cache"),
@@ -154,10 +257,7 @@ def test_concurrent_reconcile_serializes_the_physical_restore(monkeypatch, tmp_p
     guard.before_run()
     (ms / "table.dat").write_text("partial")
     guard.successor_identities["ms"] = _identity(ms)
-    faults.hooks["S2"] = lambda: (_ for _ in ()).throw(KeyboardInterrupt("hard stop before oracle"))
-    with pytest.raises(KeyboardInterrupt):
-        guard.after_success(lambda: None)
-    faults.hooks.clear()
+    _freeze_after_s2(guard, monkeypatch)
 
     original = snapshots_module._replace_tree_from_snapshot
     entered = threading.Event()
@@ -198,7 +298,7 @@ def test_concurrent_reconcile_serializes_the_physical_restore(monkeypatch, tmp_p
     assert chain.marker is None and chain.status is HeadStatus.TRUSTED
 
 
-def test_strict_reconcile_returns_a_mid_chain_rerun_to_the_head_it_found(tmp_path):
+def test_strict_reconcile_returns_a_mid_chain_rerun_to_the_head_it_found(tmp_path, monkeypatch):
     from shinobi.cache import ProvenanceKey
 
     ms = _dataset(tmp_path)
@@ -219,10 +319,7 @@ def test_strict_reconcile_returns_a_mid_chain_rerun_to_the_head_it_found(tmp_pat
     assert (ms / "table.dat").read_text() == "v0"
     (ms / "table.dat").write_text("partial")
     rerun.successor_identities["ms"] = _identity(ms)
-    faults.hooks["S2"] = lambda: (_ for _ in ()).throw(KeyboardInterrupt("hard stop before oracle"))
-    with pytest.raises(KeyboardInterrupt):
-        rerun.after_success(lambda: None)
-    faults.hooks.clear()
+    _freeze_after_s2(rerun, monkeypatch)
 
     notes = reconcile(str(tmp_path / "cache"), get_cache_manifest(str(tmp_path / "cache")), paths={ms}, exact=True)
 
@@ -268,7 +365,7 @@ def test_strict_refusals_undo_before_launch(tmp_path):
 
     shutil.rmtree(journal.snapshot_dir(gen0))
     rerun = _guard(tmp_path, ms, "b" * 64, run="run2")
-    with pytest.raises(DatasetLifecycleUnavailableError, match="has no snapshot to restore"):
+    with pytest.raises(DatasetLifecycleUnavailableError, match="exact snapshot .* is missing"):
         rerun.before_run()
     chain = journal.get(chain_id(ms))
     assert chain.marker is None and (ms / "table.dat").read_text() == "v1"
@@ -286,9 +383,9 @@ def test_strict_restore_verifies_the_restored_structure(tmp_path):
     (journal.snapshot_dir(gen0) / "stray").write_text("x")
 
     rerun = _guard(tmp_path, ms, "b" * 64, run="run2")
-    with pytest.raises(DatasetLifecycleUnavailableError, match="differs from the structure recorded"):
+    with pytest.raises(DatasetLifecycleUnavailableError, match="does not match its journal identity"):
         rerun.before_run()
-    # The live successor was swapped back, not left replaced by a bad restore.
+    # Preflight refuses before replacing the live successor with a bad snapshot.
     assert (ms / "table.dat").read_text() == "v1" and not (ms / "stray").exists()
     assert journal.get(chain_id(ms)).marker is None
 
@@ -308,8 +405,10 @@ def test_strict_refuses_a_taint_blocked_predecessor(tmp_path):
 
     journal.update_chain(chain_id(ms), taint)
     rerun = _guard(tmp_path, ms, "b" * 64, run="run2")
-    with pytest.raises(DatasetLifecycleUnavailableError, match="predates a write this journal could not name"):
+    with pytest.raises(DatasetLifecycleUnavailableError, match="predates an unnamed write"):
         rerun.before_run()
+    assert journal.get(chain_id(ms)).marker is None
+    assert (ms / "table.dat").read_text() == "v1"
 
 
 def test_strict_create_starts_a_fresh_chain_and_failure_restores_absence(tmp_path):
@@ -464,3 +563,19 @@ def test_strict_guard_refuses_an_in_place_write_it_never_saw(tmp_path):
         again.before_run()
     assert (ms / "table.dat").read_text() == "vX"
     assert journal.get(chain_id(ms)).marker is None
+
+
+@pytest.mark.parametrize("root", [[], None, 42])
+@pytest.mark.parametrize("logged", [False, True], ids=["legacy", "authoritative-log"])
+def test_strict_oracle_refuses_malformed_top_level_authority(tmp_path, root, logged):
+    from shinobi.dataset_lifecycle import DatasetLifecycleStore
+
+    path = tmp_path / "attempt.json"
+    path.write_text(json.dumps(root))
+    if logged:
+        payload = json.dumps({"version": 1, "snapshot": root}).encode()
+        DatasetLifecycleStore(path).lock_path.write_bytes(hashlib.sha256(payload).hexdigest().encode() + b" " + payload + b"\n")
+        path.write_text("{}")  # Valid compatibility JSON cannot rescue authority.
+    assert not mutation_committed(path, attempt_id="run", step_path="s", cache_key="k")
+    with pytest.raises(DatasetLifecycleUnavailableError, match="unreadable or malformed"):
+        mutation_committed(path, attempt_id="run", step_path="s", cache_key="k", strict=True)

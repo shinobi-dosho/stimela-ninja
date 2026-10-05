@@ -32,8 +32,9 @@ Per cab: ``cache``, ``sandbox``, ``harvest``, ``scratch`` and ``dataset_accesses
 which mirror the `Scope` fields of the same names. Access mappings are
 validated by `DatasetAccess`; field references use literal sanitized model
 names (``data.ms`` becomes ``data_ms``). Strict ``MSv2``/``CasaTab`` dtypes
-retain dataset metadata; legacy ``MS`` remains `Path`. Direct read-only
-``List[MSv2]`` inputs are supported. Other strict containers, mixed unions,
+retain dataset metadata; legacy ``MS`` remains `Path`. Direct
+``List[MSv2]`` inputs support reads and explicit joint WRITE declarations, with
+compatible same-name ordered passthrough outputs. Other strict containers, mixed unions,
 choices and dynamic patterns are refused for executable cabs, and ``MSv4``
 is reserved. Current dispatch supports the bounded MSv2 lifecycle only;
 ``CasaTab`` remains available for declaration and inspection.
@@ -460,7 +461,7 @@ def _build_cab(name: str, spec: dict[str, Any], package_roots: dict[str, Path], 
 
 
 def _validate_dataset_shapes(model: type) -> None:
-    """Executable strict datasets support direct scalars and MSv2 read lists."""
+    """Executable strict datasets support direct scalars and bounded MSv2 lists."""
     from shinobi.datasets import executable_dataset_fields
 
     executable_dataset_fields(model)

@@ -1519,3 +1519,21 @@ def test_subtable_writer_contract_migration_preserves_other_keys(tmp_path, monke
     # Contract changes and resolved runtime parameters both affect the new key.
     assert key != compute_cache_key(cab([writer.model_copy(update={"columns": DatasetColumns(create=("OTHER",))})]), None, prepared)
     assert key != compute_cache_key(cab([writer]), None, {**prepared, "column": "OTHER"})
+
+
+def test_subtable_writer_cache_key_retains_indexed_producer_identity(tmp_path):
+    from shinobi import DatasetAccess, DatasetColumns, MSv2
+
+    class DatasetInputs(BaseModel):
+        ms: list[MSv2]
+
+    writer = DatasetAccess(field="ms", table="ANTENNA", mode="write", columns=DatasetColumns(create=("CUSTOM",)), allow_schema_change=True)
+    cab = Cab(name="columns", command="columns", inputs_model=DatasetInputs, outputs_model=Outputs, dataset_accesses=[writer])
+    prepared = {"ms": [tmp_path / "absent.ms"]}
+    key = compute_cache_key(cab, None, prepared, {"ms": [ProvenanceKey("producer", "ms", 0)]})
+
+    # Equal producer key strings can address different predecessor states.
+    assert key != compute_cache_key(cab, None, prepared, {"ms": [ProvenanceKey("producer", "ms", 1)]})
+    assert key != compute_cache_key(cab, None, prepared, {"ms": [ProvenanceKey("producer", "other", 0)]})
+    changed_contract = cab.model_copy(update={"dataset_accesses": [writer.model_copy(update={"columns": DatasetColumns(create=("OTHER",))})]})
+    assert key != compute_cache_key(changed_contract, None, prepared, {"ms": [ProvenanceKey("producer", "ms", 0)]})

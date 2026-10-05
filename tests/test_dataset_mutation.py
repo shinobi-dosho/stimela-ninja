@@ -554,16 +554,16 @@ def test_interruption_before_the_oracle_is_recovered_under_the_next_claim(tmp_pa
         renumber(ms=ms, value=7, **run_kwargs(tmp_path))
     faults.hooks.clear()
     chain = get_journal(str(tmp_path / "cache")).get(chain_id(ms.resolve()))
-    assert chain.marker is not None and chain.marker.success_kind == "dataset-lifecycle"
-    # The successor is on disk, but no oracle ever vouched for it.
-    assert scans(ms) == [7] * ROWS
+    assert chain.marker is None
+    # A caught pre-oracle interruption rolls back immediately.
+    assert scans(ms) == [1] * ROWS
 
     assert renumber(ms=ms, value=8, **run_kwargs(tmp_path)).success
 
     assert scans(ms) == [8] * ROWS
     last = attempts(tmp_path)[-1]
     assert last.phase is DatasetLifecyclePhase.COMMITTED
-    assert any("did not complete" in note for note in last.recovery)
+    assert last.recovery == ()
     # The retry consumed the original predecessor, never the unvouched write.
     assert last.leaves[0].mutations[0].predecessor_signature == dataset_signature(ms.resolve(), tmp_path)
     assert last.leaves[0].mutations[0].predecessor_state.startswith("gen0__")
