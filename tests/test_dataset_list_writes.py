@@ -279,10 +279,11 @@ def test_indexed_names_cannot_collide_with_scalar_names():
 
 
 def test_real_model_data_joint_creation_and_readonly_sibling(tmp_path):
+    paths = roots(tmp_path)
+
     import casacore.tables as tables
     import numpy as np
 
-    paths = roots(tmp_path)
     sibling = make_ms(tmp_path / "sibling.ms", scan=13)
 
     @pystep(
@@ -630,10 +631,11 @@ def test_eviction_and_invalidation_preserve_frozen_group_sources(tmp_path):
 
 
 def test_later_successor_snapshot_failure_rolls_back_schema_and_cells(tmp_path, monkeypatch):
+    paths = roots(tmp_path)
+
     import shinobi.snapshots as snapshots
     import casacore.tables as tables
 
-    paths = roots(tmp_path)
     clone = snapshots.clone_tree
 
     def fail_second_successor(source, dest, **options):
