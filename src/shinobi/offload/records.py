@@ -27,6 +27,19 @@ class ProducedState(WireModel):
     producer_field: str
 
 
+class IndexedProducedState(ProducedState):
+    element_index: int = Field(strict=True, ge=0)
+
+
+def attempt_record_version(lifecycle=None, keys=()):
+    """Choose indexed transport only where the new contract requires it."""
+    if any(isinstance(value, (list, IndexedProducedState)) for value in keys):
+        return 3
+    if lifecycle is not None and any(access.element_index is not None and access.writes for access in lifecycle.planned_accesses):
+        return 3
+    return 2 if lifecycle is not None else 1
+
+
 class Observation(StepRecord):
     """Provenance metadata, with lossless tagged I/O instead of display JSON."""
 
@@ -43,7 +56,7 @@ class Observation(StepRecord):
 
 
 class AttemptRecord(WireModel):
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[1, 2, 3] = 1
     workflow_id: UUID
     attempt_id: UUID
     step_path: str
@@ -53,7 +66,7 @@ class AttemptRecord(WireModel):
     stdout: str = ""
     stderr: str = ""
     cache_key: str | None = None
-    output_keys: dict[str, ProducedState] = Field(default_factory=dict)
+    output_keys: dict[str, IndexedProducedState | ProducedState | list[IndexedProducedState | ProducedState | None]] = Field(default_factory=dict)
     error: str | None = None
     sandbox: str | None = None
     job_id: str | None = None
@@ -65,7 +78,10 @@ class AttemptRecord(WireModel):
     @model_validator(mode="after")
     def _check_outcome(self) -> AttemptRecord:
         lifecycle = self.dataset_lifecycle
-        if (self.schema_version == 1) != (lifecycle is None):
+        indexed = attempt_record_version(lifecycle, self.output_keys.values()) == 3
+        if indexed and self.schema_version != 3:
+            raise BundleError("indexed producer identities require attempt-record schema version 3")
+        if self.schema_version != 3 and (self.schema_version == 1) != (lifecycle is None):
             raise BundleError("dataset lifecycle evidence requires attempt-record schema version 2")
         if lifecycle is not None:
             if lifecycle.attempt_id != str(self.attempt_id):
@@ -121,10 +137,18 @@ class AttemptRecord(WireModel):
             for field in type(result.outputs).model_fields:
                 key = result.provenance_key(field)
                 if key is not None:
-                    keys[field] = ProducedState(cache_key=str(key), producer_field=getattr(key, "producer_field", None) or field)
+
+                    def produced(one):
+                        if one is None:
+                            return None
+                        index = getattr(one, "element_index", None)
+                        values = {"cache_key": str(one), "producer_field": getattr(one, "producer_field", None) or field}
+                        return ProducedState(**values) if index is None else IndexedProducedState(**values, element_index=index)
+
+                    keys[field] = [produced(one) for one in key] if isinstance(key, list) else produced(key)
         state = "failed" if not result.success else "skipped" if result.skipped else "cached" if result.cached else "succeeded"
         return cls(
-            schema_version=2 if dataset_lifecycle is not None else 1,
+            schema_version=attempt_record_version(dataset_lifecycle, keys.values()),
             workflow_id=workflow_id,
             attempt_id=attempt_id,
             step_path=step_path,
@@ -156,7 +180,12 @@ class AttemptRecord(WireModel):
             stdout=self.stdout,
             stderr=self.stderr,
             cache_key=self.cache_key,
-            output_keys={f: ProvenanceKey(v.cache_key, v.producer_field) for f, v in self.output_keys.items()},
+            output_keys={
+                f: [ProvenanceKey(one.cache_key, one.producer_field, getattr(one, "element_index", None)) if one is not None else None for one in value]
+                if isinstance(value, list)
+                else ProvenanceKey(value.cache_key, value.producer_field, getattr(value, "element_index", None))
+                for f, value in self.output_keys.items()
+            },
             **metadata,
         )
 

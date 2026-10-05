@@ -84,7 +84,7 @@ Dataset declarations nested in Pydantic models, sequences, mappings, and
 unions are discovered recursively.  Diagnostic paths use ``[]`` for a
 sequence item and ``.*`` for a mapping value.
 
-Executable YAML cabs support direct strict scalars and read-only input
+Executable YAML cabs support direct strict scalars and input
 ``List[MSv2]`` fields, including optional fields with a ``None`` default.
 Other strict containers, mixed unions and nested positions, dynamic
 ``ParamPattern`` attributes and ``choices`` are refused;
@@ -94,8 +94,8 @@ those execution shapes. ``CasaTab`` supports declaration and inspection only:
 any atomic input or output with that annotation is refused at dispatch, even
 a referenced subtable carrying ``root_field``.
 
-Read-only MSv2 lists
---------------------
+MSv2 lists
+-----------
 
 A direct Python ``list[MSv2]`` or YAML ``List[MSv2]`` input can read several
 contained datasets in one step, as required by WSClean. One base declaration,
@@ -118,10 +118,68 @@ is refused, while an omitted optional list alongside a concrete scalar or list
 is supported. An unresolved whole list may
 reserve one path envelope for planning, but execution requires concrete roots.
 Element-level ``None``, mixed unions, nested lists, tuples, sets, mappings and
-abstract sequences remain unsupported. List outputs, writes, creates,
-``MUTABLE``, ``write_path`` and same-name input/output declarations are refused;
-transactional list mutation and recovery remain future work. Scalar writers
-may precede list readers in a flat recipe under the existing mutation lifecycle.
+abstract sequences remain unsupported. Scalar writers may precede list readers
+in a flat recipe under the same mutation lifecycle.
+
+Joint MSv2 list writes
+~~~~~~~~~~~~~~~~~~~~~~
+
+An explicit ``DatasetAccess(field="ms", mode="write")`` on a direct
+``list[MSv2]`` input applies the same table, column and access policy to each
+element. WSClean/DDF-style joint invocations can therefore write several MSs
+as one strict mutation. List ``CREATE``, inferred writes, ``MUTABLE``,
+``write_path`` and ``root_field`` remain refused. New list products are outside
+this boundary.
+
+A compatible, same-name strict list output is allowed only with that explicit
+WRITE input. It must return exactly the ordered canonical input roots:
+reordering, resizing or substituting a root fails the postcondition and rolls
+back the invocation. This passthrough enables a whole-list ``OutputRef``;
+assembling a list from scalar producer outputs is also supported. Each element
+keeps its own producer field and optional index. A boundary ``InputRef`` may
+be mixed with scalar producer ``OutputRef`` entries. A keyless producer or a
+gathered scatter key cannot name an exact predecessor and is refused.
+
+.. code-block:: python
+
+   from pydantic import BaseModel
+   from shinobi import MSv2, DatasetAccess, DatasetColumns, pystep
+
+   class Updated(BaseModel):
+       ms: list[MSv2]
+
+   @pystep(dataset_accesses=[DatasetAccess(
+       field="ms", mode="write",
+       columns=DatasetColumns(create=("MODEL_DATA",)),
+       allow_schema_change=True,
+   )])
+   def predict(ms: list[MSv2]) -> Updated:
+       # Invoke the joint predictor once, using every declared MS root.
+       joint_predict(ms)
+       return Updated(ms=ms)
+
+Every strict invocation with multiple written roots (lists, scalar fields or
+both) has one commit decision. Preparation verifies all predecessor and
+pre-run rollback snapshots before moving any tree, then atomically fences the
+complete participant set in the shared journal. Success snapshots every
+successor and journals the heads before publishing one exact success oracle.
+Failure before that oracle restores every frozen pre-run state; failure after
+it preserves the successors and leaves only cleanup pending. If publication
+may have started but its oracle is unreadable, the outcome remains unknown:
+every root stays fenced and its rollback source remains available until exact
+recovery can read the oracle. Unreadable commit evidence never authorizes rollback.
+A same-key rerun keeps a separate physical rollback copy if publishing the successor would
+otherwise replace its rollback snapshot.
+
+Recovery requires explicit authority over every frozen participant path.
+A scalar writer or a changed list containing only part of a pending group is
+refused before any member changes. No marker clears until every restore has
+verified: if a later restore fails, even successfully restored earlier roots
+remain fenced against readers and reusable-state export. Reconciliation does
+not expand the caller's paths. Ordinary unqualified Tier 1 recovery refuses a
+strict group. Atomic visibility applies to cooperating Shinobi consumers;
+physical filesystem restores are sequential, and external readers are outside
+this guarantee.
 
 Physical dataset closure
 ------------------------
@@ -215,7 +273,7 @@ members remain protected even with ``allow_schema_change=True`` or
 Read accesses and accesses to standard subtables cannot carry this permission.
 New-dataset CREATE may include opaque members in its initial product.
 
-``field`` names a direct path/MS-compatible field or a read-only MSv2 list
+``field`` names a direct path/MS-compatible field or an MSv2 list
 input. ``root_field`` remains scalar-only and is not supported on list accesses.
 Other containers, nested models and non-path scalar fields are rejected at definition time;
 scatter and nested dataset recipes have their separate bounded refusals below.
@@ -380,7 +438,7 @@ refusal **before** the tool launches -- a missing or unaffordable snapshot, a
 predecessor that predates a write the journal could not name, two journal
 histories for one tree (an alias), a dataset whose root changed outside the
 journal, a predecessor whose structure differs from the one recorded for its
-state name, or a mutated field Tier 1 would decline (list-valued, scattered or
+state name, or a mutated field Tier 1 would decline (unsupported containers, scattered or
 wired to a keyless producer).  Because states are named by the writing step's
 cache key, a writing leaf caches automatically, whatever the configured
 default.  Only an *explicit* ``cache=False`` refuses the workflow: the call
@@ -413,8 +471,9 @@ Each strict leaf then:
    the journal recorded its head (an in-place write outside the pipeline,
    which moves neither the structure nor the root directory's ctime), rather
    than reusing it or restoring over it;
-#. restores and verifies its exact predecessor, snapshots it, marks the
-   dataset in flight, and observes it structurally;
+#. verifies and snapshots all required rollback sources, fences the complete
+   invocation in the journal, then restores and verifies its exact
+   predecessors and observes them structurally;
 #. runs the tool.  A non-zero exit or exception returns the dataset to an
    exact, trusted state **immediately** rather than leaving the partial write
    for the next run: its predecessor when the step ran against the head it

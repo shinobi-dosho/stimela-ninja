@@ -172,7 +172,7 @@ class StepResult:
     # each of its declared outputs is really produced by a different sub-step.
     # Read them through `provenance_key`, never directly.
     cache_key: str | None = None
-    output_keys: "dict[str, ProvenanceKey] | None" = None
+    output_keys: "dict[str, ProvenanceKey | list[ProvenanceKey | None]] | None" = None
 
     @property
     def success(self) -> bool:
@@ -195,6 +195,13 @@ class StepResult:
         """
         if self.output_keys is not None:
             return self.output_keys.get(field)
+        from shinobi.datasets import executable_dataset_fields
+        from shinobi.cache import ProvenanceKey
+
+        shape = executable_dataset_fields(type(self.outputs), reject_unsupported=False).get(field)
+        value = getattr(self.outputs, field, None)
+        if shape is not None and shape.is_list and isinstance(value, list):
+            return [ProvenanceKey(self.cache_key, field, index) if self.cache_key is not None else None for index in range(len(value))]
         return self.cache_key
 
     def __getattr__(self, name: str) -> Any:

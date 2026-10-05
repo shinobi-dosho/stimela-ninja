@@ -81,7 +81,7 @@ jobs:
       # The mutation lifecycle's observations, signatures and rollbacks are
       # only meaningful against real tables; the main job skips this file.
       - name: Run strict MSv2 lifecycle tests against real tables
-        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set pytest -q tests/test_dataset_mutation.py tests/test_dataset_lifecycle.py::test_real_casacore_contained_read_when_available tests/test_dataset_lists.py tests/test_yaml_datasets.py
+        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set pytest -q tests/test_dataset_mutation.py tests/test_dataset_lifecycle.py::test_real_casacore_contained_read_when_available tests/test_dataset_lists.py tests/test_dataset_list_writes.py tests/test_offload_dataset_lifecycle.py tests/test_yaml_datasets.py
 
       - name: Run real state export, materialization and process-death recovery
         run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set pytest -q tests/test_dataset_state.py tests/test_dataset_state_live.py

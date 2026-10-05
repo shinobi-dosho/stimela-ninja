@@ -24,11 +24,12 @@ That gap is two wrong-science bugs, not two slow runs:
 The fix is to give each state of a mutated path a *name*, snapshot it
 under that name, and restore it before a step that needs it re-runs.
 
-**States are named `(producing step's cache key, producing output field)`**
+**States are named `(producing step's cache key, producing output field,
+optional list element index)`**
 -- see `cache.ProvenanceKey` for why the field is needed (a step with two
 mutated outputs produces two states in one run and both resolve to its one
-cache key) and how it is threaded without changing a byte of hashed key
-material. A boundary path with no in-recipe producer gets a generation-0
+cache key). Scalar provenance preserves its historical hashed key
+material; indexed provenance also hashes its element address. A boundary path with no in-recipe producer gets a generation-0
 name derived from its content fingerprint at first mutation.
 
 **The journal** (`snapshots/chains.json`) is a new naming authority, and
@@ -92,6 +93,8 @@ not approved for implementation.
 """
 
 from __future__ import annotations
+
+from contextlib import contextmanager
 
 import fcntl
 import hashlib
@@ -157,13 +160,17 @@ def _sanitize(name: str) -> str:
     return "".join(char if char.isalnum() or char in "-_" else "_" for char in name)
 
 
-def state_name(cache_key: str, producer_field: str) -> str:
+def state_name(cache_key: str, producer_field: str, element_index: int | None = None) -> str:
     """The directory name for a produced state.
 
     The full 64-hex key, never truncated: these names are the only thing
     standing between a restore and the wrong data, and a birthday collision
     on a shortened key would be both silent and catastrophic.
     """
+    if element_index is not None:
+        if isinstance(element_index, bool) or not isinstance(element_index, int) or element_index < 0:
+            raise ValueError("state element index must be a non-negative integer")
+        return f"{cache_key}__list.{hashlib.sha256(producer_field.encode()).hexdigest()}.{element_index}"
     return f"{cache_key}__{_sanitize(producer_field)}"
 
 
@@ -265,6 +272,11 @@ class Marker:
     # SnapshotGuard (notably in a detached finalizer). This is the exact
     # named state a failed/interrupted mutation must put back.
     strict_rollback_state: str | None = None
+    strict_predecessor_state: str | None = None
+    strict_group: list[dict[str, Any]] | None = None
+    strict_rollback_source: str | None = None
+    strict_rollback_signature: str | None = None
+    strict_rollback_fingerprint: str | None = None
 
     def as_json(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -281,6 +293,16 @@ class Marker:
             data["success_kind"] = self.success_kind
         if self.strict_rollback_state is not None:
             data["strict_rollback_state"] = self.strict_rollback_state
+        if self.strict_predecessor_state is not None:
+            data["strict_predecessor_state"] = self.strict_predecessor_state
+        if self.strict_group is not None:
+            data["strict_group"] = self.strict_group
+        if self.strict_rollback_source is not None:
+            data.update(
+                strict_rollback_source=self.strict_rollback_source,
+                strict_rollback_signature=self.strict_rollback_signature,
+                strict_rollback_fingerprint=self.strict_rollback_fingerprint,
+            )
         return data
 
 
@@ -412,6 +434,7 @@ class ChainJournal(JsonFileStore):
     def __init__(self, root: Path):
         super().__init__(root / "chains.json")
         self.root = root
+        self._batch = threading.local()
 
     def snapshot_dir(self, name: str) -> Path:
         return self.root / "states" / name
@@ -440,15 +463,37 @@ class ChainJournal(JsonFileStore):
         between.
         """
 
+        pending = getattr(self._batch, "pending", None)
+        if pending is not None:
+            pending.append((cid, mutate))
+            return
+        self.update_chains([(cid, mutate)])
+
+    def update_chains(self, changes) -> None:
+        """Apply independent chain updates in one durable metadata transaction."""
+
         def update_data(data: dict[str, Any]) -> None:
-            current = Chain.from_json(data[cid]) if cid in data else None
-            result = mutate(current)
-            if result is None:
-                data.pop(cid, None)
-            else:
-                data[cid] = result.as_json()
+            for cid, mutate in changes:
+                current = Chain.from_json(data[cid]) if cid in data else None
+                result = mutate(current)
+                if result is None:
+                    data.pop(cid, None)
+                else:
+                    data[cid] = result.as_json()
 
         super().update(update_data)
+
+    @contextmanager
+    def batch_updates(self):
+        """Batch existing shared chain mutators without weakening atomicity."""
+        if getattr(self._batch, "pending", None) is not None:
+            raise RuntimeError("nested journal batches are unsupported")
+        pending = self._batch.pending = []
+        try:
+            yield
+            self.update_chains(pending)
+        finally:
+            self._batch.pending = None
 
 
 _journals: dict[str, ChainJournal] = {}
@@ -635,10 +680,11 @@ class StrictMutation:
 
 @dataclass
 class _FieldPlan:
-    """What Tier 1 intends to do about one mutated field of one step."""
+    """One target: a typed address, diagnostic label, and exact root."""
 
     field: str
     path: Path
+    address: Any = None
     cid: str | None = None
     required: str | None = None  # R: the state name this step's position calls for
     trash: Path | None = None
@@ -653,6 +699,9 @@ class _FieldPlan:
     marked: bool = False
     predecessor: StateIdentity | None = None
     pre_run_head: str | None = None
+    rollback_state: str | None = None
+    rollback_source: Path | None = None
+    rollback_identity: StateIdentity | None = None
     outcome: str = "pending"
 
 
@@ -680,6 +729,7 @@ class SnapshotGuard:
         success_step_path: str | None = None,
         strict: StrictMutation | None = None,
         success_kind: str | None = None,
+        addresses: dict[str, Any] | None = None,
     ):
         if strict is not None and (cache_key is None or tainting):
             # Both are "no name for a write" -- the exact shapes strict
@@ -699,7 +749,11 @@ class SnapshotGuard:
         self.force_copy = force_copy
         self.success_record = success_record
         self.success_step_path = success_step_path
-        self.plans = [_FieldPlan(field=name, path=path) for name, path in fields.items()]
+        from shinobi.dataset_access import DatasetAddress
+
+        self.plans = [_FieldPlan(field=name, path=path, address=(addresses or {}).get(name, DatasetAddress(name))) for name, path in fields.items()]
+        self.oracle_durable = False
+        self.oracle_unknown = False
         # Mutated fields Tier 1 declined to protect. It cannot snapshot them,
         # but it must still record that they *wrote*, or a later restore
         # would roll the path back over work nothing will regenerate.
@@ -708,30 +762,18 @@ class SnapshotGuard:
     # -- pre-run ----------------------------------------------------------
 
     def before_run(self) -> None:
-        """The pre-run sequence, in the one order that is safe.
+        """Prepare the exact states consumed by this invocation.
 
-        1. compute R per field, 2. restore, 3. write the marker, 4. Rule A.
+        Ordinary Tier 1 retains its historical prepare/restore/marker/Rule A
+        ordering and warning fallbacks. Strict preparation resolves every plan,
+        verifies exact predecessors and rollback sources, preflights aggregate
+        copies and snapshots trusted live heads before moving any tree. One
+        journal transaction then freezes every participant's marker. Restores
+        and predecessor verification follow under those fences; a preparation
+        failure has the same joint rollback obligations as a tool failure.
 
-        Restore *before* Rule A is load-bearing. In the window where a
-        previous run's Rule B was skipped by a space preflight and that run
-        then died mid-mutation, a Rule A that ran first would snapshot
-        corrupt content under the head's durable name -- manufacturing
-        exactly the false state this module exists to prevent. Restoring
-        first makes the disk honest (or loudly warns that it cannot be)
-        before anything is named.
-
-        None of this can move the step's cache key: a mutated path
-        contributes only its path string to the key, never a fingerprint
-        (`compute_cache_key`), and a restore preserves the path string. That
-        property is what licenses running the hook after the key has already
-        been computed.
-
-        Under a `StrictMutation` policy the same order holds, with two
-        additions between restore and marker: the predecessor's structural
-        signature must match the one recorded for its state name, and both
-        snapshots the step will need must be affordable. Any refusal undoes
-        what this call did (a restore is swapped back, a marker cleared) and
-        raises before the tool can launch.
+        A mutation contributes only its declared path value to the cache key,
+        so restoration cannot move the already-computed key.
         """
         if self.strict is None:
             for plan in self.plans:
@@ -749,22 +791,136 @@ class SnapshotGuard:
         try:
             for plan in self.plans:
                 self._prepare(plan)
+            self._freeze_strict_predecessors()
+            with self.journal.batch_updates():
+                for plan in self.plans:
+                    self._mark_in_flight(plan)
+            for plan in self.plans:
+                plan.marked = True
+            faults("P_MARKED")
             for plan in self.plans:
                 self._restore(plan)
+                faults("P_RESTORE")
             for plan in self.plans:
                 self._verify_predecessor(plan)
-            for plan in self.plans:
-                self._preflight(plan)
-            for plan in self.plans:
-                self._mark_in_flight(plan)
-                plan.marked = True
+            faults("P_RESTORED")
             for plan in self.plans:
                 self._rule_a(plan)
         except BaseException as exc:
-            self._abort_before_launch(exc)
+            if any(plan.marked for plan in self.plans):
+                self.after_failure()
+            else:
+                self._abort_before_launch(exc)
             if isinstance(exc, DatasetLifecycleUnavailableError):
                 raise
             raise DatasetLifecycleUnavailableError(f"strict MSv2 mutation refused before launch: {type(exc).__name__}: {exc}") from exc
+
+    def _freeze_strict_predecessors(self) -> None:
+        """Verify exact rollback sources before publishing fences or moving roots."""
+        assert self.strict is not None
+        estimates: dict[int, tuple[int, int]] = {}
+
+        def reserve(source, destination, copies=1):
+            destination.mkdir(parents=True, exist_ok=True)
+            tier = CloneTier.COPY if self.force_copy else probe(destination)
+            _, needed, available = can_afford(source, destination, tier=tier)
+            device = destination.stat().st_dev
+            previous, free = estimates.get(device, (0, available))
+            estimates[device] = (previous + needed * copies, min(free, available))
+
+        self.journal.root.mkdir(parents=True, exist_ok=True)
+        for plan in self.plans:
+            if plan.path_was_absent:
+                continue
+            chain = self.journal.get(plan.cid)
+            if chain is not None and chain.marker is not None:
+                self._refuse(plan, "an earlier in-flight mutation must be reconciled before preparation")
+            if plan.required is None:
+                self._refuse(plan, "no exact predecessor state is named")
+            trusted = chain is None or chain.status is HeadStatus.TRUSTED
+            live_state = chain.head if chain is not None else plan.required
+            plan.rollback_state = live_state if trusted else plan.required
+            for name in {plan.required, plan.rollback_state}:
+                if name is None:
+                    self._refuse(plan, "no rollback state is named")
+                if chain is not None and chain.taint_blocks(name):
+                    self._refuse(plan, f"state {name} predates an unnamed write")
+                source = self.journal.snapshot_dir(name)
+                if not source.exists():
+                    if not trusted or name != live_state:
+                        self._refuse(plan, f"exact snapshot {name} is missing")
+                    reserve(plan.path, self.journal.root)
+                else:
+                    generation = chain.generation(name) if chain is not None else None
+                    if generation is None:
+                        self._refuse(plan, f"snapshot {name} has no journal identity")
+                    identity = self.strict.identity(source)
+                    if generation.structural_signature != identity.signature or generation.content_fingerprint != identity.fingerprint:
+                        self._refuse(plan, f"snapshot {name} does not match its journal identity")
+            reserve(plan.path, self.journal.root)  # successor estimate
+            if plan.rollback_state == state_name(self.cache_key, plan.address.field, plan.address.element_index):
+                reserve(plan.path, self.journal.root)  # same-key rollback backup
+            if chain is not None and (chain.head != plan.required or not trusted):
+                reserve(self.journal.snapshot_dir(plan.required), plan.path.parent)
+        for needed, available in estimates.values():
+            if needed > available:
+                raise DatasetLifecycleUnavailableError(f"strict mutation group needs {needed} bytes with only {available} available")
+        for plan in self.plans:
+            if plan.path_was_absent:
+                continue
+            chain = self.journal.get(plan.cid)
+            trusted = chain is None or chain.status is HeadStatus.TRUSTED
+            live_state = chain.head if chain is not None else plan.required
+            if trusted:
+                identity = self.strict.identity(plan.path)
+                if chain is None:
+                    st = plan.path.stat()
+                    self.journal.update_chain(plan.cid, lambda _, plan=plan, st=st: Chain(dev=st.st_dev, ino=st.st_ino, ctime_ns=st.st_ctime_ns, path=str(plan.path)))
+                original = plan.predecessor
+                plan.predecessor = identity
+                self._take(plan, live_state, "A")
+                plan.predecessor = original
+
+                def adopt(chain, live_state=live_state):
+                    if chain is not None and chain.head is None:
+                        chain.head = live_state
+                    return chain
+
+                self.journal.update_chain(plan.cid, adopt)
+        for plan in self.plans:
+            if plan.path_was_absent:
+                continue
+            plan.rollback_source = self.journal.snapshot_dir(plan.rollback_state)
+            plan.rollback_identity = self.strict.identity(plan.rollback_source)
+            if plan.rollback_state == state_name(self.cache_key, plan.address.field, plan.address.element_index):
+                backup = _rollback_backup(self.journal, self.run_id, plan.path)
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                tier = CloneTier.COPY if self.force_copy else probe(backup.parent)
+                original = plan.rollback_source
+                plan.rollback_source = backup
+                clone_tree(original, backup, tier=tier)
+                if self.strict.identity(backup) != plan.rollback_identity:
+                    self._refuse(plan, "same-key rollback backup does not preserve the frozen identity")
+        self.group = (
+            [
+                {
+                    "path": str(plan.path),
+                    "field": plan.address.field,
+                    "element_index": plan.address.element_index,
+                    "label": plan.field,
+                    "rollback": plan.rollback_state,
+                    "predecessor": plan.required,
+                    "rollback_source": str(plan.rollback_source) if plan.rollback_source is not None else None,
+                    "rollback_signature": plan.rollback_identity.signature if plan.rollback_identity is not None else None,
+                    "rollback_fingerprint": plan.rollback_identity.fingerprint if plan.rollback_identity is not None else None,
+                    "absent": plan.path_was_absent,
+                    "successor": state_name(self.cache_key, plan.address.field, plan.address.element_index),
+                }
+                for plan in self.plans
+            ]
+            if len(self.plans) > 1
+            else None
+        )
 
     def _refuse(self, plan: _FieldPlan, reason: str) -> None:
         """A strict guard's replacement for "warn and run against live disk"."""
@@ -793,31 +949,6 @@ class SnapshotGuard:
             )
         plan.predecessor = identity
 
-    def _preflight(self, plan: _FieldPlan) -> None:
-        """Strict: both snapshots this step depends on must be affordable now.
-
-        Rule A protects the predecessor and Rule B names the successor; a
-        strict step that could take neither afterwards would have promised
-        exact recovery it cannot deliver. The successor is estimated from
-        the predecessor's size, and Rule B still refuses (and rolls back) if
-        the estimate proves wrong.
-        """
-        if plan.path_was_absent:
-            return
-        tier = CloneTier.COPY if self.force_copy else probe(self.journal.root)
-        needed_names = []
-        if plan.required is not None and not self.journal.snapshot_dir(plan.required).exists():
-            needed_names.append(plan.required)
-        if self.cache_key is not None and not self.journal.snapshot_dir(state_name(self.cache_key, plan.field)).exists():
-            needed_names.append(state_name(self.cache_key, plan.field))
-        if not needed_names:
-            return
-        self.journal.root.mkdir(parents=True, exist_ok=True)
-        _affordable, needed, available = can_afford(plan.path, self.journal.root, tier=tier)
-        needed *= len(needed_names)
-        if needed > available:
-            self._refuse(plan, f"exact predecessor/successor snapshots need {needed} bytes and only {available} are free")
-
     def _abort_before_launch(self, exc: BaseException) -> None:
         """Undo a strict `before_run` that refused: nothing has executed."""
         for plan in self.plans:
@@ -844,6 +975,8 @@ class SnapshotGuard:
 
                 self.journal.update_chain(plan.cid, unmark)
                 plan.marked = False
+            _discard_rollback_backup(self.journal, self.run_id, plan.path, plan.rollback_source)
+            plan.rollback_source = None
             plan.outcome = "refused"
 
     def _prepare(self, plan: _FieldPlan) -> None:
@@ -884,6 +1017,8 @@ class SnapshotGuard:
             self._refuse(plan, "a CREATE target already exists; replacement is not an exact-create lifecycle")
         chains = self.journal.all_chains()
         chain = chains.get(plan.cid)
+        if chain is not None and chain.marker is not None and chain.marker.strict_group is not None:
+            raise DatasetLifecycleUnavailableError(f"{plan.path} belongs to an unresolved strict mutation group; reconcile every exact participant first")
 
         alias = aliased_chain(chains, plan.cid, st.st_dev, st.st_ino)
         if alias is not None and self.strict is not None:
@@ -946,15 +1081,19 @@ class SnapshotGuard:
 
     def _required_state(self, plan: _FieldPlan, chain: Chain | None, st: os.stat_result) -> str | None:
         """R: the name of the state this step's DAG position calls for."""
-        key = _single_key(self.input_keys.get(plan.field))
+        raw_key = self.input_keys.get(plan.address.field)
+        if plan.address.element_index is not None:
+            key = raw_key[plan.address.element_index] if isinstance(raw_key, list) else None
+        else:
+            key = _single_key(raw_key)
         if key is not None and key.producer_field is not None:
-            return state_name(str(key), key.producer_field)
+            return state_name(str(key), key.producer_field, key.element_index)
         if chain is not None:
             # An unwired boundary path. What this step consumed last time it
             # succeeded is the honest answer; failing that the head, which is
             # the mid-first-mutation recovery case -- the *live* fingerprint
             # would name the corruption itself.
-            consumed = chain.consumed.get(f"{self.step_path}::{plan.field}")
+            consumed = chain.consumed.get(f"{self.step_path}::{plan.address.field}")
             if consumed is not None:
                 return consumed
             return chain.head
@@ -969,7 +1108,7 @@ class SnapshotGuard:
         if plan.required is None:
             return
 
-        forced = chain.marker is not None or chain.status is HeadStatus.UNTRUSTED
+        forced = (chain.marker is not None and chain.marker.run_id != self.run_id) or chain.status is HeadStatus.UNTRUSTED
         if not forced and chain.head == plan.required:
             return  # the disk already holds what this step needs
         plan.forced = forced
@@ -1108,7 +1247,12 @@ class SnapshotGuard:
             success_step_path=self.success_step_path,
             path_was_absent=plan.path_was_absent,
             success_kind=self.success_kind,
-            strict_rollback_state=(plan.pre_run_head if plan.trash is not None and not plan.forced else plan.required) if self.strict is not None else None,
+            strict_rollback_state=plan.rollback_state if self.strict is not None else None,
+            strict_predecessor_state=plan.required if self.strict is not None else None,
+            strict_group=getattr(self, "group", None),
+            strict_rollback_source=str(plan.rollback_source) if plan.rollback_source is not None else None,
+            strict_rollback_signature=plan.rollback_identity.signature if plan.rollback_identity is not None else None,
+            strict_rollback_fingerprint=plan.rollback_identity.fingerprint if plan.rollback_identity is not None else None,
         )
         if plan.path_was_absent:
 
@@ -1178,36 +1322,51 @@ class SnapshotGuard:
         *last*, so a crash anywhere in here leaves the path in-flight and
         reconciliation decides conservatively.
         """
-        if self.strict is None:
+        publication_started = False
+        try:
             for plan in self.plans:
                 if not plan.skip:
-                    self._rule_b(plan)
-        else:
-            # Strict: a successor without its exact snapshot would promise a
-            # recovery nobody can deliver, and the tool has already run, so
-            # the answer is the predecessor -- not a warning.
-            try:
+                    self._rule_b(plan) if self.strict is None else self._strict_rule_b(plan)
+            faults("S1")
+            with self.journal.batch_updates():
                 for plan in self.plans:
-                    self._strict_rule_b(plan)
-            except BaseException as exc:
-                self.after_failure()
-                exc.add_note("the strict MSv2 dataset was rolled back to its exact predecessor because its successor could not be snapshotted")
-                raise
-        faults("S1")
-        for plan in self.plans:
-            if not plan.skip:
-                self._commit_generation(plan)
-        self._taint_excluded()
-        faults("S2")
-        record()
-        faults("S3")
+                    if not plan.skip:
+                        self._commit_generation(plan)
+            self._taint_excluded()
+            faults("S2")
+            publication_started = True
+            record()
+            self.oracle_durable = True
+            faults("S3")
+        except BaseException as exc:
+            if self.strict is not None:
+                # A publication callback can fail after its durable link (or
+                # before it). Only the marker's actual oracle decides.
+                if publication_started and not self.oracle_durable:
+                    try:
+                        from shinobi.cache import get_cache_manifest
+
+                        manifest = get_cache_manifest(str(self.journal.root.parent))
+                        markers = [self.journal.get(plan.cid).marker for plan in self.plans]
+                        self.oracle_durable = bool(markers) and all(marker is not None and _marker_completed(marker, manifest, strict=True) for marker in markers)
+                    except BaseException as oracle_exc:
+                        self.oracle_unknown = True
+                        exc.add_note(f"could not verify the success oracle: {oracle_exc}")
+                if not self.oracle_durable and not self.oracle_unknown:
+                    try:
+                        self.after_failure()
+                    except BaseException as rollback_exc:
+                        exc.add_note(f"could not finish strict rollback: {rollback_exc}")
+            raise
         for plan in self.plans:
             self._discard_trash(plan)
         faults("S4")
+        with self.journal.batch_updates():
+            for plan in self.plans:
+                if not plan.skip:
+                    self._clear_marker(plan)
         for plan in self.plans:
-            if not plan.skip:
-                self._clear_marker(plan)
-                plan.outcome = "committed"
+            plan.outcome = "committed"
         faults("S5")
 
     def _strict_rule_b(self, plan: _FieldPlan) -> None:
@@ -1226,7 +1385,7 @@ class SnapshotGuard:
         actually executed, and on a clone-capable filesystem it is cheap.
         """
         assert self.cache_key is not None
-        name = state_name(self.cache_key, plan.field)
+        name = state_name(self.cache_key, plan.address.field, plan.address.element_index)
         if self.successor_identities.get(plan.field) is None:
             raise DatasetLifecycleUnavailableError(f"strict MSv2 mutation of '{plan.field}' has no validated successor observation")
         dest = self.journal.snapshot_dir(name)
@@ -1251,7 +1410,7 @@ class SnapshotGuard:
         """
         if self.cache_key is None:
             return
-        self._take(plan, state_name(self.cache_key, plan.field), "B")
+        self._take(plan, state_name(self.cache_key, plan.address.field, plan.address.element_index), "B")
 
     def _take(self, plan: _FieldPlan, name: str, rule: str) -> None:
         """Snapshot `plan.path` under `name`, unless that name already exists.
@@ -1344,8 +1503,8 @@ class SnapshotGuard:
             st = plan.path.stat()
         except OSError:
             return
-        produced = state_name(self.cache_key, plan.field) if self.cache_key else None
-        consumed_key = f"{self.step_path}::{plan.field}"
+        produced = state_name(self.cache_key, plan.address.field, plan.address.element_index) if self.cache_key else None
+        consumed_key = f"{self.step_path}::{plan.address.field}"
         consumed_name = plan.required
         successor = self.successor_identities.get(plan.field)
 
@@ -1427,6 +1586,11 @@ class SnapshotGuard:
         that fails leaves the marker set and the head untrusted, so the next
         strict run restores before anything else touches the path.
         """
+        if self.oracle_durable or self.oracle_unknown:
+            return
+        if self.strict is not None:
+            self._rollback_group()
+            return
         for plan in self.plans:
             if plan.path_was_absent:
                 if plan.outcome in {"absent-restored", "refused"}:
@@ -1445,9 +1609,6 @@ class SnapshotGuard:
                     plan.outcome = "absent-restored"
                     logger.info("step %s: removed newly-created '%s' at %s after failure", self.step_path, plan.field, plan.path)
                 continue
-            if self.strict is not None:
-                self._strict_rollback(plan)
-                continue
             if plan.trash is None:
                 continue
             try:
@@ -1460,74 +1621,63 @@ class SnapshotGuard:
             finally:
                 plan.trash = None
 
-    def _strict_rollback(self, plan: _FieldPlan) -> None:
-        """Return one strict dataset to an exact, named state, now.
-
-        Which state is deliberate. If the step ran against the head it
-        found, that head *is* its predecessor, and the dataset goes back to
-        it (``rolled-back``). If the step first restored an older
-        predecessor over a trusted head -- a re-run of a mid-chain step --
-        the dataset goes back to that head (``pre-run-restored``), exactly
-        as the non-strict guard and crash reconciliation both do: a failed
-        re-run must not leave the workspace behind the complete state it
-        found. Either way the disk is exactly a named, trusted state, and
-        the outcome says which.
-        """
-        if plan.skip or not plan.marked or plan.outcome in {"rolled-back", "pre-run-restored", "refused", "committed"}:
+    def _rollback_group(self) -> None:
+        """Restore all frozen sources; clear no fence until every root verifies."""
+        if not any(plan.marked for plan in self.plans):
             return
-        assert plan.cid is not None
-        outcome = "rolled-back"
-        try:
-            if plan.trash is not None and not plan.forced:
-                # The pre-run tree was the trusted head (this step restored
-                # an older state over it), so it goes straight back.
-                if plan.path.exists():
-                    shutil.rmtree(plan.path)
-                os.rename(plan.trash, plan.path)
-                plan.trash = None
-                trusted = True
-                outcome = "pre-run-restored"
+        failed = False
+        for plan in self.plans:
+            try:
+                if plan.path_was_absent:
+                    if plan.path.is_symlink() or plan.path.is_file():
+                        plan.path.unlink()
+                    elif plan.path.exists():
+                        shutil.rmtree(plan.path)
+                    plan.outcome = "absent-restored"
+                else:
+                    _replace_tree_from_snapshot(plan.path, plan.rollback_source, self.run_id, force_copy=self.force_copy)
+                    if self.strict.identity(plan.path) != plan.rollback_identity:
+                        raise DatasetLifecycleUnavailableError("rollback did not restore frozen identity")
+                    original = self.journal.snapshot_dir(plan.rollback_state)
+                    if plan.rollback_source != original:
+                        _replace_tree_from_snapshot(original, plan.rollback_source, self.run_id, force_copy=self.force_copy)
+                    plan.outcome = "pre-run-restored" if plan.rollback_state != plan.required else "rolled-back"
+            except BaseException:
+                failed = True
+                plan.outcome = "untrusted"
+                logger.exception("strict group rollback failed for %s; all participant fences remain", plan.path)
+        if failed:
+            with self.journal.batch_updates():
+                for plan in self.plans:
+
+                    def untrusted(chain):
+                        if chain is not None:
+                            chain.status = HeadStatus.UNTRUSTED
+                        return chain
+
+                    self.journal.update_chain(plan.cid, untrusted)
+            return
+        changes = []
+        for plan in self.plans:
+            if plan.path_was_absent:
+                changes.append((plan.cid, lambda _: None))
             else:
-                if plan.required is None:
-                    raise DatasetLifecycleUnavailableError("no predecessor state is named")
-                self._replace_from_snapshot(plan, plan.required)
-                if plan.trash is not None:
-                    # A forced restore's trash is the earlier partial write.
-                    shutil.rmtree(plan.trash, ignore_errors=True)
-                    plan.trash = None
-                chain = self.journal.get(plan.cid)
-                trusted = chain is not None and chain.head == plan.required
-        except BaseException:
-            plan.outcome = "untrusted"
-            logger.exception("step %s: could not roll strict dataset '%s' at %s back to its predecessor; it stays marked for recovery", self.step_path, plan.field, plan.path)
+                st = plan.path.stat()
 
-            def untrusted(chain: Chain | None) -> Chain | None:
-                if chain is not None:
-                    chain.status = HeadStatus.UNTRUSTED
-                return chain
+                def settle(chain, plan=plan, st=st):
+                    chain.dev, chain.ino, chain.ctime_ns = st.st_dev, st.st_ino, st.st_ctime_ns
+                    chain.head, chain.status, chain.marker = plan.rollback_state, HeadStatus.TRUSTED, None
+                    generation = chain.generation(plan.rollback_state)
+                    generation.structural_signature = plan.rollback_identity.signature
+                    generation.content_fingerprint = plan.rollback_identity.fingerprint
+                    generation.snapshot_present = True
+                    return chain
 
-            self.journal.update_chain(plan.cid, untrusted)
-            return
-        self._refresh_identity(plan)
-
-        def settled(chain: Chain | None) -> Chain | None:
-            if chain is not None:
-                chain.marker = None
-                # The disk is exactly a named state; it is the head's only
-                # when that state *is* the head. Otherwise the next run must
-                # restore before it relies on the head.
-                chain.status = HeadStatus.TRUSTED if trusted else HeadStatus.UNTRUSTED
-            return chain
-
-        self.journal.update_chain(plan.cid, settled)
-        plan.outcome = outcome
-        logger.info(
-            "step %s: returned strict dataset '%s' at %s to %s",
-            self.step_path,
-            plan.field,
-            plan.path,
-            "the head this run found" if outcome == "pre-run-restored" else "its exact predecessor",
-        )
+                changes.append((plan.cid, settle))
+        self.journal.update_chains(changes)
+        for plan in self.plans:
+            self._discard_trash(plan)
+            plan.marked = False
 
     def _replace_from_snapshot(self, plan: _FieldPlan, name: str) -> None:
         """Replace the live tree with snapshot `name`, keeping it on failure."""
@@ -1537,6 +1687,8 @@ class SnapshotGuard:
         _replace_tree_from_snapshot(plan.path, source, self.run_id, force_copy=self.force_copy)
 
     def _discard_trash(self, plan: _FieldPlan) -> None:
+        _discard_rollback_backup(self.journal, self.run_id, plan.path, plan.rollback_source)
+        plan.rollback_source = None
         if plan.trash is not None:
             shutil.rmtree(plan.trash, ignore_errors=True)
             plan.trash = None
@@ -1771,7 +1923,59 @@ def release_runs() -> None:
 # --- crash reconciliation -------------------------------------------------
 
 
-def _marker_completed(marker: Marker, manifest) -> bool:
+def _rollback_backup(journal, run_id, path):
+    return journal.root / "rollbacks" / f"{run_id}.{hashlib.sha256(str(path).encode()).hexdigest()}"
+
+
+def _discard_rollback_backup(journal, run_id, path, source):
+    """Delete only a settled invocation's explicitly frozen backup address."""
+    backup = _rollback_backup(journal, run_id, Path(path))
+    if source is not None and Path(source) == backup and backup.exists():
+        shutil.rmtree(backup)
+
+
+def _frozen_rollback_source(journal, marker, item):
+    """Validate a frozen physical source independently of mutable generations."""
+    from shinobi.dataset_lifecycle import dataset_identity
+
+    source = Path(item["rollback_source"])
+    expected = journal.snapshot_dir(item["rollback"])
+    if source not in (expected, _rollback_backup(journal, marker.run_id, Path(item["path"]))):
+        raise DatasetLifecycleUnavailableError("strict group rollback source is not its exact frozen path")
+    observed = dataset_identity(source, source.parent)
+    if observed.signature != item["rollback_signature"] or observed.fingerprint != item["rollback_fingerprint"]:
+        raise DatasetLifecycleUnavailableError("strict group rollback source does not match its frozen identity")
+    return source
+
+
+def _verify_strict_snapshot_identity(journal, chain, name, path, identity=None):
+    """Verify one exact source/live restore against its recorded identities."""
+    generation = chain.generation(name) if chain is not None else None
+    if generation is None or not generation.snapshot_present or not journal.snapshot_dir(name).exists():
+        raise DatasetLifecycleUnavailableError(f"strict recovery has no exact journalled snapshot {name}")
+    if identity is None:
+        from shinobi.dataset_lifecycle import dataset_identity
+
+        def identity(path):
+            return dataset_identity(path, path.parent)
+
+    observed = identity(path)
+    if generation.structural_signature != observed.signature or generation.content_fingerprint != observed.fingerprint:
+        raise DatasetLifecycleUnavailableError(f"strict recovery identity for {path} does not match state {name}")
+
+
+def _validate_group_evidence(leaf, participants):
+    from shinobi.dataset_lifecycle import DatasetMutationOutcome
+
+    mutations = leaf.mutations
+    if len(mutations) != len(participants):
+        return False
+    expected = {(item["label"], item["element_index"], item["path"], item["successor"]) for item in participants}
+    actual = {(item.field, item.element_index, str(item.root), item.successor_state) for item in mutations if item.outcome is DatasetMutationOutcome.COMMITTED}
+    return actual == expected and len(actual) == len(mutations)
+
+
+def _marker_completed(marker: Marker, manifest, *, strict: bool = False) -> bool:
     """Whether the marker's own success oracle committed this invocation.
 
     Local dispatch has historically used the cache manifest.  A detached
@@ -1780,7 +1984,11 @@ def _marker_completed(marker: Marker, manifest) -> bool:
     oracle; the mutable cache manifest is only an index and cannot turn a
     missing attempt result into success.
     """
+    if strict and marker.success_kind not in (None, "dataset-lifecycle"):
+        raise DatasetLifecycleUnavailableError("strict success oracle kind is unknown")
     if marker.success_record is None:
+        if strict and marker.strict_group is not None:
+            raise DatasetLifecycleUnavailableError("strict group has no exact success oracle path")
         entry = manifest.entry(marker.step_path)
         return entry is not None and entry.get("cache_key") == marker.cache_key and marker.cache_key is not None and entry.get("run_id") == marker.run_id
 
@@ -1792,16 +2000,32 @@ def _marker_completed(marker: Marker, manifest) -> bool:
             attempt_id=marker.run_id,
             step_path=marker.success_step_path or marker.step_path,
             cache_key=marker.cache_key,
+            participants=marker.strict_group,
+            strict=strict,
         )
 
     try:
         from shinobi.offload.records import AttemptRecord
 
         record = AttemptRecord.model_validate_json(Path(marker.success_record).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise DatasetLifecycleUnavailableError("strict success oracle is unreadable or malformed") from exc
         return False
     expected_step_path = marker.success_step_path or marker.step_path
-    return record.committed and str(record.attempt_id) == marker.run_id and record.step_path == expected_step_path and record.cache_key == marker.cache_key
+    committed = record.committed and str(record.attempt_id) == marker.run_id and record.step_path == expected_step_path and record.cache_key == marker.cache_key
+    if strict and record.committed and not committed and marker.strict_group is not None:
+        raise DatasetLifecycleUnavailableError("strict group success oracle lacks complete matching participant evidence")
+    if committed and marker.strict_group is not None:
+        lifecycle = record.dataset_lifecycle
+        leaf = next((leaf for leaf in lifecycle.leaves if leaf.step_path == marker.step_path), None) if lifecycle is not None else None
+        complete = leaf is not None and _validate_group_evidence(leaf, marker.strict_group)
+        if strict and not complete:
+            raise DatasetLifecycleUnavailableError("strict group success oracle lacks complete matching participant evidence")
+        return complete
+    return committed
 
 
 def reconcile(cache_dir: str, manifest, *, paths: set[Path] | None = None, exact: bool = False) -> list[str]:
@@ -1839,16 +2063,155 @@ def reconcile(cache_dir: str, manifest, *, paths: set[Path] | None = None, exact
         return _reconcile_locked(journal, manifest, paths=paths, exact=exact)
 
 
+def _reconcile_group(journal, manifest, chains, group, selected, exact):
+    """Prevalidate exact authority and every participant before moving any tree."""
+    if not exact or selected is None:
+        raise DatasetLifecycleUnavailableError("grouped strict mutation requires exact participant paths for recovery")
+    required = {"path", "field", "element_index", "label", "rollback", "rollback_source", "rollback_signature", "rollback_fingerprint", "absent", "successor"}
+    if not isinstance(group, list) or len(group) < 2 or any(not isinstance(item, dict) or not required <= set(item) or set(item) - required - {"predecessor"} for item in group):
+        raise DatasetLifecycleUnavailableError("strict mutation group participant payload is malformed")
+    from shinobi.dataset_access import DatasetAddress
+
+    for item in group:
+        if (
+            not isinstance(item["path"], str)
+            or not isinstance(item["field"], str)
+            or not isinstance(item["absent"], bool)
+            or DatasetAddress(item["field"], item["element_index"]).label != item["label"]
+        ):
+            raise DatasetLifecycleUnavailableError("strict mutation group contains a malformed typed address")
+    cids = [chain_id(Path(item["path"])) for item in group]
+    if len(set(cids)) != len(cids) or not set(cids) <= selected:
+        raise DatasetLifecycleUnavailableError("strict mutation group recovery requires every exact participant path: " + ", ".join(item["path"] for item in group))
+    members = []
+    oracle = None
+    for item, cid in zip(group, cids):
+        path = Path(item["path"])
+        if not path.is_absolute() or path.resolve() != path:
+            raise DatasetLifecycleUnavailableError("strict mutation group contains a noncanonical root")
+        chain = chains.get(cid)
+        marker = chain.marker if chain is not None else None
+        if chain is None or marker is None or chain.path != item["path"] or marker.strict_group != group:
+            raise DatasetLifecycleUnavailableError(f"strict mutation group participant {path} has missing or contradictory marker evidence")
+        frozen = (marker.run_id, marker.step_path, marker.cache_key, marker.success_record, marker.success_kind, marker.success_step_path)
+        if oracle is not None and frozen != oracle:
+            raise DatasetLifecycleUnavailableError("strict mutation group has contradictory invocation/oracle identities")
+        oracle = frozen
+        if (
+            marker.field != item["label"]
+            or marker.strict_predecessor_state != item.get("predecessor")
+            or marker.strict_rollback_state != item["rollback"]
+            or marker.path_was_absent != item["absent"]
+            or item["successor"] != state_name(marker.cache_key, item["field"], item["element_index"])
+        ):
+            raise DatasetLifecycleUnavailableError("strict mutation group participant address/rollback evidence disagrees")
+        if not item["absent"]:
+            name = item["rollback"]
+            if not name:
+                raise DatasetLifecycleUnavailableError(f"strict group rollback for {path} is missing")
+            if (
+                item["rollback_source"] != marker.strict_rollback_source
+                or item["rollback_signature"] != marker.strict_rollback_signature
+                or item["rollback_fingerprint"] != marker.strict_rollback_fingerprint
+            ):
+                raise DatasetLifecycleUnavailableError("strict group frozen source evidence disagrees")
+        members.append((cid, chain, marker, item))
+    marker = members[0][2]
+    completed = _marker_completed(marker, manifest, strict=True)
+    for cid, chain, _, item in members:
+        if completed:
+            _verify_strict_snapshot_identity(journal, chain, item["successor"], journal.snapshot_dir(item["successor"]))
+            _verify_strict_snapshot_identity(journal, chain, item["successor"], Path(chain.path))
+    if not completed:
+        for _, chain, participant_marker, item in members:
+            if not item["absent"]:
+                if chain.taint_blocks(item["rollback"]):
+                    raise DatasetLifecycleUnavailableError("strict group rollback state predates an unnamed write")
+                _frozen_rollback_source(journal, participant_marker, item)
+    return members, completed
+
+
+def _settle_group(journal, manifest, members, completed):
+    marker = members[0][2]
+    if not completed:
+        entry = manifest.entry(marker.step_path)
+        if entry is not None and entry.get("cache_key") == marker.cache_key:
+            manifest.remove({marker.step_path})
+        # All fences remain even if a later physical replacement fails.
+        for _, chain, _, item in members:
+            path = Path(chain.path)
+            if item["absent"]:
+                if path.is_symlink() or path.is_file():
+                    path.unlink()
+                elif path.exists():
+                    shutil.rmtree(path)
+            else:
+                source = _frozen_rollback_source(journal, marker, item)
+                _replace_tree_from_snapshot(path, source, marker.run_id)
+                from shinobi.dataset_lifecycle import dataset_identity
+
+                live = dataset_identity(path, path.parent)
+                if live.signature != item["rollback_signature"] or live.fingerprint != item["rollback_fingerprint"]:
+                    raise DatasetLifecycleUnavailableError("strict group live restore did not match frozen identity")
+                original = journal.snapshot_dir(item["rollback"])
+                if source != original:
+                    _replace_tree_from_snapshot(original, source, marker.run_id)
+    changes = []
+    for cid, chain, _, item in members:
+        path = Path(chain.path)
+        trash = _trash_for(path, marker.run_id)
+        if trash is not None:
+            shutil.rmtree(trash)
+        if not completed and item["absent"]:
+            changes.append((cid, lambda _: None))
+        else:
+            st = path.stat()
+
+            def settle(chain, item=item, st=st):
+                chain.dev, chain.ino, chain.ctime_ns = st.st_dev, st.st_ino, st.st_ctime_ns
+                chain.head = item["successor"] if completed else item["rollback"]
+                chain.status, chain.marker = HeadStatus.TRUSTED, None
+                if not completed:
+                    generation = chain.generation(item["rollback"])
+                    generation.structural_signature = item["rollback_signature"]
+                    generation.content_fingerprint = item["rollback_fingerprint"]
+                    generation.snapshot_present = True
+                return chain
+
+            changes.append((cid, settle))
+    journal.update_chains(changes)
+    for _, chain, _, item in members:
+        _discard_rollback_backup(journal, marker.run_id, chain.path, item["rollback_source"])
+    return [f"{chain.path}: strict group {'committed; cleanup complete' if completed else 'restored exact rollback state'}" for _, chain, _, _ in members], {
+        member[0] for member in members
+    }
+
+
 def _reconcile_locked(journal: ChainJournal, manifest, *, paths: set[Path] | None, exact: bool) -> list[str]:
     selected = {chain_id(path) for path in paths} if paths is not None else None
     notes: list[str] = []
-    for cid, chain in journal.all_chains().items():
+    chains = journal.all_chains()
+    settled = set()
+    groups = []
+    for cid, chain in chains.items():
+        if chain.marker is None or chain.marker.strict_group is None or cid in settled or (selected is not None and cid not in selected):
+            continue
+        members, completed = _reconcile_group(journal, manifest, chains, chain.marker.strict_group, selected, exact)
+        groups.append((members, completed))
+        settled.update(member[0] for member in members)
+    # Validate every selected group before the first physical change.
+    for members, completed in groups:
+        group_notes, _ = _settle_group(journal, manifest, members, completed)
+        notes.extend(group_notes)
+    for cid, chain in chains.items():
+        if cid in settled:
+            continue
         if selected is not None and cid not in selected:
             continue
         marker = chain.marker
         if marker is None:
             continue
-        completed = _marker_completed(marker, manifest)
+        completed = _marker_completed(marker, manifest, strict=exact and marker.strict_rollback_state is not None)
         trash = _trash_for(Path(chain.path), marker.run_id)
 
         if completed:
@@ -1864,6 +2227,7 @@ def _reconcile_locked(journal: ChainJournal, manifest, *, paths: set[Path] | Non
                 return c
 
             journal.update_chain(cid, clear)
+            _discard_rollback_backup(journal, marker.run_id, chain.path, marker.strict_rollback_source)
             continue
 
         # No success record from this run: the step did not finish. Remove a
@@ -1901,10 +2265,21 @@ def _reconcile_locked(journal: ChainJournal, manifest, *, paths: set[Path] | Non
             if chain.taint_blocks(rollback):
                 raise DatasetLifecycleUnavailableError(f"strict recovery for {chain.path} cannot restore {rollback}: it predates an unnamed write")
             source = journal.snapshot_dir(rollback)
+            if marker.strict_rollback_source is not None:
+                item = {
+                    "path": chain.path,
+                    "rollback": rollback,
+                    "rollback_source": marker.strict_rollback_source,
+                    "rollback_signature": marker.strict_rollback_signature,
+                    "rollback_fingerprint": marker.strict_rollback_fingerprint,
+                }
+                source = _frozen_rollback_source(journal, marker, item)
             if chain.generation(rollback) is None or not source.exists():
                 raise DatasetLifecycleUnavailableError(f"strict recovery for {chain.path} cannot restore missing snapshot {rollback}")
             path = Path(chain.path)
             _replace_tree_from_snapshot(path, source, marker.run_id)
+            if source != journal.snapshot_dir(rollback):
+                _replace_tree_from_snapshot(journal.snapshot_dir(rollback), source, marker.run_id)
             if trash is not None:
                 shutil.rmtree(trash, ignore_errors=True)
             st = path.stat()
@@ -1913,11 +2288,16 @@ def _reconcile_locked(journal: ChainJournal, manifest, *, paths: set[Path] | Non
                 if c is not None:
                     c.dev, c.ino, c.ctime_ns = st.st_dev, st.st_ino, st.st_ctime_ns
                     c.head = rollback
+                    if marker.strict_rollback_source is not None:
+                        generation = c.generation(rollback)
+                        generation.structural_signature = marker.strict_rollback_signature
+                        generation.content_fingerprint = marker.strict_rollback_fingerprint
                     c.marker = None
                     c.status = HeadStatus.TRUSTED
                 return c
 
             journal.update_chain(cid, recovered)
+            _discard_rollback_backup(journal, marker.run_id, chain.path, marker.strict_rollback_source)
             notes.append(f"{chain.path}: run {marker.run_id} of '{marker.step_path}' did not complete; restored exact state {rollback}")
             continue
         if trash is not None:
@@ -1994,6 +2374,17 @@ def _protected_names(chains: dict[str, Chain]) -> set[str]:
             # anchor, at which point every restore on the chain refuses.
             protected.add(chain.tainted_through)
         protected.update(chain.consumed.values())
+        if chain.marker is not None:
+            if chain.marker.strict_rollback_state is not None:
+                protected.add(chain.marker.strict_rollback_state)
+            if chain.marker.strict_predecessor_state is not None:
+                protected.add(chain.marker.strict_predecessor_state)
+            for item in chain.marker.strict_group or ():
+                if item["rollback"] is not None:
+                    protected.add(item["rollback"])
+                protected.add(item["successor"])
+                if item.get("predecessor") is not None:
+                    protected.add(item["predecessor"])
     return protected
 
 
@@ -2024,7 +2415,7 @@ def evict(cache_dir: str, target_bytes: int) -> list[tuple[str, int]]:
     # Only a *live* chain can protect a name: protection means "some future
     # restore might need this", and a chain whose workspace path is gone has
     # nothing left to restore to.
-    protected = _protected_names(live)
+    protected = _protected_names({cid: chain for cid, chain in chains.items() if cid in live or chain.marker is not None})
     removed: list[tuple[str, int]] = []
     freed = 0
 
@@ -2100,6 +2491,13 @@ def invalidate(cache_dir: str, step_path: str, manifest) -> list[str]:
     # only link from a step path to a state name.
     entry = manifest.entry(step_path)
     cache_key = entry.get("cache_key") if entry else None
+    for chain in journal.all_chains().values():
+        if (
+            chain.marker is not None
+            and chain.marker.strict_group is not None
+            and (chain.marker.step_path == step_path or any(gen.name.startswith(f"{cache_key}__") for gen in chain.generations))
+        ):
+            raise DatasetLifecycleUnavailableError("cannot invalidate an in-flight strict mutation group; settle its exact participant paths first")
     if manifest.remove({step_path}):
         notes.append(f"removed the manifest entry for '{step_path}'")
     if cache_key is None:

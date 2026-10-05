@@ -813,6 +813,7 @@ def _strict_snapshot_guard(
     input_keys: dict[str, Any] | None,
     wired_fields: set[str] | None,
     boundary_fields: frozenset[str],
+    boundary_elements: frozenset[tuple[str, int]],
     slice_index: int | None,
     config: AppConfig,
     success_record: Path | None,
@@ -829,12 +830,32 @@ def _strict_snapshot_guard(
     from shinobi.dataset_lifecycle import LeafMutationError
 
     wired = set(wired_fields or ()) - set(boundary_fields) if wired_fields is not None else None
+    from shinobi.datasets import executable_dataset_list_fields
+    from shinobi.cache import ProvenanceKey
+
+    list_fields = executable_dataset_list_fields(scope.inputs_model)
     _protected, excluded = eligible_fields(scope, ctx.prepare_inputs(), input_keys, wired, slice_index is not None)
-    blocked = [exclusion for exclusion in excluded if exclusion.field in leaf.fields]
-    if blocked:
-        raise LeafMutationError(
-            f"strict MSv2 mutation of {cache_path!r} refused before launch: " + "; ".join(f"'{exclusion.field}' cannot be protected: {exclusion.reason}" for exclusion in blocked)
-        )
+    blocked = [exclusion for exclusion in excluded if exclusion.field in leaf.fields and exclusion.field not in list_fields]
+    issues = [f"'{exclusion.field}' cannot be protected: {exclusion.reason}" for exclusion in blocked]
+    keys = input_keys or {}
+    for label, address in leaf.addresses.items():
+        if address.element_index is None:
+            continue
+        key_list = keys.get(address.field)
+        values = ctx.prepare_inputs()[address.field]
+        if key_list is not None and (not isinstance(key_list, list) or len(key_list) != len(values)):
+            issues.append(f"'{address.field}' producer keys must match list cardinality")
+            continue
+        key = key_list[address.element_index] if key_list is not None else None
+        boundary = address.field in boundary_fields or (address.field, address.element_index) in boundary_elements
+        if slice_index is not None:
+            issues.append(f"'{label}' is scattered")
+        elif key is not None and (not isinstance(key, ProvenanceKey) or key.producer_field is None):
+            issues.append(f"'{label}' producer key names no exact state")
+        elif key is None and address.field in (wired or ()) and not boundary:
+            issues.append(f"'{label}' is wired to a producer with no cache key")
+    if issues:
+        raise LeafMutationError(f"strict MSv2 mutation of {cache_path!r} refused before launch: " + "; ".join(issues))
     detached_oracle = success_record is not None
     return SnapshotGuard(
         journal=get_journal(cache_dir),
@@ -842,6 +863,7 @@ def _strict_snapshot_guard(
         cache_key=cache_key,
         run_id=run_id,
         fields=dict(leaf.fields),
+        addresses=leaf.addresses,
         input_keys=input_keys,
         wired_fields=wired,
         force_copy=config.cache.snapshots.mode == "copy",
@@ -887,6 +909,7 @@ def _dispatch(
     _validated_inputs: BaseModel | None = None,
     _leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
     _boundary_fields: frozenset[str] = frozenset(),
+    _boundary_elements: frozenset[tuple[str, int]] = frozenset(),
     overwrite_steps: Sequence[str] = (),
     **kwargs: Any,
 ) -> StepResult:
@@ -1556,6 +1579,7 @@ def _dispatch(
                 _input_keys,
                 _wired_fields,
                 _boundary_fields,
+                _boundary_elements,
                 _slice_index,
                 config,
                 _snapshot_success_record,
@@ -1632,7 +1656,7 @@ def _dispatch(
         # postconditions decide, before anything names or publishes the
         # successor. A violating writer is rolled back to its predecessor.
         try:
-            strict_leaf.validate(guard)
+            strict_leaf.validate(guard, result.outputs)
         except BaseException as exc:
             if guard is not None:
                 guard.after_failure()
@@ -1702,8 +1726,7 @@ def _dispatch(
                 except BaseException as exc:
                     # Before S3 the guard has rolled back; after it, the
                     # committed oracle stands and only tidying failed.
-                    recorded = strict_leaf.lifecycle.leaf(cache_path) if strict_leaf is not None else None
-                    if strict_leaf is not None and (recorded is None or recorded.outcome != "committed"):
+                    if strict_leaf is not None and not guard.oracle_durable and not guard.oracle_unknown:
                         strict_leaf.fail(guard, f"commit failed: {type(exc).__name__}: {exc}")
                     raise
             else:
@@ -2375,6 +2398,11 @@ def _run_recipe(
                 # Only the strict dataset guard distinguishes the two (see
                 # `_strict_snapshot_guard`); ordinary Tier 1 is unchanged.
                 _boundary_fields=frozenset(field for field, source in ref.wiring.items() if isinstance(source, InputRef)) if input_keys is None else frozenset(),
+                _boundary_elements=frozenset(
+                    (field, index) for field, source in ref.wiring.items() if isinstance(source, list) for index, one in enumerate(source) if isinstance(one, InputRef)
+                )
+                if input_keys is None
+                else frozenset(),
                 _run_id=run_id,
                 _slice_index=slice_idx,
                 _leaf_inputs=leaf_inputs,

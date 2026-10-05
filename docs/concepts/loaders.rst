@@ -154,11 +154,12 @@ resolved names are validated and recorded. See :doc:`datasets` for the full
 contract, including existing columns named under ``create``.
 
 Executable YAML cabs support direct strict dataset scalars, including
-optional scalars with a ``None`` default, and direct read-only input
+optional scalars with a ``None`` default, and direct input
 ``List[MSv2]`` (also ``list:MSv2``). Optional list fields may default to ``None``;
-concrete lists must be non-empty. One base ``dataset_accesses`` read declaration
-applies to every element. List outputs, explicit or inferred writes and creates,
-other strict containers, mixed unions or nested models, strict dynamic patterns,
+concrete lists must be non-empty. One base ``dataset_accesses`` read or explicit write declaration
+applies to every element. A compatible same-name list output is an exact
+ordered-root passthrough for an explicit WRITE input. Other list outputs,
+inferred writes, ``MUTABLE``, ``write_path``, creates and other strict containers, mixed unions or nested models, strict dynamic patterns,
 and strict ``choices`` are refused. See :doc:`datasets` for indexed records,
 closure overlap refusals and the multi-root execution boundary. Worker/config schemas may retain strict composite annotations.
 Legacy ``MS`` containers, patterns and choices retain their existing behavior.
