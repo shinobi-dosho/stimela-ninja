@@ -168,7 +168,7 @@ def _submit(args, label: str, recipe: Recipe, inputs: dict, nodes: dict[str, str
         submission_root=args.root / "submissions",
         worker_python=args.worker_python,
         dataset_storage_qualification=args.storage_qualification,
-        sbatch_opts={"partition": args.partition},
+        sbatch_opts={"partition": args.partition, **getattr(args, "sbatch_opts", {})},
         step_sbatch_opts={name: {"nodelist": node} for name, node in nodes.items()},
     )
     if fault is not None:
