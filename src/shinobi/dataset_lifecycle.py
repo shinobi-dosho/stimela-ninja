@@ -52,7 +52,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from shinobi.dataset_access import DatasetAccessError, DatasetFallback, DatasetMode, DatasetTable, ResolvedDatasetAccess, plan_recipe_accesses, resolve_scope_dataset_accesses
 from shinobi.dataset_backends import DATASET_MUTATION_CAPABILITY, DATASET_READ_CAPABILITY, DatasetBackendCapability
 from shinobi.dataset_closure import DATASET_CLOSURE_PROFILE, ClosureStatus, DatasetClosure, resolve_dataset_closure
-from shinobi.datasets import DatasetDescriptor, DatasetStatus, MSV2_STRUCTURAL_PROFILE, inspect_measurement_set_v2
+from shinobi.datasets import DatasetDescriptor, DatasetStatus, MSV2_STRUCTURAL_PROFILE, inspect_casa_table, inspect_measurement_set_v2
 from shinobi.exceptions import DatasetLifecycleUnavailableError
 from shinobi.ownership import WorkspaceOwner
 from shinobi.storage import JsonFileStore, SharedStorageError
@@ -111,7 +111,11 @@ class DatasetFileObservation(BaseModel):
 
 
 class DatasetObservation(BaseModel):
-    """Serializable structural, closure and member observation of one MSv2."""
+    """Serializable structural, closure and member observation of one MSv2.
+
+    Supported subtable columns are supplemental postcondition evidence;
+    historical observations may omit them, and signature v1 excludes them.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -121,6 +125,9 @@ class DatasetObservation(BaseModel):
     descriptor: DatasetDescriptor
     closure: DatasetClosure
     files: tuple[DatasetFileObservation, ...]
+    # Supplemental evidence, deliberately excluded from the frozen v1 signature.
+    # Empty historical observations must keep their original serialized identity.
+    table_columns: dict[str, tuple[str, ...]] = Field(default_factory=dict, exclude_if=lambda value: not value)
 
 
 class DatasetLifecycleSnapshot(BaseModel):
@@ -135,6 +142,30 @@ class DatasetLifecycleSnapshot(BaseModel):
     accesses: tuple[ResolvedDatasetAccess, ...]
     observations: tuple[DatasetObservation, ...]
     absent_roots: tuple[Path, ...] = ()
+
+
+def dataset_observation_matches(before: DatasetObservation | None, after: DatasetObservation | None) -> bool:
+    """Match unchanged datasets using only mutually known supplemental schemas.
+
+    Evidence availability alone is not mutation. All original structural,
+    closure, root and file evidence remains exact, including absence.
+    """
+    if before is None or after is None:
+        return before == after
+    known_tables = before.table_columns.keys() & after.table_columns.keys()
+    comparable_before = before.model_copy(update={"table_columns": {name: before.table_columns[name] for name in known_tables}})
+    comparable_after = after.model_copy(update={"table_columns": {name: after.table_columns[name] for name in known_tables}})
+    return comparable_before == comparable_after
+
+
+def dataset_snapshot_matches(before: DatasetLifecycleSnapshot, after: DatasetLifecycleSnapshot) -> bool:
+    """Match exact access/absence plans and ordered dataset observations."""
+    return (
+        before.accesses == after.accesses
+        and before.absent_roots == after.absent_roots
+        and len(before.observations) == len(after.observations)
+        and all(dataset_observation_matches(left, right) for left, right in zip(before.observations, after.observations))
+    )
 
 
 def structural_signature(observation: DatasetObservation) -> str:
@@ -563,12 +594,25 @@ def _observe_root(root: Path, workspace: Path) -> DatasetObservation:
     descriptor = inspect_measurement_set_v2(closure.root)
     if descriptor.status is not DatasetStatus.VALID:
         raise DatasetLifecycleUnavailableError(f"contained MSv2 refused: structural validation returned {descriptor.status.value}: {descriptor.message}")
+    table_columns: dict[str, tuple[str, ...]] = {}
+    supported = {table.value for table in DatasetTable} - {"MAIN"}
+    for resource in closure.resources:
+        members = supported.intersection(resource.members)
+        if members:
+            observed = inspect_casa_table(resource.path)
+            if observed.status is not DatasetStatus.VALID:
+                # Supplemental evidence must not strengthen the frozen dataset
+                # profile. Unknown metadata is omitted; applicable writers
+                # fail closed when checking their target's postconditions.
+                continue
+            for member in members:
+                table_columns[member] = observed.columns
     paths: set[Path] = set()
     for resource in closure.resources:
         paths.add(resource.path)
         paths.update(resource.path / name for name in resource.table_files)
     files = tuple(_file_observation(path) for path in sorted(paths, key=str))
-    return DatasetObservation(root=closure.root, descriptor=descriptor, closure=closure, closure_profile=closure.profile, files=files)
+    return DatasetObservation(root=closure.root, descriptor=descriptor, closure=closure, closure_profile=closure.profile, files=files, table_columns=table_columns)
 
 
 def observe_dataset(root: Path, workspace: Path) -> DatasetObservation:
@@ -828,6 +872,62 @@ def _changed_tables(pre: DatasetObservation, post: DatasetObservation) -> set[st
     return changed
 
 
+def _table_column_issues(
+    label: str,
+    writers: list[ResolvedDatasetAccess],
+    before: DatasetObservation | None,
+    after: DatasetObservation,
+) -> list[str]:
+    """Validate column promises and schema permissions independently per table.
+
+    Missing evidence on a present target is unknown, never an empty schema.
+    Only a genuinely undeclared writer applies to every supported table.
+    """
+    issues: list[str] = []
+    before_members = {member for resource in before.closure.resources for member in resource.members} if before else set()
+    after_members = {member for resource in after.closure.resources for member in resource.members}
+    for table in DatasetTable:
+        target = table.value
+        applicable = [access for access in writers if access.declaration.table is table or access.fallback is DatasetFallback.UNDECLARED]
+        declared_create = {
+            name for access in applicable if access.declaration.table is table and access.declaration.columns is not None for name in access.declaration.columns.create
+        }
+        declared_remove = {
+            name for access in applicable if access.declaration.table is table and access.declaration.columns is not None for name in access.declaration.columns.remove
+        }
+        old = before.descriptor.columns if before and table is DatasetTable.MAIN else before.table_columns.get(target) if before else None
+        new = after.descriptor.columns if table is DatasetTable.MAIN else after.table_columns.get(target)
+        old_present = table is DatasetTable.MAIN and before is not None or target in before_members
+        new_present = table is DatasetTable.MAIN or target in after_members
+        if (old_present and old is None) or (new_present and new is None):
+            if applicable:
+                issues.append(f"{label}: {target} column metadata evidence is missing")
+            continue
+        old_columns, new_columns = set(old or ()), set(new or ())
+        missing = declared_create - new_columns
+        lingering = declared_remove & new_columns
+        if missing:
+            issues.append(f"{label}: {target} declared created column(s) absent: {', '.join(sorted(missing))}")
+        if lingering:
+            issues.append(f"{label}: {target} declared removed column(s) still present: {', '.join(sorted(lingering))}")
+        # A new dataset has no predecessor schema; table membership changes are
+        # checked separately under the existing closure contract.
+        if before is None or not (old_present and new_present):
+            continue
+        added, removed = new_columns - old_columns, old_columns - new_columns
+        allow_schema = any(access.declaration.allow_schema_change for access in applicable)
+        if (added or removed) and not allow_schema:
+            issues.append(
+                f"{label}: {target} columns changed without allow_schema_change (added: {', '.join(sorted(added)) or 'none'}; removed: {', '.join(sorted(removed)) or 'none'})"
+            )
+        elif allow_schema and all(access.declaration.columns is not None and access.fallback is not DatasetFallback.UNDECLARED for access in applicable):
+            if added - declared_create:
+                issues.append(f"{label}: {target} undeclared column(s) created: {', '.join(sorted(added - declared_create))}")
+            if removed - declared_remove:
+                issues.append(f"{label}: {target} undeclared column(s) removed: {', '.join(sorted(removed - declared_remove))}")
+    return issues
+
+
 def leaf_postcondition_issues(
     accesses: tuple[ResolvedDatasetAccess, ...],
     pre: dict[Path, DatasetObservation],
@@ -855,28 +955,14 @@ def leaf_postcondition_issues(
         before, after = pre.get(root), post.get(root)
         label = root.name or str(root)
         if not writers:
-            if after != before:
+            if not dataset_observation_matches(before, after):
                 issues.append(f"{label}: read-only access changed the dataset")
             continue
         if after is None:
             issues.append(f"{label}: the dataset is absent after the step")
             continue
         creates = [access for access in writers if access.mode is DatasetMode.CREATE]
-        # The descriptor observes MAIN's columns only, so only MAIN column
-        # declarations can be checked against it.
-        main_create = {
-            name for access in writers if access.declaration.table is DatasetTable.MAIN and access.declaration.columns is not None for name in access.declaration.columns.create
-        }
-        main_remove = {
-            name for access in writers if access.declaration.table is DatasetTable.MAIN and access.declaration.columns is not None for name in access.declaration.columns.remove
-        }
-        columns = set(after.descriptor.columns)
-        missing = sorted(main_create - columns)
-        if missing:
-            issues.append(f"{label}: declared created column(s) absent: {', '.join(missing)}")
-        lingering = sorted(main_remove & columns)
-        if lingering:
-            issues.append(f"{label}: declared removed column(s) still present: {', '.join(lingering)}")
+        issues.extend(_table_column_issues(label, writers, before, after))
         if creates:
             if before is not None:
                 issues.append(f"{label}: CREATE target existed before the step")
@@ -890,17 +976,6 @@ def leaf_postcondition_issues(
         allowed_subtables = {name for access in writers for name in access.declaration.allow_subtable_change}
         if not allow_rows and before.descriptor.nrows != after.descriptor.nrows:
             issues.append(f"{label}: MAIN row count changed {before.descriptor.nrows} -> {after.descriptor.nrows} without allow_row_count_change")
-        added = set(after.descriptor.columns) - set(before.descriptor.columns)
-        removed = set(before.descriptor.columns) - set(after.descriptor.columns)
-        if (added or removed) and not allow_schema:
-            issues.append(
-                f"{label}: MAIN columns changed without allow_schema_change (added: {', '.join(sorted(added)) or 'none'}; removed: {', '.join(sorted(removed)) or 'none'})"
-            )
-        elif allow_schema and all(access.declaration.columns is not None for access in writers):
-            if added - main_create:
-                issues.append(f"{label}: undeclared column(s) created: {', '.join(sorted(added - main_create))}")
-            if removed - main_remove:
-                issues.append(f"{label}: undeclared column(s) removed: {', '.join(sorted(removed - main_remove))}")
         subtables_changed = set(before.descriptor.subtables) ^ set(after.descriptor.subtables)
         if subtables_changed and not allow_schema:
             issues.append(f"{label}: subtable set changed without allow_schema_change")
@@ -1359,6 +1434,8 @@ __all__ = [
     "claim_covers_snapshot",
     "dataset_attempt_path",
     "dataset_identity",
+    "dataset_observation_matches",
+    "dataset_snapshot_matches",
     "dataset_signature",
     "leaf_postcondition_issues",
     "member_fingerprint",

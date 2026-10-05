@@ -1024,3 +1024,82 @@ def test_read_only_change_after_precommit_is_caught_at_publication(monkeypatch, 
         assert "read-only dataset" in record.error
     finally:
         lease.release()
+
+
+@pytest.mark.parametrize("known_first", [False, True])
+def test_worker_revalidation_and_publication_allow_supplemental_availability_changes(monkeypatch, tmp_path, known_first):
+    root = tmp_path / "data.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    workflow, plan, lease = _prepared(tmp_path, _recipe(tmp_path, read=True), root)
+    original = lifecycle_module._observe_root
+    observed = []
+
+    def observe(root, workspace):
+        observation = original(root, workspace)
+        observed.append(True)
+        # First leaf resolution and workflow baseline, then claim revalidation
+        # of both. Publication also differs from the claimed baseline.
+        known = (len(observed) <= 2) == known_first
+        return observation.model_copy(update={"table_columns": {"ANTENNA": ("NAME",)} if known else {}})
+
+    monkeypatch.setattr(lifecycle_module, "_observe_root", observe)
+    try:
+        attempt = plan.attempts[0]
+        assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 0
+        record = _record(workflow, plan)
+        assert record.state == "succeeded" and record.dataset_lifecycle.outcome == "committed"
+        assert len(observed) >= 6
+    finally:
+        lease.release()
+
+
+@pytest.mark.parametrize("stage", ["claim", "publication"])
+@pytest.mark.parametrize("change", ["columns", "descriptor", "closure", "files"])
+def test_worker_outer_observation_checks_refuse_genuine_changes(monkeypatch, tmp_path, stage, change):
+    import shinobi.offload.worker as worker_module
+
+    root = tmp_path / "data.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    workflow, plan, lease = _prepared(tmp_path, _recipe(tmp_path, read=True), root)
+    original = lifecycle_module._observe_root
+    observed = []
+    late = []
+
+    def observe(root, workspace):
+        observation = original(root, workspace)
+        observed.append(True)
+        changed = len(observed) >= 3 if stage == "claim" else bool(late)
+        observation = observation.model_copy(update={"table_columns": {} if changed and change != "columns" else {"ANTENNA": ("NAME",)}})
+        if changed:
+            if change == "columns":
+                observation = observation.model_copy(update={"table_columns": {"ANTENNA": ("NAME", "CUSTOM")}})
+            elif change == "descriptor":
+                observation = observation.model_copy(update={"descriptor": observation.descriptor.model_copy(update={"nrows": 1})})
+            elif change == "closure":
+                observation = observation.model_copy(update={"closure": observation.closure.model_copy(update={"message": "different closure evidence"})})
+            else:
+                observation = observation.model_copy(update={"files": (observation.files[0].model_copy(update={"size": 99}), *observation.files[1:])})
+        return observation
+
+    monkeypatch.setattr(lifecycle_module, "_observe_root", observe)
+    finish = worker_module._WorkerDatasetLifecycle.finish
+
+    def change_before_publication(self, result):
+        late.append(True)
+        return finish(self, result)
+
+    if stage == "publication":
+        monkeypatch.setattr(worker_module._WorkerDatasetLifecycle, "finish", change_before_publication)
+    try:
+        attempt = plan.attempts[0]
+        assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
+        record = _record(workflow, plan)
+        assert record.state == "failed"
+        assert record.dataset_lifecycle.outcome == ("refused" if stage == "claim" else "failed")
+        assert ("establishing the compute-side lifecycle" if stage == "claim" else "read-only dataset") in record.error
+    finally:
+        lease.release()

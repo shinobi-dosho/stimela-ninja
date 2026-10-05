@@ -1039,3 +1039,272 @@ def test_lease_cleanup_failure_is_not_allowed_to_mask_backend_exception(tmp_path
 
     monkeypatch.setattr(WorkspaceLease, "release", original)
     assert release_workspace(tmp_path, attempt.claim.workflow_id)
+
+
+def test_optional_column_evidence_serialization_and_frozen_signature(tmp_path):
+    snapshot = _snapshot(tmp_path / "obs.ms")
+    old = snapshot.observations[0]
+    assert "table_columns" not in snapshot.model_dump(mode="json")["observations"][0]
+    fresh = old.model_copy(update={"table_columns": {"ANTENNA": ("NAME", "CUSTOM")}})
+    assert DatasetObservation.model_validate_json(fresh.model_dump_json()) == fresh
+    assert lifecycle_module.structural_signature(fresh) == lifecycle_module.structural_signature(old)
+    assert lifecycle_module.member_fingerprint(fresh) == lifecycle_module.member_fingerprint(old)
+
+
+@pytest.mark.parametrize("unknown_target,changed_target", [("ANTENNA", "MAIN"), ("MAIN", "ANTENNA")])
+@pytest.mark.parametrize("permission", [False, True])
+def test_column_contract_permissions_and_unknown_columns_are_table_local(tmp_path, unknown_target, changed_target, permission):
+    snapshot = _snapshot(tmp_path / "obs.ms")
+    before = snapshot.observations[0]
+    antenna = before.closure.resources[0].model_copy(update={"path": before.root / "ANTENNA", "members": ("ANTENNA",)})
+    before = before.model_copy(update={"closure": before.closure.model_copy(update={"resources": (*before.closure.resources, antenna)}), "table_columns": {"ANTENNA": ("NAME",)}})
+    after = (
+        before.model_copy(update={"descriptor": before.descriptor.model_copy(update={"columns": ("CUSTOM",)})})
+        if changed_target == "MAIN"
+        else before.model_copy(update={"table_columns": {"ANTENNA": ("NAME", "CUSTOM")}})
+    )
+    accesses = []
+    for target in ("MAIN", "ANTENNA"):
+        declaration = DatasetAccess(
+            field="ms",
+            table=target,
+            mode="write",
+            columns=None if target == unknown_target else DatasetColumns(write=("NAME",)),
+            allow_schema_change=permission or target == unknown_target,
+        )
+        accesses.append(
+            snapshot.accesses[0].model_copy(
+                update={
+                    "mode": DatasetMode.WRITE,
+                    "declaration": declaration,
+                    "fallback": DatasetFallback.UNKNOWN_COLUMNS if target == unknown_target else None,
+                    "columns_known": target != unknown_target,
+                }
+            )
+        )
+    issues = lifecycle_module.leaf_postcondition_issues(tuple(accesses), {before.root: before}, {before.root: after})
+    assert any(changed_target in issue and ("undeclared column" if permission else "without allow_schema_change") in issue for issue in issues)
+    assert not any("undeclared table" in issue for issue in issues)
+
+
+def test_present_target_requires_column_evidence_but_absent_optional_table_does_not(tmp_path):
+    snapshot = _snapshot(tmp_path / "obs.ms")
+    before = snapshot.observations[0]
+    declaration = DatasetAccess(field="ms", table="SOURCE", mode="write", columns=DatasetColumns(write=("NAME",)))
+    access = snapshot.accesses[0].model_copy(update={"mode": DatasetMode.WRITE, "declaration": declaration})
+    assert not lifecycle_module.leaf_postcondition_issues((access,), {before.root: before}, {before.root: before})
+    source = before.closure.resources[0].model_copy(update={"path": before.root / "SOURCE", "members": ("SOURCE",)})
+    present = before.model_copy(update={"closure": before.closure.model_copy(update={"resources": (*before.closure.resources, source)})})
+    assert any(
+        "SOURCE column metadata evidence is missing" in issue for issue in lifecycle_module.leaf_postcondition_issues((access,), {present.root: present}, {present.root: present})
+    )
+
+
+@pytest.mark.parametrize("failure", [None, "unreadable", "oversized"])
+def test_subtable_observation_uses_bounded_closed_metadata_once_per_resource(tmp_path, monkeypatch, failure):
+    import shinobi.datasets as datasets
+    from tests.test_datasets import _FakeTable
+
+    root = tmp_path / "obs.ms"
+    root.mkdir()
+    antenna = root / "ANTENNA"
+    antenna.mkdir()
+    opaque = root / "QUALITY_CUSTOM"
+    opaque.mkdir()
+    snapshot = _snapshot(root)
+    template = snapshot.observations[0]
+    resource = template.closure.resources[0]
+    closure = template.closure.model_copy(
+        update={
+            "resources": (
+                resource.model_copy(update={"table_files": ()}),
+                resource.model_copy(update={"path": antenna, "members": ("ANTENNA", "SOURCE"), "table_files": ()}),
+                resource.model_copy(update={"path": opaque, "members": ("QUALITY_CUSTOM",), "table_files": ()}),
+            )
+        }
+    )
+    monkeypatch.setattr(lifecycle_module, "resolve_dataset_closure", lambda *args, **kwargs: closure)
+    monkeypatch.setattr(lifecycle_module, "inspect_measurement_set_v2", lambda *args: template.descriptor)
+    columns = tuple(f"C{i}" for i in range(datasets.InspectionLimits().max_columns + 1)) if failure == "oversized" else ("NAME", "CUSTOM")
+    table = _FakeTable(columns=columns, metadata_error=OSError("unreadable") if failure == "unreadable" else None)
+    opened = []
+
+    def factory(path, **kwargs):
+        assert path == str(antenna)
+        assert kwargs == {"readonly": True, "ack": False}
+        opened.append(path)
+        return table  # no cell-reading methods: any bulk/cell read fails
+
+    monkeypatch.setattr(datasets, "_load_table_factory", lambda: factory)
+    observed = lifecycle_module.observe_dataset(root, tmp_path)
+    if failure:
+        assert observed.table_columns == {}  # unknown, not an empty schema
+        for target, fallback, refused in (
+            ("MAIN", DatasetFallback.UNKNOWN_COLUMNS, False),
+            ("ANTENNA", DatasetFallback.UNKNOWN_COLUMNS, True),
+            ("SOURCE", DatasetFallback.UNKNOWN_COLUMNS, True),
+            ("MAIN", DatasetFallback.UNDECLARED, True),
+        ):
+            declaration = DatasetAccess(field="ms", table=target, mode="write")
+            access = snapshot.accesses[0].model_copy(update={"mode": DatasetMode.WRITE, "declaration": declaration, "fallback": fallback})
+            issues = lifecycle_module.leaf_postcondition_issues((access,), {root: observed}, {root: observed})
+            assert bool(issues) is refused
+            if refused:
+                assert any("column metadata evidence is missing" in issue for issue in issues)
+        assert not lifecycle_module.leaf_postcondition_issues(snapshot.accesses, {root: observed}, {root: observed})
+    else:
+        assert observed.table_columns == {"ANTENNA": ("CUSTOM", "NAME"), "SOURCE": ("CUSTOM", "NAME")}
+    assert "QUALITY_CUSTOM" not in observed.table_columns
+    assert len(opened) == 1
+    assert table.closed
+
+
+@pytest.mark.parametrize("fallback", [DatasetFallback.UNKNOWN_COLUMNS, DatasetFallback.UNDECLARED])
+@pytest.mark.parametrize("permission", [False, True])
+def test_unknown_column_and_undeclared_writers_still_require_schema_permission(tmp_path, fallback, permission):
+    snapshot = _snapshot(tmp_path / "obs.ms")
+    before = snapshot.observations[0]
+    antenna = before.closure.resources[0].model_copy(update={"path": before.root / "ANTENNA", "members": ("ANTENNA",)})
+    before = before.model_copy(update={"closure": before.closure.model_copy(update={"resources": (*before.closure.resources, antenna)}), "table_columns": {"ANTENNA": ("NAME",)}})
+    after = before.model_copy(update={"table_columns": {"ANTENNA": ("NAME", "CUSTOM")}})
+    # Undeclared inference records MAIN but has whole-dataset scope. An explicit
+    # unknown-columns writer has only its declared ANTENNA scope.
+    declaration = DatasetAccess(field="ms", table="MAIN" if fallback is DatasetFallback.UNDECLARED else "ANTENNA", mode="write", allow_schema_change=permission)
+    access = snapshot.accesses[0].model_copy(update={"mode": DatasetMode.WRITE, "declaration": declaration, "fallback": fallback})
+    issues = lifecycle_module.leaf_postcondition_issues((access,), {before.root: before}, {before.root: after})
+    assert bool(issues) is not permission
+    if not permission:
+        assert any("ANTENNA columns changed without allow_schema_change" in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    "before_columns,after_columns,changed",
+    [
+        ({"ANTENNA": ("NAME",)}, {}, False),
+        ({}, {"ANTENNA": ("NAME",)}, False),
+        ({"ANTENNA": ("NAME",)}, {"ANTENNA": ("NAME",)}, False),
+        ({"ANTENNA": ("NAME",)}, {"ANTENNA": ("NAME", "CUSTOM")}, True),
+        ({"ANTENNA": ("NAME",), "SOURCE": ("NAME",)}, {"ANTENNA": ("NAME", "CUSTOM")}, True),
+    ],
+)
+def test_reader_compares_only_mutually_known_subtable_schemas(tmp_path, before_columns, after_columns, changed):
+    snapshot = _snapshot(tmp_path / "obs.ms")
+    observation = snapshot.observations[0]
+    before = observation.model_copy(update={"table_columns": before_columns})
+    after = observation.model_copy(update={"table_columns": after_columns})
+    issues = lifecycle_module.leaf_postcondition_issues(snapshot.accesses, {observation.root: before}, {observation.root: after})
+    assert bool(issues) is changed
+    if changed:
+        assert issues == ["obs.ms: read-only access changed the dataset"]
+
+
+@pytest.mark.parametrize("change", ["descriptor", "closure", "files"])
+@pytest.mark.parametrize("evidence_disappears", [False, True])
+def test_reader_still_detects_original_evidence_changes_when_schema_availability_changes(tmp_path, change, evidence_disappears):
+    snapshot = _snapshot(tmp_path / "obs.ms")
+    observation = snapshot.observations[0]
+    known = {"ANTENNA": ("NAME",)}
+    before = observation.model_copy(update={"table_columns": known if evidence_disappears else {}})
+    after = observation.model_copy(update={"table_columns": {} if evidence_disappears else known})
+    if change == "descriptor":
+        after = after.model_copy(update={"descriptor": after.descriptor.model_copy(update={"nrows": 1})})
+    elif change == "closure":
+        resource = after.closure.resources[0].model_copy(update={"storage_managers": ("IncrementalStMan",)})
+        after = after.model_copy(update={"closure": after.closure.model_copy(update={"resources": (resource,)})})
+    else:
+        after = after.model_copy(update={"files": (after.files[0].model_copy(update={"size": after.files[0].size + 1}),)})
+    assert lifecycle_module.leaf_postcondition_issues(snapshot.accesses, {observation.root: before}, {observation.root: after}) == ["obs.ms: read-only access changed the dataset"]
+
+
+@pytest.mark.parametrize("before_exists,after_exists,changed", [(False, False, False), (False, True, True), (True, False, True)])
+def test_reader_observation_presence_comparison_is_preserved(tmp_path, before_exists, after_exists, changed):
+    snapshot = _snapshot(tmp_path / "obs.ms")
+    observation = snapshot.observations[0]
+    before = {observation.root: observation} if before_exists else {}
+    after = {observation.root: observation if after_exists else None}
+    assert bool(lifecycle_module.leaf_postcondition_issues(snapshot.accesses, before, after)) is changed
+
+
+@pytest.mark.parametrize("known_first", [False, True])
+@pytest.mark.parametrize("execution_fails", [False, True])
+def test_local_reader_accepts_supplemental_availability_changes_through_outer_lifecycle(tmp_path, monkeypatch, known_first, execution_fails):
+    ms = tmp_path / "outer.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("data")
+    snapshot = _snapshot(ms)
+    known = snapshot.model_copy(update={"observations": (snapshot.observations[0].model_copy(update={"table_columns": {"ANTENNA": ("NAME",)}}),)})
+    first, second = (known, snapshot) if known_first else (snapshot, known)
+    _install_lifecycle(monkeypatch, tmp_path, [first, second, second])
+    monkeypatch.chdir(tmp_path)
+    original_error = RuntimeError("reader's original failure")
+    ran = []
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="read")])
+    def reader(ms: MeasurementSetV2) -> None:
+        ran.append(True)
+        if execution_fails:
+            raise original_error
+
+    if execution_fails:
+        with pytest.raises(RuntimeError) as caught:
+            reader(ms=ms)
+        assert caught.value is original_error
+        assert _attempts(tmp_path)[0].phase is DatasetLifecyclePhase.FAILED
+    else:
+        assert reader(ms=ms).success
+        assert _attempts(tmp_path)[0].phase is DatasetLifecyclePhase.COMMITTED
+    assert ran == [True]
+
+
+@pytest.mark.parametrize("execution_fails", [False, True])
+@pytest.mark.parametrize("stage", ["claim", "final"])
+@pytest.mark.parametrize("change", ["columns", "descriptor", "closure", "files"])
+def test_local_outer_reader_checks_still_refuse_genuine_changes(tmp_path, monkeypatch, stage, change, execution_fails):
+    ms = tmp_path / "outer.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("data")
+    snapshot = _snapshot(ms)
+    before = snapshot.observations[0].model_copy(update={"table_columns": {"ANTENNA": ("NAME",)}})
+    after = before.model_copy(update={"table_columns": {}})
+    if change == "columns":
+        after = after.model_copy(update={"table_columns": {"ANTENNA": ("NAME", "CUSTOM")}})
+    elif change == "descriptor":
+        after = after.model_copy(update={"descriptor": after.descriptor.model_copy(update={"nrows": 1})})
+    elif change == "closure":
+        after = after.model_copy(update={"closure": after.closure.model_copy(update={"message": "different closure evidence"})})
+    else:
+        after = after.model_copy(update={"files": (after.files[0].model_copy(update={"size": 99}),)})
+    baseline = snapshot.model_copy(update={"observations": (before,)})
+    changed = snapshot.model_copy(update={"observations": (after,)})
+    _install_lifecycle(monkeypatch, tmp_path, [baseline, changed if stage == "claim" else baseline, changed])
+    monkeypatch.chdir(tmp_path)
+    ran = []
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="read")])
+    def reader(ms: MeasurementSetV2) -> None:
+        ran.append(True)
+        if execution_fails:
+            raise RuntimeError("reader failed during execution")
+
+    error = DatasetLifecycleUnavailableError if stage == "claim" else DatasetLifecycleViolationError
+    with pytest.raises(error, match="changed after claim" if stage == "claim" else "reader changed its dataset"):
+        reader(ms=ms)
+    assert ran == ([] if stage == "claim" else [True])
+
+
+@pytest.mark.parametrize("change", ["accesses", "absent", "length", "order", "root"])
+def test_snapshot_matching_preserves_exact_plans_and_observation_topology(tmp_path, change):
+    before = _snapshot(tmp_path / "first.ms")
+    second = _snapshot(tmp_path / "second.ms").observations[0]
+    before = before.model_copy(update={"observations": (*before.observations, second)})
+    if change == "accesses":
+        after = before.model_copy(update={"accesses": ()})
+    elif change == "absent":
+        after = before.model_copy(update={"absent_roots": (tmp_path / "absent.ms",)})
+    elif change == "length":
+        after = before.model_copy(update={"observations": before.observations[:1]})
+    elif change == "order":
+        after = before.model_copy(update={"observations": tuple(reversed(before.observations))})
+    else:
+        after = before.model_copy(update={"observations": (before.observations[0].model_copy(update={"root": tmp_path / "other.ms"}), second)})
+    assert not lifecycle_module.dataset_snapshot_matches(before, after)

@@ -538,7 +538,9 @@ def compute_cache_key(
 
     Provenance is one part at the end rather than per-field alongside the
     params, so a step with no wired inputs keys exactly as it did before
-    provenance existed and its cache entries survive the upgrade.
+    provenance existed and its cache entries survive the upgrade. Explicit
+    non-MAIN dataset writers additionally key their access contracts under
+    a versioned component, invalidating historical unchecked subtable work.
     """
     input_paths = path_fields(scope.inputs_model)
     mutated_paths = mutated_path_fields(scope)
@@ -600,6 +602,13 @@ def compute_cache_key(
         addresses = [[name, indexed(input_keys[name])] for name in sorted(input_keys)]
         if any(value is not None and (not isinstance(value, list) or any(one is not None for one in value)) for _, value in addresses):
             parts.append(["__indexed_upstream__", addresses])
+
+    # Narrow migration: historical successes did not enforce subtable column
+    # contracts. Keep every other key vector unchanged, including MAIN-only.
+    from shinobi.dataset_access import DatasetMode, DatasetTable
+
+    if any(access.table is not DatasetTable.MAIN and access.mode is not DatasetMode.READ for access in scope.dataset_accesses):
+        parts.append(["__msv2_subtable_columns_v1__", [access.model_dump(mode="json") for access in scope.dataset_accesses]])
 
     blob = json.dumps(parts, default=str, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()

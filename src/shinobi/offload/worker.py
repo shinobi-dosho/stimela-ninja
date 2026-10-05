@@ -573,6 +573,7 @@ class _WorkerDatasetLifecycle:
             DatasetLifecyclePhase,
             DatasetLifecycleSnapshot,
             claim_covers_accesses,
+            dataset_snapshot_matches,
             pending_dataset_recovery,
             resolve_lifecycle_snapshot,
         )
@@ -618,7 +619,7 @@ class _WorkerDatasetLifecycle:
         # Re-resolve after reading the claim.  The first observation never
         # authorizes execution by itself.
         second_leaf = resolve_lifecycle_snapshot(scope, values, workspace=self.workspace, mutation=contract.mutation) if self.expected else self.leaf_snapshot
-        if second_leaf != self.leaf_snapshot or self._observe() != self.baseline:
+        if not dataset_snapshot_matches(self.leaf_snapshot, second_leaf) or not dataset_snapshot_matches(self.baseline, self._observe()):
             raise BundleError(f"step {step_path!r}: dataset plan or observation changed while establishing the compute-side lifecycle")
 
         self.written_roots = {access.root for access in self.leaf_snapshot.accesses if access.writes and access.root is not None}
@@ -662,11 +663,15 @@ class _WorkerDatasetLifecycle:
         )
 
     def _read_only_changed(self, post) -> tuple[Path, ...]:
+        from shinobi.dataset_lifecycle import dataset_observation_matches
+
         written = self.written_roots
         before = {item.root: item for item in self.baseline.observations}
         after = {item.root: item for item in post.observations}
         return tuple(
-            root for root in self.roots if root not in written and (before.get(root) != after.get(root) or (root in self.baseline.absent_roots) != (root in post.absent_roots))
+            root
+            for root in self.roots
+            if root not in written and (not dataset_observation_matches(before.get(root), after.get(root)) or (root in self.baseline.absent_roots) != (root in post.absent_roots))
         )
 
     def validate(self):

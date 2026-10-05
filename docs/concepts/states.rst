@@ -50,6 +50,12 @@ every file/directory, sizes/checksums and actual Zarr node metadata: chunks,
 shards, codecs, dtype, shape, dimensions and schema attributes. Node documents
 are JSON text, preserving non-finite fill values without normalization.
 
+Fresh source observations include supplemental ``table_columns`` evidence
+for supported MSv2 subtables. Historical observations omit this optional field;
+an empty default stays omitted even in nested representation serialization,
+preserving their original canonical representation digests. The evidence does
+not enter the frozen structural-signature v1 inputs or scientific logical IDs.
+
 Manifests reject unknown fields/contracts. Reopening requires the exact
 recorded runtime stack and pinned msutils commit, not only nominal version
 3.0.0. There is no implicit migration: recovery of a published-but-uncommitted

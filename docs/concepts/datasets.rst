@@ -265,6 +265,41 @@ The postcondition requires that named column to exist afterward and refuses
 other undeclared additions. This differs from ``mode="create"``, which creates
 a new dataset and retains its existing-target refusal.
 
+Column postconditions apply independently to MAIN and each supported
+keyword-linked subtable, including optional tables such as SOURCE. The
+successor must contain every declared ``create`` column and omit every
+``remove`` column. A schema change needs permission from a writer targeting
+that table; known declarations allow only their combined named additions and
+removals. Unknown columns relax that restriction for the same target table.
+Only an inferred ``undeclared`` writer has whole-dataset scope, and it still
+needs schema-change permission. MAIN permission cannot authorize ANTENNA
+schema changes, nor can unknown ANTENNA columns relax a MAIN contract.
+
+Lifecycle observations retain bounded column-name evidence for supported
+subtables, including optional and custom columns, using read-only metadata
+inspection without reading cells. Aliases of one physical resource share one
+inspection. Opaque QUALITY tables keep their existing file/link protection.
+Failed or oversized supplemental metadata is omitted as unknown evidence;
+it does not invalidate an otherwise valid dataset for readers or unrelated
+writers. For readers, a change in supplemental evidence availability is not a
+mutation: column schemas are compared only for tables with evidence in both
+observations, alongside all original structural, closure and file checks.
+The same policy applies to local and detached claim revalidation and reader
+postconditions; access plans and observation presence/order remain exact.
+A writer targeting a present table with missing column evidence
+refuses validation, as does an undeclared whole-dataset writer. An absent
+optional table is distinct from missing evidence. Original structural and
+closure validation still apply. This supplemental evidence does not change the frozen
+``msv2-structural-signature/v1`` coverage or any scientific logical identity.
+
+Explicit non-MAIN writing contracts add a versioned cache-key component
+containing their scope's dataset-access declarations. This invalidates old
+successes whose subtable column promises were unchecked; runtime column
+parameters and templates remain part of the key. Ordinary, read-only,
+inferred and MAIN-only key vectors retain their historical values. Reuse
+checks the committed mutation chain rather than testing an ancestor's column
+promise against its live descendant: a later writer may remove that column.
+
 An explicit MAIN writer can name opaque keyword-linked tables with
 ``allow_subtable_change=("QUALITY_BASELINE_STATISTIC",)``. Each named permission
 allows creation, removal, replacement and changes to that table. Other opaque
