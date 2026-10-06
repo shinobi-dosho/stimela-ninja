@@ -64,15 +64,18 @@ import os
 import shutil
 import tempfile
 import warnings
+from glob import has_magic
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from shinobi.exceptions import ParameterError, StepError
 from shinobi.steps.schema import (
     Scope,
+    _product_pattern_directory,
     declared_output_dirs,
     declared_output_paths,
     path_fields,
+    output_path_values,
     paths_overlap,
     path_input_modes,
     validate_declared_writes,
@@ -146,16 +149,54 @@ def prepare_output_parents(scope: Scope, prepared: dict[str, Any], sandbox_dir: 
     return created
 
 
-def prune_unused_parents(created: list[Path]) -> None:
-    """Remove the `prepare_output_parents` directories the tool never wrote
-    into, deepest first, restoring harvest's invariant that everything
-    present in the sandbox was written by the tool -- otherwise a leftover
-    empty dir could be rescued over real workspace content (`_move` replaces
-    the destination wholesale). A dir the tool did use is non-empty and
-    survives the rmdir; tool-created dirs (even empty ones) are untouched
-    and harvest exactly as they would have unsandboxed.
+def observe_product_path(path: Path, *, recursive: bool = False):
+    """Filesystem write-attribution evidence, without following directory symlinks.
+
+    Schema-only setup directories need shallow observations. Only direct
+    harvest directory matches request descendants; these observations do not
+    impose a recursive cache-hit existence obligation.
     """
-    for path in sorted(created, reverse=True):
+    info = path.lstat()
+    own = (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    if recursive and path.is_dir() and not path.is_symlink():
+        return own, tuple((child.name, observe_product_path(child, recursive=True)) for child in sorted(path.iterdir()))
+    return own
+
+
+def observe_prepared_parents(created: Sequence[Path]) -> dict[Path, Any]:
+    """Record shallow setup identities after all parents have been prepared."""
+    observations = {}
+    for path in created:
+        try:
+            observations[path] = observe_product_path(path)
+        except OSError:
+            # Missing cache/pruning evidence cannot revoke a tool's success.
+            # Unknown identities use only best-effort empty-directory pruning.
+            observations[path] = None
+    return observations
+
+
+def prune_unused_parents(created: list[Path], observations: dict[Path, Any] | None = None) -> None:
+    """Remove unchanged empty setup directories, deepest first.
+
+    Production launchers pass pre-launch observations so recreated or modified
+    empty directories with known identities are tool products and survive.
+    Unknown identities retain historical best-effort empty-directory removal,
+    preventing library scaffolding from replacing workspace data. Select unchanged paths
+    before deleting any child, since deletion changes its parent's timestamps.
+    The one-argument form retains historical empty-directory pruning for callers
+    which do not retain pre-launch observations.
+    """
+    unchanged = []
+    for path in created:
+        try:
+            if observations is None or observations.get(path) is None or observe_product_path(path) == observations[path]:
+                unchanged.append(path)
+        except OSError:
+            if observations is not None:
+                observations[path] = None
+            unchanged.append(path)
+    for path in sorted(unchanged, key=lambda path: len(path.parts), reverse=True):
         try:
             path.rmdir()
         except OSError:
@@ -500,41 +541,70 @@ def _relative_targets(scope: Scope, outputs: Any, prepared: dict[str, Any], sand
     declared.
     """
     targets: dict[str, bool] = {}
-    for name in sorted(path_fields(scope.outputs_model)):
-        value = getattr(outputs, name, None)
-        if value is None:
-            continue
-        for item in value if isinstance(value, (list, tuple)) else [value]:
-            path = Path(str(item))
-            if not path.is_absolute():
-                targets[str(path)] = True
+    for _name, path, _required in output_path_values(scope, outputs):
+        if not path.is_absolute():
+            targets[str(path)] = True
+    for match in _harvest_matches(scope, prepared, sandbox_dir, absolute=False, relative=True, reject_escape=True):
+        targets.setdefault(str(match.relative_to(sandbox_dir)), False)
+    return targets
+
+
+def _harvest_matches(scope: Scope, prepared: dict[str, Any], root: Path, *, absolute: bool, relative: bool, reject_escape: bool = False, observe: bool = False):
+    """Expand harvest declarations for rescue and direct-write observation."""
     for pattern in scope.harvest:
         try:
             resolved = pattern.format(**prepared)
         except KeyError as exc:
             raise ParameterError(f"'{scope.name}' harvest pattern {pattern!r} references unknown input {exc}") from exc
-        # A pattern that *resolves* absolute (e.g. `"{prefix}-*"` with an
-        # absolute prefix) is skipped, same as an absolute declared output:
-        # the tool wrote those files straight to their absolute destination,
-        # so there is nothing inside the sandbox to rescue -- raising here
-        # would fail a successful run on ordinary input. A `..` escape can't
-        # be harvested either (it points outside the sandbox), but unlike the
-        # absolute case the tool's relative writes landed *next to* the
-        # sandbox, not at their intended destination -- warn so the stranded
-        # files can be found.
-        if Path(resolved).is_absolute():
-            continue
-        if ".." in Path(resolved).parts:
-            escaped = (sandbox_dir / resolved).resolve()
+        path = Path(resolved)
+        if reject_escape and not path.is_absolute() and ".." in path.parts:
+            escaped = (root / resolved).resolve()
             warnings.warn(
                 f"'{scope.name}' harvest pattern {pattern!r} resolved to {resolved!r} (-> {escaped}), "
                 "which escapes the sandbox -- skipped; any matching files were left outside the sandbox",
                 stacklevel=3,
             )
             continue
-        for match in sandbox_dir.glob(resolved):
-            targets.setdefault(str(match.relative_to(sandbox_dir)), False)
-    return targets
+        if path.is_absolute():
+            if absolute:
+                match_root, glob = Path(path.anchor), str(path.relative_to(path.anchor))
+            else:
+                continue
+        elif relative:
+            match_root, glob = root, resolved
+        else:
+            continue
+        if observe and not has_magic(glob):
+            # Glob suppresses some stat errors even for a literal match. Let
+            # direct observation test the exact path, without parent listing.
+            yield match_root / glob
+            continue
+        if observe and not _harvest_parent_readable(match_root, glob):
+            raise OSError("directory-wildcard harvest enumeration cannot prove complete cache evidence")
+        yield from match_root.glob(glob)
+
+
+def _harvest_parent_readable(root: Path, pattern: str) -> bool:
+    """Preflight direct cache evidence before glob can hide filesystem errors.
+
+    Basename globs need one explicit literal-parent directory enumeration.
+    Directory wildcards and recursive globs conservatively remain unknown when
+    their literal prefix exists; proving every branch would need another walker.
+    Missing literal prefixes cannot contain matches and are trustworthy empty.
+    """
+    parts = Path(pattern).parts
+    if not any(has_magic(part) for part in parts):
+        # Literal matches can be stated directly without listing their parent.
+        return True
+    prefix = root / _product_pattern_directory(pattern)
+    directory_wildcard = any(has_magic(part) for part in parts[:-1])
+    try:
+        with os.scandir(prefix) as entries:
+            for _entry in entries:
+                pass
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    return not directory_wildcard and "**" not in parts
 
 
 def _move(src: Path, dst: Path, declared: bool) -> None:
@@ -589,7 +659,7 @@ def _remove(path: Path) -> None:
         path.unlink()
 
 
-def harvest_outputs(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbox_dir: Path, workspace: Path) -> list[Path]:
+def harvest_outputs(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbox_dir: Path, workspace: Path, *, _capture: ProductCapture | None = None) -> list[Path]:
     """Move the step's declared outputs from `sandbox_dir` to `workspace`,
     preserving their relative paths, and return the workspace-side paths
     that were moved. A declared output the tool never wrote (e.g. an
@@ -603,6 +673,14 @@ def harvest_outputs(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbo
     """
     moved: list[Path] = []
     targets = _relative_targets(scope, outputs, prepared, sandbox_dir)
+    candidates = ()
+    if _capture is not None:
+        try:
+            candidates = {rel for rel in targets if (sandbox_dir / rel).exists()}
+        except OSError:
+            _capture.complete = False
+            # Actual harvest checks/moves still run and retain their failures.
+
     for rel in sorted(targets, key=lambda rel: Path(rel).parts):
         src = sandbox_dir / rel
         if not src.exists() and not src.is_symlink():
@@ -610,6 +688,11 @@ def harvest_outputs(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbo
         dst = workspace / rel
         _move(src, dst, targets[rel])
         moved.append(dst)
+    if _capture is not None:
+        # Freeze selected children before parent moves, then publish the whole
+        # inventory only after every move succeeded. Each candidate is visited
+        # once, including children that travelled with their declared parent.
+        _capture.harvested.update(workspace / candidate for candidate in candidates)
     return moved
 
 
@@ -618,3 +701,72 @@ def discard_sandbox(sandbox_dir: Path) -> None:
     Best-effort: a straggler open file must not fail the step.
     """
     shutil.rmtree(sandbox_dir, ignore_errors=True)
+
+
+class ProductCapture:
+    """Freeze concrete products of one successful execution, independently of outputs.
+
+    Direct harvest matches are compared with a pre-execution observation. Only
+    harvest directories recurse: declared directories require their root alone.
+    Observations distinguish writes, not scientific identity or timestamp age.
+    """
+
+    def __init__(
+        self,
+        scope: Scope,
+        prepared: dict[str, Any],
+        workspace: Path,
+        sandbox_dir: Path | None = None,
+        *,
+        created_dirs: Sequence[Path] = (),
+        prepared_observations: dict[Path, Any] | None = None,
+    ):
+        self.scope = scope
+        self.prepared = prepared
+        self.workspace = workspace
+        self.sandbox_dir = sandbox_dir
+        self.harvested: set[Path] = set()
+        self.before = self._direct_matches()
+        self.prepared_dirs = prepared_observations if prepared_observations is not None else observe_prepared_parents(created_dirs)
+        self.complete = self.before is not None and all(observation is not None for observation in self.prepared_dirs.values())
+        self.passthroughs = {path if path.is_absolute() else workspace / path for _name, path, _required in output_path_values(scope, prepared)}
+
+    def _direct_matches(self) -> dict[Path, Any] | None:
+        matches = {}
+        try:
+            for match in _harvest_matches(self.scope, self.prepared, self.workspace, absolute=True, relative=self.sandbox_dir is None, observe=True):
+                if match.exists():
+                    matches[match] = observe_product_path(match, recursive=True)
+        except OSError:
+            return None
+        return matches
+
+    def finish(self, outputs: Any) -> list[str] | None:
+        """Exact products, or None when incomplete evidence requires a cache miss."""
+        if not self.complete or any(observation is None for observation in self.prepared_dirs.values()):
+            self.complete = False
+            return None
+        products = set(self.harvested)
+        try:
+            for _name, path, _required in output_path_values(self.scope, outputs):
+                actual = path if path.is_absolute() else self.workspace / path
+                if actual.exists():
+                    if actual in self.prepared_dirs and self.prepared_dirs[actual] == observe_product_path(actual) and actual.is_dir() and not any(actual.iterdir()):
+                        # Compare shallow identity before inspecting contents:
+                        # changed opaque directories may be legitimate products.
+                        continue
+                    # A sandbox destination leftover is not evidence the tool
+                    # produced it. Same-named input passthroughs remain valid.
+                    if self.sandbox_dir is None or path.is_absolute() or actual in self.harvested or actual in self.passthroughs:
+                        products.add(actual)
+            after = self._direct_matches()
+            if after is None:
+                self.complete = False
+                return None
+            for path, observation in after.items():
+                if self.before.get(path) != observation:
+                    products.add(path)
+        except OSError:
+            self.complete = False
+            return None
+        return sorted(str(path) for path in products)

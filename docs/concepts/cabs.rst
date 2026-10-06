@@ -90,6 +90,13 @@ so, because nothing else can:
         harvest=["{prefix}-*.fits"],  # the rest of the family
     )
 
+An implicit path is still the public output value when an optional product is
+absent. With caching enabled, the successful run records only existing optional
+outputs and concrete harvest members. For example, a WSClean channel image
+family can be reused even when its optional MFS filename was not written;
+removing one recorded channel image reruns the cab. Required path fields still
+require every non-null member to exist before a cache hit.
+
 Not everything a tool writes is a product, though. A cache tree, a scratch
 directory, a tool logfile: those must be *writable* -- so the container
 backends have to mount them -- but they must not follow the products back out

@@ -34,6 +34,7 @@ from shinobi.cache import (
     as_provenance_key,
     combine_keys,
     compute_cache_key,
+    product_contract,
     get_cache_manifest,
     invalidate_path_hashes,
     resolve_input_keys,
@@ -47,12 +48,14 @@ from shinobi.policies import build_argv
 from shinobi.resources import Budget, Resources
 from shinobi.results import BackendRun, StepResult, explain_returncode
 from shinobi.sandbox import (
+    ProductCapture,
     absolutize_path_inputs,
     clear_stale_outputs,
     create_sandbox,
     discard_sandbox,
     harvest_outputs,
     prepare_output_parents,
+    observe_prepared_parents,
     prune_unused_parents,
     relativize_path_outputs,
 )
@@ -750,6 +753,7 @@ class ExecContext:
                 dataset_plan=dataset_plan,
                 dataset_resources=self.workflow_dataset_resources(),
                 planned_inputs=self._planned_inputs,
+                product_captures=getattr(self, "_product_captures", None),
             )
         elif isinstance(self.scope, Recipe):
             result = _run_recipe(
@@ -1686,7 +1690,15 @@ def _dispatch(
                 guard.after_failure()
             strict_leaf.fail(guard, f"predecessor observation failed: {type(exc).__name__}: {exc}", refused=True)
             raise
+    # Retain each result with its inventory: a callback may discard an earlier
+    # execution before returning another result, and object IDs can be reused.
+    ctx._product_captures = {} if cacheable else None
+    products = None
+    contract = None
     try:
+        if cacheable:
+            contract = product_contract(scope, prepared_for_key)
+            fallback_capture = ProductCapture(scope, ctx.prepare_inputs(), Path.cwd())
         if func is None:
             result = ctx.run()
         else:
@@ -1695,6 +1707,9 @@ def _dispatch(
                 result = ctx.run()
             elif not isinstance(result, StepResult):
                 raise TypeError(f"step function {getattr(func, '__name__', func)!r} must return StepResult or None, got {type(result).__name__}")
+        if cacheable and result.success:
+            captured = ctx._product_captures.get(id(result))
+            products = captured[1] if captured is not None else fallback_capture.finish(result.outputs)
     except BaseException as step_exc:
         # BaseException, not Exception: an interrupt is now an orderly unwind
         # (the child is stopped first), so the step's workspace needs the same
@@ -1768,7 +1783,7 @@ def _dispatch(
             # committed result could name a state with nothing snapshotted.
             def _record_cache() -> None:
                 if cacheable:
-                    manifest.record(cache_path, cache_key, result, run_id=run_id)
+                    manifest.record(cache_path, cache_key, result, run_id=run_id, product_contract=contract, products=products)
 
             def _commit() -> None:
                 if _result_commit is None:
@@ -1895,6 +1910,7 @@ def _run_cab(
     dataset_plan: Any | None = None,
     dataset_resources: set[Path] | None = None,
     planned_inputs: BaseModel | dict[str, Any] | _ProductReservations | None = None,
+    product_captures: dict[int, tuple[StepResult, list[str] | None]] | None = None,
 ) -> StepResult:
     # Sandboxed run (shinobi.sandbox): the tool's cwd is a private scratch
     # dir; path-typed inputs are anchored back at the workspace so the tool
@@ -1932,7 +1948,9 @@ def _run_cab(
     if clear_outputs:
         clear_stale_outputs(cab, run_inputs, workspace, sandboxed=sandbox_dir is not None)
     created = prepare_output_parents(cab, run_inputs, run_cwd)
+    prepared_observations = observe_prepared_parents(created)
     precreated = [path for path in created if sandbox_dir is not None and path.resolve().is_relative_to(sandbox_dir)]
+    capture = ProductCapture(cab, run_inputs, workspace, sandbox_dir, prepared_observations=prepared_observations) if product_captures is not None else None
     argv = build_argv(cab, run_inputs)
     import shlex
 
@@ -1956,18 +1974,19 @@ def _run_cab(
     lines = run.stdout.splitlines() + run.stderr.splitlines()
     wrangled = apply_wranglers(cab.wranglers, lines)
     outputs = _fill_outputs(cab, prepared, run, wrangled)
+    capture_outputs = outputs
     if sandbox_dir is not None:
         outputs = relativize_path_outputs(cab, outputs, workspace)
         if run.returncode == 0:
-            prune_unused_parents(precreated)
-            harvest_outputs(cab, outputs, prepared, sandbox_dir, workspace)
+            prune_unused_parents(precreated, prepared_observations)
+            harvest_outputs(cab, outputs, run_inputs, sandbox_dir, workspace, _capture=capture)
             discard_sandbox(sandbox_dir)
         else:
             warnings.warn(
                 f"step '{label or cab.name}' failed (returncode {explain_returncode(run.returncode)}); its sandbox is kept for post-mortem at {sandbox_dir}",
                 stacklevel=2,
             )
-    return StepResult(
+    result = StepResult(
         name=cab.name,
         returncode=run.returncode,
         outputs=outputs,
@@ -1985,6 +2004,9 @@ def _run_cab(
         sandboxed=sandbox_dir is not None,
         resources=cab.resources,
     )
+    if capture is not None and result.success:
+        product_captures[id(result)] = (result, capture.finish(capture_outputs))
+    return result
 
 
 def _resolve_wiring(ref, prepared: dict[str, Any], results: dict[str, StepResult]) -> dict[str, Any]:

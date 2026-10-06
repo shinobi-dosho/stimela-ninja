@@ -85,12 +85,14 @@ from shinobi.exceptions import BackendError, CabRunError, ParameterError
 from shinobi.loaders._modelgen import narrow_choices
 from shinobi.results import StepResult, explain_returncode
 from shinobi.sandbox import (
+    ProductCapture,
     absolutize_path_inputs,
     clear_stale_outputs,
     create_sandbox,
     discard_sandbox,
     harvest_outputs,
     prepare_output_parents,
+    observe_prepared_parents,
     prune_unused_parents,
     relativize_path_outputs,
 )
@@ -667,7 +669,14 @@ def _run_pystep_subprocess(
     if ctx._clear_outputs:
         clear_stale_outputs(scope, run_prepared, Path(workspace), sandboxed=sandbox_dir is not None)
     created = prepare_output_parents(scope, run_prepared, run_cwd)
+    prepared_observations = observe_prepared_parents(created)
     precreated = [path for path in created if sandbox_dir is not None and path.resolve().is_relative_to(sandbox_dir)]
+
+    capture = (
+        ProductCapture(scope, run_prepared, Path(workspace), sandbox_dir, prepared_observations=prepared_observations)
+        if getattr(ctx, "_product_captures", None) is not None
+        else None
+    )
 
     # Not `with TemporaryDirectory(...)`: on an interrupt whose child could
     # not be confirmed stopped, this directory must **stay**. It holds the
@@ -747,13 +756,14 @@ def _run_pystep_subprocess(
                 raise TypeError(f"pystep {func.__name__!r} must return {outputs_model.__name__!r}, got {type(output_data).__name__!r} from the subprocess")
             outputs = outputs_model(**output_data)
 
+        capture_outputs = outputs
         if sandbox_dir is not None:
             outputs = relativize_path_outputs(scope, outputs, Path(workspace))
-            prune_unused_parents(precreated)
-            harvest_outputs(scope, outputs, prepared, sandbox_dir, Path(workspace))
+            prune_unused_parents(precreated, prepared_observations)
+            harvest_outputs(scope, outputs, run_prepared, sandbox_dir, Path(workspace), _capture=capture)
             discard_sandbox(sandbox_dir)
 
-        return StepResult(
+        result = StepResult(
             name=scope.name,
             returncode=0,
             outputs=outputs,
@@ -767,6 +777,9 @@ def _run_pystep_subprocess(
             resources=scope.resources,
             **launch.provenance,
         )
+        if capture is not None:
+            ctx._product_captures[id(result)] = (result, capture.finish(capture_outputs))
+        return result
     except TeardownIncomplete:
         keep_tmpdir = True
         logger.error(
@@ -840,6 +853,7 @@ def _make_adapter(func: Callable, outputs_model: type[BaseModel], is_empty: bool
         # destination and a re-run needs the previous product cleared.
         if ctx._clear_outputs:
             clear_stale_outputs(ctx.scope, prepared, Path.cwd(), sandboxed=False)
+        capture = ProductCapture(ctx.scope, prepared, Path.cwd()) if getattr(ctx, "_product_captures", None) is not None else None
         ret = func(ctx, **prepared) if wants_ctx else func(**prepared)
         if is_empty:
             if ret is not None:
@@ -849,7 +863,7 @@ def _make_adapter(func: Callable, outputs_model: type[BaseModel], is_empty: bool
             if not isinstance(ret, outputs_model):
                 raise TypeError(f"pystep {func.__name__!r} must return {outputs_model.__name__!r}, got {type(ret).__name__!r}")
             outputs = ret
-        return StepResult(
+        result = StepResult(
             name=ctx.scope.name,
             returncode=0,
             outputs=outputs,
@@ -858,6 +872,9 @@ def _make_adapter(func: Callable, outputs_model: type[BaseModel], is_empty: bool
             stderr="",
             kind="pyfunc",  # ran in-process; no container -> backend/image left None
         )
+        if capture is not None:
+            ctx._product_captures[id(result)] = (result, capture.finish(outputs))
+        return result
 
     return PystepCallable(func, _adapter, is_empty, wants_ctx)
 

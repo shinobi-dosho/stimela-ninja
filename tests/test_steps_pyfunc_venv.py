@@ -89,3 +89,67 @@ def test_pystep_venv_nested_output_end_to_end(make_venv, tmp_path, monkeypatch, 
     # sandbox discarded on success
     if sandbox:
         assert list((tmp_path / ".shinobi/work").iterdir()) == []
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_venv_optional_filename_and_harvest_inventory(make_venv, tmp_path, monkeypatch, sandbox):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(tmp_path / "sandboxes"))
+    venv = _venv_with_pkg(make_venv)
+    ref = pystep(venv=str(venv), backend="venv", sandbox=sandbox, cache=True, cache_dir=str(tmp_path / "cache"), harvest=["{prefix}-*.fits"])(funcs.produce_family)
+    first = ref(prefix="image")
+    second = ref(prefix="image")
+    assert second.cached
+    assert first.outputs.mfs == second.outputs.mfs == funcs.Path("image-MFS-image.fits")
+    (tmp_path / "image-0000-I-image.fits").unlink()
+    assert not ref(prefix="image").cached
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+@pytest.mark.parametrize("cache_enabled", [False, True])
+def test_venv_recreated_empty_declared_directory_survives(make_venv, tmp_path, monkeypatch, sandbox, cache_enabled):
+    from shinobi.cache import get_cache_manifest
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(tmp_path / "sandboxes"))
+    venv = _venv_with_pkg(make_venv)
+    ref = pystep(venv=str(venv), backend="venv", sandbox=sandbox, cache=cache_enabled, cache_dir=str(tmp_path / "cache"), harvest=["{prefix}/*.fits"])(
+        funcs.produce_recreated_empty_directory
+    )
+    first = ref(prefix="empty")
+    assert first.outputs.mfs == funcs.Path("empty")
+    assert (tmp_path / "empty").is_dir()
+    if cache_enabled:
+        assert get_cache_manifest(str(tmp_path / "cache")).entry(ref.step.name)["products"] == [str(tmp_path / "empty")]
+    assert ref(prefix="empty").cached is cache_enabled
+    (tmp_path / "empty").rmdir()
+    assert not ref(prefix="empty").cached
+    assert (tmp_path / "empty").is_dir()
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_venv_unavailable_setup_observation_preserves_success(make_venv, tmp_path, monkeypatch, sandbox):
+    import shinobi.sandbox as sandbox_module
+    from shinobi.cache import get_cache_manifest
+    from shinobi.steps.dispatch import _dispatch
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(tmp_path / "sandboxes"))
+    venv = _venv_with_pkg(make_venv)
+    ref = pystep(venv=str(venv), backend="venv", sandbox=sandbox, cache=True, cache_dir=str(tmp_path / "cache"), harvest=["{prefix}/*.fits"])(funcs.produce_recreated_directory)
+    original = sandbox_module.observe_product_path
+
+    def observe(path, *, recursive=False):
+        if path.name == "empty" and not recursive:
+            raise PermissionError("setup cache evidence unavailable")
+        return original(path, recursive=recursive)
+
+    monkeypatch.setattr(sandbox_module, "observe_product_path", observe)
+    for index, run_id in enumerate(["successful-venv-without-evidence-1", "successful-venv-without-evidence-2"]):
+        result = _dispatch(ref.step, ref.func, prefix="empty", _run_id=run_id)
+        assert result.success and not result.cached
+        assert (tmp_path / "empty/science.dat").read_text() == "science"
+        entry = get_cache_manifest(str(tmp_path / "cache")).entry(ref.step.name)
+        assert entry["run_id"] == run_id
+        expected = None if sandbox or index == 0 else [str(tmp_path / "empty")]
+        assert entry["products"] == expected

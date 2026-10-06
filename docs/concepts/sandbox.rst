@@ -212,3 +212,42 @@ to write a logfile at all (``--no-log-file`` flags, CASA's
 ``casalog.setlogfile``) should bake that into its definition -- stdout and
 stderr are always captured on the ``StepResult`` regardless, so console
 output is never lost.
+
+
+Concrete products and caching
+-----------------------------
+
+The successful run freezes a separate inventory of concrete products before
+result publication. Sandbox harvest candidates are captured before moving a
+parent directory, so a selected child remains independently checked on later
+cache hits. Optional filenames that were never produced and unused setup
+directories do not become products. Known pre-launch shallow observations
+distinguish unchanged setup directories from tool-recreated or modified empty
+directories, which survive harvesting whether caching is enabled or disabled.
+When setup identity is unavailable, empty directories receive historical
+best-effort pruning and the cache inventory remains unknown, protecting existing
+workspace data from phantom setup outputs. ``scratch`` declarations contribute
+no products.
+
+For unsandboxed runs and absolute destinations, harvest patterns identify
+new or changed matches by filesystem observations before and after execution.
+These observations use device, inode, type, size and nanosecond modification
+and change times; directory harvest matches include descendant observations
+without following directory symlinks. A directory-valued harvest match requires
+its root to exist on a cache hit; descendants impose separate existence checks
+only when selected individually by output fields or harvest patterns. Unchanged
+pre-existing harvest-only files are excluded. These observations identify execution products, not scientific
+content identity. Writes with indistinguishable coarse or restored metadata
+can evade this attribution. Cache hits use exact recorded paths and never expand
+patterns again. Output model values and provenance remain unchanged.
+
+Incomplete filesystem observations force a cache miss without revoking a
+successful run or its exact-run recovery record.
+
+Direct cache observation explicitly checks literal-parent readability for
+basename wildcards because filesystem globbing can silently hide permission
+errors. Literal matches instead check the exact path without globbing or parent
+listing, so denied search permission yields unknown evidence. Directory-wildcard
+and recursive patterns with existing prefixes
+conservatively remain nonreusable;
+sandbox-relative harvest still records its selected fresh products.

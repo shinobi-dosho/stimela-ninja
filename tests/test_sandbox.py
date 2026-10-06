@@ -18,6 +18,8 @@ from shinobi.sandbox import (
     discard_sandbox,
     harvest_outputs,
     prepare_output_parents,
+    observe_prepared_parents,
+    ProductCapture,
     prune_unused_parents,
     relativize_path_outputs,
 )
@@ -867,3 +869,54 @@ def test_pruning_preserves_parent_reached_through_sandbox_symlink(workspace, mon
     assert (external / "new").is_dir()
     assert not (external / "new/out.dat").exists()
     assert not sandbox.exists()
+
+
+def test_nested_unchanged_prepared_parents_all_prune(tmp_path):
+    scope = make_scope(harvest=["outer/middle/deep/*.fits"])
+    created = prepare_output_parents(scope, {}, tmp_path)
+    observations = observe_prepared_parents(created)
+    prune_unused_parents(created, observations)
+    assert not (tmp_path / "outer").exists()
+
+
+def test_modified_empty_prepared_directory_survives_pruning(tmp_path):
+    scope = make_scope(harvest=["changed/*.fits"])
+    created = prepare_output_parents(scope, {}, tmp_path)
+    observations = observe_prepared_parents(created)
+    (tmp_path / "changed").chmod(0o700)
+    prune_unused_parents(created, observations)
+    assert (tmp_path / "changed").is_dir()
+
+
+def test_large_harvest_family_does_not_compare_every_pair_of_siblings(tmp_path, monkeypatch):
+    scope = make_scope(harvest=["*.fits"])
+    names = [f"channel-{index:04d}.fits" for index in range(128)]
+    sandbox = _sandbox_with(tmp_path, *names)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    capture = ProductCapture(scope, {}, workspace, sandbox)
+    comparisons = 0
+    original = Path.is_relative_to
+
+    def counted(path, *other):
+        nonlocal comparisons
+        comparisons += 1
+        return original(path, *other)
+
+    monkeypatch.setattr(Path, "is_relative_to", counted)
+    moved = harvest_outputs(scope, scope.outputs_model(), {}, sandbox, workspace, _capture=capture)
+    assert set(moved) == {workspace / name for name in names}
+    assert capture.finish(scope.outputs_model()) == sorted(str(workspace / name) for name in names)
+    assert comparisons <= len(names)
+
+
+def test_failed_harvest_does_not_publish_a_partial_inventory(tmp_path):
+    scope = make_scope(harvest=["*"])
+    sandbox = _sandbox_with(tmp_path, "first.fits", "tree/child")
+    workspace = tmp_path / "workspace"
+    (workspace / "tree").mkdir(parents=True)
+    capture = ProductCapture(scope, {}, workspace, sandbox)
+    with pytest.raises(StepError, match="Refusing to delete"):
+        harvest_outputs(scope, scope.outputs_model(), {}, sandbox, workspace, _capture=capture)
+    assert (workspace / "first.fits").exists()
+    assert capture.harvested == set()

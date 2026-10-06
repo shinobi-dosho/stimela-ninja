@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from collections.abc import Sequence as ABCSequence, Set as ABCSet
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -355,6 +356,26 @@ def path_fields(model: type[BaseModel]) -> set[str]:
                 result.add(name)
                 break
     return result
+
+
+def output_path_values(scope: Scope, outputs: BaseModel | dict[str, Any]) -> Iterator[tuple[str, Path, bool]]:
+    """Yield annotation-declared concrete output paths and their requiredness.
+
+    None and empty containers contribute no paths; strings on non-path fields
+    never become filesystem declarations.
+    """
+
+    def paths(value):
+        if isinstance(value, (Path, str)):
+            yield Path(value)
+        elif isinstance(value, (ABCSequence, ABCSet)):
+            for item in value:
+                yield from paths(item)
+
+    for name in sorted(path_fields(scope.outputs_model)):
+        value = outputs.get(name) if isinstance(outputs, dict) else getattr(outputs, name, None)
+        for path in paths(value):
+            yield name, path, scope.outputs_model.model_fields[name].is_required()
 
 
 def readonly_path_fields(model: type[BaseModel], field_meta: dict[str, "ParamMeta"] | None = None) -> set[str]:
@@ -905,7 +926,7 @@ class Scope(BaseModel):
     # outputs: glob patterns relative to the step's cwd, `str.format`-resolved
     # against the step's own prepared inputs (e.g. `"{prefix}-*.fits"` for a
     # tool whose dynamically-named output family can't be enumerated as
-    # literal output fields). Only consulted when the step runs sandboxed.
+    # literal output fields). Also identifies concrete cache products for direct writes.
     harvest: list[str] = Field(default_factory=list)
     # Where the step writes things that are *not* products: a cache tree, a
     # scratch/wisdom directory, a tool logfile. Same shape as `harvest` --

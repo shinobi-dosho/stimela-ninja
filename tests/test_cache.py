@@ -16,6 +16,7 @@ from shinobi.cache import (
     compute_cache_key,
     get_cache_manifest,
     invalidate_path_hashes,
+    product_contract,
     resolve_input_keys,
 )
 from shinobi.results import StepResult
@@ -573,7 +574,7 @@ def test_wrangled_non_path_output_is_restored_verbatim_on_a_hit(tmp_path):
     manifest = CacheManifest(tmp_path / "manifest.json")
     outputs = WrangledOutputs(note="hello from stdout wrangling", marker=None)
 
-    manifest.record("w", "key1", StepResult(name="w", returncode=0, outputs=outputs, inputs=NoInputs()))
+    manifest.record("w", "key1", StepResult(name="w", returncode=0, outputs=outputs, inputs=NoInputs()), product_contract=product_contract(scope, {}), products=[])
     hit = manifest.check("w", "key1", scope, {})
     assert hit is not None
     assert hit.outputs.note == "hello from stdout wrangling"
