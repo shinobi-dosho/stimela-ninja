@@ -432,13 +432,13 @@ def _snapshot_product_inputs(scope: Scope, inputs: BaseModel | dict[str, Any] | 
         raise DatasetLifecycleUnavailableError(f"scope {scope.name!r} cannot freeze product directory reservation inputs: {exc}") from exc
 
 
-def _snapshot_product_leaf_inputs(scope: Scope, leaf_inputs: dict[int, tuple[BaseModel, bool]] | None) -> dict[int, _ProductReservations]:
+def _snapshot_product_leaf_inputs(scope: Scope, leaf_inputs: dict[int, tuple[BaseModel, bool] | dict[str, Any]] | None) -> dict[int, _ProductReservations]:
     """Capture every patterned descendant before any recipe callback runs."""
     snapshots: dict[int, _ProductReservations] = {}
     if isinstance(scope, Recipe) and leaf_inputs is not None:
         for ref in scope.steps:
             prior = leaf_inputs.get(id(ref))
-            frozen = _snapshot_product_inputs(ref.step, prior[0]) if prior is not None else None
+            frozen = _snapshot_product_inputs(ref.step, prior[0] if isinstance(prior, tuple) else prior) if prior is not None else None
             if frozen is not None:
                 snapshots[id(ref)] = frozen
             snapshots.update(_snapshot_product_leaf_inputs(ref.step, leaf_inputs))
@@ -1108,7 +1108,9 @@ def _dispatch(
                 if overwrites:
                     logger.warning("overwrite: invalidated cached results of %s", ", ".join(overwrites[0].invalidated))
                 lifecycle.amend(overwrites=overwrites)
-            accesses, leaf_inputs = scope_path_accesses(scope, validated_inputs, workspace=launch_workspace)
+            known_steps: dict[int, dict[str, Any]] = {}
+            accesses, leaf_inputs = scope_path_accesses(scope, validated_inputs, workspace=launch_workspace, known_steps=known_steps)
+            planned_leaf_inputs = _snapshot_product_leaf_inputs(scope, known_steps)
             planned = resolve_snapshot()
             lifecycle.transition(
                 DatasetLifecyclePhase.PLANNED,
@@ -1224,6 +1226,7 @@ def _dispatch(
                     _dataset_lifecycle=lifecycle,
                     _validated_inputs=validated_inputs,
                     _planned_inputs=validated_inputs if not isinstance(scope, Recipe) else None,
+                    _planned_leaf_inputs=planned_leaf_inputs,
                     _leaf_inputs=leaf_inputs,
                     **kwargs,
                 )

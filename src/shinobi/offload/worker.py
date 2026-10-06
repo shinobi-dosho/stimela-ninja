@@ -946,8 +946,7 @@ def _execute_step_invocation(
 
                 declaration = bundle.declaration()
                 snapshots = planned_leaf_inputs(declaration, unpack(bundle.inputs))
-                snapshot = snapshots.get(id(declaration.steps[index]))
-                planned_inputs = snapshot[0] if snapshot is not None else None
+                planned_inputs = snapshots.get(id(declaration.steps[index]))
             config = AppConfig.model_validate({name: unpack(value) for name, value in bundle.config.items()})
             recipe = bundle.recipe.restore()
             cache_enabled = (

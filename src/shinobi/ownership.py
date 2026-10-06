@@ -135,6 +135,7 @@ def _resolved_leaf_inputs(
     reusable: bool = True,
     unresolved_inputs: set[str] | None = None,
     validated_steps: dict[int, tuple[BaseModel, bool]] | None = None,
+    known_steps: dict[int, dict[str, Any]] | None = None,
 ) -> Iterable[tuple[Scope, dict[str, Any], set[str]]]:
     """Yield each leaf with the inputs knowable at a workflow boundary.
 
@@ -146,6 +147,8 @@ def _resolved_leaf_inputs(
     unchanged, so both default factories and custom validators run exactly
     once. Runtime-dependent models still supply their already-evaluated
     defaults, but execution validates the final upstream values normally.
+    ``known_steps`` separately retains partial values with unresolved fields
+    excluded, even when an unrelated required scalar prevents model validation.
     """
     unresolved_inputs = set(unresolved_inputs or ())
     if not isinstance(scope, Recipe):
@@ -184,13 +187,15 @@ def _resolved_leaf_inputs(
         prior = validated_steps.get(id(ref)) if validated_steps is not None else None
         try:
             validated = prior[0] if prior is not None else ref.step.inputs_model(**known)
-            known = {name: getattr(validated, name) for name in ref.step.inputs_model.model_fields}
+            known = _model_values(validated)
             for name in unresolved_fields:
                 known.pop(name, None)
             reuse_model = reusable and not runtime_dependent and not output_wired and ref.scatter is None
             step_inputs[id(ref)] = (validated, reuse_model)
         except Exception:
             pass
+        if known_steps is not None:
+            known_steps[id(ref)] = {name: value for name, value in known.items() if name not in unresolved_fields}
         if not isinstance(ref.step, Recipe) and ref.scatter is None:
             outputs[ref.name] = static_output_values(ref.step, known, unresolved_inputs=unresolved_fields)
         yield from _resolved_leaf_inputs(
@@ -200,22 +205,31 @@ def _resolved_leaf_inputs(
             reusable=reusable and validated is not None and not runtime_dependent and not output_wired and ref.scatter is None,
             unresolved_inputs=unresolved_fields,
             validated_steps=validated_steps,
+            known_steps=known_steps,
         )
 
 
-def scope_path_accesses(scope: Scope, values: dict[str, Any] | BaseModel, *, workspace: Path) -> tuple[list[tuple[Path, bool]], dict[int, tuple[BaseModel, bool]]]:
+def scope_path_accesses(
+    scope: Scope,
+    values: dict[str, Any] | BaseModel,
+    *,
+    workspace: Path,
+    known_steps: dict[int, dict[str, Any]] | None = None,
+) -> tuple[list[tuple[Path, bool]], dict[int, tuple[BaseModel, bool]]]:
     """Resolve every path access known at a workflow boundary.
 
     Also returns each StepRef's validated inputs model, keyed by StepRef
     identity, plus whether it is safe to reuse unchanged at execution. This
     makes claim-time validation the one validation for fully knowable steps.
+    An optional ``known_steps`` collector retains partial values independently
+    for product reservations that do not depend on unresolved scalar inputs.
     """
     collected: dict[Path, bool] = {}
     step_inputs: dict[int, tuple[BaseModel, bool]] = {}
     from shinobi.dataset_access import ResolvedAccessPlanner, dataset_workspace_accesses
 
     planner = ResolvedAccessPlanner(workspace)
-    for index, (leaf, known, unresolved) in enumerate(_resolved_leaf_inputs(scope, values, step_inputs=step_inputs)):
+    for index, (leaf, known, unresolved) in enumerate(_resolved_leaf_inputs(scope, values, step_inputs=step_inputs, known_steps=known_steps)):
         generic_accesses = path_accesses(leaf, known, workspace=workspace)
         for path, writes in generic_accesses:
             collected[path] = collected.get(path, False) or writes
@@ -357,15 +371,18 @@ def contained_access_issues(
     return tuple(dict.fromkeys(issues))
 
 
-def planned_leaf_inputs(scope: Scope, values: dict[str, Any] | BaseModel) -> dict[int, tuple[BaseModel, bool]]:
+def planned_leaf_inputs(scope: Scope, values: dict[str, Any] | BaseModel) -> dict[int, dict[str, Any]]:
     """Reconstruct claim-time input snapshots from immutable declaration data.
 
     Unlike ownership discovery, this does not inspect datasets or plan access
     hazards. Workers use the original bundle inputs, never upstream runtime
     results, so another leaf's reservation cannot grant this leaf a new path.
+    Partial mappings retain statically known product inputs when unrelated
+    required inputs cannot be resolved until execution; they are not reused
+    as validated execution models.
     """
-    snapshots: dict[int, tuple[BaseModel, bool]] = {}
-    for _leaf in _resolved_leaf_inputs(scope, values, step_inputs=snapshots):
+    snapshots: dict[int, dict[str, Any]] = {}
+    for _leaf in _resolved_leaf_inputs(scope, values, step_inputs={}, known_steps=snapshots):
         pass
     return snapshots
 

@@ -5,10 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 import shinobi.steps.dispatch as dispatch_module
 from shinobi import Cab, DatasetAccess, MeasurementSetV2
+from shinobi.config import AppConfig
 from shinobi.dataset_access import DatasetColumns
 from shinobi.dataset_lifecycle import DatasetLifecyclePhase
 from shinobi.loaders import build_model
@@ -195,6 +196,13 @@ def test_actual_anchored_product_pattern_is_rechecked_before_preparing_parent(tm
 
 
 def test_worker_bounded_products_keep_broad_claim_and_publish_success(tmp_path, monkeypatch):
+    # A rejected configuration leaves AppConfig's source pointer set. Worker
+    # preparation must choose its own source regardless of earlier test loads.
+    monkeypatch.setattr(AppConfig, "_config_file", AppConfig._config_file)
+    invalid_config = tmp_path / "invalid-config.yml"
+    invalid_config.write_text("log:\n  capture_head_lines: -1\n")
+    with pytest.raises(ValidationError):
+        AppConfig.load(config_file=invalid_config)
     root = tmp_path / "obs.ms"
     root.mkdir()
     (root / "table.dat").write_text("raw")
@@ -856,3 +864,227 @@ def test_ordinary_patterned_cab_keeps_mutable_noncopyable_input_identity(tmp_pat
     cab = Cab(name="ordinary", command="/bin/true", inputs_model=Inputs, outputs_model=Empty, harvest=["out-*"], input_mutability={"handle": Mutability.MUTABLE})
     assert cab(handle=handle, backend="recording", cache=False, provenance=False).success
     assert backend.calls[0][2]["handle"] is handle
+
+
+def _partial_product_recipe(tmp_path, *, launcher="cab", pattern="out-*", nested=False):
+    """A product whose required scalar can only be supplied at execution."""
+    import sys
+    from shinobi import Recipe, pystep
+    from shinobi.results import StepResult
+    from shinobi.steps.schema import InputRef, OutputRef, Scope, StepRef
+
+    class Root(BaseModel):
+        ms: MeasurementSetV2
+
+    class Number(BaseModel):
+        count: int
+
+    class Script(BaseModel):
+        script: str
+
+    class Product(BaseModel):
+        count: int
+        prefix: str
+        script: str
+
+    reader = Cab(name="read", command="/bin/true", inputs_model=Root, outputs_model=Empty, dataset_accesses=[DatasetAccess(field="ms", mode="read")])
+    selector = Cab(
+        name="select",
+        command=f"{sys.executable} -c",
+        inputs_model=Script,
+        outputs_model=Number,
+        field_meta={"script": ParamMeta(positional_head=True)},
+        wranglers={r"^COUNT=(?P<count>\d+)$": ["PARSE_OUTPUT:count:int"]},
+    )
+    target = tmp_path / "out-test"
+    if launcher == "native":
+
+        @pystep(harvest=[pattern])
+        def produce(count: int, prefix: str) -> None:
+            target.write_text(str(count))
+
+        product = produce
+    elif launcher == "manual":
+        scope = Scope(name="produce", inputs_model=Product, outputs_model=Empty, harvest=[pattern])
+
+        def produce(ctx):
+            target.write_text(str(ctx.inputs.count))
+            return StepResult(name="produce", returncode=0, inputs=ctx.inputs.model_dump(), outputs=Empty())
+
+        product = StepRef(name="produce", step=scope, func=produce)
+    else:
+        scope = Cab(
+            name="produce",
+            command=f"{sys.executable} -c",
+            inputs_model=Product,
+            outputs_model=Empty,
+            harvest=[pattern],
+            field_meta={"script": ParamMeta(positional_head=True), "count": ParamMeta(positional=True)},
+        )
+        product = StepRef(name="produce", step=scope)
+    product.params = {"prefix": "out", **({"script": "import sys;from pathlib import Path;Path('out-test').write_text(sys.argv[-1])"} if launcher != "native" else {})}
+    if nested:
+        product.wiring = {"count": InputRef(field="count")}
+        inner = Recipe(name="inner", inputs_model=Number, outputs_model=Empty, steps=[product])
+        product = StepRef(name="inner", step=inner, wiring={"count": OutputRef(step="select", field="count")})
+    else:
+        product.wiring = {"count": OutputRef(step="select", field="count")}
+    return Recipe(
+        name="partial-products",
+        inputs_model=Root,
+        outputs_model=Empty,
+        steps=[
+            StepRef(name="read", step=reader, wiring={"ms": InputRef(field="ms")}),
+            StepRef(name="select", step=selector, params={"script": "print('COUNT=7')"}),
+            product,
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "launcher,nested,pattern",
+    [
+        ("manual", False, "out-*"),
+        ("native", False, "{prefix}-*"),
+        ("cab", False, "out-*"),
+        ("cab", True, "{prefix}-*"),
+    ],
+)
+def test_static_products_allow_unrelated_required_runtime_scalar(tmp_path, monkeypatch, launcher, nested, pattern):
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "obs.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    recipe = _partial_product_recipe(tmp_path, launcher=launcher, pattern=pattern, nested=nested)
+    assert contained_access_issues(recipe, {"ms": root}, workspace=tmp_path, dataset_resources={root}) == ()
+    result = recipe(ms=root, backend="native", cache=False, cache_dir=str(tmp_path / "cache"))
+    assert result.returncode == 0
+    assert (tmp_path / "out-test").read_text() == "7"
+    assert (root / "table.dat").read_text() == "raw"
+
+
+def test_static_product_worker_reconstructs_partial_reservation(tmp_path, monkeypatch):
+    from shinobi.offload.records import AttemptRecord
+
+    root = tmp_path / "obs.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    recipe = _partial_product_recipe(tmp_path, pattern="{prefix}-*")
+    workflow, plan, lease = _prepared(tmp_path, recipe, root)
+    try:
+        for name in ("read", "select", "produce"):
+            attempt = plan.attempt(name)
+            assert execute_step(workflow.submission_dir, name, attempt.attempt_id) == 0
+        assert (tmp_path / "out-test").read_text() == "7"
+        final = workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "final.json"
+        assert AttemptRecord.model_validate_json(final.read_text()).committed
+    finally:
+        lease.release()
+
+
+def test_partial_reservation_still_refuses_runtime_pattern_value(tmp_path, monkeypatch):
+    from shinobi.exceptions import DatasetLifecycleUnavailableError
+
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "obs.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    recipe = _partial_product_recipe(tmp_path, pattern="{count}/out-*")
+    with pytest.raises(DatasetLifecycleUnavailableError, match="harvest pattern.*unresolved"):
+        recipe(ms=root, backend="native", cache=False, cache_dir=str(tmp_path / "cache"))
+    assert not (tmp_path / "7").exists()
+    assert not (tmp_path / "out-test").exists()
+
+
+def _dynamic_product_recipe(tmp_path, *, partial, scalar_default=False):
+    from shinobi.steps.schema import ParamPattern, ParamSegment
+
+    class DynamicInputs(BaseModel):
+        model_config = ConfigDict(extra="allow")
+        count: int
+        script: str
+
+    class DefaultedDynamicInputs(DynamicInputs):
+        count: int = 0
+
+    recipe = _partial_product_recipe(tmp_path, pattern="{prefix}-*")
+    product = recipe.steps[-1]
+    product.step.inputs_model = DefaultedDynamicInputs if scalar_default else DynamicInputs
+    product.step.input_patterns = [ParamPattern(segments=[ParamSegment(attrs={"prefix": ParamMeta()})])]
+    if not partial:
+        product.wiring = {}
+        product.params["count"] = 7
+    return recipe
+
+
+@pytest.mark.parametrize("partial,scalar_default", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("worker", [False, True])
+def test_dynamic_product_input_extra_keeps_frozen_reservation(tmp_path, monkeypatch, partial, scalar_default, worker):
+    from shinobi.offload.records import AttemptRecord
+
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "obs.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    recipe = _dynamic_product_recipe(tmp_path, partial=partial, scalar_default=scalar_default)
+    assert contained_access_issues(recipe, {"ms": root}, workspace=tmp_path, dataset_resources={root}) == ()
+    if worker:
+        workflow, plan, lease = _prepared(tmp_path, recipe, root)
+        try:
+            for name in ("read", "select", "produce"):
+                attempt = plan.attempt(name)
+                assert execute_step(workflow.submission_dir, name, attempt.attempt_id) == 0
+            final = workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "final.json"
+            assert AttemptRecord.model_validate_json(final.read_text()).committed
+        finally:
+            lease.release()
+    else:
+        assert recipe(ms=root, backend="native", cache=False, cache_dir=str(tmp_path / "cache")).returncode == 0
+    assert (tmp_path / "out-test").read_text() == "7"
+    assert (root / "table.dat").read_text() == "raw"
+
+
+def test_dynamic_product_runtime_wired_extra_remains_unresolved(tmp_path, monkeypatch):
+    from shinobi.exceptions import DatasetLifecycleUnavailableError
+    from shinobi.steps.schema import OutputRef
+
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "obs.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    recipe = _dynamic_product_recipe(tmp_path, partial=False)
+    recipe.steps[-1].wiring["prefix"] = OutputRef(step="select", field="count")
+    with pytest.raises(DatasetLifecycleUnavailableError, match="harvest pattern.*unresolved"):
+        recipe(ms=root, backend="native", cache=False, cache_dir=str(tmp_path / "cache"))
+    assert not (tmp_path / "out-test").exists()
+
+
+@pytest.mark.parametrize("partial,scalar_default", [(False, False), (True, False), (True, True)])
+def test_dynamic_product_extra_preserves_sibling_writer_order(tmp_path, monkeypatch, partial, scalar_default):
+    from shinobi.dataset_access import plan_recipe_accesses
+    from shinobi.steps.schema import Scope, StepRef
+
+    class WriterInputs(BaseModel):
+        target: Path
+
+    root = tmp_path / "obs.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    recipe = _dynamic_product_recipe(tmp_path, partial=partial, scalar_default=scalar_default)
+    recipe.steps.append(
+        StepRef(
+            name="sibling",
+            step=Scope(name="sibling", inputs_model=WriterInputs, outputs_model=Empty, field_meta={"target": ParamMeta(write_path=True)}),
+            params={"target": tmp_path / "sibling"},
+        )
+    )
+    _, snapshots = scope_path_accesses(recipe, {"ms": root}, workspace=tmp_path)
+    for validated_steps in (None, snapshots):
+        plan = plan_recipe_accesses(recipe, {"ms": root}, workspace=tmp_path, validated_steps=validated_steps)
+        assert plan.graph.names.index("produce") in plan.graph.deps[-1]

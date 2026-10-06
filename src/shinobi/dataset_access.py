@@ -779,6 +779,7 @@ def plan_recipe_accesses(
     from pydantic_core import PydanticUndefined
 
     from shinobi.graph import RecipeGraph, build_graph
+    from shinobi.ownership import _model_values
     from shinobi.steps.schema import Recipe, static_output_values, static_wiring_values
 
     if recipe.dataset_accesses:
@@ -793,7 +794,7 @@ def plan_recipe_accesses(
         validated = inputs
     else:
         validated = recipe.inputs_model(**inputs)
-    recipe_inputs = {name: getattr(validated, name) for name in recipe.inputs_model.model_fields}
+    recipe_inputs = _model_values(validated)
     outputs: dict[str, dict[str, Any]] = {}
     planner = ResolvedAccessPlanner(root)
     dependencies = [set(items) for items in graph.deps]
@@ -818,11 +819,11 @@ def plan_recipe_accesses(
         snapshot = (validated_steps or {}).get(id(ref))
         if snapshot is not None and snapshot[1]:
             model = snapshot[0]
-            known = {name: getattr(model, name) for name in ref.step.inputs_model.model_fields}
+            known = _model_values(model)
         else:
             try:
                 model = ref.step.inputs_model(**known)
-                known = {name: getattr(model, name) for name in ref.step.inputs_model.model_fields}
+                known = _model_values(model)
                 for name in unresolved_fields:
                     known.pop(name, None)
             except Exception:

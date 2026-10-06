@@ -235,8 +235,10 @@ def _static_inputs(
                 kwargs[step_field] = value
 
     if not unresolved:
+        from shinobi.ownership import _model_values
+
         validated = scope.inputs_model(**kwargs)
-        return {field: getattr(validated, field) for field in scope.inputs_model.model_fields}
+        return _model_values(validated)
 
     # Fill only ordinary defaults; executing a default factory at compile
     # time would turn preparation into user-code execution.

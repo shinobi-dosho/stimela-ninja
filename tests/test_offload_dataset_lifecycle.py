@@ -120,7 +120,8 @@ def _recipe(workspace: Path, *, fail: bool = False, read: bool = False) -> Recip
 
 
 def _prepared(workspace: Path, recipe: Recipe, root: Path):
-    bundle = freeze_recipe(recipe, {"ms": root}, config=AppConfig(), workspace=workspace)
+    config = AppConfig.load(config_file=workspace / "missing-config.yml")
+    bundle = freeze_recipe(recipe, {"ms": root}, config=config, workspace=workspace)
     workflow = prepare_worker_slurm(
         bundle,
         submission_root=workspace / "runs",
