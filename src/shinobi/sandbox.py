@@ -10,9 +10,9 @@ named output families that can't be enumerated as literal fields). An
 undeclared output simply doesn't survive -- "fully-defined I/O" enforced by
 construction rather than by a validator.
 
-The same declarations drive setup: parent directories of relative declared
-outputs (and the literal directory prefix of harvest patterns) are
-pre-created inside the fresh sandbox before the run
+The same declarations drive setup: declared output parents and the literal
+directory prefixes of harvest and scratch patterns are pre-created before
+subprocess runs, including absolute destinations and unsandboxed execution
 (`prepare_output_parents`), because tools generally don't ``mkdir -p``
 their own output stems and would otherwise crash on e.g. ``plots/gain.html``.
 
@@ -68,14 +68,14 @@ from pathlib import Path
 from typing import Any
 
 from shinobi.exceptions import ParameterError, StepError
-from shinobi.loaders._modelgen import is_file_dtype
 from shinobi.steps.schema import (
-    Cab,
     Scope,
     declared_output_dirs,
     declared_output_paths,
     path_fields,
     paths_overlap,
+    path_input_modes,
+    validate_declared_writes,
     write_path_fields,
 )
 
@@ -95,30 +95,32 @@ def create_sandbox(root: str, label: str) -> Path:
 
 
 def prepare_output_parents(scope: Scope, prepared: dict[str, Any], sandbox_dir: Path) -> list[Path]:
-    """Pre-create, inside the fresh sandbox, the parent directories of every
-    *relative* declared output directory (`schema.declared_output_dirs`).
-    Tools generally don't ``mkdir -p`` their own output stems (wsclean's
-    ``-name``, ragavi's ``htmlname``), so a relative output like
-    ``plots/gain.html`` that works in the workspace -- where the caller made
-    ``plots/`` -- crashes the tool inside an empty sandbox.
+    """Create declared write directories relative to the execution cwd.
 
-    Absolute declared outputs are skipped: they bypass the sandbox entirely
-    (the tool writes them straight to their destination), which is also why
-    the container backend takes exactly the half this one drops -- it has to
-    bind-mount them for the write to reach the host at all.
-
-    Returns every directory it created, for `prune_unused_parents`: harvest
-    assumes anything present in the sandbox was written by the tool, so the
-    dirs the tool never used must be removed again before harvesting.
+    ``sandbox_dir`` retains its original keyword name, but may also be the
+    workspace for an unsandboxed run. Absolute declarations are prepared at
+    their destinations. Products and existing parents are left untouched.
+    Returns exactly the newly created directories, including intermediates;
+    only entries canonically inside a sandbox should be passed to pruning.
     """
-    dirs = {d for d, _ in declared_output_dirs(scope, prepared) if not d.is_absolute()}
+    validate_declared_writes(scope, prepared, sandbox_dir)
+    dirs = {d if d.is_absolute() else sandbox_dir / d for d, _ in declared_output_dirs(scope, prepared)}
     created: list[Path] = []
-    for rel in sorted(dirs):
-        path = sandbox_dir
-        for part in rel.parts:
-            path = path / part
-            if not path.is_dir():
+    for directory in sorted(dirs):
+        missing: list[Path] = []
+        path = directory
+        while not path.is_dir():
+            missing.append(path)
+            if path == path.parent:
+                break
+            path = path.parent
+        for path in reversed(missing):
+            try:
                 path.mkdir()
+            except FileExistsError:
+                if not path.is_dir():
+                    raise
+            else:
                 created.append(path)
     return created
 
@@ -147,31 +149,8 @@ def _anchor(value: Any, workspace: Path) -> Any:
 
 
 def path_input_names(scope: Scope, prepared: dict[str, Any]) -> set[str]:
-    """Which of `prepared`'s keys are path-typed *inputs*. Same field
-    classification as container bind-mounting
-    (`backends.container.bind_dir_modes`): declared fields via `path_fields`,
-    dynamically pattern-matched Cab inputs via their `ParamMeta.dtype`.
-
-    Factored out because two callers need the identical answer for opposite
-    reasons: `absolutize_path_inputs` anchors exactly these at the workspace,
-    and `clear_stale_outputs` refuses to delete anything one of them points
-    at. A field either side classified differently would be a path the tool
-    writes for real and the deleter believes is scratch, or the reverse.
-    """
-    declared = path_fields(scope.inputs_model)
-    match_pattern = scope.match_pattern if isinstance(scope, Cab) else None
-    names: set[str] = set()
-    for name, value in prepared.items():
-        if value is None:
-            continue
-        if name not in declared:
-            if match_pattern is None:
-                continue
-            meta = match_pattern(name)
-            if meta is None or meta.dtype is None or not is_file_dtype(meta.dtype):
-                continue
-        names.add(name)
-    return names
+    """Present path-typed inputs, using shared schema classification."""
+    return set(path_input_modes(scope, prepared))
 
 
 def absolutize_path_inputs(scope: Scope, prepared: dict[str, Any], workspace: Path) -> dict[str, Any]:

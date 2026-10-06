@@ -25,6 +25,7 @@ from pydantic_core import PydanticUndefined
 
 from shinobi._annotations import walk_annotation
 from shinobi.dataset_access import DatasetAccess, validate_scope_dataset_accesses
+from shinobi.exceptions import ParameterError
 from shinobi.resources import Resources
 
 
@@ -382,6 +383,62 @@ def readonly_path_fields(model: type[BaseModel], field_meta: dict[str, "ParamMet
     return result
 
 
+def path_input_modes(scope: Scope, prepared: dict[str, Any]) -> dict[str, bool]:
+    """Present path-typed inputs mapped to whether their schema permits writes.
+
+    Includes Cab pattern inputs and both model and ParamMeta readonly markers.
+    String-valued stems do not become path inputs merely by declaring a write.
+    """
+    from shinobi.loaders._modelgen import is_file_dtype
+
+    declared = path_fields(scope.inputs_model)
+    readonly = readonly_path_fields(scope.inputs_model, scope.field_meta)
+    modes: dict[str, bool] = {}
+    for name, value in prepared.items():
+        if value is None:
+            continue
+        if name in declared:
+            modes[name] = name not in readonly
+        elif isinstance(scope, Cab):
+            meta = scope.match_pattern(name)
+            if meta is not None and meta.dtype is not None and is_file_dtype(meta.dtype):
+                modes[name] = meta.writable is not False
+    return modes
+
+
+def validate_declared_writes(scope: Scope, prepared: dict[str, Any], cwd: Path, *, error_type: type[Exception] = ParameterError) -> None:
+    """Refuse declared products or write directories inside read-only inputs.
+
+    Compare canonical paths before filesystem preparation or stale removal,
+    including symlink aliases. Products may not contain a protected input
+    either; a writable parent directory beside a protected input is allowed.
+    ``error_type`` preserves the caller boundary's validation error contract.
+    """
+
+    def canonical(path: Path) -> Path:
+        return (path if path.is_absolute() else cwd / path).resolve()
+
+    readonly: list[tuple[Path, str]] = []
+    for name, writable in path_input_modes(scope, prepared).items():
+        if writable:
+            continue
+        value = prepared[name]
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            if item is not None:
+                readonly.append((canonical(Path(str(item))), name))
+    for entries, product in ((declared_output_paths(scope, prepared), True), (declared_output_dirs(scope, prepared), False)):
+        for path, source in entries:
+            target = canonical(path)
+            for protected, name in readonly:
+                if paths_overlap(target, protected) if product else target.is_relative_to(protected):
+                    raise error_type(
+                        f"{scope.name}: declared {source} writes to '{target}', which overlaps input '{name}' "
+                        f"('{protected}') -- marked `writable: false`. Nothing can honour both: "
+                        f"drop `writable: false` from '{name}' if the tool really writes there, "
+                        "or point the output outside it."
+                    )
+
+
 _GLOB_CHARS = frozenset("*?[")
 
 
@@ -580,11 +637,11 @@ def declared_output_dirs(scope: Scope, prepared: dict[str, Any]) -> list[tuple[P
     already gives.
 
     Both relative and absolute directories are returned, order-preserving
-    and de-duplicated; ``.`` and anything containing ``..`` is dropped. The
-    two consumers filter complementary halves: `sandbox` pre-creates the
-    *relative* ones inside the scratch dir, the container backend bind-mounts
-    the *absolute* ones so a product declared outside the workdir still
-    reaches the host. Both consumers treat a ``scratch`` directory exactly
+    and de-duplicated; ``.`` and anything containing ``..`` is dropped.
+    Execution pre-creates these directories at the tool's actual cwd,
+    including absolute destinations. The container backend bind-mounts the
+    absolute ones so a product declared outside the workdir reaches the host.
+    Both consumers treat a ``scratch`` directory exactly
     like a product's: it is mounted so the tool's write lands on the host, and
     pre-created so the tool doesn't have to. Only `harvest` differs -- it never
     rescues a ``scratch`` path out of a sandbox, which is the whole point of

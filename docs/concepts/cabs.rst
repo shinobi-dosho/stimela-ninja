@@ -107,7 +107,8 @@ which has the same shape as ``harvest`` and the opposite effect on rescue:
 An ``implicit`` template on a ``File``-dtype output, or a ``harvest`` or
 ``scratch`` glob, is what tells shinobi that ``prefix`` names a write target.
 All three are resolved against the step's own inputs *before* the run, and
-drive real behaviour: the sandbox pre-creates the directories they imply, and
+drive real behaviour: subprocess execution pre-creates the directories they
+imply (absolute or relative, with or without a sandbox), and
 the container backends bind-mount them so a write outside the working
 directory reaches the host instead of dying inside the container. A cab that
 declares none of them is taken at its word -- a bare ``str`` stem is just a string, and a value pointing somewhere no

@@ -41,7 +41,7 @@ from shinobi.cache import (
 )
 from shinobi.snapshots import SnapshotGuard, announce_run, eligible_fields, get_journal, mutation_paths, new_run_id, reconcile
 from shinobi.config import AppConfig
-from shinobi.exceptions import CabRunError, DatasetLifecycleUnavailableError, DatasetLifecycleViolationError, ParameterError, ShinobiError, StepError
+from shinobi.exceptions import BackendError, CabRunError, DatasetLifecycleUnavailableError, DatasetLifecycleViolationError, ParameterError, ShinobiError, StepError
 from shinobi.graph import build_graph
 from shinobi.policies import build_argv
 from shinobi.resources import Budget, Resources
@@ -57,7 +57,7 @@ from shinobi.sandbox import (
     relativize_path_outputs,
 )
 from shinobi.steps.loops import passthrough_result, should_skip
-from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope, StepRef
+from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope, StepRef, validate_declared_writes
 from shinobi.wranglers import apply_wranglers
 
 # Run-log records (step lifecycle + captured tool output) go through the
@@ -1844,15 +1844,21 @@ def _run_cab(
     workspace = Path.cwd()
     if sandbox_root is not None:
         sandbox_dir = create_sandbox(sandbox_root, label or cab.name)
-        precreated = prepare_output_parents(cab, prepared, sandbox_dir)
         run_inputs = absolutize_path_inputs(cab, prepared, workspace)
     # Against `run_inputs`, so the destinations are the ones the tool is
     # really given, and before the run, because a tool that refuses to
     # overwrite has already failed by the time anything harvests.
+    run_cwd = sandbox_dir if sandbox_dir is not None else workspace
+    from shinobi.backends.container import CONTAINER_RUNTIMES
+
+    backend = get_step_backend(backend_name)
+    uses_mounts = backend_name in CONTAINER_RUNTIMES or backend_name == "kubernetes" or (backend_name == "slurm" and cab.image and getattr(backend, "container_runtime", None))
+    validate_declared_writes(cab, run_inputs, run_cwd, error_type=BackendError if uses_mounts else ParameterError)
     if clear_outputs:
         clear_stale_outputs(cab, run_inputs, workspace, sandboxed=sandbox_dir is not None)
+    created = prepare_output_parents(cab, run_inputs, run_cwd)
+    precreated = [path for path in created if sandbox_dir is not None and path.resolve().is_relative_to(sandbox_dir)]
     argv = build_argv(cab, run_inputs)
-    backend = get_step_backend(backend_name)
     import shlex
 
     logger.debug("step %s: backend=%s argv: %s", label or cab.name, backend_name, shlex.join(argv))

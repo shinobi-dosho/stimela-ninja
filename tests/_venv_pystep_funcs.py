@@ -62,7 +62,7 @@ def mutation_v2(ms: Path) -> MutationOut:
 
 
 class PathOut(BaseModel):
-    report: Path
+    report: Path = Path("reports/deep/report.txt")
 
 
 def write_report(n: int) -> PathOut:
@@ -70,7 +70,7 @@ def write_report(n: int) -> PathOut:
 
     # A relative, output-only path: under a sandbox the cwd is the scratch
     # dir, so this lands there and is harvested back to the workspace.
-    report = Path("report.txt")
+    report = Path("reports/deep/report.txt")
     report.write_text(f"magic={venvonlypkg.MAGIC + n}\n")
     return PathOut(report=report)
 

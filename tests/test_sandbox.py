@@ -395,11 +395,10 @@ def test_prune_removes_only_unused_precreated_dirs(tmp_path):
     assert not (tmp_path / "unused").exists()  # pruned bottom-up, deep first
 
 
-def test_prepare_parents_skips_absolute_escapes_and_bare_names(tmp_path):
+def test_prepare_parents_skips_escapes_and_bare_names(tmp_path):
     scope = make_scope(
         inputs={"stem": ("str", True, None)},
         outputs={
-            "abs_out": ("File", False, "/elsewhere/x.dat"),
             "flat": ("File", False, "out.dat"),
             "stem": ("File", False, None),
         },
@@ -689,3 +688,182 @@ def test_a_pattern_referencing_a_none_field_declares_nothing(tmp_path):
 def test_scratch_dirs_are_reported_with_their_source():
     scope = make_scope(inputs={"cache": ("str", True, None)}, scratch=["{cache}/*"])
     assert declared_output_dirs(scope, {"cache": "/scratch/ddf"}) == [(Path("/scratch/ddf"), "scratch pattern '{cache}/*'")]
+
+
+@pytest.mark.parametrize("kind", ["default", "implicit", "list", "harvest", "scratch"])
+def test_prepare_absolute_declared_parents_only(tmp_path, kind):
+    root = tmp_path / "external" / "nested"
+    product = root / "result.dat"
+    outputs = {"result": ("File", False, str(product))} if kind == "default" else {}
+    prepared = {"prefix": str(root / "result")}
+    scope = make_scope(outputs=outputs)
+    if kind == "implicit":
+        scope = make_scope(outputs={"result": ("File", False, None)})
+        scope.field_meta["result"] = ParamMeta(implicit="{prefix}.dat")
+    elif kind == "list":
+        scope = make_scope(outputs={"result": ("List[File]", False, None)})
+        prepared["result"] = [product, root / "other.dat"]
+    elif kind in ("harvest", "scratch"):
+        setattr(scope, kind, ["{prefix}-*.dat"])
+    created = prepare_output_parents(scope, prepared, tmp_path)
+    assert created == [root.parent, root]
+    assert root.is_dir()
+    assert not product.exists()
+    assert list(root.iterdir()) == []
+    product.write_text("keep")
+    assert prepare_output_parents(scope, prepared, tmp_path) == []
+    assert product.read_text() == "keep"
+
+
+def test_prepare_shared_parent_race_preserves_other_creator(tmp_path, monkeypatch):
+    root = tmp_path / "shared"
+    original = Path.mkdir
+
+    def raced_mkdir(path, *args, **kwargs):
+        if path == root:
+            original(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", raced_mkdir)
+    scope = make_scope(outputs={"result": ("File", False, str(root / "out.dat"))})
+    assert prepare_output_parents(scope, {}, tmp_path) == []
+    assert root.is_dir()
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+@pytest.mark.parametrize("dtype", ["str", "File"])
+def test_native_cab_creates_nested_destination_without_tool_mkdir(workspace, sandbox, dtype):
+    script = _script(workspace, 'echo data > "$2"\n')
+    cab = Cab(
+        name="writer",
+        command=str(script),
+        sandbox=sandbox,
+        inputs_model=build_model("In", {"target": (dtype, True, None)}),
+        outputs_model=build_model("Out", {"target": ("File", False, None)}),
+        field_meta={"target": ParamMeta(write_path=True)},
+    )
+    result = cab(backend="native", target="new/deep/out.dat")
+    assert result.success, result.stderr
+    assert (workspace / "new/deep/out.dat").read_text() == "data\n"
+    assert list((workspace / WORK_ROOT).iterdir()) == [] if sandbox else True
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_native_absolute_outputs_and_scratch_keep_external_parents(workspace, sandbox):
+    target = workspace / "external/deep/out.dat"
+    log = workspace / "logs/deep/tool.log"
+    cache = workspace / "cache/deep"
+    unused = workspace / "unused/deep"
+    script = _script(workspace, f'echo result >> "{target}"\necho log > "{log}"\necho cache > "{cache}/entry"\n')
+    target.parent.mkdir(parents=True)
+    target.write_text("old\n")
+    cab = Cab(
+        name="writer",
+        command=str(script),
+        sandbox=sandbox,
+        inputs_model=build_model("In", {}),
+        outputs_model=build_model("Out", {"result": ("File", False, str(target))}),
+        scratch=[f"{log}", f"{cache}/*", f"{unused}/*"],
+    )
+    from shinobi.steps.dispatch import _run_cab
+
+    result = _run_cab(cab, {}, "native", sandbox_root=str(workspace / WORK_ROOT) if sandbox else None, clear_outputs=False)
+    assert result.success, result.stderr
+    assert target.read_text() == "old\nresult\n"
+    assert log.read_text() == "log\n"
+    assert cache.is_dir() and unused.is_dir()
+
+
+@pytest.mark.parametrize("symlink", [False, True])
+@pytest.mark.parametrize("sandbox", [False, True])
+@pytest.mark.parametrize("backend", ["native", "docker", "kubernetes", "slurm"])
+def test_readonly_collision_refused_before_mkdir_clear_or_tool(workspace, monkeypatch, symlink, sandbox, backend):
+    from shinobi.steps.dispatch import _STEP_BACKENDS
+    from shinobi.backends.container import DockerBackend
+    from shinobi.backends.kubernetes import KubernetesBackend
+    from shinobi.backends.slurm import SlurmBackend
+
+    if backend != "native":
+        instance = {"docker": DockerBackend, "kubernetes": lambda: KubernetesBackend(namespace="test"), "slurm": SlurmBackend}[backend]()
+        monkeypatch.setitem(_STEP_BACKENDS, backend, instance)
+    protected = workspace / "protected"
+    protected.mkdir()
+    stale = protected / "old.dat"
+    stale.write_text("keep")
+    alias = workspace / "alias"
+    if symlink:
+        alias.symlink_to(protected, target_is_directory=True)
+    else:
+        alias = protected
+    script = _script(workspace, "touch launched\n")
+    cab = Cab(
+        name="conflict",
+        command=str(script),
+        image="test:latest",
+        sandbox=sandbox,
+        inputs_model=build_model("In", {"data": ("Directory", True, None)}),
+        outputs_model=build_model("Out", {"new": ("File", False, str(alias / "new/out.dat")), "stale": ("File", False, str(alias / "old.dat"))}),
+        field_meta={"data": ParamMeta(writable=False)},
+    )
+    from shinobi.exceptions import BackendError
+
+    with pytest.raises(BackendError if backend != "native" else ParameterError, match="writable: false"):
+        cab(backend=backend, data=protected)
+    assert stale.read_text() == "keep"
+    assert not (protected / "new").exists()
+    assert not (workspace / "launched").exists()
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_container_cab_prepares_parent_before_mount_launch(workspace, monkeypatch, sandbox):
+    from shinobi.backends.container import DockerBackend
+    from shinobi.backends import BackendRun
+
+    target = workspace / "new/deep/out.dat"
+    cab = Cab(
+        name="writer",
+        command="writer",
+        image="test:latest",
+        sandbox=sandbox,
+        inputs_model=build_model("In", {"target": ("File", True, None)}),
+        outputs_model=build_model("Out", {"target": ("File", False, None)}),
+        field_meta={"target": ParamMeta(write_path=True)},
+    )
+
+    def run(self, scope, argv, inputs, **kwargs):
+        assert target.parent.is_dir()
+        assert not target.exists()
+        wrapped, _ = self._wrap(scope, argv, inputs, cwd=kwargs["cwd"])
+        assert any(str(target.parent) in arg for arg in wrapped)
+        target.write_text("data")
+        return BackendRun(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(DockerBackend, "run", run)
+    from shinobi.steps.dispatch import _STEP_BACKENDS
+
+    monkeypatch.setitem(_STEP_BACKENDS, "docker", DockerBackend())
+    result = cab(backend="docker", target=Path("new/deep/out.dat"))
+    assert result.success, result.stderr
+    assert target.read_text() == "data"
+
+
+def test_pruning_preserves_parent_reached_through_sandbox_symlink(workspace, monkeypatch):
+    from shinobi.steps.dispatch import _run_cab
+
+    external = workspace / "external"
+    external.mkdir()
+    sandbox = workspace / "sandbox"
+    sandbox.mkdir()
+    (sandbox / "link").symlink_to(external, target_is_directory=True)
+    monkeypatch.setattr("shinobi.steps.dispatch.create_sandbox", lambda *args: sandbox)
+    cab = Cab(
+        name="unused",
+        command="/bin/true",
+        inputs_model=build_model("In", {}),
+        outputs_model=build_model("Out", {"result": ("File", False, "link/new/out.dat")}),
+    )
+    result = _run_cab(cab, {}, "native", sandbox_root=str(sandbox))
+    assert result.success
+    assert (external / "new").is_dir()
+    assert not (external / "new/out.dat").exists()
+    assert not sandbox.exists()

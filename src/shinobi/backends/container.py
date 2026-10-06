@@ -63,10 +63,9 @@ from shinobi.backends import Backend, register
 from shinobi.backends._stream import RuntimeStop, run_streaming
 from shinobi.config import AppConfig
 from shinobi.exceptions import BackendError
-from shinobi.loaders._modelgen import is_file_dtype
 from shinobi.resources import delegated_controllers
 from shinobi.results import BackendRun
-from shinobi.steps.schema import Cab, Scope, declared_output_dirs, declared_output_paths, path_fields, paths_overlap, readonly_path_fields
+from shinobi.steps.schema import Cab, Scope, declared_output_dirs, path_input_modes, validate_declared_writes
 
 logger = logging.getLogger(__name__)
 
@@ -556,9 +555,9 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
     --rm`, and a hard failure on apptainer's read-only image. So every
     absolute `schema.declared_output_dirs` entry (a path-typed output's
     resolved value or ``implicit`` template, a ``harvest`` pattern's literal
-    prefix) is mounted read-write too, and one that doesn't exist yet
-    contributes its nearest existing ancestor -- the tool then creates its own
-    output tree exactly as it would natively.
+    prefix) is mounted read-write too. Dispatch prepares these directories
+    before constructing mounts. Direct backend callers with an absent directory
+    fall back to its nearest existing ancestor.
 
     An input marked `writable: false` can share a directory with something
     that has to be writable -- a declared write target, or another input -- and
@@ -594,28 +593,10 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
     readonly_paths: dict[str, list[str]] = {}
     readonly_owner: dict[str, str] = {}  # read-only input path -> the field that declared it
     writable_owner: dict[str, str] = {}  # writable mount dir -> an input field that made it writable
-    declared = path_fields(scope.inputs_model)
-    readonly = readonly_path_fields(scope.inputs_model, scope.field_meta)
-    # Only Cabs carry dynamically-named `ParamPattern` inputs; bare Scopes
-    # (e.g. from `@shinobi.pystep`) are fully typed, so every input is
-    # already in `declared`.
-    match_pattern = scope.match_pattern if isinstance(scope, Cab) else None
+    validate_declared_writes(scope, inputs, Path(workdir), error_type=BackendError)
 
-    for name, value in inputs.items():
-        if name not in declared:
-            if match_pattern is None:
-                continue
-            meta = match_pattern(name)
-            if meta is None or meta.dtype is None or not is_file_dtype(meta.dtype):
-                continue
-            # A dynamically-named input has no model field, so its marker
-            # lives on the pattern attr's own `ParamMeta.writable`; unmarked
-            # (None) reads as writable, same as a declared field's default.
-            writable = meta.writable is not False
-        else:
-            writable = name not in readonly
-        if value is None:
-            continue
+    for name, writable in path_input_modes(scope, inputs).items():
+        value = inputs[name]
         for item in value if isinstance(value, (list, tuple)) else [value]:
             path = Path(str(item))
             if not path.is_absolute():
@@ -634,59 +615,10 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
 
     scope_name = getattr(scope, "name", "<scope>")
 
-    # The same contradiction as the directory check below, one level down and
-    # invisible to it: `declared_output_dirs` reports a product's *parent*, so
-    # an output and a `writable: false` input naming the same file compare as
-    # neighbours in one directory, not as one inside the other. That is the
-    # dual-declared echo shape -- `vis` on both `inputs:` and `outputs:` -- and
-    # it is the most natural way to write this contradiction: "the tool must
-    # not modify this" and "the tool produces this" about one path. Left
-    # unchecked it mounted the product `:ro` inside its own read-write parent,
-    # so the refusal landed as a permission error from the tool at run time.
-    for outpath, source in declared_output_paths(scope, inputs):
-        # Anchored at the workdir when relative, exactly as an input value is
-        # above -- it is the same contradiction whether the cab spells the path
-        # absolutely or relative to where the step runs, and the read-only
-        # paths it is compared against were anchored the same way. (The
-        # directory loop below *skips* its relative entries instead, for an
-        # unrelated reason: those are already inside the always-mounted
-        # workdir, so there is no mount to derive from them.)
-        if not outpath.is_absolute():
-            outpath = Path(workdir) / outpath
-        conflict = next((p for paths in readonly_paths.values() for p in paths if paths_overlap(outpath, Path(p))), None)
-        if conflict is not None:
-            field = readonly_owner[conflict]
-            same = "is" if str(outpath) == conflict else "is inside"
-            raise BackendError(
-                f"{scope_name}: declared {source} writes to '{outpath}', which {same} input '{field}' ('{conflict}') "
-                f"-- marked `writable: false`. Nothing can honour both: the cab declares that path a product it "
-                f"writes and an input it must not touch. Drop `writable: false` from '{field}' if the tool really "
-                f"does write there, or drop the output declaration if it does not."
-            )
-
     for outdir, source in declared_output_dirs(scope, inputs):
-        # Relative outputs land under the (always-mounted) workdir, and are
-        # the sandbox's half of `declared_output_dirs` besides.
+        # Relative outputs land under the always-mounted workdir.
         if not outdir.is_absolute():
             continue
-        # A write target that *is*, or is inside, an input the cab marked
-        # `writable: false` is a contradiction in the declarations themselves
-        # -- "never write this" and "put a product here" name the same tree,
-        # and no arrangement of mounts honours both. Nesting resolves the
-        # neighbouring shape (a target beside such an input, or under a
-        # directory whose `:ro` a *sibling* input earned); it cannot resolve
-        # this one, so refuse before any of it. Checked ahead of the coverage
-        # test below because the contradiction is in the schema, not in how
-        # the mount table happened to come out.
-        conflict = next((p for paths in readonly_paths.values() for p in paths if outdir.is_relative_to(Path(p))), None)
-        if conflict is not None:
-            field = readonly_owner[conflict]
-            raise BackendError(
-                f"{scope_name}: declared {source} writes to '{outdir}', inside input '{field}' ('{conflict}') "
-                f"which is marked `writable: false`. Nothing can honour both -- the cab declares that input "
-                f"untouchable and declares a product inside it. Drop `writable: false` from '{field}' if the "
-                f"tool really does write there, or point the output outside it."
-            )
         if str(outdir) in modes:
             modes[str(outdir)] = True  # writable wins, same as for inputs
             continue
