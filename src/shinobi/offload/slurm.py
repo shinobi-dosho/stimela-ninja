@@ -235,8 +235,10 @@ def _static_inputs(
                 kwargs[step_field] = value
 
     if not unresolved:
+        from shinobi.ownership import _model_values
+
         validated = scope.inputs_model(**kwargs)
-        return {field: getattr(validated, field) for field in scope.inputs_model.model_fields}
+        return _model_values(validated)
 
     # Fill only ordinary defaults; executing a default factory at compile
     # time would turn preparation into user-code execution.
@@ -637,7 +639,6 @@ def _dataset_worker_plan(
     from shinobi.offload.worker import DatasetStepPlan, DatasetWorkerPlan
     from shinobi.ownership import contained_access_issues
     from shinobi.steps.dispatch import _scope_tree_writes_datasets, _strict_mutation_cache_issues
-    from shinobi.steps.schema import paths_overlap
 
     workspace = Path(pinned.workspace).resolve()
     unavailable = worker_dataset_backend_capability(mutation=_scope_tree_writes_datasets(recipe))
@@ -691,13 +692,6 @@ def _dataset_worker_plan(
     )
     if access_issues:
         raise DatasetLifecycleUnavailableError("detached MSv2 lifecycle refused: " + "; ".join(access_issues))
-    overlapping_writes = sorted(
-        {path for path, writes in generic_accesses.items() if writes and not (mutation and path in resources) and any(paths_overlap(path, resource) for resource in resources)},
-        key=str,
-    )
-    if overlapping_writes:
-        raise DatasetLifecycleUnavailableError("detached MSv2 lifecycle refused: a generic write overlaps the dataset closure: " + ", ".join(map(str, overlapping_writes)))
-
     tool_capabilities = tuple(dataset_backend_capability(step.backend, mutation=mutation) for step in pinned.steps)
     unavailable = tuple(
         capability for capability in tool_capabilities if capability.status is not DatasetBackendStatus.TESTED or capability.namespace_mode is DatasetNamespaceMode.REMOTE_DELEGATED

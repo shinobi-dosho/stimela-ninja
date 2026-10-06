@@ -15,9 +15,12 @@ first execution.
 
 from __future__ import annotations
 
+import fnmatch
 import re
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from string import Formatter
 from typing import Any, Callable, Iterator, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_serializer, model_validator
@@ -584,10 +587,11 @@ def declared_output_paths(scope: Scope, prepared: dict[str, Any]) -> list[tuple[
     can report it.
 
     Deliberately *not* included: `harvest`/`scratch` glob patterns. Those
-    describe a family whose member names the tool chooses at run time, so
-    they can only be matched against the filesystem after the fact -- which
-    is exactly the distinction `sandbox._move` already draws between a
-    declared destination and a glob-matched one.
+    describe a family whose member names the tool chooses at run time, rather
+    than concrete products. Bounded families can be proved disjoint from
+    protected datasets before execution by ``product_pattern_issue``,
+    while harvesting still distinguishes a declared destination from a
+    glob-matched one.
 
     Best-effort by design -- a template that fails to resolve is skipped
     here, not raised; output filling reports those errors with full context.
@@ -599,6 +603,105 @@ def declared_output_paths(scope: Scope, prepared: dict[str, Any]) -> list[tuple[
         for item in value if isinstance(value, (list, tuple)) else [value]:
             paths.append((Path(str(item)), f"output {name!r}"))
     return paths
+
+
+@dataclass(frozen=True)
+class _ProductReservations:
+    """Private claim-time declarations and independently snapshotted inputs."""
+
+    harvest: tuple[str, ...]
+    scratch: tuple[str, ...]
+    inputs: dict[str, Any]
+
+    @property
+    def declarations(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        return (("harvest", self.harvest), ("scratch", self.scratch))
+
+    def with_inputs(self, inputs: dict[str, Any]) -> _ProductReservations:
+        """Retain original declarations when anchoring execution input paths."""
+        return _ProductReservations(self.harvest, self.scratch, inputs)
+
+
+def _resolved_product_patterns(
+    scope: Scope,
+    prepared: dict[str, Any],
+    *,
+    declarations: tuple[tuple[str, tuple[str, ...]], ...] | None = None,
+) -> Iterator[tuple[str, str | None]]:
+    """Format product declarations once; absent inputs remain unresolved."""
+    present = {name: value for name, value in prepared.items() if value is not None}
+    formatter = Formatter()
+
+    def require_present_fields(template: str) -> None:
+        for _literal, field, format_spec, _conversion in formatter.parse(template):
+            if field is None:
+                continue
+            value, _used_key = formatter.get_field(field, (), present)
+            if value is None:
+                raise ValueError(f"unset template value {field!r}")
+            if format_spec:
+                require_present_fields(format_spec)
+
+    for kind, patterns in declarations if declarations is not None else (("harvest", scope.harvest), ("scratch", scope.scratch)):
+        for pattern in patterns:
+            source = f"{kind} pattern {pattern!r}"
+            try:
+                require_present_fields(pattern)
+                yield source, pattern.format(**present)
+            except Exception:  # noqa: BLE001 -- callers choose strict or best-effort handling
+                yield source, None
+
+
+def _product_pattern_directory(pattern: str) -> Path:
+    """Literal directory prefix retained for conservative reservations."""
+    literal: list[str] = []
+    for part in Path(pattern).parts[:-1]:
+        if _GLOB_CHARS & set(part):
+            break
+        literal.append(part)
+    return Path(*literal) if literal else Path(".")
+
+
+def product_pattern_issue(pattern: str | None, *, workspace: Path, resources: set[Path]) -> str | None:
+    """Prove a bounded product family cannot select any protected tree.
+
+    Only the final basename may contain glob syntax. Ancestor directories
+    are safe only when that basename excludes the first component towards
+    every resource, including resources that have not been created yet.
+    Existing matches are also resolved to catch symlink aliases. This is a
+    declaration proof under the cooperative filesystem contract, not a
+    guarantee against hostile symlink replacement during execution.
+    """
+    if not pattern:
+        return "is empty or unresolved (including an unset template input)"
+    path = Path(pattern)
+    if ".." in path.parts or "**" in pattern or path == Path(".") or pattern.endswith("/"):
+        return "is not a bounded basename pattern (recursive, empty, or escaping path)"
+    if any(_GLOB_CHARS & set(part) for part in path.parts[:-1]):
+        return "has a wildcard directory component"
+    try:
+        parent = (path.parent if path.is_absolute() else workspace / path.parent).resolve()
+        protected = {resource.resolve() for resource in resources}
+        for resource in protected:
+            if parent == resource or parent.is_relative_to(resource):
+                return f"writes inside the MSv2 closure: {resource}"
+            if resource.is_relative_to(parent) and fnmatch.fnmatchcase(resource.relative_to(parent).parts[0], path.name):
+                return f"can select the MSv2 closure: {resource}"
+        # iterdir sees dangling symlinks too, unlike glob implementations
+        # which may omit them. Resolve non-strictly for planned CREATE roots.
+        try:
+            parent.stat()
+        except FileNotFoundError:
+            pass
+        else:
+            for entry in parent.iterdir():
+                if fnmatch.fnmatchcase(entry.name, path.name):
+                    canonical = entry.resolve()
+                    if any(paths_overlap(canonical, resource) for resource in protected):
+                        return f"selects an alias overlapping the MSv2 closure: {entry}"
+    except (OSError, RuntimeError, ValueError) as exc:
+        return f"cannot inspect its destination safely: {exc}"
+    return None
 
 
 def declared_output_dirs(scope: Scope, prepared: dict[str, Any]) -> list[tuple[Path, str]]:
@@ -661,24 +764,10 @@ def declared_output_dirs(scope: Scope, prepared: dict[str, Any]) -> list[tuple[P
     for path, source in declared_output_paths(scope, prepared):
         add(path.parent, source)
 
-    # A None-valued field is *absent* for templating purposes, so a pattern
-    # needing it raises KeyError below and is skipped rather than resolving to
-    # a literal "None" path segment.
-    present = {name: value for name, value in prepared.items() if value is not None}
-
-    for kind, patterns in (("harvest", scope.harvest), ("scratch", scope.scratch)):
-        for pattern in patterns:
-            try:
-                resolved = Path(pattern.format(**present))
-            except Exception:  # noqa: BLE001 -- best-effort; harvest reports the real error
-                continue
-            literal: list[str] = []
-            for part in resolved.parts[:-1]:
-                if _GLOB_CHARS & set(part):
-                    break
-                literal.append(part)
-            if literal:
-                add(Path(*literal), f"{kind} pattern {pattern!r}")
+    for source, pattern in _resolved_product_patterns(scope, prepared):
+        if pattern is None:
+            continue
+        add(_product_pattern_directory(pattern), source)
     return dirs
 
 
@@ -700,31 +789,48 @@ def path_accesses(scope: Scope, prepared: dict[str, Any], *, workspace: Path | N
     same current directory as the job's declared workspace.
     """
 
-    root = workspace.resolve() if workspace is not None else Path.cwd().resolve()
     accesses: dict[Path, bool] = {}
+    for path, writes, _source, _field in _path_access_contributors(scope, prepared, workspace=workspace):
+        accesses[path] = accesses.get(path, False) or writes
+    return list(accesses.items())
 
-    def add(value: Any, writes: bool) -> None:
+
+def _path_access_contributors(
+    scope: Scope,
+    prepared: dict[str, Any],
+    *,
+    workspace: Path | None = None,
+) -> Iterator[tuple[Path, bool, str, str | None]]:
+    """Unaggregated access paths with their declaration and field identity.
+
+    Glob parents retain broad ownership/order reservations. Their proof does
+    not exempt an ordinary writer that happens to contribute the same path.
+    """
+    root = workspace.resolve() if workspace is not None else Path.cwd().resolve()
+
+    def paths(value: Any) -> Iterator[Path]:
         for item in value if isinstance(value, (list, tuple)) else [value]:
-            if item is None:
-                continue
-            path = Path(str(item))
-            canonical = (path if path.is_absolute() else root / path).resolve()
-            accesses[canonical] = accesses.get(canonical, False) or writes
+            if item is not None:
+                path = Path(str(item))
+                yield (path if path.is_absolute() else root / path).resolve()
 
     mutated = mutated_path_fields(scope)
     destinations = write_path_fields(scope)
-    # A write_path is deliberately allowed on a string-valued stem.  It is
-    # still a filesystem access even though path_fields() cannot infer that
-    # from the annotation (and must not guess for ordinary strings).
     for name in sorted(path_fields(scope.inputs_model) | destinations):
         if name in prepared:
-            add(prepared[name], name in mutated or name in destinations)
-    for path, _source in declared_output_paths(scope, prepared):
-        add(path, True)
-    for directory, source in declared_output_dirs(scope, prepared):
-        if source.startswith(("harvest pattern ", "scratch pattern ")):
-            add(directory, True)
-    return list(accesses.items())
+            for path in paths(prepared[name]):
+                yield path, name in mutated or name in destinations, f"input {name!r}", name
+    for name, value, resolved in _resolved_output_path_values(scope, prepared):
+        if resolved:
+            yield from ((canonical, True, f"output {name!r}", name) for canonical in paths(value))
+    # Preserve conservative literal-prefix reservations for ordinary glob
+    # declarations, including the workspace parent of a flat family.
+    for source, pattern in _resolved_product_patterns(scope, prepared):
+        if pattern is None:
+            continue
+        directory = _product_pattern_directory(pattern)
+        if ".." not in directory.parts:
+            yield from ((canonical, True, source, None) for canonical in paths(directory))
 
 
 def declares_path_writes(scope: Scope) -> bool:

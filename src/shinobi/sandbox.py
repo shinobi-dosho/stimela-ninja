@@ -82,16 +82,37 @@ from shinobi.steps.schema import (
 logger = logging.getLogger(__name__)
 
 
-def create_sandbox(root: str, label: str) -> Path:
+def create_sandbox(root: str, label: str, *, dataset_resources: set[Path] | None = None) -> Path:
     """Create (and return, resolved absolute) a fresh per-step sandbox
     directory under `root`, named after `label` plus a unique suffix.
     `root` is created on demand; a relative `root` is anchored at the cwd,
     which keeps it on the workspace's filesystem so harvest can rename.
     """
     root_path = Path(root)
+    if dataset_resources:
+        validate_sandbox_location(root_path, dataset_resources, fresh=False)
     root_path.mkdir(parents=True, exist_ok=True)
     safe_label = label.replace("/", "_") or "step"
-    return Path(tempfile.mkdtemp(prefix=f"{safe_label}-", dir=root_path)).resolve()
+    sandbox = Path(tempfile.mkdtemp(prefix=f"{safe_label}-", dir=root_path)).resolve()
+    if dataset_resources:
+        validate_sandbox_location(sandbox, dataset_resources, fresh=True)
+    return sandbox
+
+
+def validate_sandbox_location(path: Path, resources: set[Path], *, fresh: bool) -> None:
+    """Refuse sandbox filesystem work within a protected dataset closure."""
+    from shinobi.exceptions import DatasetLifecycleUnavailableError
+
+    try:
+        canonical = path.resolve()
+        for resource in resources:
+            protected = resource.resolve()
+            if canonical == protected or canonical.is_relative_to(protected) or (protected.is_relative_to(canonical) and (fresh or not canonical.is_dir())):
+                raise DatasetLifecycleUnavailableError(
+                    f"contained MSv2 execution refused: sandbox {'directory' if fresh else 'root'} {path} overlaps the MSv2 closure: {protected}"
+                )
+    except (OSError, RuntimeError) as exc:
+        raise DatasetLifecycleUnavailableError(f"contained MSv2 execution refused: cannot inspect sandbox location {path}: {exc}") from exc
 
 
 def prepare_output_parents(scope: Scope, prepared: dict[str, Any], sandbox_dir: Path) -> list[Path]:

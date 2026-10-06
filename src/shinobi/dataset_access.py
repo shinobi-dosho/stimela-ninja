@@ -691,6 +691,16 @@ class ResolvedAccessPlanner:
             allow_existing_create=allow_existing_create,
         )
         generic = resolved_path_accesses if resolved_path_accesses is not None else path_accesses(scope, values, workspace=self._workspace)
+        from shinobi.steps.schema import _resolved_product_patterns, product_pattern_issue
+
+        for access in datasets:
+            if access.mode is DatasetMode.READ:
+                for source, pattern in _resolved_product_patterns(scope, values):
+                    issue = product_pattern_issue(pattern, workspace=self._workspace, resources=set(access.resources))
+                    if issue:
+                        raise DatasetAccessError(
+                            f"scope {scope.name!r} declares READ access for {access.field!r}, but its schema also declares a filesystem write: {source} {issue}"
+                        )
         for access in datasets:
             if access.mode is DatasetMode.READ and any(
                 writes and any(path == resource or path.is_relative_to(resource) for resource in access.resources) for path, writes in generic
@@ -775,6 +785,7 @@ def plan_recipe_accesses(
     from pydantic_core import PydanticUndefined
 
     from shinobi.graph import RecipeGraph, build_graph
+    from shinobi.ownership import _model_values
     from shinobi.steps.schema import Recipe, static_output_values, static_wiring_values
 
     if recipe.dataset_accesses:
@@ -789,7 +800,7 @@ def plan_recipe_accesses(
         validated = inputs
     else:
         validated = recipe.inputs_model(**inputs)
-    recipe_inputs = {name: getattr(validated, name) for name in recipe.inputs_model.model_fields}
+    recipe_inputs = _model_values(validated)
     outputs: dict[str, dict[str, Any]] = {}
     planner = ResolvedAccessPlanner(root)
     dependencies = [set(items) for items in graph.deps]
@@ -814,11 +825,11 @@ def plan_recipe_accesses(
         snapshot = (validated_steps or {}).get(id(ref))
         if snapshot is not None and snapshot[1]:
             model = snapshot[0]
-            known = {name: getattr(model, name) for name in ref.step.inputs_model.model_fields}
+            known = _model_values(model)
         else:
             try:
                 model = ref.step.inputs_model(**known)
-                known = {name: getattr(model, name) for name in ref.step.inputs_model.model_fields}
+                known = _model_values(model)
                 for name in unresolved_fields:
                     known.pop(name, None)
             except Exception:

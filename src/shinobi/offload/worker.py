@@ -940,6 +940,13 @@ def _execute_step_invocation(
             kwargs, upstream, input_keys = _resolved_inputs(submission_dir, bundle, plan, index)
             ref = frozen.declaration()
             prepared = _prepare_inputs(scope, kwargs)
+            planned_inputs = None
+            if plan.dataset_lifecycle is not None:
+                from shinobi.ownership import planned_leaf_inputs
+
+                declaration = bundle.declaration()
+                snapshots = planned_leaf_inputs(declaration, unpack(bundle.inputs))
+                planned_inputs = snapshots.get(id(declaration.steps[index]))
             config = AppConfig.model_validate({name: unpack(value) for name, value in bundle.config.items()})
             recipe = bundle.recipe.restore()
             cache_enabled = (
@@ -1016,6 +1023,7 @@ def _execute_step_invocation(
                     _result_commit=commit_result,
                     _workspace_claimed=dataset_runtime is not None,
                     _dataset_lifecycle=dataset_runtime.lifecycle if dataset_runtime is not None else None,
+                    _planned_inputs=planned_inputs,
                     **kwargs,
                 )
         finally:

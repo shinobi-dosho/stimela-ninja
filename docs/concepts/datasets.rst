@@ -431,7 +431,37 @@ non-dataset reports or images through the existing output lifecycle, but a
 generic write overlapping the MSv2 closure is refused.  Every generic path
 must be concrete at the ownership boundary and covered by the claim; runtime
 ``Path`` returns, unresolved path-valued ``OutputRef`` inputs, output default factories,
-glob-selected products, and generic in-place mutation are bounded refusals.
+and generic in-place mutation are bounded refusals. ``harvest`` and ``scratch``
+may declare bounded product families: literal directories followed by a final
+basename containing ``*``, ``?`` or character classes (or a literal filename).
+Templates use validated inputs; missing or unset referenced values, including
+nested mapping, list and model values, are refused. A literal string ``"None"``
+is an ordinary value. Wildcard directories,
+recursive ``**`` and ``..`` escapes are refused with the declaration's name.
+The canonical parent must lie outside every workflow closure, including planned
+CREATE roots. An ancestor parent is allowed only when the basename cannot match
+the next component toward any closure resource: ``out-*`` beside ``obs.ms`` is
+safe; ``obs*`` and ``*`` are refused. Existing matches are resolved too, so
+symlink aliases to existing or planned dataset roots are refused. Inspection
+failures refuse execution; hostile concurrent symlink replacement is outside
+the cooperative filesystem contract.
+
+Pattern parents retain broad write reservations for ownership and ordering,
+including the workspace for a flat ``out-*`` family. This can serialize sibling
+writers even when their particular basenames differ. The proof exempts only
+the pattern contributor: an ordinary output or write destination sharing its
+parent still has to pass the generic containment rules.
+Each leaf also retains its own planned canonical pattern directory through an
+independent deep snapshot of its reservation inputs. Callback changes to an
+execution model, including nested mutable values, cannot change that snapshot.
+The original harvest/scratch declarations are retained as immutable tuples;
+callbacks may not replace, add, remove, transfer or reorder those declarations.
+Runtime inputs and ``ctx.run`` overrides may change a basename within that directory,
+provided the new pattern still excludes every closure resource; they may not
+select a different directory, even if another leaf has claimed it. All leaf
+launchers, including native Python and manual ``Scope`` functions, validate
+these reservations before execution. Detached workers reconstruct the same
+planned inputs from the immutable bundle and original workflow inputs.
 An unannotated generic path may not alias the strict closure.  Mixed
 read/output claims retain the conservative exclusive workspace authority. Any
 overlapping writer remains excluded through the same workspace ownership and
