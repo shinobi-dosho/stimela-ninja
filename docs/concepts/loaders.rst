@@ -118,6 +118,12 @@ alias contradictions that require resolved filesystem identities are checked
 by planning.
 Column creation/removal requires ``allow_schema_change: true``; creating a
 new dataset with ``mode: create`` alone does not require that flag.
+MAIN ``write`` declarations may set ``allow_present_subtable_rewrite: true``
+for backing-file rewrites of supported subtables already present in the restored
+pre-execution closure and linked at the same path afterward. It permits no
+subtable column-schema or membership changes and excludes opaque tables;
+explicit table-scoped declarations retain their own schema and column promises.
+The flag is invalid on reads, creates, and non-MAIN accesses.
 MAIN writers may specify ``allow_subtable_change: [QUALITY_BASELINE_STATISTIC]``
 to permit changes to named opaque keyword-linked tables; generic schema or
 keyword permission does not permit those changes. See :doc:`datasets`.

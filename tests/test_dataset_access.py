@@ -916,3 +916,18 @@ def test_absent_optional_dataset_does_not_resolve_its_column_template(tmp_path):
         name="optional", inputs_model=OptionalDataset, outputs_model=Empty, dataset_accesses=[DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("{column}",)))]
     )
     assert resolve_scope_dataset_accesses(scope, {"ms": None, "column": "BAD-NAME"}, workspace=tmp_path) == ()
+
+
+@pytest.mark.parametrize("mode,table", [("read", "MAIN"), ("create", "MAIN"), ("write", "ANTENNA"), ("write", "SOURCE")])
+def test_present_subtable_rewrite_requires_explicit_main_write(mode, table):
+    with pytest.raises(ValidationError, match="requires a MAIN write"):
+        DatasetAccess(field="ms", mode=mode, table=table, allow_present_subtable_rewrite=True)
+
+
+def test_present_subtable_rewrite_serialization_preserves_old_records():
+    old = DatasetAccess(field="ms", mode="write", table="ANTENNA").model_dump(mode="json")
+    assert "allow_present_subtable_rewrite" not in old
+    assert not DatasetAccess.model_validate(old).allow_present_subtable_rewrite
+    grant = DatasetAccess(field="ms", mode="write", allow_present_subtable_rewrite=True)
+    assert DatasetAccess.model_validate_json(grant.model_dump_json()) == grant
+    assert grant.model_dump(mode="json")["allow_present_subtable_rewrite"] is True

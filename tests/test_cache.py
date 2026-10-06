@@ -1537,3 +1537,49 @@ def test_subtable_writer_cache_key_retains_indexed_producer_identity(tmp_path):
     assert key != compute_cache_key(cab, None, prepared, {"ms": [ProvenanceKey("producer", "other", 0)]})
     changed_contract = cab.model_copy(update={"dataset_accesses": [writer.model_copy(update={"columns": DatasetColumns(create=("OTHER",))})]})
     assert key != compute_cache_key(changed_contract, None, prepared, {"ms": [ProvenanceKey("producer", "ms", 0)]})
+
+
+def test_present_subtable_rewrite_keys_complete_contract_and_preserves_false_vectors(tmp_path, monkeypatch):
+    import hashlib
+    import json
+
+    from shinobi import DatasetAccess, DatasetColumns, MSv2
+
+    class DatasetInputs(BaseModel):
+        ms: MSv2
+
+    def cab(accesses):
+        return Cab(name="rewrite", command="rewrite", inputs_model=DatasetInputs, outputs_model=Outputs, dataset_accesses=accesses)
+
+    prepared = {"ms": tmp_path / "absent.ms"}
+    main = DatasetAccess(field="ms", mode="write")
+    subtable = DatasetAccess(field="ms", table="ANTENNA", mode="write", columns=DatasetColumns(write=("NAME",)))
+    dumps = json.dumps
+    captured = []
+
+    def capture(parts, **kwargs):
+        captured.append(parts)
+        return dumps(parts, **kwargs)
+
+    monkeypatch.setattr(cache.json, "dumps", capture)
+    for accesses in ([main], [main, subtable]):
+        key = compute_cache_key(cab(accesses), None, prepared)
+        parts = captured[-1]
+        assert "allow_present_subtable_rewrite" not in dumps(parts, default=str)
+        assert "__msv2_present_subtable_rewrite_v1__" not in dumps(parts, default=str)
+        assert key == hashlib.sha256(dumps(parts, default=str, sort_keys=True).encode()).hexdigest()
+        granted = main.model_copy(update={"allow_present_subtable_rewrite": True})
+        grant_key = compute_cache_key(cab([granted, *accesses[1:]]), None, prepared)
+        assert grant_key != key
+        grant_parts = captured[-1]
+        old = [part for part in grant_parts if not (isinstance(part, list) and part and part[0] == "__msv2_present_subtable_rewrite_v1__")]
+        # For the non-MAIN component, old records omitted the default false field.
+        for part in old:
+            if isinstance(part, list) and part and part[0] == "__msv2_subtable_columns_v1__":
+                for declaration in part[1]:
+                    declaration.pop("allow_present_subtable_rewrite", None)
+        assert key == hashlib.sha256(dumps(old, default=str, sort_keys=True).encode()).hexdigest()
+    granted = main.model_copy(update={"allow_present_subtable_rewrite": True})
+    key = compute_cache_key(cab([granted, subtable]), None, prepared)
+    assert key != compute_cache_key(cab([granted, subtable.model_copy(update={"columns": DatasetColumns(write=("POSITION",))})]), None, prepared)
+    assert key != compute_cache_key(cab([granted.model_copy(update={"allow_keyword_change": True}), subtable]), None, prepared)

@@ -8,6 +8,7 @@ observations and signatures are the real ones rather than stand-ins.
 
 from __future__ import annotations
 
+import shutil
 import threading
 from pathlib import Path
 
@@ -1296,3 +1297,188 @@ def test_mixed_mutation_workflow_reader_root_allows_evidence_availability_change
     assert len(observations) >= 4
     assert scans(written) == [7] * ROWS
     assert scans(read) == [1] * ROWS
+
+
+def _present_source(ms):
+    path = ms / "OPTIONAL_SOURCES"
+    with tables.table(str(path), tables.required_ms_desc("SOURCE"), ack=False):
+        pass
+    with tables.table(str(ms), readonly=False, ack=False) as main:
+        main.putkeyword("SOURCE", f"Table: {path}")
+    return path
+
+
+@pytest.mark.parametrize("source_present", [False, True])
+@pytest.mark.parametrize("grant", [False, True])
+def test_present_subtable_rewrite_commits_or_restores(tmp_path, source_present, grant):
+    ms = make_ms(tmp_path / "rewrite.ms")
+    targets = [ms / "ANTENNA"]
+    if source_present:
+        targets.append(_present_source(ms))
+
+    @pystep(dataset_accesses=[WRITE_SCANS.model_copy(update={"allow_present_subtable_rewrite": grant})])
+    def writer(ms: MeasurementSetV2) -> None:
+        set_scans(ms, 42)
+        for path in targets:
+            with tables.table(str(path), readonly=False, ack=False) as table:
+                table.addrows(1)
+                table.putcell("NAME", 0, "rewritten")
+
+    if grant:
+        writer(ms=ms, **run_kwargs(tmp_path))
+        assert attempts(tmp_path)[-1].leaves[0].accesses[0].declaration.allow_present_subtable_rewrite
+    else:
+        with pytest.raises(DatasetLifecycleViolationError, match="undeclared table"):
+            writer(ms=ms, **run_kwargs(tmp_path))
+    assert scans(ms) == [42 if grant else 1] * ROWS
+    for path in targets:
+        with tables.table(str(path), ack=False) as table:
+            assert table.nrows() == int(grant)
+
+
+@pytest.mark.parametrize("target", ["ANTENNA", "SOURCE"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_present_rewrite_grant_needs_explicit_table_schema_authority(tmp_path, target, explicit):
+    ms = make_ms(tmp_path / "schema.ms")
+    path = _present_source(ms) if target == "SOURCE" else ms / target
+    accesses = [DatasetAccess(field="ms", mode="write", allow_present_subtable_rewrite=True, allow_schema_change=True)]
+    if explicit:
+        accesses.append(DatasetAccess(field="ms", mode="write", table=target, columns=DatasetColumns(create=("CUSTOM",)), allow_schema_change=True))
+
+    @pystep(dataset_accesses=accesses)
+    def writer(ms: MeasurementSetV2) -> None:
+        with tables.table(str(path), readonly=False, ack=False) as table:
+            table.addcols(tables.maketabdesc([tables.makescacoldesc("CUSTOM", 0)]))
+
+    if explicit:
+        writer(ms=ms, **run_kwargs(tmp_path))
+    else:
+        with pytest.raises(DatasetLifecycleViolationError, match=f"{target} columns changed without allow_schema_change"):
+            writer(ms=ms, **run_kwargs(tmp_path))
+    with tables.table(str(path), ack=False) as table:
+        assert ("CUSTOM" in table.colnames()) == explicit
+
+
+@pytest.mark.parametrize("action", ["create", "remove", "relink", "opaque"])
+def test_present_rewrite_does_not_grant_membership_or_opaque_changes(tmp_path, action):
+    ms = make_ms(tmp_path / "membership.ms")
+    if action in {"remove", "relink"}:
+        _present_source(ms)
+    if action == "opaque":
+        add_quality_table(ms, "QUALITY_TEST")
+
+    # Broad MAIN schema permission cannot enlarge the additional file grant.
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="write", allow_present_subtable_rewrite=True, allow_schema_change=True)])
+    def writer(ms: MeasurementSetV2) -> None:
+        if action == "create":
+            _present_source(ms)
+        elif action == "remove":
+            with tables.table(str(ms), readonly=False, ack=False) as main:
+                main.removekeyword("SOURCE")
+            shutil.rmtree(ms / "OPTIONAL_SOURCES")
+        elif action == "relink":
+            (ms / "OPTIONAL_SOURCES").rename(ms / "OTHER_SOURCE")
+            with tables.table(str(ms), readonly=False, ack=False) as main:
+                main.putkeyword("SOURCE", f"Table: {ms / 'OTHER_SOURCE'}")
+        else:
+            with tables.table(str(ms / "QUALITY_TEST"), readonly=False, ack=False) as table:
+                table.putcell("VALUE", 0, 99)
+
+    with pytest.raises(DatasetLifecycleViolationError, match="undeclared table|opaque subtable"):
+        writer(ms=ms, **run_kwargs(tmp_path))
+    with tables.table(str(ms), ack=False) as main:
+        assert ("SOURCE" in main.keywordnames()) == (action in {"remove", "relink"})
+        if action == "relink":
+            assert "OPTIONAL_SOURCES" in str(main.getkeyword("SOURCE"))
+    assert not (ms / "OTHER_SOURCE").exists()
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_present_rewrite_lists_use_each_predecessor_membership_and_rollback_jointly(tmp_path, invalid):
+    roots = [make_ms(tmp_path / f"list-{index}.ms") for index in range(2)]
+    source = _present_source(roots[1])
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="write", allow_present_subtable_rewrite=True)])
+    def writer(ms: list[MeasurementSetV2]) -> None:
+        for root in ms:
+            set_scans(root, 42)
+            with tables.table(str(root / "ANTENNA"), readonly=False, ack=False) as table:
+                table.addrows(1)
+        with tables.table(str(source), readonly=False, ack=False) as table:
+            if invalid:
+                table.addcols(tables.maketabdesc([tables.makescacoldesc("UNDECLARED", 0)]))
+            else:
+                table.addrows(1)
+
+    if invalid:
+        with pytest.raises(DatasetLifecycleViolationError, match="SOURCE columns changed"):
+            writer(ms=roots, **run_kwargs(tmp_path))
+    else:
+        writer(ms=roots, **run_kwargs(tmp_path))
+    for root in roots:
+        assert scans(root) == [1 if invalid else 42] * ROWS
+        with tables.table(str(root / "ANTENNA"), ack=False) as table:
+            assert table.nrows() == int(not invalid)
+    with tables.table(str(source), ack=False) as table:
+        assert "UNDECLARED" not in table.colnames()
+
+
+@pytest.mark.parametrize("grant", [False, True])
+def test_present_rewrite_grant_covers_all_supported_subtable_header_timestamps(tmp_path, grant):
+    import os
+
+    from shinobi.dataset_access import DatasetTable
+    from shinobi.dataset_closure import resolve_dataset_closure
+
+    ms = make_ms(tmp_path / "headers.ms")
+    _present_source(ms)
+    closure = resolve_dataset_closure(ms, storage_namespace=tmp_path)
+    paths = [resource.path / "table.dat" for resource in closure.resources if any(member != "MAIN" and member in DatasetTable._value2member_map_ for member in resource.members)]
+    original = {path: path.stat().st_mtime_ns for path in paths}
+    assert len(paths) > 10
+
+    @pystep(dataset_accesses=[WRITE_SCANS.model_copy(update={"allow_present_subtable_rewrite": grant})])
+    def writer(ms: MeasurementSetV2) -> None:
+        for path in paths:
+            os.utime(path, ns=(path.stat().st_atime_ns, original[path] + 10_000_000_000))
+
+    if grant:
+        writer(ms=ms, **run_kwargs(tmp_path))
+    else:
+        with pytest.raises(DatasetLifecycleViolationError, match="undeclared table"):
+            writer(ms=ms, **run_kwargs(tmp_path))
+    assert {path: path.stat().st_mtime_ns for path in paths} == {path: value + (10_000_000_000 if grant else 0) for path, value in original.items()}
+
+
+@pytest.mark.parametrize("action", ["missing", "unexpected"])
+def test_present_rewrite_does_not_relax_explicit_named_column_promises(tmp_path, action):
+    ms = make_ms(tmp_path / "bounded.ms")
+    accesses = [
+        DatasetAccess(field="ms", mode="write", allow_present_subtable_rewrite=True),
+        DatasetAccess(field="ms", mode="write", table="ANTENNA", columns=DatasetColumns(create=("PROMISED",)), allow_schema_change=True),
+    ]
+
+    @pystep(dataset_accesses=accesses)
+    def writer(ms: MeasurementSetV2) -> None:
+        if action == "unexpected":
+            with tables.table(str(ms / "ANTENNA"), readonly=False, ack=False) as table:
+                table.addcols(tables.maketabdesc([tables.makescacoldesc(name, 0) for name in ("PROMISED", "EXTRA")]))
+
+    with pytest.raises(DatasetLifecycleViolationError, match="declared created column.*absent|undeclared column.*created"):
+        writer(ms=ms, **run_kwargs(tmp_path))
+    with tables.table(str(ms / "ANTENNA"), ack=False) as table:
+        assert "PROMISED" not in table.colnames() and "EXTRA" not in table.colnames()
+
+
+def test_present_rewrite_grant_preserves_named_opaque_permission(tmp_path):
+    ms = make_ms(tmp_path / "opaque.ms")
+    path = add_quality_table(ms, "QUALITY_TEST")
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="write", allow_present_subtable_rewrite=True, allow_subtable_change=("QUALITY_TEST",))])
+    def writer(ms: MeasurementSetV2) -> None:
+        with tables.table(str(path), readonly=False, ack=False) as table:
+            table.putcell("VALUE", 0, 99)
+
+    writer(ms=ms, **run_kwargs(tmp_path))
+    with tables.table(str(path), ack=False) as table:
+        assert table.getcell("VALUE", 0) == 99

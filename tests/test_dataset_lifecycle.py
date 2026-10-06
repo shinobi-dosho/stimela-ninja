@@ -1337,3 +1337,17 @@ def test_strict_reader_refuses_write_before_preparing_parent(tmp_path, monkeypat
         reader(ms=ms, backend="native")
     assert not (ms / "new").exists()
     assert (ms / "table.dat").read_text() == "data"
+
+
+def test_present_rewrite_grant_requires_supplemental_column_evidence(tmp_path):
+    snapshot = _snapshot(tmp_path / "obs.ms")
+    before = snapshot.observations[0]
+    antenna = before.closure.resources[0].model_copy(update={"path": before.root / "ANTENNA", "members": ("ANTENNA",)})
+    before = before.model_copy(update={"closure": before.closure.model_copy(update={"resources": (*before.closure.resources, antenna)})})
+    declaration = DatasetAccess(field="ms", mode="write", allow_present_subtable_rewrite=True)
+    access = snapshot.accesses[0].model_copy(update={"mode": DatasetMode.WRITE, "declaration": declaration})
+    known = before.model_copy(update={"table_columns": {"ANTENNA": ("NAME",)}})
+    for left, right in ((before, known), (known, before)):
+        issues = lifecycle_module.leaf_postcondition_issues((access,), {before.root: left}, {before.root: right})
+        assert any("ANTENNA column metadata evidence is missing" in issue for issue in issues)
+    assert not lifecycle_module.leaf_postcondition_issues((access,), {before.root: known}, {before.root: known})

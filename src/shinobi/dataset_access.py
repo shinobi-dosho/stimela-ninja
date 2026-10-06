@@ -150,6 +150,9 @@ class DatasetAccess(BaseModel):
     be inferred from its path (notably an externally stored subtable).
     ``reservation`` is a canonicalizable path envelope used when the dataset
     path is produced dynamically and is therefore unknown during planning.
+    ``allow_present_subtable_rewrite`` grants an explicit MAIN writer backing-
+    file rewrites of supported subtables present before execution and still
+    linked at the same path afterward; table schema authority stays explicit.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -163,12 +166,15 @@ class DatasetAccess(BaseModel):
     allow_schema_change: bool = False
     allow_keyword_change: bool = False
     allow_subtable_change: tuple[str, ...] = ()
+    allow_present_subtable_rewrite: bool = Field(default=False, exclude_if=lambda value: not value)
     root_field: str | None = None
     reservation: Path | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> "DatasetAccess":
         columns = self.columns
+        if self.allow_present_subtable_rewrite and (self.mode is not DatasetMode.WRITE or self.table is not DatasetTable.MAIN):
+            raise ValueError("allow_present_subtable_rewrite requires a MAIN write access")
         if self.mode is DatasetMode.READ:
             if columns is not None and (columns.write or columns.create or columns.remove):
                 raise ValueError("read dataset access cannot write, create, or remove columns")
