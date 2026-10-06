@@ -46,9 +46,9 @@ Available backends
     output stem is a plain ``str`` parameter (the usual shape -- see
     :ref:`declaring-where-a-tool-writes`) still has its products land on the
     host: whatever directory a ``File``-dtype output or a ``harvest`` pattern
-    resolves to is mounted read-write when it is absolute. A directory that
-    does not exist yet contributes its nearest existing ancestor, so a tool
-    that creates its own output tree behaves as it would natively; an
+    resolves to is mounted read-write when it is absolute. Execution prepares
+    declared directories before building mounts. Direct backend callers with
+    an absent directory use its nearest existing ancestor; an
     absolute output path with no existing ancestor at all is refused before
     the run rather than written into the container and lost. When a write
     target -- or simply another input -- lands in a directory an input marked
@@ -56,8 +56,12 @@ Available backends
     directory is mounted read-write and the read-only input is re-asserted
     ``:ro`` at its own path inside it, so the write lands but that input stays
     untouchable. A cab that declares something writable *inside* a
-    ``writable: false`` input is refused instead -- no arrangement of mounts
-    satisfies both. Any input can say the word: a declared field marks itself
+    ``writable: false`` input is refused before preparing directories or
+    clearing stale products. No arrangement of mounts satisfies both.
+    Declared output, log, and scratch parents are
+    created on the host before mounts are built, including absolute paths
+    and runs without a sandbox. Products themselves are left for the tool
+    to create. Any input can say the word: a declared field marks itself
     with ``writable: false`` in the schema, and a pattern-matched
     (dynamically-named) input -- which has no declared field at all -- marks
     the attr it matches, the same place that attr's ``dtype`` lives.

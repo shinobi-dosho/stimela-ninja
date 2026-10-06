@@ -1308,3 +1308,32 @@ def test_snapshot_matching_preserves_exact_plans_and_observation_topology(tmp_pa
     else:
         after = before.model_copy(update={"observations": (before.observations[0].model_copy(update={"root": tmp_path / "other.ms"}), second)})
     assert not lifecycle_module.dataset_snapshot_matches(before, after)
+
+
+@pytest.mark.parametrize("kind", ["output", "scratch", "harvest"])
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_strict_reader_refuses_write_before_preparing_parent(tmp_path, monkeypatch, kind, sandbox):
+    ms = tmp_path / "observation.ms"
+    ms.mkdir()
+    (ms / "table.dat").write_text("data")
+    _install_lifecycle(monkeypatch, tmp_path, [_snapshot(ms)])
+    monkeypatch.chdir(tmp_path)
+    parent = ms / "new/deep"
+
+    class Outputs(BaseModel):
+        report: Path = parent / "report.txt"
+
+    reader = Cab(
+        name="read",
+        command="/bin/true",
+        inputs_model=MSInput,
+        outputs_model=Outputs if kind == "output" else Empty,
+        dataset_accesses=[DatasetAccess(field="ms", mode="read")],
+        sandbox=sandbox,
+        scratch=[str(parent / "*")] if kind == "scratch" else [],
+        harvest=[str(parent / "*")] if kind == "harvest" else [],
+    )
+    with pytest.raises(DatasetAccessError, match="schema also declares a filesystem write"):
+        reader(ms=ms, backend="native")
+    assert not (ms / "new").exists()
+    assert (ms / "table.dat").read_text() == "data"

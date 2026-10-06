@@ -54,13 +54,14 @@ How a sandboxed step runs
    drive container bind mounts) are rewritten to absolute paths anchored at
    the workspace, so the tool reads -- and, for ``MUTABLE`` inputs like a
    measurement set, writes -- the caller's real files in place.
-#. **Parent directories of relative outputs are pre-created** inside the
-   sandbox -- from declared output values (including resolved ``implicit``
-   templates) and the literal directory prefix of each ``harvest`` glob.
-   Tools generally don't ``mkdir -p`` their own output stems (wsclean's
-   ``-name img/run1``, ragavi's ``htmlname``), so without this a relative
-   output like ``plots/gain.html`` that works in the workspace would crash
-   in the empty sandbox.
+#. **Declared write directories are pre-created** before launch, including
+   output parents and literal prefixes of ``harvest`` and ``scratch`` globs.
+   Relative destinations follow the tool's actual cwd; absolute destinations
+   are prepared on the host. This also applies without a sandbox and covers
+   logs and scratch directories. Products themselves remain for the tool to
+   create. Read-only input collisions are refused before preparation or stale
+   output removal. Only newly created directories inside the sandbox are
+   eligible for pruning before harvest; external parents remain in place.
 #. The tool runs; relative outputs land inside the sandbox.
 #. On success, declared outputs are **harvested**: moved (by rename -- the
    scratch root lives on the workspace's filesystem precisely so this is

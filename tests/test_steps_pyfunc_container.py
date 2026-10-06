@@ -735,12 +735,20 @@ def test_sandboxed_container_pystep_keeps_absolute_paths_outside_workspace(tmp_p
 
     ref = pystep(image="test:latest", backend="docker", sandbox=True)(path_echo)
 
-    fake = _fake_container_run({"target": "/elsewhere/data.txt"})
+    target = tmp_path.parent / (tmp_path.name + "-external") / "deep/data.txt"
+    original_fake = _fake_container_run({"target": str(target)})
+
+    def fake(argv, *args, **kwargs):
+        assert target.parent.is_dir()
+        assert not target.exists()
+        return original_fake(argv, *args, **kwargs)
+
     with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
-        result = ref(target=Path("/elsewhere/data.txt"))
+        result = ref(target=target)
 
     assert result.success, result.stderr
-    assert result.outputs.target == Path("/elsewhere/data.txt")
+    assert result.outputs.target == target
+    assert target.parent.is_dir()
 
 
 class IntrospectOutputs(BaseModel):
@@ -880,3 +888,51 @@ def test_the_shim_itself_rejects_a_module():
     assert shim_ctx.import_callable("join", "os.path")("/a", "b") == "/a/b"
     with pytest.raises(TypeError, match="not callable"):
         shim_ctx.import_callable("path", "os")
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_container_pystep_prepares_parents_before_mount_launch(tmp_path, monkeypatch, sandbox):
+    monkeypatch.chdir(tmp_path)
+    ref = pystep(image="test:latest", backend="docker", sandbox=sandbox)(path_echo)
+    target = tmp_path / "new/deep/probe.txt"
+    original_fake = _fake_container_run({"target": str(target)})
+
+    def fake(argv, *args, **kwargs):
+        assert target.parent.is_dir()
+        assert not target.exists()
+        assert any(str(target.parent) in arg for arg in argv)
+        return original_fake(argv, *args, **kwargs)
+
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
+        result = ref(target=target)
+    assert result.success, result.stderr
+    assert target.parent.is_dir()
+
+
+class ProtectedOutputs(BaseModel):
+    target: Path
+    stale: Path
+
+
+def protected_write(data: Path, target: Path, stale: Path) -> ProtectedOutputs:
+    raise AssertionError("read-only conflict launched tool")
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_container_pystep_readonly_conflict_keeps_backend_error_before_preparation(tmp_path, monkeypatch, sandbox):
+    from shinobi.exceptions import BackendError
+    from shinobi.steps.schema import ParamMeta
+
+    monkeypatch.chdir(tmp_path)
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    stale = protected / "old.dat"
+    stale.write_text("keep")
+    ref = pystep(image="test:latest", backend="docker", sandbox=sandbox)(protected_write)
+    ref.step.field_meta["data"] = ParamMeta(writable=False)
+    with patch("shinobi.steps.pyfunc.run_streaming") as launch:
+        with pytest.raises(BackendError, match="writable: false"):
+            ref(data=protected, target=protected / "new/deep/out.dat", stale=stale)
+    launch.assert_not_called()
+    assert not (protected / "new").exists()
+    assert stale.read_text() == "keep"

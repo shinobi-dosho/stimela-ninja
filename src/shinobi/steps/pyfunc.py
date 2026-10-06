@@ -81,7 +81,7 @@ from pydantic.fields import FieldInfo
 from shinobi.backends._stream import TeardownIncomplete, display_label, run_streaming
 from shinobi.config import AppConfig
 from shinobi.dataset_access import DatasetAccess
-from shinobi.exceptions import CabRunError
+from shinobi.exceptions import BackendError, CabRunError, ParameterError
 from shinobi.loaders._modelgen import narrow_choices
 from shinobi.results import StepResult, explain_returncode
 from shinobi.sandbox import (
@@ -94,7 +94,7 @@ from shinobi.sandbox import (
     prune_unused_parents,
     relativize_path_outputs,
 )
-from shinobi.steps.schema import ParamMeta, Scope, StepRef
+from shinobi.steps.schema import ParamMeta, Scope, StepRef, validate_declared_writes
 
 if TYPE_CHECKING:
     from shinobi.steps.dispatch import ExecContext
@@ -645,13 +645,16 @@ def _run_pystep_subprocess(
     run_prepared = prepared
     if ctx._sandbox_root is not None:
         sandbox_dir = create_sandbox(ctx._sandbox_root, ctx._cache_path or scope.name)
-        precreated = prepare_output_parents(scope, prepared, sandbox_dir)
         run_prepared = absolutize_path_inputs(scope, prepared, Path(workspace))
     # Same pre-run replacement a cab gets (`dispatch._run_cab`): a declared
     # output the child writes straight to its destination must not still hold
     # the last run's product when the function starts.
+    run_cwd = sandbox_dir if sandbox_dir is not None else Path(workspace)
+    validate_declared_writes(scope, run_prepared, run_cwd, error_type=BackendError if isinstance(launcher, _ContainerLauncher) else ParameterError)
     if ctx._clear_outputs:
         clear_stale_outputs(scope, run_prepared, Path(workspace), sandboxed=sandbox_dir is not None)
+    created = prepare_output_parents(scope, run_prepared, run_cwd)
+    precreated = [path for path in created if sandbox_dir is not None and path.resolve().is_relative_to(sandbox_dir)]
 
     # Not `with TemporaryDirectory(...)`: on an interrupt whose child could
     # not be confirmed stopped, this directory must **stay**. It holds the

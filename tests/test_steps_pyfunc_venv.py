@@ -70,20 +70,22 @@ def test_pystep_venv_no_venv_declared_falls_back_in_process(monkeypatch):
     assert result.venv is None
 
 
-def test_pystep_venv_sandboxed_end_to_end(make_venv, tmp_path, monkeypatch):
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_pystep_venv_nested_output_end_to_end(make_venv, tmp_path, monkeypatch, sandbox):
     # A sandboxed venv pystep: the runner must launch with cwd inside the
     # sandbox (the venv path has no container --workdir flag), and its declared
     # Path output must be harvested back to the workspace.
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(tmp_path / ".shinobi/work"))
     venv = _venv_with_pkg(make_venv)
-    ref = pystep(venv=str(venv), backend="venv", sandbox=True)(funcs.write_report)
+    ref = pystep(venv=str(venv), backend="venv", sandbox=sandbox)(funcs.write_report)
 
     result = ref(n=1)
 
     assert result.success, result.stderr
-    assert result.sandboxed is True
+    assert result.sandboxed is sandbox
     # harvested from the sandbox cwd back to the workspace
-    assert (tmp_path / "report.txt").read_text() == "magic=4243\n"
+    assert (tmp_path / "reports/deep/report.txt").read_text() == "magic=4243\n"
     # sandbox discarded on success
-    assert list((tmp_path / ".shinobi/work").iterdir()) == []
+    if sandbox:
+        assert list((tmp_path / ".shinobi/work").iterdir()) == []
