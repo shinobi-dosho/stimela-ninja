@@ -1048,3 +1048,26 @@ def test_a_cab_without_patterns_still_rejects_extras():
     """
     cab = loads("cabs:\n  p:\n    command: p\n    inputs: {x: {dtype: int}}\n")["p"]
     assert cab.inputs_model.model_config.get("extra") is None
+
+
+@pytest.mark.parametrize("mode,table", [("write", "MAIN"), ("read", "MAIN"), ("create", "MAIN"), ("write", "ANTENNA")])
+def test_yaml_present_subtable_rewrite_contract(mode, table):
+    source = f"""
+cabs:
+  rewrite:
+    command: rewrite
+    inputs:
+      ms:
+        dtype: MeasurementSetV2
+        required: true
+    dataset_accesses:
+      - field: ms
+        mode: {mode}
+        table: {table}
+        allow_present_subtable_rewrite: true
+"""
+    if mode == "write" and table == "MAIN":
+        assert loads(source)["rewrite"].dataset_accesses[0].allow_present_subtable_rewrite
+    else:
+        with pytest.raises(CabLoadError, match="requires a MAIN write"):
+            loads(source)

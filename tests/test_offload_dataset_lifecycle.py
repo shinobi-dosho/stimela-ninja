@@ -1103,3 +1103,31 @@ def test_worker_outer_observation_checks_refuse_genuine_changes(monkeypatch, tmp
         assert ("establishing the compute-side lifecycle" if stage == "claim" else "read-only dataset") in record.error
     finally:
         lease.release()
+
+
+@pytest.mark.parametrize("grant", [False, True])
+def test_qualified_worker_retains_present_rewrite_grant_and_shared_postcondition(monkeypatch, tmp_path, grant):
+    pytest.importorskip("casacore.tables", reason="requires measurement-set group")
+    from tests._dataset_fixtures import make_ms
+
+    root = make_ms(tmp_path / "worker.ms")
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "registry.json"))
+    monkeypatch.chdir(tmp_path)
+    recipe = _recipe(tmp_path)
+    recipe.steps[0].step.dataset_accesses = [DatasetAccess(field="ms", mode="write", allow_present_subtable_rewrite=grant)]
+    header = root / "ANTENNA" / "table.dat"
+    original = header.stat().st_mtime_ns
+    recipe.steps[0].params["script"] = (
+        "import os,sys;from pathlib import Path;p=Path(sys.argv[1],'ANTENNA','table.dat');s=p.stat();os.utime(p,ns=(s.st_atime_ns,s.st_mtime_ns+10000000000))"
+    )
+    workflow, plan, lease = _prepared(tmp_path, recipe, root)
+    try:
+        attempt = plan.attempts[0]
+        status = execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id)
+        record = _record(workflow, plan)
+        assert record.committed == grant
+        assert (status == 0) == grant
+        assert record.dataset_lifecycle.leaves[0].accesses[0].declaration.allow_present_subtable_rewrite == grant
+        assert header.stat().st_mtime_ns == original + (10_000_000_000 if grant else 0)
+    finally:
+        lease.release()

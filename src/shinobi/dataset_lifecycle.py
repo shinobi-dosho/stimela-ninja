@@ -872,6 +872,26 @@ def _changed_tables(pre: DatasetObservation, post: DatasetObservation) -> set[st
     return changed
 
 
+def _present_subtable_rewrites(
+    writers: list[ResolvedDatasetAccess],
+    before: DatasetObservation | None,
+    after: DatasetObservation,
+) -> tuple[set[str], set[str]]:
+    """Return pre-execution grant targets and members still at the same path.
+
+    The restored predecessor's closure is the authority for this grant, not
+    the planning observation. MAIN and opaque members are never targets.
+    Column evidence is required for every target; only stable targets gain
+    backing-file rewrite permission. Table schema authority stays explicit.
+    """
+    if before is None or not any(access.declaration.allow_present_subtable_rewrite for access in writers):
+        return set(), set()
+    supported = {table.value for table in DatasetTable if table is not DatasetTable.MAIN}
+    old = {member: resource.path for resource in before.closure.resources for member in resource.members if member in supported}
+    new = {member: resource.path for resource in after.closure.resources for member in resource.members}
+    return set(old), {member for member, path in old.items() if new.get(member) == path}
+
+
 def _table_column_issues(
     label: str,
     writers: list[ResolvedDatasetAccess],
@@ -881,11 +901,13 @@ def _table_column_issues(
     """Validate column promises and schema permissions independently per table.
 
     Missing evidence on a present target is unknown, never an empty schema.
-    Only a genuinely undeclared writer applies to every supported table.
+    A present-subtable rewrite grant requires evidence but adds no schema
+    authority. Only a genuinely undeclared writer applies to every table.
     """
     issues: list[str] = []
     before_members = {member for resource in before.closure.resources for member in resource.members} if before else set()
     after_members = {member for resource in after.closure.resources for member in resource.members}
+    grant_targets, _ = _present_subtable_rewrites(writers, before, after)
     for table in DatasetTable:
         target = table.value
         applicable = [access for access in writers if access.declaration.table is table or access.fallback is DatasetFallback.UNDECLARED]
@@ -900,7 +922,7 @@ def _table_column_issues(
         old_present = table is DatasetTable.MAIN and before is not None or target in before_members
         new_present = table is DatasetTable.MAIN or target in after_members
         if (old_present and old is None) or (new_present and new is None):
-            if applicable:
+            if applicable or target in grant_targets:
                 issues.append(f"{label}: {target} column metadata evidence is missing")
             continue
         old_columns, new_columns = set(old or ()), set(new or ())
@@ -940,8 +962,9 @@ def leaf_postcondition_issues(
     columns; a writer may change row count, schema (columns, subtables,
     closure membership) and MAIN keyword names only where its declarations
     permit, may add/remove only declared columns when its columns are
-    known, and may touch only the tables it declares -- unless it was an
-    undeclared whole-dataset writer, for which any table is in scope.
+    known, and may touch only the tables it declares or stable present
+    subtables covered by its rewrite grant -- unless it was an undeclared
+    whole-dataset writer, for which any table is in scope.
 
     These are structural checks. Which *cells* a writer changed is not
     observable here, so declared column writes are recorded, not verified.
@@ -996,7 +1019,8 @@ def leaf_postcondition_issues(
         if opaque_changes:
             issues.append(f"{label}: opaque subtable(s) changed without allow_subtable_change: {', '.join(sorted(opaque_changes))}")
         if not any(access.fallback is DatasetFallback.UNDECLARED for access in writers):
-            declared_tables = {access.declaration.table.value for access in writers} | allowed_subtables
+            _, stable_grants = _present_subtable_rewrites(writers, before, after)
+            declared_tables = {access.declaration.table.value for access in writers} | allowed_subtables | stable_grants
             touched = sorted(changed_tables - declared_tables)
             if touched:
                 issues.append(f"{label}: undeclared table(s) changed: {', '.join(touched)} (declared: {', '.join(sorted(declared_tables))})")

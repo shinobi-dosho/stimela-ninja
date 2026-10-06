@@ -296,9 +296,59 @@ Explicit non-MAIN writing contracts add a versioned cache-key component
 containing their scope's dataset-access declarations. This invalidates old
 successes whose subtable column promises were unchecked; runtime column
 parameters and templates remain part of the key. Ordinary, read-only,
-inferred and MAIN-only key vectors retain their historical values. Reuse
+inferred and MAIN-only key vectors without the present-subtable rewrite grant
+retain their historical values. Reuse
 checks the committed mutation chain rather than testing an ancestor's column
 promise against its live descendant: a later writer may remove that column.
+
+An explicit MAIN ``write`` may opt into
+``allow_present_subtable_rewrite=True`` when a tool also rewrites the backing
+files of standard subtables it opens (for example, table headers). This grants
+whole-table file rewrites for supported standard and optional subtables present
+in the restored pre-execution closure and still linked at the same canonical
+member path afterward. An absent optional table is never a grant target. The
+grant excludes MAIN and opaque tables, and permits no creation, removal or
+relinking of members, even with MAIN ``allow_schema_change=True``. An explicit
+table-scoped declaration can separately authorize those changes under the
+ordinary contract.
+
+The grant requires pre/post column metadata for its present targets and does
+not authorize subtable column-schema changes. Only an explicit writer for that
+table supplies schema authority and bounded named column create/remove
+promises; unknown MAIN columns do not relax them. The flag belongs only on a
+MAIN ``write``, never on ``read``, ``create`` or a subtable access. Each list
+element uses its own restored closure. It adds a versioned cache-key component
+containing the complete scope access declarations only when true; false is
+omitted from serialization, preserving historical nongrant key vectors.
+Structural signatures, member fingerprints, snapshots and logical state
+identities retain their existing coverage and meaning.
+
+For a tool that writes MAIN visibility columns while refreshing existing
+subtable headers:
+
+.. code-block:: python
+
+   from pydantic import BaseModel
+   from shinobi import Cab, DatasetAccess, DatasetColumns, MeasurementSetV2
+
+   class In(BaseModel):
+       ms: MeasurementSetV2
+
+   class Out(BaseModel):
+       pass
+
+   tool = Cab(
+       name="refresh", command="refresh-ms",
+       inputs_model=In, outputs_model=Out,
+       dataset_accesses=[DatasetAccess(
+           field="ms", mode="write",
+           columns=DatasetColumns(write=("DATA",)),
+           allow_present_subtable_rewrite=True,
+       )],
+   )
+
+A present SOURCE table is covered automatically; an absent SOURCE table stays
+absent unless a separate SOURCE writer permits creation.
 
 An explicit MAIN writer can name opaque keyword-linked tables with
 ``allow_subtable_change=("QUALITY_BASELINE_STATISTIC",)``. Each named permission

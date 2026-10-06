@@ -610,6 +610,11 @@ def compute_cache_key(
     if any(access.table is not DatasetTable.MAIN and access.mode is not DatasetMode.READ for access in scope.dataset_accesses):
         parts.append(["__msv2_subtable_columns_v1__", [access.model_dump(mode="json") for access in scope.dataset_accesses]])
 
+    # Opt-in rewrite permission is a distinct contract: a cached success may
+    # not bypass either toggling it or changing its companion declarations.
+    if any(access.allow_present_subtable_rewrite for access in scope.dataset_accesses):
+        parts.append(["__msv2_present_subtable_rewrite_v1__", [access.model_dump(mode="json") for access in scope.dataset_accesses]])
+
     blob = json.dumps(parts, default=str, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()
 
