@@ -77,3 +77,25 @@ def write_report(n: int) -> PathOut:
 
 def plain_double(n: int) -> MagicOut:
     return MagicOut(value=n * 2)
+
+
+class FamilyProducts(BaseModel):
+    mfs: Path | None = None
+
+
+def produce_family(prefix: str) -> FamilyProducts:
+    Path(prefix + "-0000-I-image.fits").write_text("channel")
+    return FamilyProducts(mfs=Path(prefix + "-MFS-image.fits"))
+
+
+def produce_recreated_empty_directory(prefix: str) -> FamilyProducts:
+    directory = Path(prefix)
+    directory.rename(directory.with_name(directory.name + "-old"))
+    directory.mkdir()
+    return FamilyProducts(mfs=directory)
+
+
+def produce_recreated_directory(prefix: str) -> FamilyProducts:
+    products = produce_recreated_empty_directory(prefix)
+    (products.mfs / "science.dat").write_text("science")
+    return products

@@ -1730,3 +1730,55 @@ def test_failed_worker_pystep_retains_sandbox_without_clearing_in_place_input(ba
     assert data.read_text() == "touched"
     assert record.sandbox is not None
     assert (Path(record.sandbox) / "failed-scratch.txt").read_text() == "inspect me"
+
+
+class FamilyOut(BaseModel):
+    mfs: Path | None = None
+
+
+def test_worker_optional_implicit_and_harvest_inventory(tmp_path):
+    cab = Cab(
+        name="family",
+        command=f"{sys.executable} -c",
+        inputs_model=WriteIn,
+        outputs_model=FamilyOut,
+        field_meta={"script": ParamMeta(positional_head=True), "out": ParamMeta(positional=True), "mfs": ParamMeta(implicit="{out}-MFS.fits")},
+        harvest=["{out}-*.fits"],
+    )
+    recipe = Recipe(
+        name="worker-family",
+        inputs_model=RootIn,
+        outputs_model=FamilyOut,
+        steps=[StepRef(name="family", step=cab, params={"script": "from pathlib import Path;import sys;Path(sys.argv[1]+'-0000-I.fits').write_text('channel')", "out": "image"})],
+        output_wiring={"mfs": OutputRef(step="family", field="mfs")},
+    )
+    first, _bundle, plan = _prepared_cached(tmp_path, recipe)
+    assert _execute_all(first, plan)[0].state == "succeeded"
+    second, _bundle, plan = _prepared_cached(tmp_path, recipe)
+    assert _execute_all(second, plan)[0].state == "cached"
+    (tmp_path / "image-0000-I.fits").unlink()
+    third, _bundle, plan = _prepared_cached(tmp_path, recipe)
+    assert _execute_all(third, plan)[0].state == "succeeded"
+
+
+def test_worker_unknown_inventory_retains_successful_attempt_and_cache_oracle(tmp_path, monkeypatch):
+    import shinobi.sandbox as sandbox_module
+
+    recipe = _recipe()
+    recipe.steps[0].step.harvest = [str(tmp_path / "first.txt")]
+    original = sandbox_module.observe_product_path
+
+    def observe(path, *, recursive=False):
+        if path == tmp_path / "first.txt" and recursive:
+            raise PermissionError("worker cache evidence unavailable")
+        return original(path, recursive=recursive)
+
+    monkeypatch.setattr(sandbox_module, "observe_product_path", observe)
+    for _index in range(2):
+        workflow, _bundle, plan = _prepared_cached(tmp_path, recipe)
+        records = _execute_all(workflow, plan)
+        assert records[0].state == "succeeded"
+        entry = get_cache_manifest(str(tmp_path / "cache")).entry("worker-pipe.write")
+        assert entry["run_id"] == str(plan.attempts[0].attempt_id)
+        assert entry["products"] is None
+        assert (tmp_path / "first.txt").read_text() == "frozen"

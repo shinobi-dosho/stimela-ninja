@@ -173,6 +173,27 @@ settings. ``ninja compile --worker --submit`` additionally accepts
 ``--cache``/``--no-cache`` and ``--cache-dir`` as frozen invocation-level
 overrides; the cache decision itself still happens inside each allocation.
 
+A successful execution records a versioned declaration contract and its concrete
+products separately from the validated output model. Required path output
+fields retain existence checks for every non-null member. Optional path fields
+contribute only files or directories that actually exist: an implicit filename
+for an optional image that the tool never produced does not prevent reuse.
+``None`` and empty collections contribute no paths; plain string outputs are
+not filesystem declarations.
+
+Every recorded product must still exist, including individual ``harvest``
+matches. Cache hits check those exact paths without expanding globs again;
+deleting a previously produced family member reruns the step. Directory outputs
+require the directory itself, with harvest-selected descendants checked
+separately. Changing path declarations, implicit templates, harvest patterns or
+the workspace invalidates reuse independently of the scientific cache key.
+Older entries containing path or harvest declarations refresh once; scalar-only
+legacy results remain readable. Path outputs with opaque executable default
+factories conservatively rerun, without evaluating factories for cache identity;
+builtin empty-container factories retain reuse. Failed execution, validation and harvesting do
+not publish a reusable result. Mutation snapshot and worker attempt identities
+retain their existing contracts.
+
 The cache manifest and mutation journal are mutable shared metadata. Their
 read-modify-write transactions are serialized with persistent sibling lock
 files. A checksummed transaction is appended and synced in that same persistent
@@ -182,7 +203,7 @@ a failed refresh leaves a warning and a recoverable commit instead of falsely
 reporting that the transaction failed;
 an incomplete trailing record is ignored, while corruption in a completed
 record fails closed. ``ninja clean --cache`` is the explicit recovery when the
-cache can be discarded. The JSON filenames and payloads did not change, so the
+cache can be discarded. The existing JSON filenames remain the snapshot files, and the
 first update imports an existing cache as the log's initial snapshot. This is a
 **one-way upgrade**: every later writer must be M2-aware. A pre-M2 process writes
 only the compatibility JSON, outside the lock, and its changes are ignored to

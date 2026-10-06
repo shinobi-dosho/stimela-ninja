@@ -1,7 +1,7 @@
 """Step-level caching: skip re-running a step whose identity (container
 image + command, or -- for a `@shinobi.pystep`-style bare `Scope` -- its
 own function's source) and resolved params are unchanged since a prior
-successful run, and whose declared outputs still exist on disk.
+successful run, whose required outputs and recorded concrete products exist.
 
 Opt-in (see `Scope.cache`/`Scope.cache_dir`, same precedence chain as
 `Scope.backend`: explicit call-time `cache=`/`cache_dir=` kwarg > a
@@ -125,7 +125,7 @@ from typing import Any, Callable
 
 from shinobi.results import StepResult
 from shinobi.storage import JsonFileStore
-from shinobi.steps.schema import Cab, Scope, mutated_path_fields, path_fields
+from shinobi.steps.schema import Cab, Scope, mutated_path_fields, path_fields, output_path_values, static_output_values
 
 
 _path_hash_cache: dict[Path, Any] = {}
@@ -619,33 +619,112 @@ def compute_cache_key(
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
+PRODUCT_CONTRACT_VERSION = 1
+
+
+def product_contract(scope: Scope, prepared: dict[str, Any], workspace: Path | None = None) -> dict[str, Any]:
+    """Stable declaration identity, separate from the scientific cache key.
+
+    Only path declarations participate; arbitrary Python model values and
+    default-factory function identities are deliberately not serialized.
+    Call with the original prepared inputs on both lookup and publication,
+    rather than effective execution overrides.
+    """
+    from types import UnionType
+    from typing import Annotated, Union, get_args, get_origin
+
+    from pydantic_core import PydanticUndefined
+
+    def annotation(value):
+        origin = get_origin(value)
+        if origin is Annotated:
+            return annotation(get_args(value)[0])
+        if origin in (Union, UnionType):
+            return ["union", sorted((annotation(arg) for arg in get_args(value)), key=lambda item: json.dumps(item))]
+        if origin is not None:
+            return [annotation(origin), [annotation(arg) for arg in get_args(value)]]
+        if isinstance(value, type):
+            return value.__module__ + "." + value.__qualname__
+        return str(value) if value is Ellipsis else None
+
+    def declaration(value):
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, (set, frozenset)):
+            return sorted((declaration(item) for item in value), key=lambda item: json.dumps(item))
+        if isinstance(value, (list, tuple)):
+            return [declaration(item) for item in value]
+        return value if value is None or isinstance(value, (str, bool, int, float)) else None
+
+    values = static_output_values(scope, prepared)
+    fields = []
+    reusable = True
+    for name in sorted(path_fields(scope.outputs_model)):
+        field = scope.outputs_model.model_fields[name]
+        meta = scope.field_meta.get(name)
+        factory = None
+        if field.default_factory is not None:
+            factory = next((builtin.__name__ for builtin in (list, tuple, set, frozenset, dict) if field.default_factory is builtin), "opaque")
+            if factory == "opaque":
+                reusable = False
+        fields.append(
+            [
+                name,
+                field.is_required(),
+                annotation(field.annotation),
+                declaration(values.get(name)),
+                field.default is not PydanticUndefined,
+                declaration(field.default),
+                factory,
+                meta.implicit if meta and isinstance(meta.implicit, str) else None,
+            ]
+        )
+    return {"version": PRODUCT_CONTRACT_VERSION, "workspace": str(workspace or Path.cwd()), "fields": fields, "harvest": list(scope.harvest), "reusable": reusable}
+
+
 class CacheManifest(JsonFileStore):
-    """A JSON-backed `{step_path: {cache_key, outputs}}` store -- see
+    """A JSON-backed step result and versioned concrete-product inventory store -- see
     :class:`shinobi.storage.JsonFileStore` for its transaction contract.
     """
 
     def check(self, step_path: str, cache_key: str, scope: Scope, prepared: dict[str, Any]) -> StepResult | None:
         """`None` on any kind of miss (no entry, key mismatch, or a
-        declared output path that no longer exists on disk) -- otherwise
+        required output or recorded concrete product that no longer exists) -- otherwise
         a synthesized `StepResult(cached=True)` restored from the
         manifest's persisted outputs.
         """
         entry = self.read().get(step_path)
-        if entry is None or entry["cache_key"] != cache_key:
+        if not isinstance(entry, dict) or entry.get("cache_key") != cache_key:
             return None
-
-        for field in path_fields(scope.outputs_model):
-            value = entry["outputs"].get(field)
-            # `path_fields` unwraps `list[Path]` too, so a declared output can
-            # be a list of paths -- `Path(a_list)` would raise TypeError, and
-            # this is only reached on a key *match*, which provenance keying
-            # makes far more common than it used to be.
-            for one in value if isinstance(value, list) else [value]:
-                if one and not Path(one).exists():
+        contract = product_contract(scope, prepared)
+        if not contract["reusable"]:
+            return None
+        if "product_contract" not in entry:
+            # Legacy scalar-only results remain useful; legacy paths/globs
+            # cannot prove which optional products existed, so refresh once.
+            if contract["fields"] or scope.harvest or "products" in entry:
+                return None
+        else:
+            products = entry.get("products")
+            stored_contract = entry["product_contract"]
+            if not isinstance(stored_contract, dict) or type(stored_contract.get("version")) is not int or stored_contract != contract or not isinstance(products, list):
+                return None
+            try:
+                if any(not isinstance(path, str) or not Path(path).is_absolute() or not Path(path).exists() for path in products):
                     return None
-
-        outputs = scope.outputs_model(**entry["outputs"])
-        inputs = scope.inputs_model(**prepared)
+            except (OSError, ValueError):
+                return None
+        try:
+            outputs = scope.outputs_model(**entry["outputs"])
+            inputs = scope.inputs_model(**prepared)
+        except (TypeError, ValueError, KeyError):
+            return None
+        try:
+            for _name, path, required in output_path_values(scope, outputs):
+                if required and not path.exists():
+                    return None
+        except (OSError, ValueError):
+            return None
         # Restore provenance too (missing on entries written by older
         # versions -- `.get` defaults keep those readable), so a cached step
         # carries the same kind/backend/image/digest into the run manifest as
@@ -690,7 +769,9 @@ class CacheManifest(JsonFileStore):
 
         return self.update(mutate)
 
-    def record(self, step_path: str, cache_key: str, result, run_id: str | None = None) -> None:
+    def record(
+        self, step_path: str, cache_key: str, result, run_id: str | None = None, *, product_contract: dict[str, Any] | None = None, products: list[str] | None = None
+    ) -> None:
         """Persist the *whole* outputs model (not just path-valued
         fields) -- a downstream step wired to a non-path (e.g. wrangled)
         output of a cached step still needs a real value on a later hit --
@@ -725,6 +806,8 @@ class CacheManifest(JsonFileStore):
                 "venv_digest": result.venv_digest,
                 "sandboxed": result.sandboxed,
             }
+            if product_contract is not None:
+                data[step_path].update(product_contract=product_contract, products=products)
 
         self.update(mutate)
 

@@ -1222,3 +1222,40 @@ def test_a_gathered_key_declines_tier_1_loudly(tmp_path, caplog):
         pipeline(spw="*", cache=True, cache_dir=str(tmp_path / "cache"))
 
     assert "names no one state" in caplog.text
+
+
+def test_unknown_product_inventory_still_commits_exact_run_recovery_oracle(tmp_path, monkeypatch):
+    import shinobi.sandbox as sandbox_module
+
+    ms = tmp_path / "data.ms"
+    cache_dir = tmp_path / "cache"
+    calls = {}
+    pipeline = _pipeline(ms, calls)
+    pipeline.steps[-1].step.harvest = [str(ms)]
+    original = sandbox_module.observe_product_path
+
+    def observe(path, *, recursive=False):
+        if path == ms and recursive:
+            raise PermissionError("cache evidence unavailable")
+        return original(path, recursive=recursive)
+
+    monkeypatch.setattr(sandbox_module, "observe_product_path", observe)
+    assert pipeline(spw="*", cache=True, cache_dir=str(cache_dir)).success
+    assert pipeline(spw="*", cache=True, cache_dir=str(cache_dir)).success
+    assert calls["cal"] == 2
+    assert _read(ms) == "vis[*]|flag[default]|cal"
+    manifest = get_cache_manifest(str(cache_dir))
+    entry = manifest.entry("pipe.cal")
+    assert entry["products"] is None
+    journal = get_journal(str(cache_dir))
+
+    def arm(chain):
+        chain.marker = Marker(step_path="pipe.cal", field="ms", cache_key=entry["cache_key"], run_id=entry["run_id"], started_at=0.0)
+        return chain
+
+    journal.update_chain(chain_id(ms), arm)
+    reconcile(str(cache_dir), manifest)
+    chain = journal.get(chain_id(ms))
+    assert chain.status is HeadStatus.TRUSTED
+    assert chain.marker is None
+    assert _read(ms) == "vis[*]|flag[default]|cal"
