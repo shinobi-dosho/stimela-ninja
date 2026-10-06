@@ -25,6 +25,11 @@ from shinobi.exceptions import ShinobiError
 from shinobi.storage import JsonFileStore, SharedStorageError, ofd_lock
 from shinobi.steps.schema import (
     Cab,
+    _path_access_contributors,
+    _ProductReservations,
+    _resolved_product_patterns,
+    _product_pattern_directory,
+    product_pattern_issue,
     OutputRef,
     Recipe,
     Scope,
@@ -239,8 +244,9 @@ def contained_access_issues(
     The contained lifecycle permits ordinary products only when their paths
     are fixed at the ownership boundary and do not overlap the claimed MSv2
     closure.  Runtime-returned ``Path`` outputs, path-valued ``OutputRef``
-    inputs, default factories, and glob-selected products cannot meet that
-    proof.  This is deliberately stricter than ordinary dispatch: refusing a
+    inputs and default factories cannot meet that proof. Bounded
+    basename product patterns are admitted only by a declaration-aware
+    containment proof against every workflow resource.  This is deliberately stricter than ordinary dispatch: refusing a
     shape is safe, while guessing a reservation can let a nominal reader
     choose the dataset itself after the shared read claim has been acquired.
 
@@ -335,10 +341,79 @@ def contained_access_issues(
             # so only a same-named, already-claimed input is a fixed target.
             if not isinstance(leaf, Cab) and name not in known:
                 issues.append(f"scope {leaf.name!r} path output {name!r} is selected by runtime Python output")
-        if leaf.harvest or leaf.scratch:
-            issues.append(f"scope {leaf.name!r} uses runtime glob-selected generic products")
+        for source, pattern in _resolved_product_patterns(leaf, known):
+            issue = product_pattern_issue(pattern, workspace=root, resources=dataset_resources)
+            if issue:
+                issues.append(f"scope {leaf.name!r} {source} {issue}")
+        for path, writes, source, field in _path_access_contributors(leaf, known, workspace=root):
+            if not writes or field is None:
+                continue  # pattern contributors were proved independently above
+            dataset_fields = dataset_outputs | dataset_inputs if source.startswith("output ") else dataset_inputs
+            if field in dataset_fields:
+                continue
+            if any(paths_overlap(path, resource) for resource in dataset_resources):
+                issues.append(f"scope {leaf.name!r} generic write overlaps the MSv2 closure ({source}): {path}")
 
     return tuple(dict.fromkeys(issues))
+
+
+def planned_leaf_inputs(scope: Scope, values: dict[str, Any] | BaseModel) -> dict[int, tuple[BaseModel, bool]]:
+    """Reconstruct claim-time input snapshots from immutable declaration data.
+
+    Unlike ownership discovery, this does not inspect datasets or plan access
+    hazards. Workers use the original bundle inputs, never upstream runtime
+    results, so another leaf's reservation cannot grant this leaf a new path.
+    """
+    snapshots: dict[int, tuple[BaseModel, bool]] = {}
+    for _leaf in _resolved_leaf_inputs(scope, values, step_inputs=snapshots):
+        pass
+    return snapshots
+
+
+def validate_contained_execution(
+    scope: Scope,
+    prepared: dict[str, Any],
+    *,
+    workspace: Path,
+    dataset_resources: set[Path],
+    planned_inputs: _ProductReservations | None = None,
+) -> None:
+    """Prove actual leaf destinations and preserve its planned pattern parents.
+
+    Comparing each declaration's canonical directory keeps the ownership and
+    per-leaf ordering assumptions even if another leaf claims the new parent.
+    Basename changes within the same reservation remain allowed when safe.
+    """
+    from shinobi.exceptions import DatasetLifecycleUnavailableError
+
+    def canonical(pattern: str) -> Path:
+        parent = _product_pattern_directory(pattern)
+        return (parent if parent.is_absolute() else workspace / parent).resolve()
+
+    if planned_inputs is not None and (tuple(scope.harvest), tuple(scope.scratch)) != (planned_inputs.harvest, planned_inputs.scratch):
+        raise DatasetLifecycleUnavailableError(f"scope {scope.name!r} changed its planned harvest/scratch declarations")
+    issues = list(contained_access_issues(scope, prepared, workspace=workspace, dataset_resources=dataset_resources))
+    if scope.harvest or scope.scratch:
+        if planned_inputs is None:
+            issues.append(f"scope {scope.name!r} has no frozen product directory reservations")
+        else:
+            declarations = planned_inputs.declarations
+            for (source, actual), (_source, expected) in zip(
+                _resolved_product_patterns(scope, prepared, declarations=declarations),
+                _resolved_product_patterns(scope, planned_inputs.inputs, declarations=declarations),
+            ):
+                try:
+                    if expected is None or actual is None:
+                        issues.append(f"scope {scope.name!r} {source} has an unresolved product directory reservation")
+                        continue
+
+                    actual_parent, expected_parent = canonical(actual), canonical(expected)
+                    if actual_parent != expected_parent:
+                        issues.append(f"scope {scope.name!r} {source} changed its planned product directory reservation: {expected_parent} -> {actual_parent}")
+                except (OSError, RuntimeError, ValueError) as exc:
+                    issues.append(f"scope {scope.name!r} {source} cannot verify its product directory reservation: {exc}")
+    if issues:
+        raise DatasetLifecycleUnavailableError("contained MSv2 execution refused: " + "; ".join(issues))
 
 
 class WorkspaceOwner(BaseModel):

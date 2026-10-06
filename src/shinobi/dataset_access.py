@@ -685,6 +685,16 @@ class ResolvedAccessPlanner:
             allow_existing_create=allow_existing_create,
         )
         generic = resolved_path_accesses if resolved_path_accesses is not None else path_accesses(scope, values, workspace=self._workspace)
+        from shinobi.steps.schema import _resolved_product_patterns, product_pattern_issue
+
+        for access in datasets:
+            if access.mode is DatasetMode.READ:
+                for source, pattern in _resolved_product_patterns(scope, values):
+                    issue = product_pattern_issue(pattern, workspace=self._workspace, resources=set(access.resources))
+                    if issue:
+                        raise DatasetAccessError(
+                            f"scope {scope.name!r} declares READ access for {access.field!r}, but its schema also declares a filesystem write: {source} {issue}"
+                        )
         for access in datasets:
             if access.mode is DatasetMode.READ and any(
                 writes and any(path == resource or path.is_relative_to(resource) for resource in access.resources) for path, writes in generic

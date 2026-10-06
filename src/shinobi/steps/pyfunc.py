@@ -643,13 +643,26 @@ def _run_pystep_subprocess(
     sandbox_dir: Path | None = None
     precreated: list[Path] = []
     run_prepared = prepared
+    dataset_resources = ctx.workflow_dataset_resources()
+    planned = ctx._planned_inputs
+    run_planned = planned
+    if dataset_resources:
+        from shinobi.ownership import validate_contained_execution
+
+        validate_contained_execution(scope, prepared, workspace=Path(workspace), dataset_resources=dataset_resources, planned_inputs=planned)
     if ctx._sandbox_root is not None:
-        sandbox_dir = create_sandbox(ctx._sandbox_root, ctx._cache_path or scope.name)
+        sandbox_dir = create_sandbox(ctx._sandbox_root, ctx._cache_path or scope.name, **({"dataset_resources": dataset_resources} if dataset_resources else {}))
         run_prepared = absolutize_path_inputs(scope, prepared, Path(workspace))
+        if planned is not None:
+            run_planned = planned.with_inputs(absolutize_path_inputs(scope, planned.inputs, Path(workspace)))
     # Same pre-run replacement a cab gets (`dispatch._run_cab`): a declared
     # output the child writes straight to its destination must not still hold
     # the last run's product when the function starts.
     run_cwd = sandbox_dir if sandbox_dir is not None else Path(workspace)
+    if dataset_resources:
+        from shinobi.ownership import validate_contained_execution
+
+        validate_contained_execution(scope, run_prepared, workspace=run_cwd, dataset_resources=dataset_resources, planned_inputs=run_planned)
     validate_declared_writes(scope, run_prepared, run_cwd, error_type=BackendError if isinstance(launcher, _ContainerLauncher) else ParameterError)
     if ctx._clear_outputs:
         clear_stale_outputs(scope, run_prepared, Path(workspace), sandboxed=sandbox_dir is not None)

@@ -57,7 +57,7 @@ from shinobi.sandbox import (
     relativize_path_outputs,
 )
 from shinobi.steps.loops import passthrough_result, should_skip
-from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, Recipe, Scope, StepRef, validate_declared_writes
+from shinobi.steps.schema import _ProductReservations, Cab, InputRef, Mutability, OutputRef, Recipe, Scope, StepRef, validate_declared_writes
 from shinobi.wranglers import apply_wranglers
 
 # Run-log records (step lifecycle + captured tool output) go through the
@@ -415,6 +415,36 @@ def _validate_inputs(scope: Scope, kwargs: dict[str, Any]) -> BaseModel:
         raise ParameterError(f"{scope.name}: parameter validation failed:\n{exc}") from exc
 
 
+def _snapshot_product_inputs(scope: Scope, inputs: BaseModel | dict[str, Any] | _ProductReservations | None) -> _ProductReservations | None:
+    """Freeze declarations and inputs without changing execution mutability."""
+    if inputs is None:
+        return None
+    try:
+        if isinstance(inputs, _ProductReservations):
+            return inputs.with_inputs(copy.deepcopy(inputs.inputs))
+        if not (scope.harvest or scope.scratch):
+            return None
+        from shinobi.ownership import _model_values
+
+        values = _model_values(inputs) if isinstance(inputs, BaseModel) else inputs
+        return _ProductReservations(tuple(scope.harvest), tuple(scope.scratch), copy.deepcopy(values))
+    except Exception as exc:
+        raise DatasetLifecycleUnavailableError(f"scope {scope.name!r} cannot freeze product directory reservation inputs: {exc}") from exc
+
+
+def _snapshot_product_leaf_inputs(scope: Scope, leaf_inputs: dict[int, tuple[BaseModel, bool]] | None) -> dict[int, _ProductReservations]:
+    """Capture every patterned descendant before any recipe callback runs."""
+    snapshots: dict[int, _ProductReservations] = {}
+    if isinstance(scope, Recipe) and leaf_inputs is not None:
+        for ref in scope.steps:
+            prior = leaf_inputs.get(id(ref))
+            frozen = _snapshot_product_inputs(ref.step, prior[0]) if prior is not None else None
+            if frozen is not None:
+                snapshots[id(ref)] = frozen
+            snapshots.update(_snapshot_product_leaf_inputs(ref.step, leaf_inputs))
+    return snapshots
+
+
 class ExecContext:
     """Live execution state, created by `_dispatch`. `inputs` is a
     validated snapshot for inspection; the raw caller kwargs are kept
@@ -442,6 +472,8 @@ class ExecContext:
         budget: Budget | None = None,
         run_id: str = "",
         validated_inputs: BaseModel | None = None,
+        planned_inputs: BaseModel | dict[str, Any] | _ProductReservations | None = None,
+        planned_leaf_inputs: dict[int, _ProductReservations] | None = None,
         leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
         dataset_lifecycle: Any | None = None,
         publication_gate: Callable[[Callable[[], None]], None] | None = None,
@@ -519,6 +551,12 @@ class ExecContext:
         # A Recipe forwards them to `_run_recipe`; fully knowable steps reuse
         # the exact model, while runtime-dependent ones reuse only defaults.
         self._leaf_inputs = leaf_inputs
+        # Original ownership/order inputs remain authoritative when runtime
+        # wiring or ctx.run overrides select another product directory.
+        self._planned_inputs = _snapshot_product_inputs(scope, planned_inputs) if dataset_lifecycle is not None else None
+        self._planned_leaf_inputs = (
+            (planned_leaf_inputs if planned_leaf_inputs is not None else _snapshot_product_leaf_inputs(scope, leaf_inputs)) if dataset_lifecycle is not None else None
+        )
         # Non-None only for leaves executing under the top-level contained
         # MSv2 read lifecycle and its already-acquired shared claim.
         self._dataset_lifecycle = dataset_lifecycle
@@ -547,6 +585,26 @@ class ExecContext:
         the precedence logic.
         """
         return override or self._backend_override or self.scope.backend or self._recipe_backend or (self._config or AppConfig.load()).backend.default
+
+    def validate_contained_inputs(self, prepared: dict[str, Any] | None = None) -> None:
+        """Check every leaf launcher, including native and manual functions."""
+        resources = self.workflow_dataset_resources()
+        if resources and not isinstance(self.scope, Recipe):
+            from shinobi.ownership import validate_contained_execution
+
+            validate_contained_execution(
+                self.scope,
+                self.prepare_inputs() if prepared is None else prepared,
+                workspace=self._dataset_lifecycle.workspace,
+                dataset_resources=resources,
+                planned_inputs=self._planned_inputs,
+            )
+
+    def workflow_dataset_resources(self) -> set[Path]:
+        """Every protected resource, including other leaves and planned creates."""
+        if self._dataset_lifecycle is None:
+            return set()
+        return {resource for access in self._dataset_lifecycle.record.planned_accesses for resource in access.resources}
 
     def dataset_backend_plan(self, backend_name: str, prepared: dict[str, Any] | None = None) -> Any | None:
         """Prepared namespace plan for an atomic leaf under a strict lifecycle.
@@ -676,6 +734,7 @@ class ExecContext:
         # validated in __init__; reuse it instead of re-validating.
         validated = self.inputs if not overrides else None
         prepared = _prepare_inputs(self.scope, raw, validated=validated)
+        self.validate_contained_inputs(prepared)
         backend_name = self.resolve_backend_name(backend)
         if isinstance(self.scope, Cab):
             dataset_plan = self.dataset_backend_plan(backend_name, prepared)
@@ -689,6 +748,8 @@ class ExecContext:
                 sandbox_root=self._sandbox_root,
                 clear_outputs=self._clear_outputs,
                 dataset_plan=dataset_plan,
+                dataset_resources=self.workflow_dataset_resources(),
+                planned_inputs=self._planned_inputs,
             )
         elif isinstance(self.scope, Recipe):
             result = _run_recipe(
@@ -706,6 +767,7 @@ class ExecContext:
                 budget=self._budget,
                 run_id=self._run_id,
                 leaf_inputs=self._leaf_inputs,
+                planned_leaf_inputs=self._planned_leaf_inputs,
                 validated_inputs=validated,
                 dataset_lifecycle=self._dataset_lifecycle,
                 publication_gate=self._publication_gate,
@@ -907,6 +969,8 @@ def _dispatch(
     _workspace_claimed: bool = False,
     _dataset_lifecycle: Any | None = None,
     _validated_inputs: BaseModel | None = None,
+    _planned_inputs: BaseModel | dict[str, Any] | _ProductReservations | None = None,
+    _planned_leaf_inputs: dict[int, _ProductReservations] | None = None,
     _leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
     _boundary_fields: frozenset[str] = frozenset(),
     _boundary_elements: frozenset[tuple[str, int]] = frozenset(),
@@ -945,7 +1009,6 @@ def _dispatch(
             ownership_workspace,
             scope_path_accesses,
         )
-        from shinobi.steps.schema import paths_overlap
 
         launch_workspace = Path.cwd().resolve()
         root_backend = backend or scope.backend or _recipe_backend or config.backend.default
@@ -1071,16 +1134,6 @@ def _dispatch(
             )
             if access_issues:
                 raise DatasetLifecycleUnavailableError(f"contained MSv2 {noun} refused: " + "; ".join(access_issues))
-            # A dataset's own declared write names exactly one of its closure
-            # resources; any other write reaching into a closure is generic.
-            overlapping_writes = sorted(
-                {path for path, writes in accesses if writes and not (mutation and path in resources) and any(paths_overlap(path, resource) for resource in resources)},
-                key=str,
-            )
-            if overlapping_writes:
-                raise DatasetLifecycleUnavailableError(
-                    f"contained MSv2 {noun} refused: a generic write overlaps the {'dataset' if mutation else 'read-only'} closure: " + ", ".join(map(str, overlapping_writes))
-                )
             writable_paths = [path for path, writes in accesses if writes]
             claim_workspace = ownership_workspace(launch_workspace, writable_paths) if writable_paths else launch_workspace
             lease = acquire_workspace(
@@ -1170,6 +1223,7 @@ def _dispatch(
                     _workspace_claimed=True,
                     _dataset_lifecycle=lifecycle,
                     _validated_inputs=validated_inputs,
+                    _planned_inputs=validated_inputs if not isinstance(scope, Recipe) else None,
                     _leaf_inputs=leaf_inputs,
                     **kwargs,
                 )
@@ -1486,10 +1540,14 @@ def _dispatch(
         budget=_budget,
         run_id=run_id,
         validated_inputs=_validated_inputs,
+        planned_inputs=_planned_inputs,
+        planned_leaf_inputs=_planned_leaf_inputs,
         leaf_inputs=_leaf_inputs,
         dataset_lifecycle=_dataset_lifecycle,
         publication_gate=_publication_gate,
     )
+
+    ctx.validate_contained_inputs()
 
     manifest = None
     cache_key = None
@@ -1832,6 +1890,8 @@ def _run_cab(
     sandbox_root: str | None = None,
     clear_outputs: bool = True,
     dataset_plan: Any | None = None,
+    dataset_resources: set[Path] | None = None,
+    planned_inputs: BaseModel | dict[str, Any] | _ProductReservations | None = None,
 ) -> StepResult:
     # Sandboxed run (shinobi.sandbox): the tool's cwd is a private scratch
     # dir; path-typed inputs are anchored back at the workspace so the tool
@@ -1842,9 +1902,17 @@ def _run_cab(
     sandbox_dir = None
     run_inputs = prepared
     workspace = Path.cwd()
+    planned = _snapshot_product_inputs(cab, planned_inputs if planned_inputs is not None else prepared) if dataset_resources else None
+    run_planned = planned
+    if dataset_resources:
+        from shinobi.ownership import validate_contained_execution
+
+        validate_contained_execution(cab, prepared, workspace=workspace, dataset_resources=dataset_resources, planned_inputs=planned)
     if sandbox_root is not None:
-        sandbox_dir = create_sandbox(sandbox_root, label or cab.name)
+        sandbox_dir = create_sandbox(sandbox_root, label or cab.name, **({"dataset_resources": dataset_resources} if dataset_resources else {}))
         run_inputs = absolutize_path_inputs(cab, prepared, workspace)
+        if planned is not None:
+            run_planned = planned.with_inputs(absolutize_path_inputs(cab, planned.inputs, workspace))
     # Against `run_inputs`, so the destinations are the ones the tool is
     # really given, and before the run, because a tool that refuses to
     # overwrite has already failed by the time anything harvests.
@@ -1853,6 +1921,10 @@ def _run_cab(
 
     backend = get_step_backend(backend_name)
     uses_mounts = backend_name in CONTAINER_RUNTIMES or backend_name == "kubernetes" or (backend_name == "slurm" and cab.image and getattr(backend, "container_runtime", None))
+    if dataset_resources:
+        from shinobi.ownership import validate_contained_execution
+
+        validate_contained_execution(cab, run_inputs, workspace=run_cwd, dataset_resources=dataset_resources, planned_inputs=run_planned)
     validate_declared_writes(cab, run_inputs, run_cwd, error_type=BackendError if uses_mounts else ParameterError)
     if clear_outputs:
         clear_stale_outputs(cab, run_inputs, workspace, sandboxed=sandbox_dir is not None)
@@ -2147,6 +2219,7 @@ def _run_recipe(
     budget: Budget | None = None,
     run_id: str = "",
     leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
+    planned_leaf_inputs: dict[int, _ProductReservations] | None = None,
     validated_inputs: BaseModel | None = None,
     dataset_lifecycle: Any | None = None,
     publication_gate: Callable[[Callable[[], None]], None] | None = None,
@@ -2418,6 +2491,8 @@ def _run_recipe(
                 _slice_index=slice_idx,
                 _leaf_inputs=leaf_inputs,
                 _validated_inputs=validated_inputs,
+                _planned_inputs=planned_leaf_inputs.get(id(ref)) if planned_leaf_inputs is not None else None,
+                _planned_leaf_inputs=planned_leaf_inputs,
                 _dataset_lifecycle=dataset_lifecycle,
                 _publication_gate=publication_gate,
                 **unit_kwargs,

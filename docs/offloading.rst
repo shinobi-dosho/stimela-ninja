@@ -229,6 +229,15 @@ before its final attempt record is committed. Failed tools and harvest errors
 retain the exact shared sandbox path in their diagnostics. Harvesting several
 products is ordered, but is not a filesystem transaction across all products.
 
+Strict dataset workers admit bounded ``harvest``/``scratch`` basename families
+under the same containment proof as local execution (see
+:doc:`concepts/datasets`). Their literal parents remain broad write claims for
+ordering and ownership, including the workspace for a flat family. Workspace
+harvest destinations and actual execution sources after path anchoring are
+checked against the complete workflow closure before tool launch. Relative
+scratch stays in the sandbox and disappears on success; absolute scratch and
+unsandboxed scratch remain at their declared destinations.
+
 Strict ``MeasurementSetV2`` contracts add a compute-side lifecycle around
 that worker path. Preparation freezes the whole-workflow and per-leaf
 resolved accesses, contained closure identities, cache store, tool-backend

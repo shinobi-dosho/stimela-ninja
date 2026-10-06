@@ -73,6 +73,20 @@ How a sandboxed step runs
    for post-mortem; a warning reports its path. ``ninja clean`` removes
    leftover sandboxes (it targets ``sandbox.dir`` by default).
 
+Contained dataset execution checks both workspace declarations and the actual
+execution destinations after path inputs are anchored. It applies the bounded
+product-family rules in :doc:`datasets` against every workflow closure resource,
+including datasets created by another leaf. Before creating a sandbox, its
+configured root must be outside those resources. An existing ancestor directory
+such as the workspace is allowed: the fresh execution directory must be a
+separate sibling, and is checked again before launch.
+
+``scratch`` families are never harvested. Relative scratch products disappear
+with a successful sandbox; absolute scratch products and products written
+without sandboxing remain at their declared destinations. Both scratch and
+harvest parents keep broad ownership reservations even when execution uses a
+private directory.
+
 What survives the sandbox
 -------------------------
 

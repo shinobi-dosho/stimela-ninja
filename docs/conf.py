@@ -81,6 +81,8 @@ nitpick_ignore = [
     ("py:class", "shinobi.steps.schema._InputsProxy"),
     ("py:class", "shinobi.steps.schema._LoopOutputsProxy"),
     ("py:class", "shinobi.steps.schema._OutputsProxy"),
+    # Private contained-execution reservation record, not a public API.
+    ("py:class", "_ProductReservations"),
 ]
 
 # -- Autodoc / autosummary ---------------------------------------------------
