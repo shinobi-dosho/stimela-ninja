@@ -695,7 +695,7 @@ class ResolvedAccessPlanner:
 
         for access in datasets:
             if access.mode is DatasetMode.READ:
-                for source, pattern in _resolved_product_patterns(scope, values):
+                for source, pattern in _resolved_product_patterns(scope, values, workspace=self._workspace):
                     issue = product_pattern_issue(pattern, workspace=self._workspace, resources=set(access.resources))
                     if issue:
                         raise DatasetAccessError(

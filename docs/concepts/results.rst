@@ -43,6 +43,11 @@ A cab does not scrape arbitrary files after it runs. For each field in its
    the cab's validated inputs;
 #. the pydantic field default.
 
+Declared ``ParamMeta.family`` outputs are resolved from execution evidence
+before validating the final output mapping, independently of caching.
+See :doc:`products` for typed collections, unique coordinate selection and
+local bundle inventories. Failed commands retain unresolved family values.
+
 The completed mapping is validated by ``outputs_model``. A missing required
 output or a value of the wrong type is therefore a ``ParameterError`` rather
 than a partially populated result. Outputs that may genuinely be absent when a

@@ -7,11 +7,13 @@ This is a transport contract, not the shared cache journal or a lease.
 
 from __future__ import annotations
 
+from shinobi.products import Coordinate
+
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, JsonValue, model_validator
+from pydantic import model_serializer, ConfigDict, Field, JsonValue, model_validator
 
 from shinobi.cache import ProvenanceKey
 from shinobi.dataset_lifecycle import DatasetLifecycleAttempt
@@ -27,12 +29,19 @@ class ProducedState(WireModel):
     producer_field: str
 
 
+class CoordinateProducedState(ProducedState):
+    coordinates: dict[str, Coordinate]
+
+
 class IndexedProducedState(ProducedState):
     element_index: int = Field(strict=True, ge=0)
 
 
 def attempt_record_version(lifecycle=None, keys=()):
     """Choose indexed transport only where the new contract requires it."""
+    keys = tuple(keys)
+    if any(isinstance(value, CoordinateProducedState) or isinstance(value, list) and any(isinstance(item, CoordinateProducedState) for item in value) for value in keys):
+        return 4
     if any(isinstance(value, (list, IndexedProducedState)) for value in keys):
         return 3
     if lifecycle is not None and any(access.element_index is not None and access.writes for access in lifecycle.planned_accesses):
@@ -56,7 +65,7 @@ class Observation(StepRecord):
 
 
 class AttemptRecord(WireModel):
-    schema_version: Literal[1, 2, 3] = 1
+    schema_version: Literal[1, 2, 3, 4] = 1
     workflow_id: UUID
     attempt_id: UUID
     step_path: str
@@ -66,7 +75,9 @@ class AttemptRecord(WireModel):
     stdout: str = ""
     stderr: str = ""
     cache_key: str | None = None
-    output_keys: dict[str, IndexedProducedState | ProducedState | list[IndexedProducedState | ProducedState | None]] = Field(default_factory=dict)
+    output_keys: dict[str, CoordinateProducedState | IndexedProducedState | ProducedState | list[CoordinateProducedState | IndexedProducedState | ProducedState | None]] = Field(
+        default_factory=dict
+    )
     error: str | None = None
     sandbox: str | None = None
     job_id: str | None = None
@@ -74,14 +85,27 @@ class AttemptRecord(WireModel):
     code_digest: str | None = None
     worker_digest: str | None = None
     dataset_lifecycle: DatasetLifecycleAttempt | None = None
+    bundle_inventories: list[dict[str, JsonValue]] | None = None
+
+    @model_serializer(mode="wrap")
+    def _old_shape(self, handler):
+        values = handler(self)
+        if self.bundle_inventories is None:
+            values.pop("bundle_inventories", None)
+        return values
 
     @model_validator(mode="after")
     def _check_outcome(self) -> AttemptRecord:
         lifecycle = self.dataset_lifecycle
-        indexed = attempt_record_version(lifecycle, self.output_keys.values()) == 3
-        if indexed and self.schema_version != 3:
+        if self.bundle_inventories is not None and self.schema_version != 4:
+            raise BundleError("bundle inventories require attempt-record schema version 4")
+        required_version = attempt_record_version(lifecycle, self.output_keys.values())
+        if required_version == 4 and self.schema_version != 4:
+            raise BundleError("coordinate producer identities require attempt-record schema version 4")
+        indexed = required_version == 3
+        if indexed and self.schema_version not in (3, 4):
             raise BundleError("indexed producer identities require attempt-record schema version 3")
-        if self.schema_version != 3 and (self.schema_version == 1) != (lifecycle is None):
+        if self.schema_version not in (3, 4) and (self.schema_version == 1) != (lifecycle is None):
             raise BundleError("dataset lifecycle evidence requires attempt-record schema version 2")
         if lifecycle is not None:
             if lifecycle.attempt_id != str(self.attempt_id):
@@ -143,12 +167,16 @@ class AttemptRecord(WireModel):
                             return None
                         index = getattr(one, "element_index", None)
                         values = {"cache_key": str(one), "producer_field": getattr(one, "producer_field", None) or field}
+                        coordinates = getattr(one, "coordinates", None)
+                        if coordinates is not None:
+                            return CoordinateProducedState(**values, coordinates=coordinates)
                         return ProducedState(**values) if index is None else IndexedProducedState(**values, element_index=index)
 
                     keys[field] = [produced(one) for one in key] if isinstance(key, list) else produced(key)
         state = "failed" if not result.success else "skipped" if result.skipped else "cached" if result.cached else "succeeded"
         return cls(
-            schema_version=attempt_record_version(dataset_lifecycle, keys.values()),
+            schema_version=4 if result.bundle_inventories else attempt_record_version(dataset_lifecycle, keys.values()),
+            bundle_inventories=result.bundle_inventories or None,
             workflow_id=workflow_id,
             attempt_id=attempt_id,
             step_path=step_path,
@@ -180,10 +208,14 @@ class AttemptRecord(WireModel):
             stdout=self.stdout,
             stderr=self.stderr,
             cache_key=self.cache_key,
+            bundle_inventories=self.bundle_inventories,
             output_keys={
-                f: [ProvenanceKey(one.cache_key, one.producer_field, getattr(one, "element_index", None)) if one is not None else None for one in value]
+                f: [
+                    ProvenanceKey(one.cache_key, one.producer_field, getattr(one, "element_index", None), getattr(one, "coordinates", None)) if one is not None else None
+                    for one in value
+                ]
                 if isinstance(value, list)
-                else ProvenanceKey(value.cache_key, value.producer_field, getattr(value, "element_index", None))
+                else ProvenanceKey(value.cache_key, value.producer_field, getattr(value, "element_index", None), getattr(value, "coordinates", None))
                 for f, value in self.output_keys.items()
             },
             **metadata,

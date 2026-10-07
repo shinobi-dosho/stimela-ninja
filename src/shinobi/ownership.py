@@ -282,12 +282,10 @@ def contained_access_issues(
     step_inputs: dict[int, tuple[BaseModel, bool]] = {}
 
     def concrete_paths(value: Any) -> tuple[Path, ...]:
-        values = value if isinstance(value, (list, tuple)) else (value,)
+        from shinobi.products import iter_product_paths
+
         paths = []
-        for item in values:
-            if item is None:
-                continue
-            path = Path(str(item))
+        for path in iter_product_paths(value):
             paths.append((path if path.is_absolute() else root / path).resolve())
         return tuple(paths)
 
@@ -355,7 +353,7 @@ def contained_access_issues(
             # so only a same-named, already-claimed input is a fixed target.
             if not isinstance(leaf, Cab) and name not in known:
                 issues.append(f"scope {leaf.name!r} path output {name!r} is selected by runtime Python output")
-        for source, pattern in _resolved_product_patterns(leaf, known):
+        for source, pattern in _resolved_product_patterns(leaf, known, workspace=root):
             issue = product_pattern_issue(pattern, workspace=root, resources=dataset_resources)
             if issue:
                 issues.append(f"scope {leaf.name!r} {source} {issue}")
@@ -410,25 +408,33 @@ def validate_contained_execution(
     if planned_inputs is not None and (tuple(scope.harvest), tuple(scope.scratch)) != (planned_inputs.harvest, planned_inputs.scratch):
         raise DatasetLifecycleUnavailableError(f"scope {scope.name!r} changed its planned harvest/scratch declarations")
     issues = list(contained_access_issues(scope, prepared, workspace=workspace, dataset_resources=dataset_resources))
-    if scope.harvest or scope.scratch:
+    families = {name: meta.family for name, meta in scope.field_meta.items() if meta.family}
+    if planned_inputs is not None and families != (planned_inputs.families or {}):
+        issues.append(f"scope {scope.name!r} changed its planned family declarations")
+    if scope.harvest or scope.scratch or families:
         if planned_inputs is None:
             issues.append(f"scope {scope.name!r} has no frozen product directory reservations")
         else:
             declarations = planned_inputs.declarations
-            for (source, actual), (_source, expected) in zip(
-                _resolved_product_patterns(scope, prepared, declarations=declarations),
-                _resolved_product_patterns(scope, planned_inputs.inputs, declarations=declarations),
-            ):
-                try:
-                    if expected is None or actual is None:
-                        issues.append(f"scope {scope.name!r} {source} has an unresolved product directory reservation")
-                        continue
 
-                    actual_parent, expected_parent = canonical(actual), canonical(expected)
-                    if actual_parent != expected_parent:
-                        issues.append(f"scope {scope.name!r} {source} changed its planned product directory reservation: {expected_parent} -> {actual_parent}")
-                except (OSError, RuntimeError, ValueError) as exc:
-                    issues.append(f"scope {scope.name!r} {source} cannot verify its product directory reservation: {exc}")
+            def parents(inputs):
+                reservations: dict[str, set[Path]] = {}
+                for source, pattern in _resolved_product_patterns(scope, inputs, declarations=declarations, workspace=workspace):
+                    try:
+                        if pattern is None:
+                            issues.append(f"scope {scope.name!r} {source} has an unresolved product directory reservation")
+                            continue
+                        reservations.setdefault(source, set()).add(canonical(pattern))
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        issues.append(f"scope {scope.name!r} {source} cannot verify its product directory reservation: {exc}")
+                return reservations
+
+            frozen_parents = parents(planned_inputs.inputs)
+            for source, actual_parents in parents(prepared).items():
+                expected_parents = frozen_parents.get(source, set())
+                for actual_parent in sorted(actual_parents - expected_parents, key=str):
+                    expected = ", ".join(map(str, sorted(expected_parents, key=str))) or "no frozen parents"
+                    issues.append(f"scope {scope.name!r} {source} changed its planned product directory reservation: {expected} -> {actual_parent}")
     if issues:
         raise DatasetLifecycleUnavailableError("contained MSv2 execution refused: " + "; ".join(issues))
 

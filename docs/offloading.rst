@@ -762,3 +762,19 @@ stop it, but does destroy ``ninja status``'s only local record of it.
    cluster is single-node, so multi-node scheduling and cross-node shared
    storage are not proven by it -- check generated scripts and accounting
    behavior on your own site's scheduler. See :doc:`concepts/backends`.
+
+Output families in workers
+--------------------------
+
+Coordinate-labelled file families and local directory bundles use the ordinary
+worker dispatch and immutable result publication lifecycle. A bundle containing
+family types/declarations or coordinate selections uses schema version 2;
+ordinary historical bundles retain version 1. The codec recognizes only exact
+framework family/bundle types and never bypasses checks for arbitrary model
+subclasses. Coordinate-bearing produced states and recursive bundle inventories
+use attempt-record version 4. Old scalar and indexed-MS records remain readable.
+
+Selections resolve after the producing dependency commits, against its saved
+member table. The legacy argv compiler refuses families and selections because
+it cannot preserve post-execution membership/evidence. Remote stores and
+store-relative subresources remain gated. See :doc:`concepts/products`.

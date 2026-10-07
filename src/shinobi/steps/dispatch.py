@@ -425,12 +425,14 @@ def _snapshot_product_inputs(scope: Scope, inputs: BaseModel | dict[str, Any] | 
     try:
         if isinstance(inputs, _ProductReservations):
             return inputs.with_inputs(copy.deepcopy(inputs.inputs))
-        if not (scope.harvest or scope.scratch):
+        if not (scope.harvest or scope.scratch or any(meta.family for meta in scope.field_meta.values())):
             return None
         from shinobi.ownership import _model_values
 
         values = _model_values(inputs) if isinstance(inputs, BaseModel) else inputs
-        return _ProductReservations(tuple(scope.harvest), tuple(scope.scratch), copy.deepcopy(values))
+        return _ProductReservations(
+            tuple(scope.harvest), tuple(scope.scratch), copy.deepcopy(values), copy.deepcopy({name: meta.family for name, meta in scope.field_meta.items() if meta.family})
+        )
     except Exception as exc:
         raise DatasetLifecycleUnavailableError(f"scope {scope.name!r} cannot freeze product directory reservation inputs: {exc}") from exc
 
@@ -1950,7 +1952,11 @@ def _run_cab(
     created = prepare_output_parents(cab, run_inputs, run_cwd)
     prepared_observations = observe_prepared_parents(created)
     precreated = [path for path in created if sandbox_dir is not None and path.resolve().is_relative_to(sandbox_dir)]
-    capture = ProductCapture(cab, run_inputs, workspace, sandbox_dir, prepared_observations=prepared_observations) if product_captures is not None else None
+    capture = (
+        ProductCapture(cab, run_inputs, workspace, sandbox_dir, prepared_observations=prepared_observations)
+        if product_captures is not None or any(meta.family for meta in cab.field_meta.values())
+        else None
+    )
     argv = build_argv(cab, run_inputs)
     import shlex
 
@@ -1973,7 +1979,17 @@ def _run_cab(
     _report_elision(run, label or cab.name, wrangled=bool(cab.wranglers))
     lines = run.stdout.splitlines() + run.stderr.splitlines()
     wrangled = apply_wranglers(cab.wranglers, lines)
+    if capture is not None:
+        try:
+            wrangled.update(capture.resolve_families(run.returncode == 0))
+        except (OSError, ValueError) as exc:
+            raise ParameterError(f"{cab.name}: family resolution failed: {exc}") from exc
     outputs = _fill_outputs(cab, prepared, run, wrangled)
+    if capture is not None and run.returncode == 0:
+        try:
+            capture.validate_output_ownership(outputs)
+        except ValueError as exc:
+            raise ParameterError(f"{cab.name}: {exc}") from exc
     capture_outputs = outputs
     if sandbox_dir is not None:
         outputs = relativize_path_outputs(cab, outputs, workspace)
@@ -2005,7 +2021,9 @@ def _run_cab(
         resources=cab.resources,
     )
     if capture is not None and result.success:
-        product_captures[id(result)] = (result, capture.finish(capture_outputs))
+        result.bundle_inventories = capture.bundle_inventories
+        if product_captures is not None:
+            product_captures[id(result)] = (result, capture.finish(capture_outputs))
     return result
 
 
@@ -2030,7 +2048,9 @@ def _resolve_wiring(ref, prepared: dict[str, Any], results: dict[str, StepResult
         if isinstance(source, InputRef):
             return prepared[source.field]
         try:
-            return getattr(results[source.step].outputs, source.field)
+            from shinobi.products import resolve_reference
+
+            return resolve_reference(getattr(results[source.step].outputs, source.field), source.selection)
         except AttributeError as exc:
             raise StepError(f"step '{ref.name}' cannot resolve wiring for input '{field}': step '{source.step}' has no output '{source.field}'") from exc
 
@@ -2696,7 +2716,13 @@ def _run_recipe(
         raise CabRunError(f"step '{ref_name}' in recipe '{recipe.name}' failed (returncode {explain_returncode(failed.returncode)})")
 
     ordered = [ref.name for ref in recipe.steps if ref.name in results]
-    outputs = {field: getattr(results[out_ref.step].outputs, out_ref.field) for field, out_ref in recipe.output_wiring.items() if out_ref.step in results}
+    from shinobi.products import resolve_reference
+
+    outputs = {
+        field: resolve_reference(getattr(results[out_ref.step].outputs, out_ref.field), out_ref.selection)
+        for field, out_ref in recipe.output_wiring.items()
+        if out_ref.step in results
+    }
     # Per-output provenance for whoever consumes this recipe's outputs: each
     # declared output is keyed by the sub-step that actually produced it, not
     # by the recipe as a whole -- see StepResult.provenance_key. `out_ref.field`
@@ -2704,8 +2730,10 @@ def _run_recipe(
     # `ProvenanceKey` field here; a sub-step that is itself a recipe already
     # carries one naming its leaf, and `as_provenance_key` leaves that alone
     # rather than renaming the state to this recipe's export name.
+    from shinobi.cache import selected_key
+
     output_keys = {
-        field: as_provenance_key(key, out_ref.field)
+        field: selected_key(as_provenance_key(key, out_ref.field), out_ref.selection)
         for field, out_ref in recipe.output_wiring.items()
         if out_ref.step in results and (key := results[out_ref.step].provenance_key(out_ref.field)) is not None
     }

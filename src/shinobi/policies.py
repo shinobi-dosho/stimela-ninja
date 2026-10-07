@@ -111,6 +111,9 @@ def build_argv(cab: Cab, resolved: dict[str, Any]) -> list[str]:
             continue
         if value is None:
             continue
+        from shinobi.products import product_argv_value
+
+        value = product_argv_value(value)
         repeat_as_tokens = meta is not None and meta.repeat_as_tokens and isinstance(value, (list, tuple))
         if meta is not None and (meta.positional or meta.positional_head):
             positionals = positionals_head if meta.positional_head else positionals_tail

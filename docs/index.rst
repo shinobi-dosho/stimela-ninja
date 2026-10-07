@@ -78,6 +78,7 @@ and :doc:`offloading`.
    concepts/loaders
    concepts/config
    concepts/results
+   concepts/products
    concepts/datasets
    concepts/states
    concepts/provenance

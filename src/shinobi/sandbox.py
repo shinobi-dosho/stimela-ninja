@@ -128,7 +128,7 @@ def prepare_output_parents(scope: Scope, prepared: dict[str, Any], sandbox_dir: 
     only entries canonically inside a sandbox should be passed to pruning.
     """
     validate_declared_writes(scope, prepared, sandbox_dir)
-    dirs = {d if d.is_absolute() else sandbox_dir / d for d, _ in declared_output_dirs(scope, prepared)}
+    dirs = {d if d.is_absolute() else sandbox_dir / d for d, _ in declared_output_dirs(scope, prepared, workspace=sandbox_dir)}
     created: list[Path] = []
     for directory in sorted(dirs):
         missing: list[Path] = []
@@ -204,10 +204,9 @@ def prune_unused_parents(created: list[Path], observations: dict[Path, Any] | No
 
 
 def _anchor(value: Any, workspace: Path) -> Any:
-    if isinstance(value, (list, tuple)):
-        return type(value)(_anchor(item, workspace) for item in value)
-    path = Path(str(value))
-    return value if path.is_absolute() else workspace / path
+    from shinobi.products import map_product_paths
+
+    return map_product_paths(value, lambda path: path if path.is_absolute() else workspace / path)
 
 
 def path_input_names(scope: Scope, prepared: dict[str, Any]) -> set[str]:
@@ -246,9 +245,9 @@ def _input_paths_to_keep(scope: Scope, run_inputs: dict[str, Any]) -> list[Path]
     writes = write_path_fields(scope)
     for name in path_input_names(scope, run_inputs) - writes:
         value = run_inputs[name]
-        for item in value if isinstance(value, (list, tuple)) else [value]:
-            if item is not None:
-                keep.append(Path(str(item)).resolve())
+        from shinobi.products import iter_product_paths
+
+        keep.extend(path.resolve() for path in iter_product_paths(value))
     return keep
 
 
@@ -311,7 +310,18 @@ def clear_stale_outputs(scope: Scope, run_inputs: dict[str, Any], workspace: Pat
     # Nothing declared, nothing to clear -- and no `resolve()`/`stat` calls
     # for a step that declares no path outputs at all, which is the common
     # case and is on the critical path of every single run.
-    candidates = [(path, source) for path, source in declared_output_paths(scope, run_inputs) if path.is_absolute() or not sandboxed]
+    family_sources = {f"output {name!r}" for name, meta in scope.field_meta.items() if meta.family is not None}
+    candidates = [(path, source) for path, source in declared_output_paths(scope, run_inputs) if source not in family_sources and (path.is_absolute() or not sandboxed)]
+    from shinobi.products import family_plans
+
+    for name, plan in family_plans(scope, run_inputs, workspace).items():
+        for candidate in plan.candidates:
+            absolute = (
+                Path(plan.spec.root.format(**run_inputs)).is_absolute()
+                or Path(candidate.rule.path.format(**{**run_inputs, **dict.fromkeys(candidate.rule.axes, "")})).is_absolute()
+            )
+            if not candidate.rule.accept_existing and (absolute or not sandboxed):
+                candidates.append((candidate.path, f"output {name!r}"))
     if not candidates:
         return []
     keep = _input_paths_to_keep(scope, run_inputs)
@@ -491,16 +501,12 @@ def _relativize(value: Any, workspace: Path) -> Any:
     """Convert an absolute path value to workspace-relative, if applicable.
     Handles single paths and lists/tuples of paths. Non-path values and
     paths outside the workspace pass through unchanged."""
-    if isinstance(value, (list, tuple)):
-        return type(value)(_relativize(item, workspace) for item in value)
-    path = Path(str(value))
-    if not path.is_absolute():
-        return value
-    try:
-        relative = path.relative_to(workspace)
-    except ValueError:
-        return value
-    return relative
+    from shinobi.products import map_product_paths
+
+    def relative(path):
+        return path.relative_to(workspace) if path.is_absolute() and path.is_relative_to(workspace) else path
+
+    return map_product_paths(value, relative)
 
 
 def relativize_path_outputs(scope: Scope, outputs: Any, workspace: Path) -> Any:
@@ -671,6 +677,8 @@ def harvest_outputs(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbo
     Child-first order would move the child, then `_move` the parent dir over
     the same destination -- rmtree-ing the just-harvested child.
     """
+    if _capture is not None:
+        _capture.validate_family_boundaries()
     moved: list[Path] = []
     targets = _relative_targets(scope, outputs, prepared, sandbox_dir)
     candidates = ()
@@ -721,6 +729,28 @@ class ProductCapture:
         created_dirs: Sequence[Path] = (),
         prepared_observations: dict[Path, Any] | None = None,
     ):
+        from shinobi.products import family_plans
+        from shinobi.steps.schema import protected_family_inputs, validate_family_inputs
+
+        self.family_plans = family_plans(scope, prepared, sandbox_dir or workspace)
+        self.destination_plans = family_plans(scope, prepared, workspace)
+        self.protected_inputs = protected_family_inputs(scope, prepared, sandbox_dir or workspace)
+        for name, plan in self.family_plans.items():
+            validate_family_inputs(name, plan, self.protected_inputs, sandbox_dir or workspace)
+            validate_family_inputs(name, self.destination_plans[name], self.protected_inputs, workspace)
+        self.family_candidates = []
+        self.family_before = {}
+        self.bundle_inventories = []
+        self.family_products = set()
+        for plan in self.family_plans.values():
+            for candidate in [*plan.candidates, *plan.discovered()]:
+                if candidate.path.is_symlink():
+                    raise ValueError(f"symlink family member: {candidate.path}")
+                self.family_before[candidate.path] = observe_product_path(candidate.path, recursive=True) if candidate.path.exists() else None
+                if candidate.rule.accept_existing and sandbox_dir is not None and candidate.path.is_relative_to(sandbox_dir):
+                    prior = workspace / candidate.path.relative_to(sandbox_dir)
+                    if prior.exists():
+                        raise ValueError("relative sandbox accept_existing needs explicit staging; use an absolute shared output root or direct execution")
         self.scope = scope
         self.prepared = prepared
         self.workspace = workspace
@@ -730,6 +760,101 @@ class ProductCapture:
         self.prepared_dirs = prepared_observations if prepared_observations is not None else observe_prepared_parents(created_dirs)
         self.complete = self.before is not None and all(observation is not None for observation in self.prepared_dirs.values())
         self.passthroughs = {path if path.is_absolute() else workspace / path for _name, path, _required in output_path_values(scope, prepared)}
+
+    def resolve_families(self, success):
+        from shinobi.products import DirectoryBundle, ProductFamily, ProductMember, address, bundle_inventory
+
+        values, physical = {}, []
+        for name, plan in self.family_plans.items():
+            if not success:
+                values[name] = ProductFamily[plan.member_type]()
+                continue
+            plan.validate_root()
+            self.destination_plans[name].validate_root()
+            members, counts = [], {}
+            for candidate in [*plan.candidates, *plan.discovered()]:
+                path, rule = candidate.path, candidate.rule
+                self.validate_family_candidate(name, plan, path)
+                if path.is_symlink():
+                    raise ValueError(f"symlink family member: {path}")
+                exists = path.is_dir() if plan.member_type is DirectoryBundle else path.is_file()
+                after = observe_product_path(path, recursive=True) if exists else None
+                if exists and after is None:
+                    raise ValueError(f"cannot observe family member: {path}")
+                evidenced = exists and (rule.accept_existing or self.family_before.get(path) != after)
+                if path in self.prepared_dirs and path.is_dir() and not any(path.iterdir()) and self.prepared_dirs[path] == observe_product_path(path):
+                    evidenced = False
+                if not evidenced:
+                    if rule.required:
+                        raise ValueError(f"{name}: required family member missing execution evidence: {path}")
+                    continue
+                for prior, bundle in physical:
+                    if (
+                        path.resolve() == prior
+                        or (bundle or plan.member_type is DirectoryBundle)
+                        and (path.resolve().is_relative_to(prior) or prior.is_relative_to(path.resolve()))
+                    ):
+                        raise ValueError(f"overlapping product ownership: {path}")
+                physical.append((path.resolve(), plan.member_type is DirectoryBundle))
+                if plan.member_type is DirectoryBundle:
+                    inventory = bundle_inventory(path)
+                    destination = self.workspace / path.relative_to(self.sandbox_dir) if self.sandbox_dir is not None and path.is_relative_to(self.sandbox_dir) else path
+                    inventory["root"] = str(destination.resolve())
+                    self.bundle_inventories.append(inventory)
+                destination = self.workspace / path.relative_to(self.sandbox_dir) if self.sandbox_dir is not None and path.is_relative_to(self.sandbox_dir) else path
+                self.family_candidates.append((name, plan, path))
+                self.family_products.add(destination.resolve())
+                display = path
+                anchor = self.sandbox_dir if self.sandbox_dir is not None and path.is_relative_to(self.sandbox_dir) else self.workspace
+                if path.is_relative_to(anchor):
+                    display = path.relative_to(anchor)
+                value = DirectoryBundle(path=display) if plan.member_type is DirectoryBundle else display
+                members.append(ProductMember[plan.member_type](coordinates=candidate.coordinates, value=value))
+                counts[id(rule)] = counts.get(id(rule), 0) + 1
+                if len(members) > plan.spec.max_members:
+                    raise ValueError("family member limit exceeded")
+            if len(members) < plan.spec.min_members or any(counts.get(id(rule), 0) < rule.min_members for rule in plan.active_rules):
+                raise ValueError(f"{name}: family cardinality below minimum")
+            members.sort(key=lambda member: address(member.coordinates))
+            values[name] = ProductFamily[plan.member_type](resolved=True, members=tuple(members))
+        return values
+
+    def validate_family_candidate(self, name, plan, path):
+        """Recheck original source/destination boundaries and protected inputs."""
+        from shinobi.steps.schema import protected_family_inputs, validate_family_inputs
+
+        cwd = self.sandbox_dir or self.workspace
+        protected = self.protected_inputs + protected_family_inputs(self.scope, self.prepared, cwd)
+        validate_family_inputs(name, plan, protected, cwd, path=path, error_type=ValueError)
+        destination = self.workspace / path.relative_to(self.sandbox_dir) if self.sandbox_dir is not None and path.is_relative_to(self.sandbox_dir) else path
+        validate_family_inputs(name, self.destination_plans[name], protected, self.workspace, path=destination, error_type=ValueError)
+
+    def validate_family_boundaries(self):
+        for name, plan in self.family_plans.items():
+            plan.validate_root()
+            self.destination_plans[name].validate_root()
+        for name, plan, path in self.family_candidates:
+            self.validate_family_candidate(name, plan, path)
+
+    def validate_output_ownership(self, outputs):
+        """Scalar outputs cannot independently claim family-owned roots/children."""
+        from shinobi.products import DirectoryBundle
+
+        self.validate_family_boundaries()
+        owners = []
+        for name in self.family_plans:
+            for member in getattr(outputs, name).members:
+                bundle = isinstance(member.value, DirectoryBundle)
+                path = member.value.path if bundle else member.value
+                actual = (path if path.is_absolute() else self.workspace / path).resolve()
+                owners.append((actual, bundle))
+        for name, path, _required in output_path_values(self.scope, outputs):
+            if name in self.family_plans:
+                continue
+            actual = (path if path.is_absolute() else self.workspace / path).resolve()
+            for owned, bundle in owners:
+                if actual == owned or bundle and actual.is_relative_to(owned) or actual.is_dir() and owned.is_relative_to(actual):
+                    raise ValueError(f"output {name!r} overlaps family-owned product: {owned}")
 
     def _direct_matches(self) -> dict[Path, Any] | None:
         matches = {}
@@ -746,7 +871,7 @@ class ProductCapture:
         if not self.complete or any(observation is None for observation in self.prepared_dirs.values()):
             self.complete = False
             return None
-        products = set(self.harvested)
+        products = set(self.harvested) | self.family_products
         try:
             for _name, path, _required in output_path_values(self.scope, outputs):
                 actual = path if path.is_absolute() else self.workspace / path

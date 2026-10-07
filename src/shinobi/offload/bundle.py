@@ -9,6 +9,8 @@ Slurm preparation stage freezes their compute-side lifecycle contract.
 
 from __future__ import annotations
 
+from shinobi.products import Coordinate
+
 import hashlib
 import json
 import os
@@ -18,7 +20,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import JsonValue, ValidationError, model_validator
+from pydantic import model_serializer, JsonValue, ValidationError, model_validator
 
 from shinobi import __version__
 from shinobi.backends.venv import resolve_venv
@@ -100,13 +102,21 @@ class Binding(WireModel):
 
     field: str
     step: str | None = None
+    selection: dict[str, Coordinate] | None = None
+
+    @model_serializer(mode="wrap")
+    def _old_shape(self, handler):
+        values = handler(self)
+        if self.selection is None:
+            values.pop("selection", None)
+        return values
 
     @classmethod
     def capture(cls, ref: InputRef | OutputRef) -> Binding:
-        return cls(field=ref.field, step=ref.step if isinstance(ref, OutputRef) else None)
+        return cls(field=ref.field, step=ref.step if isinstance(ref, OutputRef) else None, selection=ref.selection if isinstance(ref, OutputRef) else None)
 
     def restore(self) -> InputRef | OutputRef:
-        return InputRef(field=self.field) if self.step is None else OutputRef(step=self.step, field=self.field)
+        return InputRef(field=self.field) if self.step is None else OutputRef(step=self.step, field=self.field, selection=self.selection)
 
 
 class FrozenStep(WireModel):
@@ -137,7 +147,7 @@ class FrozenStep(WireModel):
 
 
 class RecipeBundle(WireModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     worker_protocol: Literal[1] = 1
     shinobi_version: str = __version__
     workspace: str
@@ -156,6 +166,9 @@ class RecipeBundle(WireModel):
         if not Path(self.workspace).is_absolute() or self.recipe.kind != "recipe":
             raise BundleError("a bundle needs an absolute shared workspace and a recipe root")
         recipe = self.declaration()
+        family_features = uses_products(recipe)
+        if self.schema_version != (2 if family_features else 1):
+            raise BundleError("family declarations/selections require bundle schema version 2; ordinary bundles retain version 1")
         has_datasets = scope_tree_has_dataset_contract(recipe)
         if has_datasets != (self.execution_blocked_reason is not None):
             raise BundleError("dataset-bearing bundles must carry their compute-lifecycle preparation marker")
@@ -303,7 +316,9 @@ def freeze_recipe(
             )
         )
     blocked = "MSv2 dataset contracts require compute-side lifecycle preparation before submission" if scope_tree_has_dataset_contract(recipe) else None
+    family_features = uses_products(recipe)
     return RecipeBundle(
+        schema_version=2 if family_features else 1,
         workspace=str(workspace.resolve()),
         recipe=root,
         inputs=pack(prepared),
@@ -314,4 +329,22 @@ def freeze_recipe(
         output_wiring={k: Binding.capture(v) for k, v in recipe.output_wiring.items()},
         max_workers=recipe.max_workers,
         execution_blocked_reason=blocked,
+    )
+
+
+def uses_products(recipe):
+    from shinobi.products import framework_type
+    from shinobi._annotations import walk_model_annotations
+
+    scopes = [recipe, *(ref.step for ref in recipe.steps)]
+    return (
+        any(meta.family for scope in scopes for meta in scope.field_meta.values())
+        or any(framework_type(node.annotation) for scope in scopes for model in (scope.inputs_model, scope.outputs_model) for node in walk_model_annotations(model))
+        or any(ref.selection is not None for ref in recipe.output_wiring.values())
+        or any(
+            getattr(source, "selection", None) is not None
+            for ref in recipe.steps
+            for sources in ref.wiring.values()
+            for source in (sources if isinstance(sources, list) else [sources])
+        )
     )

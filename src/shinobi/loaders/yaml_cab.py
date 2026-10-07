@@ -587,6 +587,7 @@ def _param_meta(value: dict[str, Any], *, nom_de_guerre: str | None = None, with
     return ParamMeta(
         nom_de_guerre=nom_de_guerre,
         implicit=value.get("implicit"),
+        family=value.get("family"),
         info=value.get("info"),
         positional=bool(policies.get("positional", False)),
         positional_head=bool(policies.get("positional_head", False)),

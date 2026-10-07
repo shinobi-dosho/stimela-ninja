@@ -75,8 +75,15 @@ from shinobi.dataset_lifecycle import (  # noqa: E402
     read_dataset_attempt,
 )
 from shinobi.exceptions import DatasetLifecycleUnavailableError, DatasetLifecycleViolationError  # noqa: E402
+from shinobi.products import DirectoryBundle, ProductFamily, ProductMember, FamilySpec, AxisSpec, MemberRule  # noqa: E402
 
 __all__ = [
+    "DirectoryBundle",
+    "ProductFamily",
+    "ProductMember",
+    "FamilySpec",
+    "AxisSpec",
+    "MemberRule",
     "Cab",
     "CasaTable",
     "CasaTab",
