@@ -597,8 +597,9 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
 
     for name, writable in path_input_modes(scope, inputs).items():
         value = inputs[name]
-        for item in value if isinstance(value, (list, tuple)) else [value]:
-            path = Path(str(item))
+        from shinobi.products import iter_product_paths
+
+        for path in iter_product_paths(value):
             if not path.is_absolute():
                 path = Path(workdir) / path
             parent = str(path.parent)

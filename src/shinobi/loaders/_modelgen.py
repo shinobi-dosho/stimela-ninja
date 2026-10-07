@@ -169,6 +169,18 @@ def dtype_to_type(dtype: str) -> Any:
     """
     dtype = str(dtype).strip()
     lower = dtype.lower()
+    if lower == "directorybundle":
+        from shinobi.products import DirectoryBundle
+
+        return DirectoryBundle
+    if lower.startswith("productfamily["):
+        from shinobi.products import DirectoryBundle, ProductFamily
+
+        if lower == "productfamily[file]":
+            return ProductFamily[Path]
+        if lower == "productfamily[directorybundle]":
+            return ProductFamily[DirectoryBundle]
+        raise ValueError("ProductFamily supports only File and DirectoryBundle")
     if lower == "msv4":
         raise DatasetDeclarationError("MSv4 is reserved and unsupported as a dataset dtype")
     if lower.startswith("list:"):

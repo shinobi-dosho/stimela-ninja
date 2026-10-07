@@ -486,7 +486,9 @@ def _resolved_inputs(submission_dir: Path, bundle: RecipeBundle, plan: Execution
         if source.step not in loaded:
             loaded[source.step] = _result_for(submission_dir, bundle, plan, source.step)
         result = loaded[source.step]
-        return getattr(result.outputs, source.field)
+        from shinobi.products import resolve_reference
+
+        return resolve_reference(getattr(result.outputs, source.field), source.selection)
 
     ref = frozen.declaration()
     for field, source in ref.wiring.items():
@@ -1375,7 +1377,9 @@ def finalize_submission(submission_dir: Path) -> Finalization:
     manifest_name = None
     if all_committed and settled:
         recipe = bundle.declaration()
-        output_values = {name: getattr(results[binding.step].outputs, binding.field) for name, binding in recipe.output_wiring.items()}
+        from shinobi.products import resolve_reference
+
+        output_values = {name: resolve_reference(getattr(results[binding.step].outputs, binding.field), binding.selection) for name, binding in recipe.output_wiring.items()}
         root = StepResult(
             name=recipe.name,
             returncode=0,

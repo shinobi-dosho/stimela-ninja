@@ -277,3 +277,23 @@ Exceptions
 .. automodule:: shinobi.exceptions
    :members:
    :show-inheritance:
+
+Product declaration helpers
+---------------------------
+
+.. currentmodule:: shinobi.products
+
+.. autoclass:: shinobi.products.AggregateSpec
+   :members:
+
+.. py:class:: ProductModel
+
+   Internal closed, frozen base for framework product values and declarations.
+
+.. py:data:: T
+
+   Type parameter for File and DirectoryBundle members.
+
+.. py:data:: Coordinate
+
+   Strict integer or string coordinate; bool values are rejected.

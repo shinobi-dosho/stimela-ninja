@@ -271,3 +271,13 @@ you can confirm how a definition was interpreted:
 .. code-block:: console
 
     $ ninja cab cabs.yml wsclean
+
+Output-family declarations
+--------------------------
+
+Static outputs may use ``ProductFamily[File]`` or
+``ProductFamily[DirectoryBundle]`` with a closed ``family`` mapping. See
+:doc:`products` for bounded axes, anchored discovery captures and availability
+tables. Unknown family keys and unsupported member types are errors. A family
+output cannot also declare ``implicit`` or act as a same-named argv input.
+Loading these declarations never executes a tool or external schema function.

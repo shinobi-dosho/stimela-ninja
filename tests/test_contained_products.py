@@ -1064,6 +1064,75 @@ def test_dynamic_product_runtime_wired_extra_remains_unresolved(tmp_path, monkey
     assert not (tmp_path / "out-test").exists()
 
 
+@pytest.mark.parametrize("worker", [False, True])
+@pytest.mark.parametrize("initial,nested", [(1, True), (0, True), (1, False)])
+def test_runtime_family_count_refinement_respects_original_parents(tmp_path, monkeypatch, worker, initial, nested):
+    import sys
+    from pydantic import create_model
+    from shinobi import AxisSpec, FamilySpec, MemberRule, ProductFamily
+    from shinobi.exceptions import DatasetLifecycleUnavailableError
+    from shinobi.steps.schema import OutputRef
+
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "obs.ms"
+    root.mkdir()
+    (root / "table.dat").write_text("raw")
+    _install_dataset(monkeypatch, tmp_path, root)
+    recipe = _runtime_product_recipe(tmp_path, actual="unused")
+    selector = recipe.steps[1]
+    selector.step.outputs_model = create_model("FamilyCount", n=(int, initial))
+    selector.step.wranglers = {r"^COUNT=(?P<n>\d+)$": ["PARSE_OUTPUT:n:int"]}
+    selector.params["script"] = "print('COUNT=2')"
+    product = recipe.steps[-1]
+    pattern = "{band}/out" if nested else "out-{band}"
+    spec = FamilySpec(coordinates={"band": "int"}, rules=(MemberRule(path=pattern, axes={"band": AxisSpec(count_input="n", suffix="dir{index}")}, required=True),))
+    product.step = Cab(
+        name="produce",
+        command=f"{sys.executable} -c",
+        inputs_model=create_model("FamilyCountInput", script=(str, ...), n=(int, initial)),
+        outputs_model=create_model("FamilyCountOutput", image=(ProductFamily[Path], ...)),
+        field_meta={"script": ParamMeta(positional_head=True), "n": ParamMeta(positional=True), "image": ParamMeta(family=spec)},
+    )
+    product.wiring = {"n": OutputRef(step="select", field="n")}
+    product.params = {
+        "script": f"import sys;from pathlib import Path;Path({str(tmp_path / 'launched')!r}).touch();"
+        + (
+            "[(Path('dir'+str(i)).mkdir(exist_ok=True),Path('dir'+str(i),'out').write_text('new')) for i in range(int(sys.argv[1]))]"
+            if nested
+            else "[Path('out-dir'+str(i)).write_text('new') for i in range(int(sys.argv[1]))]"
+        )
+    }
+    if nested:
+        (tmp_path / "dir0").mkdir()
+        (tmp_path / "dir0/out").write_text("old product")
+    if worker:
+        workflow, plan, lease = _prepared(tmp_path, recipe, root)
+        try:
+            for name in ("read", "select"):
+                attempt = plan.attempt(name)
+                assert execute_step(workflow.submission_dir, name, attempt.attempt_id) == 0
+            attempt = plan.attempt("produce")
+            assert execute_step(workflow.submission_dir, "produce", attempt.attempt_id) == int(nested)
+            if nested:
+                final = workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "final.json"
+                assert "family 'image' pattern changed its planned product directory reservation" in final.read_text()
+        finally:
+            lease.release()
+    elif nested:
+        with pytest.raises(DatasetLifecycleUnavailableError, match="family 'image' pattern changed its planned product directory reservation"):
+            recipe(ms=root, backend="native", cache=False)
+    else:
+        assert recipe(ms=root, backend="native", cache=False).success
+    if nested:
+        assert not Path("launched").exists()
+        assert Path("dir0/out").read_text() == "old product"
+        assert not Path("dir1").exists()
+    else:
+        assert Path("launched").exists()
+        assert Path("out-dir0").read_text() == Path("out-dir1").read_text() == "new"
+    assert (root / "table.dat").read_text() == "raw"
+
+
 @pytest.mark.parametrize("partial,scalar_default", [(False, False), (True, False), (True, True)])
 def test_dynamic_product_extra_preserves_sibling_writer_order(tmp_path, monkeypatch, partial, scalar_default):
     from shinobi.dataset_access import plan_recipe_accesses

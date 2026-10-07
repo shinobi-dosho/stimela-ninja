@@ -117,6 +117,7 @@ def passthrough_result(ref: StepRef, prev: StepResult, inputs: Any) -> StepResul
         worker_digest=prev.worker_digest,
         resources=prev.resources,
         skipped=True,
+        bundle_inventories=prev.bundle_inventories,
         cache_key=prev.cache_key,
         output_keys=prev.output_keys,
     )

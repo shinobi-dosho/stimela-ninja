@@ -47,6 +47,12 @@ def pack(value: Any) -> JsonValue:
         return ["mutability", value.value]
     if type(value) is DatasetAccess:
         return ["dataset_access", value.model_dump(mode="json")]
+    from shinobi.products import framework_type
+
+    recognized = framework_type(type(value))
+    if recognized:
+        kind, member = recognized
+        return ["product", [kind, "bundle" if member is not None and member is not Path else "file", value.model_dump(mode="json")]]
     if isinstance(value, BaseModel):
         return ["dict", pack_model(value)]
     if type(value) in (list, tuple):
@@ -65,6 +71,14 @@ def unpack(value: JsonValue) -> Any:
         return data
     if kind == "path" and isinstance(data, str):
         return Path(data)
+    if kind == "product" and isinstance(data, list) and len(data) == 3:
+        from shinobi.products import DirectoryBundle, ProductFamily, ProductMember
+
+        name, member, payload = data
+        if member not in ("file", "bundle") or name not in ("family", "member", "bundle"):
+            raise BundleError("invalid framework product tag")
+        annotation = DirectoryBundle if name == "bundle" else (ProductFamily if name == "family" else ProductMember)[Path if member == "file" else DirectoryBundle]
+        return annotation.model_validate(payload)
     if kind == "param_meta":
         return ParamMeta.model_validate(unpack(data))
     if kind == "mutability" and isinstance(data, str):
@@ -172,7 +186,25 @@ class Constraint(WireModel):
 
 
 class TypeSpec(WireModel):
-    kind: Literal["str", "int", "float", "bool", "path", "none", "any", "list", "tuple", "dict", "union", "literal", "model", "annotated"]
+    kind: Literal[
+        "str",
+        "int",
+        "float",
+        "bool",
+        "path",
+        "none",
+        "any",
+        "list",
+        "tuple",
+        "dict",
+        "union",
+        "literal",
+        "model",
+        "annotated",
+        "product_family",
+        "product_member",
+        "directory_bundle",
+    ]
     args: tuple[TypeSpec, ...] = ()
     values: tuple[JsonValue, ...] = ()
     variadic: bool = False
@@ -191,6 +223,12 @@ class TypeSpec(WireModel):
 
     @classmethod
     def capture(cls, annotation: Any, seen: tuple[type, ...] = ()) -> TypeSpec:
+        from shinobi.products import framework_type
+
+        product = framework_type(annotation)
+        if product:
+            kind, member = product
+            return cls(kind={"family": "product_family", "member": "product_member", "bundle": "directory_bundle"}[kind], args=(cls.capture(member),) if member else ())
         for name, scalar in _SCALARS.items():
             if annotation is scalar:
                 return cls(kind=name)
@@ -213,6 +251,14 @@ class TypeSpec(WireModel):
         if self.kind in _SCALARS:
             return _SCALARS[self.kind]
         args = tuple(a.restore() for a in self.args)
+        if self.kind in ("product_family", "product_member", "directory_bundle"):
+            from shinobi.products import DirectoryBundle, ProductFamily, ProductMember
+
+            if self.kind == "directory_bundle" and not args:
+                return DirectoryBundle
+            if len(args) == 1 and args[0] in (Path, DirectoryBundle):
+                return (ProductFamily if self.kind == "product_family" else ProductMember)[args[0]]
+            raise BundleError("invalid framework product type")
         if self.kind == "model" and self.model_spec is not None:
             return self.model_spec.restore()
         if self.kind == "literal" and self.values:

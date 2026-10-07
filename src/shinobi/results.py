@@ -171,6 +171,7 @@ class StepResult:
     # override a *Recipe* carries, since a recipe is never itself cached and
     # each of its declared outputs is really produced by a different sub-step.
     # Read them through `provenance_key`, never directly.
+    bundle_inventories: list[dict[str, Any]] | None = None
     cache_key: str | None = None
     output_keys: "dict[str, ProvenanceKey | list[ProvenanceKey | None]] | None" = None
 

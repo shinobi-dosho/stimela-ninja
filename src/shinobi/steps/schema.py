@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import fnmatch
 import re
-from collections.abc import Sequence as ABCSequence, Set as ABCSet
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -31,6 +30,7 @@ from shinobi._annotations import walk_annotation
 from shinobi.dataset_access import DatasetAccess, validate_scope_dataset_accesses
 from shinobi.exceptions import ParameterError
 from shinobi.resources import Resources
+from shinobi.products import Coordinate, FamilySpec, family_annotation, family_plans, framework_type, iter_product_paths, resolve_reference
 
 
 class Mutability(str, Enum):
@@ -162,6 +162,7 @@ class ParamMeta(BaseModel):
     abbreviation: str | None = None
     write_path: bool = False
     writable: bool | None = None
+    family: FamilySpec | None = None
 
 
 class Policies(BaseModel):
@@ -352,7 +353,7 @@ def path_fields(model: type[BaseModel]) -> set[str]:
     result: set[str] = set()
     for name, field in model.model_fields.items():
         for leaf in _unwrap_annotation(field.annotation):
-            if isinstance(leaf, type) and issubclass(leaf, Path):
+            if framework_type(leaf) or isinstance(leaf, type) and issubclass(leaf, Path):
                 result.add(name)
                 break
     return result
@@ -365,16 +366,9 @@ def output_path_values(scope: Scope, outputs: BaseModel | dict[str, Any]) -> Ite
     never become filesystem declarations.
     """
 
-    def paths(value):
-        if isinstance(value, (Path, str)):
-            yield Path(value)
-        elif isinstance(value, (ABCSequence, ABCSet)):
-            for item in value:
-                yield from paths(item)
-
     for name in sorted(path_fields(scope.outputs_model)):
         value = outputs.get(name) if isinstance(outputs, dict) else getattr(outputs, name, None)
-        for path in paths(value):
+        for path in iter_product_paths(value):
             yield name, path, scope.outputs_model.model_fields[name].is_required()
 
 
@@ -447,10 +441,12 @@ def validate_declared_writes(scope: Scope, prepared: dict[str, Any], cwd: Path, 
         if writable:
             continue
         value = prepared[name]
-        for item in value if isinstance(value, (list, tuple)) else [value]:
-            if item is not None:
-                readonly.append((canonical(Path(str(item))), name))
-    for entries, product in ((declared_output_paths(scope, prepared), True), (declared_output_dirs(scope, prepared), False)):
+        for item in iter_product_paths(value):
+            readonly.append((canonical(item), name))
+    input_trees = protected_family_inputs(scope, prepared, cwd)
+    for name, plan in family_plans(scope, prepared, cwd, best_effort=True).items():
+        validate_family_inputs(name, plan, input_trees, cwd, error_type=error_type)
+    for entries, product in ((declared_output_paths(scope, prepared, workspace=cwd), True), (declared_output_dirs(scope, prepared, workspace=cwd), False)):
         for path, source in entries:
             target = canonical(path)
             for protected, name in readonly:
@@ -461,6 +457,33 @@ def validate_declared_writes(scope: Scope, prepared: dict[str, Any], cwd: Path, 
                         f"drop `writable: false` from '{name}' if the tool really writes there, "
                         "or point the output outside it."
                     )
+
+
+def protected_family_inputs(scope: Scope, prepared: dict[str, Any], cwd: Path) -> list[tuple[Path, str]]:
+    """Canonical non-destination physical inputs, including whole-family roots."""
+    return [
+        ((path if path.is_absolute() else cwd / path).resolve(), name)
+        for name in path_input_modes(scope, prepared)
+        if name not in write_path_fields(scope)
+        for path in iter_product_paths(prepared[name])
+    ]
+
+
+def validate_family_inputs(name, plan, input_trees, cwd, *, path=None, error_type=ParameterError):
+    """Shared preflight namespace proof and post-run concrete overlap check."""
+    if path is None:
+        for candidate in plan.candidates:
+            validate_family_inputs(name, plan, input_trees, cwd, path=candidate.path, error_type=error_type)
+        for pattern in plan.patterns():
+            issue = product_pattern_issue(pattern, workspace=cwd, resources={root for root, _name in input_trees}, resource_label="input tree")
+            if issue:
+                raise error_type(f"{name}: family discovery overlaps protected inputs (including writable: false inputs): {issue}")
+        return
+    plan._contain(path)
+    actual = path.resolve()
+    for protected, input_name in input_trees:
+        if paths_overlap(actual, protected):
+            raise error_type(f"{name}: family output overlaps input tree {input_name!r}: {protected}")
 
 
 _GLOB_CHARS = frozenset("*?[")
@@ -518,7 +541,7 @@ def static_wiring_values(
             if isinstance(item, InputRef) and item.field in recipe_inputs and item.field not in unresolved_inputs:
                 found.append(recipe_inputs[item.field])
             elif isinstance(item, OutputRef) and item.field in outputs.get(item.step, {}):
-                found.append(outputs[item.step][item.field])
+                found.append(resolve_reference(outputs[item.step][item.field], item.selection))
             else:
                 break
         if len(found) == len(sources):
@@ -550,6 +573,8 @@ def static_output_values(
     values: dict[str, Any] = {}
     for name, model_field in scope.outputs_model.model_fields.items():
         if name in unresolved_inputs or name in skip_outputs:
+            continue
+        if scope.field_meta.get(name) is not None and scope.field_meta[name].family is not None:
             continue
         if name in prepared:
             values[name] = prepared[name]
@@ -590,10 +615,11 @@ def unresolved_output_path_fields(scope: Scope, prepared: dict[str, Any]) -> set
     A resolved ``None`` or empty collection is deliberately not unresolved:
     those are valid declarations of no product for optional/list outputs.
     """
-    return {name for name, _value, resolved in _resolved_output_path_values(scope, prepared) if not resolved}
+    planned = family_plans(scope, prepared, Path.cwd(), best_effort=True)
+    return {name for name, _value, resolved in _resolved_output_path_values(scope, prepared) if not resolved and name not in planned}
 
 
-def declared_output_paths(scope: Scope, prepared: dict[str, Any]) -> list[tuple[Path, str]]:
+def declared_output_paths(scope: Scope, prepared: dict[str, Any], *, workspace: Path | None = None) -> list[tuple[Path, str]]:
     """``(path, source)`` for every path-typed output field the step is
     *declared* to produce, resolved before the run from the declarations
     alone -- the products themselves, where `declared_output_dirs` (built on
@@ -621,8 +647,18 @@ def declared_output_paths(scope: Scope, prepared: dict[str, Any]) -> list[tuple[
     for name, value, resolved in _resolved_output_path_values(scope, prepared):
         if not resolved or value is None:
             continue
-        for item in value if isinstance(value, (list, tuple)) else [value]:
-            paths.append((Path(str(item)), f"output {name!r}"))
+        for item in iter_product_paths(value):
+            paths.append((item, f"output {name!r}"))
+    cwd = workspace or Path.cwd()
+    for name, plan in family_plans(scope, prepared, cwd, best_effort=True).items():
+        for candidate in plan.candidates:
+            path = candidate.path
+            if (
+                not Path(plan.spec.root.format(**prepared)).is_absolute()
+                and not Path(candidate.rule.path.format(**{**prepared, **dict.fromkeys(candidate.rule.axes, "")})).is_absolute()
+            ):
+                path = path.relative_to(cwd)
+            paths.append((path, f"output {name!r}"))
     return paths
 
 
@@ -633,6 +669,7 @@ class _ProductReservations:
     harvest: tuple[str, ...]
     scratch: tuple[str, ...]
     inputs: dict[str, Any]
+    families: dict[str, FamilySpec] | None = None
 
     @property
     def declarations(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
@@ -640,7 +677,7 @@ class _ProductReservations:
 
     def with_inputs(self, inputs: dict[str, Any]) -> _ProductReservations:
         """Retain original declarations when anchoring execution input paths."""
-        return _ProductReservations(self.harvest, self.scratch, inputs)
+        return _ProductReservations(self.harvest, self.scratch, inputs, self.families)
 
 
 def _resolved_product_patterns(
@@ -648,6 +685,7 @@ def _resolved_product_patterns(
     prepared: dict[str, Any],
     *,
     declarations: tuple[tuple[str, tuple[str, ...]], ...] | None = None,
+    workspace: Path | None = None,
 ) -> Iterator[tuple[str, str | None]]:
     """Format product declarations once; absent inputs remain unresolved."""
     present = {name: value for name, value in prepared.items() if value is not None}
@@ -663,6 +701,12 @@ def _resolved_product_patterns(
             if format_spec:
                 require_present_fields(format_spec)
 
+    cwd = workspace or Path.cwd()
+    for name, plan in family_plans(scope, prepared, cwd, best_effort=True).items():
+        for pattern in [*(str(candidate.path) for candidate in plan.candidates), *plan.patterns()]:
+            if not Path(plan.spec.root.format(**prepared)).is_absolute():
+                pattern = str(Path(pattern).relative_to(cwd))
+            yield f"family {name!r} pattern", pattern
     for kind, patterns in declarations if declarations is not None else (("harvest", scope.harvest), ("scratch", scope.scratch)):
         for pattern in patterns:
             source = f"{kind} pattern {pattern!r}"
@@ -683,7 +727,7 @@ def _product_pattern_directory(pattern: str) -> Path:
     return Path(*literal) if literal else Path(".")
 
 
-def product_pattern_issue(pattern: str | None, *, workspace: Path, resources: set[Path]) -> str | None:
+def product_pattern_issue(pattern: str | None, *, workspace: Path, resources: set[Path], resource_label: str = "MSv2 closure") -> str | None:
     """Prove a bounded product family cannot select any protected tree.
 
     Only the final basename may contain glob syntax. Ancestor directories
@@ -705,9 +749,9 @@ def product_pattern_issue(pattern: str | None, *, workspace: Path, resources: se
         protected = {resource.resolve() for resource in resources}
         for resource in protected:
             if parent == resource or parent.is_relative_to(resource):
-                return f"writes inside the MSv2 closure: {resource}"
+                return f"writes inside the {resource_label}: {resource}"
             if resource.is_relative_to(parent) and fnmatch.fnmatchcase(resource.relative_to(parent).parts[0], path.name):
-                return f"can select the MSv2 closure: {resource}"
+                return f"can select the {resource_label}: {resource}"
         # iterdir sees dangling symlinks too, unlike glob implementations
         # which may omit them. Resolve non-strictly for planned CREATE roots.
         try:
@@ -719,13 +763,13 @@ def product_pattern_issue(pattern: str | None, *, workspace: Path, resources: se
                 if fnmatch.fnmatchcase(entry.name, path.name):
                     canonical = entry.resolve()
                     if any(paths_overlap(canonical, resource) for resource in protected):
-                        return f"selects an alias overlapping the MSv2 closure: {entry}"
+                        return f"selects an alias overlapping the {resource_label}: {entry}"
     except (OSError, RuntimeError, ValueError) as exc:
         return f"cannot inspect its destination safely: {exc}"
     return None
 
 
-def declared_output_dirs(scope: Scope, prepared: dict[str, Any]) -> list[tuple[Path, str]]:
+def declared_output_dirs(scope: Scope, prepared: dict[str, Any], *, workspace: Path | None = None) -> list[tuple[Path, str]]:
     """``(directory, source)`` for every directory the step is *declared* to
     write into, resolved before the run from the declarations alone -- never
     from the shape of an input's value.
@@ -782,10 +826,10 @@ def declared_output_dirs(scope: Scope, prepared: dict[str, Any]) -> list[tuple[P
         seen.add(path)
         dirs.append((path, source))
 
-    for path, source in declared_output_paths(scope, prepared):
+    for path, source in declared_output_paths(scope, prepared, workspace=workspace):
         add(path.parent, source)
 
-    for source, pattern in _resolved_product_patterns(scope, prepared):
+    for source, pattern in _resolved_product_patterns(scope, prepared, workspace=workspace):
         if pattern is None:
             continue
         add(_product_pattern_directory(pattern), source)
@@ -830,10 +874,8 @@ def _path_access_contributors(
     root = workspace.resolve() if workspace is not None else Path.cwd().resolve()
 
     def paths(value: Any) -> Iterator[Path]:
-        for item in value if isinstance(value, (list, tuple)) else [value]:
-            if item is not None:
-                path = Path(str(item))
-                yield (path if path.is_absolute() else root / path).resolve()
+        for path in iter_product_paths(value):
+            yield (path if path.is_absolute() else root / path).resolve()
 
     mutated = mutated_path_fields(scope)
     destinations = write_path_fields(scope)
@@ -844,9 +886,12 @@ def _path_access_contributors(
     for name, value, resolved in _resolved_output_path_values(scope, prepared):
         if resolved:
             yield from ((canonical, True, f"output {name!r}", name) for canonical in paths(value))
+    for name, plan in family_plans(scope, prepared, root, best_effort=True).items():
+        for candidate in plan.candidates:
+            yield candidate.path.resolve(), True, f"output {name!r}", name
     # Preserve conservative literal-prefix reservations for ordinary glob
     # declarations, including the workspace parent of a flat family.
-    for source, pattern in _resolved_product_patterns(scope, prepared):
+    for source, pattern in _resolved_product_patterns(scope, prepared, workspace=workspace):
         if pattern is None:
             continue
         directory = _product_pattern_directory(pattern)
@@ -955,6 +1000,21 @@ class Scope(BaseModel):
     # since a recipe is not a unit of execution and reserving for both it
     # and its leaves would double-count.
     resources: Resources | None = None
+
+    @model_validator(mode="after")
+    def _families(self):
+        for name, meta in self.field_meta.items():
+            if meta.family is not None and name not in self.outputs_model.model_fields:
+                raise ValueError(f"{name}: family metadata requires a declared family output")
+        for name, field in self.outputs_model.model_fields.items():
+            member = family_annotation(field.annotation)
+            meta = self.field_meta.get(name)
+            if member is not None and (meta is None or meta.family is None) and isinstance(self, Cab):
+                raise ValueError(f"{name}: family output requires family metadata")
+            if meta is not None and meta.family is not None:
+                if member is None or meta.implicit is not None or name in self.inputs_model.model_fields:
+                    raise ValueError(f"{name}: family metadata requires a family-only output, without implicit")
+        return self
 
     @model_validator(mode="after")
     def _dataset_access_fields_exist(self) -> "Scope":
@@ -1175,6 +1235,7 @@ class Cab(Scope):
         # `implicit` templates reference *input field* names, so scan the
         # output side's templates plus the two glob lists.
         declarations = [str(meta.implicit) for name, meta in self.field_meta.items() if name in self.outputs_model.model_fields and isinstance(meta.implicit, str)]
+        declarations += [template for meta in self.field_meta.values() if meta.family for template in [meta.family.root, *(rule.path for rule in meta.family.rules)]]
         declarations += list(self.harvest or []) + list(self.scratch or [])
         haystack = " ".join(declarations)
         orphaned = [name for name in marked if "{" + name not in haystack and name not in declared_outputs]
@@ -1204,6 +1265,12 @@ class OutputRef(BaseModel):
 
     step: str
     field: str
+    selection: dict[str, Coordinate] | None = None
+
+    def select(self, **coordinates):
+        if self.selection is not None:
+            raise ValueError("reference already has a coordinate selection")
+        return type(self)(step=self.step, field=self.field, selection=coordinates)
 
 
 class ScatterSpec(BaseModel):
@@ -1713,11 +1780,11 @@ class Recipe(Scope):
                 raise ValueError(
                     f"loop '{name}': body output '{out_field}' is not wired to any of the body's steps (Recipe.set_output), so the loop cannot tell which step produces it"
                 )
-            return OutputRef(step=iteration_step(k, src.step), field=src.field)
+            return OutputRef(step=iteration_step(k, src.step), field=src.field, selection=src.selection)
 
         if until not in body.outputs_model.model_fields:
             raise ValueError(f"loop '{name}': until='{until}' is not an output of {body.outputs_model.__name__}")
-        if until not in path_fields(body.outputs_model):
+        if until not in path_fields(body.outputs_model) or any(framework_type(leaf) for leaf in _unwrap_annotation(body.outputs_model.model_fields[until].annotation)):
             raise ValueError(
                 f"loop '{name}': until='{until}' must be a path-typed output (its existence on disk is the convergence signal), but {body.outputs_model.__name__}.{until} is not a path"
             )
@@ -1769,7 +1836,7 @@ class Recipe(Scope):
                     nonlocal intra_iteration
                     if isinstance(source, OutputRef):
                         intra_iteration = True
-                        return OutputRef(step=iteration_step(k, source.step), field=source.field)
+                        return OutputRef(step=iteration_step(k, source.step), field=source.field, selection=source.selection)
                     if source.field == index_input:
                         return k
                     bound_source = bound.get(source.field)

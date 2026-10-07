@@ -260,3 +260,15 @@ provenance states, not reusable dataset-state IDs, observed fingerprints or
 worker attempt IDs. A same-key reexecution can require a separately frozen
 physical rollback copy; its identity is not replaced by the new generation's
 observation until the invocation's exact success oracle decides the outcome.
+
+Coordinate product provenance
+-----------------------------
+
+:doc:`products` selections retain the original producing field and a typed
+coordinate address, including through renamed recipe outputs and loop
+pass-through. Downstream keys append this address conditionally; historical
+scalar scientific keys retain their shape. Coordinates never reuse the strict
+MS list ``element_index``. Whole-family values and bundle roots use the shared
+path walker for boundary fingerprints and mounts. Family product declarations
+and recursive kind inventories are product-cache evidence, independent of
+scientific keys, mutation snapshots and reusable dataset-state identities.

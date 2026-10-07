@@ -403,8 +403,9 @@ class ProvenanceKey(str):
 
     producer_field: str | None = None
     element_index: int | None = None
+    coordinates: dict[str, Any] | None = None
 
-    def __new__(cls, value: str, producer_field: str | None = None, element_index: int | None = None) -> "ProvenanceKey":
+    def __new__(cls, value: str, producer_field: str | None = None, element_index: int | None = None, coordinates: dict[str, Any] | None = None) -> "ProvenanceKey":
         """Build a key naming `value` as produced by output `producer_field`.
 
         Args:
@@ -415,6 +416,7 @@ class ProvenanceKey(str):
         obj = str.__new__(cls, value)
         obj.producer_field = producer_field
         obj.element_index = element_index
+        obj.coordinates = coordinates
         return obj
 
 
@@ -434,6 +436,20 @@ def as_provenance_key(key: Any, producer_field: str | None) -> Any:
     if key is None or isinstance(key, ProvenanceKey):
         return key
     return ProvenanceKey(key, producer_field)
+
+
+def selected_key(key, selection):
+    if key is None or selection is None:
+        return key
+    if isinstance(key, list):
+        raise ValueError("selection cannot address indexed dataset provenance")
+    if getattr(key, "coordinates", None) is not None:
+        if key.coordinates != selection:
+            raise ValueError("producer already has a different coordinate address")
+        return key
+    result = ProvenanceKey(str(key), getattr(key, "producer_field", None), getattr(key, "element_index", None))
+    result.coordinates = dict(selection)
+    return result
 
 
 def combine_keys(keys: list[Any]) -> str | None:
@@ -480,7 +496,8 @@ def resolve_input_keys(ref, inbound_keys: dict[str, Any], results: dict[str, Ste
         producer = results.get(source.step)
         if producer is None:
             return None
-        return as_provenance_key(producer.provenance_key(source.field), source.field)
+        key = as_provenance_key(producer.provenance_key(source.field), source.field)
+        return selected_key(key, source.selection)
 
     keys: dict[str, Any] = {}
     for field, source in ref.wiring.items():
@@ -570,9 +587,17 @@ def compute_cache_key(
     # would be a false invalidation, not a correctness win.
     for name in sorted(prepared):
         value = prepared[name]
-        if name in input_paths and name not in mutated_paths and name not in wired and value is not None:
-            values = value if isinstance(value, (list, tuple)) else [value]
-            parts.append([name, repr(value), [_hash_path(Path(v)) for v in values]])
+        from shinobi.products import has_product_value, iter_product_paths, product_cache_value
+
+        if has_product_value(value):
+            parts.append([name, product_cache_value(value)])
+            if name not in wired:
+                parts.append([name, "physical", [_hash_path(path) for path in iter_product_paths(value)]])
+            elif isinstance(value, list) and isinstance(input_keys[name], list) and any(key is None for key in input_keys[name]):
+                parts.append([name, "physical", [[_hash_path(path) for path in iter_product_paths(one)] if key is None else None for one, key in zip(value, input_keys[name])]])
+        elif name in input_paths and name not in mutated_paths and name not in wired and value is not None:
+            values = list(iter_product_paths(value))
+            parts.append([name, repr(value), [_hash_path(v) for v in values]])
         elif (
             name in input_paths
             and name not in mutated_paths
@@ -591,6 +616,20 @@ def compute_cache_key(
             # would otherwise be invisible.
             parts.append([name, repr(value)])
     if input_keys:
+        from shinobi.products import address
+
+        def coordinate_address(key):
+            if isinstance(key, list):
+                return [coordinate_address(one) for one in key]
+            return [getattr(key, "producer_field", None), address(key.coordinates)] if getattr(key, "coordinates", None) is not None else None
+
+        selections = [
+            [name, coordinate_address(key)]
+            for name, key in sorted(input_keys.items())
+            if getattr(key, "coordinates", None) is not None or isinstance(key, list) and any(getattr(one, "coordinates", None) is not None for one in key)
+        ]
+        if selections:
+            parts.append(["__coordinate_upstream_v1__", selections])
         parts.append(["__upstream__", [[name, input_keys[name]] for name in sorted(input_keys)]])
 
         def indexed(key):
@@ -619,7 +658,7 @@ def compute_cache_key(
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
-PRODUCT_CONTRACT_VERSION = 1
+PRODUCT_CONTRACT_VERSION = 2
 
 
 def product_contract(scope: Scope, prepared: dict[str, Any], workspace: Path | None = None) -> dict[str, Any]:
@@ -679,7 +718,15 @@ def product_contract(scope: Scope, prepared: dict[str, Any], workspace: Path | N
                 meta.implicit if meta and isinstance(meta.implicit, str) else None,
             ]
         )
-    return {"version": PRODUCT_CONTRACT_VERSION, "workspace": str(workspace or Path.cwd()), "fields": fields, "harvest": list(scope.harvest), "reusable": reusable}
+    families = {name: meta.family.model_dump(mode="json") for name, meta in scope.field_meta.items() if meta.family is not None}
+    return {
+        "families": families,
+        "version": PRODUCT_CONTRACT_VERSION,
+        "workspace": str(workspace or Path.cwd()),
+        "fields": fields,
+        "harvest": list(scope.harvest),
+        "reusable": reusable,
+    }
 
 
 class CacheManifest(JsonFileStore):
@@ -714,6 +761,11 @@ class CacheManifest(JsonFileStore):
                     return None
             except (OSError, ValueError):
                 return None
+        from shinobi.products import ProductFamily, DirectoryBundle, family_plans, iter_product_paths, validate_bundle_inventory
+
+        inventories = entry.get("bundle_inventories", [])
+        if not isinstance(inventories, list) or any(not validate_bundle_inventory(inventory) for inventory in inventories):
+            return None
         try:
             outputs = scope.outputs_model(**entry["outputs"])
             inputs = scope.inputs_model(**prepared)
@@ -724,6 +776,22 @@ class CacheManifest(JsonFileStore):
                 if required and not path.exists():
                     return None
         except (OSError, ValueError):
+            return None
+        try:
+            plans = family_plans(scope, prepared, Path.cwd())
+            for name in scope.outputs_model.model_fields:
+                value = getattr(outputs, name, None)
+                if isinstance(value, ProductFamily):
+                    if not value.resolved:
+                        return None
+                    if name in plans:
+                        plans[name].validate_table(value, Path.cwd())
+                    if any(str(path.resolve()) not in entry.get("products", ()) for path in iter_product_paths(value)):
+                        return None
+                    for member in value.members:
+                        if isinstance(member.value, DirectoryBundle) and not any(Path(item["root"]).resolve() == member.value.path.resolve() for item in inventories):
+                            return None
+        except (OSError, ValueError, KeyError, TypeError):
             return None
         # Restore provenance too (missing on entries written by older
         # versions -- `.get` defaults keep those readable), so a cached step
@@ -748,6 +816,7 @@ class CacheManifest(JsonFileStore):
             venv=entry.get("venv"),
             venv_digest=entry.get("venv_digest"),
             sandboxed=entry.get("sandboxed", False),
+            bundle_inventories=inventories,
         )
 
     def entry(self, step_path: str) -> dict[str, Any] | None:
@@ -794,6 +863,7 @@ class CacheManifest(JsonFileStore):
 
         def mutate(data: dict[str, Any]) -> None:
             data[step_path] = {
+                "bundle_inventories": result.bundle_inventories or [],
                 "cache_key": cache_key,
                 "run_id": run_id,
                 "outputs": json.loads(result.outputs.model_dump_json()),

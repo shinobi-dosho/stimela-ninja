@@ -81,6 +81,15 @@ nitpick_ignore = [
     ("py:class", "shinobi.steps.schema._InputsProxy"),
     ("py:class", "shinobi.steps.schema._LoopOutputsProxy"),
     ("py:class", "shinobi.steps.schema._OutputsProxy"),
+    # Pydantic Annotated metadata is rendered as pseudo class references by
+    # autodoc; these values are not importable classes. Coordinate is a type
+    # alias documented as data, and annotated-types has no public inventory.
+    ("py:class", "strict=True"),
+    ("py:class", "ge=0"),
+    ("py:class", "annotated_types.Ge"),
+    ("py:class", "Coordinate"),
+    # The generic type parameter is a data declaration, not a Python class.
+    ("py:class", "shinobi.products.T"),
     # Private contained-execution reservation record, not a public API.
     ("py:class", "_ProductReservations"),
 ]

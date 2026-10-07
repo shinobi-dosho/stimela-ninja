@@ -170,6 +170,10 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
                             f"'{one_source.field}' of step '{one_source.step}', which is not "
                             f"a field of {producer_scope.outputs_model.__name__}"
                         )
+                    from shinobi.products import family_annotation
+
+                    if one_source.selection is not None and family_annotation(producer_scope.outputs_model.model_fields[one_source.field].annotation) is None:
+                        raise RecipeGraphError("coordinate selection requires a family output")
                     dep = index[one_source.step]
                     deps[i].add(dep)
                     dependents[dep].add(i)
@@ -186,6 +190,11 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
                 f"'{source.field}' of step '{source.step}', which is not a field of "
                 f"{producer_scope.outputs_model.__name__}"
             )
+
+        from shinobi.products import family_annotation
+
+        if source.selection is not None and family_annotation(producer_scope.outputs_model.model_fields[source.field].annotation) is None:
+            raise RecipeGraphError("coordinate selection requires a family output")
 
     _check_acyclic(recipe.name, names, deps)
     return RecipeGraph(names=names, deps=deps, dependents=dependents)
@@ -324,6 +333,13 @@ def check_offloadable(recipe: "Recipe", *, worker: bool = False, allow_dataset_p
         # the ordering edges the declared graph doesn't have. A MUTABLE
         # *non*-path input is a live Python object, which no filesystem can
         # carry across a node boundary.
+        if not worker:
+            from shinobi.products import family_annotation
+
+            if any(meta.family for meta in scope.field_meta.values()) or any(
+                family_annotation(field.annotation) for model in (scope.inputs_model, scope.outputs_model) for field in model.model_fields.values()
+            ):
+                reasons.append(f"step {ref.name!r}: output families require worker offload")
         paths = path_fields(scope.inputs_model)
         mutable_non_path = sorted(name for name, m in scope.input_mutability.items() if m is Mutability.MUTABLE and name not in paths)
         if mutable_non_path:
@@ -342,6 +358,8 @@ def check_offloadable(recipe: "Recipe", *, worker: bool = False, allow_dataset_p
             src: The output reference to check (wrangler-derived and
                 non-path outputs are ineligible for offload).
         """
+        if src.selection is not None and not worker:
+            reasons.append(f"{label}: coordinate selection requires worker offload")
         if worker:
             return  # typed values and wrangler outputs travel in result records
         producer = by_name.get(src.step)
