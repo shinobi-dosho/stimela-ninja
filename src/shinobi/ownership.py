@@ -65,7 +65,7 @@ def scope_requires_ownership(scope: Scope) -> bool:
         return any(scope_requires_ownership(step.step) for step in scope.steps)
     from shinobi.dataset_access import scope_has_dataset_contract
 
-    return declares_path_writes(scope) or scope_has_dataset_contract(scope)
+    return declares_path_writes(scope) or scope_has_dataset_contract(scope) or bool(scope.derived_reads)
 
 
 def _workspace(path: Path) -> Path:
@@ -230,6 +230,13 @@ def scope_path_accesses(
 
     planner = ResolvedAccessPlanner(workspace)
     for index, (leaf, known, unresolved) in enumerate(_resolved_leaf_inputs(scope, values, step_inputs=step_inputs, known_steps=known_steps)):
+        if leaf.derived_reads:
+            from shinobi.derived import derived_reads
+
+            try:
+                derived_reads(leaf, known, workspace)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise WorkspaceOwnershipError(f"derived read paths must resolve before claiming a workflow: {exc}") from exc
         generic_accesses = path_accesses(leaf, known, workspace=workspace)
         for path, writes in generic_accesses:
             collected[path] = collected.get(path, False) or writes
@@ -405,6 +412,15 @@ def validate_contained_execution(
         parent = _product_pattern_directory(pattern)
         return (parent if parent.is_absolute() else workspace / parent).resolve()
 
+    if scope.derived_reads:
+        from shinobi.derived import derived_reads
+
+        if planned_inputs is None or scope.derived_reads != planned_inputs.derived:
+            raise DatasetLifecycleUnavailableError("derived read declaration changed since planning")
+        expected = [(read.address, read.path) for read in derived_reads(scope, planned_inputs.inputs, workspace)]
+        actual = [(read.address, read.path) for read in derived_reads(scope, prepared, workspace)]
+        if actual != expected:
+            raise DatasetLifecycleUnavailableError("derived read paths changed since planning")
     if planned_inputs is not None and (tuple(scope.harvest), tuple(scope.scratch)) != (planned_inputs.harvest, planned_inputs.scratch):
         raise DatasetLifecycleUnavailableError(f"scope {scope.name!r} changed its planned harvest/scratch declarations")
     issues = list(contained_access_issues(scope, prepared, workspace=workspace, dataset_resources=dataset_resources))

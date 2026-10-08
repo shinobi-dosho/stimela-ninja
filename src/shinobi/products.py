@@ -275,6 +275,7 @@ class MemberRule(ProductModel):
     axes: dict[str, AxisSpec] = Field(default_factory=dict)
     captures: dict[str, Literal["int", "str"]] = Field(default_factory=dict)
     when: dict[str, tuple[str | int | bool, ...]] = Field(default_factory=dict)
+    when_set: dict[str, bool] = Field(default_factory=dict, exclude_if=lambda value: not value)
     required: bool = False
     accept_existing: bool = False
     min_members: int = Field(default=0, ge=0)
@@ -331,6 +332,8 @@ class FamilyPlan:
         self.root = self.root_location.resolve()
         self.candidates, self.matchers, self.active_rules = [], [], []
         for rule in spec.rules:
+            if any(bool(inputs[name]) != present for name, present in rule.when_set.items()):
+                continue
             if any(not any(type(inputs[name]) is type(value) and inputs[name] == value for value in allowed) for name, allowed in rule.when.items()):
                 continue
             self.active_rules.append(rule)

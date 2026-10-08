@@ -49,6 +49,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from shinobi.derived import DerivedAddress, derived_reads, read_fingerprint, profile_identity
 from shinobi.dataset_access import DatasetAccessError, DatasetFallback, DatasetMode, DatasetTable, ResolvedDatasetAccess, plan_recipe_accesses, resolve_scope_dataset_accesses
 from shinobi.dataset_backends import DATASET_MUTATION_CAPABILITY, DATASET_READ_CAPABILITY, DatasetBackendCapability
 from shinobi.dataset_closure import DATASET_CLOSURE_PROFILE, ClosureStatus, DatasetClosure, resolve_dataset_closure
@@ -263,6 +264,26 @@ class DatasetCacheDecision(BaseModel):
     reason: str
 
 
+class AuxiliaryMutationRecord(BaseModel):
+    """Regular-file participants in the existing strict mutation group."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal[1] = 1
+    profile: Literal["regular-file/v1"] = "regular-file/v1"
+    address: DerivedAddress
+    path: Path
+    predecessor_state: str
+    predecessor_signature: str
+    predecessor_fingerprint: str
+    predecessor_snapshot: Path
+    successor_state: str
+    successor_signature: str | None = None
+    successor_fingerprint: str | None = None
+    successor_snapshot: Path | None = None
+    outcome: DatasetMutationOutcome = DatasetMutationOutcome.PENDING
+    restored_state: str | None = None
+
+
 class DatasetLeafAttempt(BaseModel):
     """One atomic step's strict observations under the workflow's claim."""
 
@@ -275,6 +296,7 @@ class DatasetLeafAttempt(BaseModel):
     absent_before: tuple[Path, ...] = ()
     post_observations: tuple[DatasetObservation, ...] = ()
     mutations: tuple[DatasetMutationRecord, ...] = ()
+    auxiliary_mutations: tuple[AuxiliaryMutationRecord, ...] = Field(default=(), exclude_if=lambda value: not value)
     outcome: Literal["pending", "validated", "committed", "reused", "failed", "refused"] = "pending"
     reason: str = ""
 
@@ -1048,6 +1070,7 @@ class StrictLeaf:
         self.absent: tuple[Path, ...] = ()
         self.cache: DatasetCacheDecision | None = None
         self.mutations: dict[str, DatasetMutationRecord] = {}
+        self.auxiliary_mutations: dict[str, AuxiliaryMutationRecord] = {}
         try:
             accesses = resolve_claimed_leaf_accesses(lifecycle, scope, prepared)
         except BaseException as exc:
@@ -1058,7 +1081,27 @@ class StrictLeaf:
             raise
         self.accesses = accesses
         self.fields, self.creates = strict_mutation_targets(scope, self.accesses)
+        self.dataset_fields = dict(self.fields)
+        self.derived = derived_reads(scope, prepared, lifecycle.workspace)
+        self.auxiliary = {}
+        self.selected_predecessors = {}
+        self.selected_identities = {}
+        self.derived_before = {}
+        for read in self.derived:
+            fingerprint = read_fingerprint(read, require=True)
+            self.derived_before[read.address.field] = fingerprint
+            if read.mutable:
+                if read.member != "file" or fingerprint is None:
+                    raise DatasetLifecycleUnavailableError("strict derived mutation requires an existing regular file; directory mutation is unsupported")
+                self.auxiliary[read.address.field] = read
+                self.fields[read.address.field] = read.path
+        if self.auxiliary and not lifecycle.mutation:
+            raise DatasetLifecycleUnavailableError("auxiliary mutation requires an existing strict mutation lifecycle")
+        for read in self.derived:
+            if any(read.path == resource or read.path.is_relative_to(resource) or resource.is_relative_to(read.path) for access in self.accesses for resource in access.resources):
+                raise DatasetLifecycleUnavailableError("derived reads overlap a strict dataset closure")
         self.addresses = {access.field: access.address for access in self.accesses if access.writes}
+        self.addresses.update({field: read.address for field, read in self.auxiliary.items()})
         from shinobi.datasets import executable_dataset_list_fields
 
         self.passthrough_roots = {
@@ -1075,7 +1118,28 @@ class StrictLeaf:
         from shinobi.snapshots import StrictMutation
 
         workspace = self.lifecycle.workspace
-        return StrictMutation(identity=lambda path: dataset_identity(path, workspace), create_fields=self.creates)
+        return StrictMutation(
+            identity=lambda path: dataset_identity(path, workspace),
+            create_fields=self.creates,
+            profiles=dict.fromkeys(self.auxiliary, "regular-file/v1"),
+            predecessors=self.selected_predecessors,
+            predecessor_identities=self.selected_identities,
+        )
+
+    def select_derived_states(self, journal):
+        from shinobi.snapshots import required_predecessor
+
+        identities = []
+        for read in self.derived:
+            if read.mutable:
+                state, identity = required_predecessor(journal, self.step_path, read)
+                self.selected_predecessors[read.address.field] = state
+                self.selected_identities[read.address.field] = identity
+                physical = ["file", identity.fingerprint]
+            else:
+                physical = read_fingerprint(read, require=True)
+            identities.append([read.address.model_dump(mode="json"), str(read.path), physical])
+        return identities
 
     def coverage(self, input_keys: dict[str, Any] | None) -> tuple[str, ...]:
         """How each dataset field entered the cache key -- stated, not implied."""
@@ -1106,7 +1170,7 @@ class StrictLeaf:
         problems = []
         for field, root in sorted(self.fields.items()):
             try:
-                live = dataset_identity(root, self.lifecycle.workspace)
+                live = profile_identity(root, "regular-file/v1") if field in self.auxiliary else dataset_identity(root, self.lifecycle.workspace)
             except DatasetLifecycleUnavailableError as exc:
                 problems.append(f"{field}: {exc}")
                 continue
@@ -1153,7 +1217,7 @@ class StrictLeaf:
         if unexpected:
             raise DatasetLifecycleUnavailableError(f"strict leaf {self.step_path!r}: dataset(s) absent before launch: {', '.join(map(str, unexpected))}")
         plans = {plan.field: plan for plan in guard.plans} if guard is not None else {}
-        for field, root in sorted(self.fields.items()):
+        for field, root in sorted(self.dataset_fields.items()):
             plan = plans.get(field)
             required = plan.required if plan is not None else None
             before = self.pre.get(root)
@@ -1168,6 +1232,18 @@ class StrictLeaf:
                 predecessor_fingerprint=member_fingerprint(before) if before is not None else None,
                 predecessor_snapshot=guard.journal.snapshot_dir(required) if guard is not None and required is not None else None,
                 successor_state=state_name(self.cache_key, self.addresses[field].field, self.addresses[field].element_index),
+            )
+        for field, read in self.auxiliary.items():
+            plan = plans[field]
+            identity = profile_identity(read.path, "regular-file/v1")
+            self.auxiliary_mutations[field] = AuxiliaryMutationRecord(
+                address=read.address,
+                path=read.path,
+                predecessor_state=plan.required,
+                predecessor_signature=identity.signature,
+                predecessor_fingerprint=identity.fingerprint,
+                predecessor_snapshot=guard.journal.snapshot_dir(plan.required),
+                successor_state=state_name(self.cache_key, read.address.field),
             )
         self._record("pending", "predecessor observed under the workflow claim")
 
@@ -1211,7 +1287,7 @@ class StrictLeaf:
             reason = "postcondition failed: " + "; ".join(issues)
             self._record("failed", reason, post=observed)
             raise DatasetLifecycleViolationError(f"strict MSv2 step {self.step_path!r} broke its declared contract: " + "; ".join(issues))
-        for field, root in self.fields.items():
+        for field, root in self.dataset_fields.items():
             observation = post[root]
             assert observation is not None
             from shinobi.snapshots import StateIdentity
@@ -1227,10 +1303,26 @@ class StrictLeaf:
                     "successor_snapshot": guard.journal.snapshot_dir(record.successor_state) if guard is not None else None,
                 }
             )
+        for read in self.derived:
+            if read.mutable:
+                identity = profile_identity(read.path, "regular-file/v1")
+                guard.successor_identities[read.address.field] = identity
+                record = self.auxiliary_mutations[read.address.field]
+                self.auxiliary_mutations[read.address.field] = record.model_copy(
+                    update={
+                        "successor_signature": identity.signature,
+                        "successor_fingerprint": identity.fingerprint,
+                        "successor_snapshot": guard.journal.snapshot_dir(record.successor_state),
+                    }
+                )
+            elif read_fingerprint(read, require=True) != self.derived_before[read.address.field]:
+                raise DatasetLifecycleViolationError(f"read-only derived dependency changed during execution: {read.path}")
         self._post = observed
         self._record("validated", "declared postconditions hold", post=observed)
 
     def commit(self) -> None:
+        for field, record in self.auxiliary_mutations.items():
+            self.auxiliary_mutations[field] = record.model_copy(update={"outcome": DatasetMutationOutcome.COMMITTED})
         for field, record in self.mutations.items():
             self.mutations[field] = record.model_copy(update={"outcome": DatasetMutationOutcome.COMMITTED})
         reason = (
@@ -1250,6 +1342,19 @@ class StrictLeaf:
                 DatasetMutationOutcome.PRE_RUN_RESTORED: plan.pre_run_head if plan is not None else None,
             }.get(outcome)
             self.mutations[field] = record.model_copy(update={"outcome": outcome, "restored_state": restored})
+        for field, record in self.auxiliary_mutations.items():
+            plan = plans.get(field)
+            outcome = DatasetMutationOutcome.REFUSED if refused else DatasetMutationOutcome(plan.outcome) if plan is not None and plan.outcome != "pending" else record.outcome
+            self.auxiliary_mutations[field] = record.model_copy(
+                update={
+                    "outcome": outcome,
+                    "restored_state": record.predecessor_state
+                    if outcome is DatasetMutationOutcome.ROLLED_BACK
+                    else plan.pre_run_head
+                    if plan is not None and outcome is DatasetMutationOutcome.PRE_RUN_RESTORED
+                    else None,
+                }
+            )
         self._record("refused" if refused else "failed", reason, post=getattr(self, "_post", ()))
 
     def _record(self, outcome: str, reason: str, *, post: tuple[DatasetObservation, ...] = ()) -> None:
@@ -1262,6 +1367,7 @@ class StrictLeaf:
                 absent_before=self.absent,
                 post_observations=post,
                 mutations=tuple(self.mutations[field] for field in sorted(self.mutations)),
+                auxiliary_mutations=tuple(self.auxiliary_mutations[field] for field in sorted(self.auxiliary_mutations)),
                 outcome=outcome,  # type: ignore[arg-type]
                 reason=reason,
             )

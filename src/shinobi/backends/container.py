@@ -614,6 +614,23 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
             else:
                 modes[parent] = modes[parent] or writable  # writable wins
 
+    from shinobi.derived import derived_reads, read_fingerprint
+
+    for read in derived_reads(scope, inputs, Path(workdir)):
+        if read_fingerprint(read, require=True) is None:
+            continue
+        parent = str(read.path.parent)
+        if parent not in modes:
+            modes[parent] = read.mutable
+            order.append(parent)
+        else:
+            modes[parent] = modes[parent] or read.mutable
+        if not read.mutable:
+            readonly_paths.setdefault(parent, []).append(str(read.path))
+            readonly_owner[str(read.path)] = f"derived read {read.address.name}"
+        else:
+            writable_owner.setdefault(parent, read.address.name)
+
     scope_name = getattr(scope, "name", "<scope>")
 
     for outdir, source in declared_output_dirs(scope, inputs):

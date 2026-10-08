@@ -21,11 +21,12 @@ import functools
 import keyword
 import operator
 import re
+import types
 from collections.abc import Hashable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Annotated, Any, Callable, Literal, get_args, get_origin
+from typing import Annotated, Any, Callable, Literal, Union, get_args, get_origin
 
 from pydantic import ConfigDict, Field, StringConstraints, create_model
 
@@ -248,16 +249,48 @@ def constrain_string(py_type: Any, pattern: Any, *, dtype: str, error: type[Exce
     return Annotated[py_type, StringConstraints(pattern=compiled)]
 
 
-def required_field_spec(py_type: Any, required: bool, default: Any) -> tuple[Any, Any]:
-    """`(annotation, default)` for a `pydantic.create_model`/`Field` slot: a
-    required field with no default is `(py_type, ...)`; everything else is
-    Optional with its default (or None), so callers can omit it. The single
-    source of truth for this rule -- shared by `build_model` below and by
-    any loader (e.g. `worker_schema._leaf_field`) building one field at a
-    time instead of a whole model in one call.
+def validate_nullable(spec: dict[str, Any], *, error: type[Exception]) -> bool | None:
+    """Read the explicit nullability contract without coercing schema data.
+
+    Omission preserves the legacy required/default rule. Contradictory
+    nullable dtypes and explicit null defaults are declaration errors.
     """
+    if "nullable" not in spec:
+        return None
+    nullable = spec["nullable"]
+    if not isinstance(nullable, bool):
+        raise error("nullable must be a boolean")
+    if not nullable:
+        dtype = str(spec.get("dtype", "str")).strip()
+        optional = re.match(r"^optional\[", dtype, re.IGNORECASE)
+        null_union = _UNION_RE.match(dtype)
+        if optional or (null_union and any(item.strip().lower() in {"none", "nonetype", "null"} for item in _split_top_level(null_union.group("inner")))):
+            raise error("nullable: false conflicts with an explicitly nullable dtype")
+        if "default" in spec and spec["default"] is None:
+            raise error("nullable: false cannot have a null default")
+    return nullable
+
+
+def required_field_spec(py_type: Any, required: bool, default: Any, *, nullable: bool | None = None, error: type[Exception] = ValueError) -> tuple[Any, Any]:
+    """Shared annotation/default rule for both YAML schema loaders.
+
+    An absent ``nullable`` preserves legacy Optional annotations for defaulted
+    or non-required fields. Explicit false keeps the type non-nullable, and
+    needs either a default or ``required: true``. Explicit true permits null
+    even when the caller must supply the field.
+    """
+    if nullable is False:
+        base_type = py_type
+        while get_origin(base_type) is Annotated:
+            base_type = get_args(base_type)[0]
+        origin = get_origin(base_type)
+        if base_type is type(None) or (origin in (Union, types.UnionType) and type(None) in get_args(base_type)) or (origin is Literal and None in get_args(base_type)):
+            raise error("nullable: false conflicts with an annotation accepting null")
+        if default is None and not required:
+            raise error("nullable: false without a default requires required: true")
+        return (py_type, ... if default is None else default)
     if required and default is None:
-        return (py_type, ...)
+        return (py_type | None if nullable is True else py_type, ...)
     return (py_type | None, default)
 
 
@@ -269,6 +302,8 @@ def build_model(
     choices: dict[str, list[Any]] | None = None,
     extras: dict[str, dict[str, Any]] | None = None,
     string_patterns: dict[str, str] | None = None,
+    nullable: dict[str, bool] | None = None,
+    error: type[Exception] = ValueError,
 ) -> type:
     """Create a pydantic model class named `name`.
 
@@ -283,17 +318,20 @@ def build_model(
     loaders attach field-level hints the same way. ``string_patterns`` adds
     pydantic regex constraints to literal scalar string fields; constrained
     defaults are validated when the model is instantiated.
+    ``nullable`` supplies explicit nullability independently of omission;
+    non-nullable defaults also receive Pydantic default validation.
     """
     choices = choices or {}
     extras = extras or {}
     string_patterns = string_patterns or {}
+    nullable = nullable or {}
 
     def _spec(field_name: str, dtype: str, required: bool, default: Any) -> tuple[Any, Any]:
         py_type = constrain_string(narrow_choices(dtype_to_type(dtype), choices.get(field_name)), string_patterns.get(field_name), dtype=dtype, error=ValueError)
-        annotation, field_default = required_field_spec(py_type, required, default)
+        annotation, field_default = required_field_spec(py_type, required, default, nullable=nullable.get(field_name), error=error)
         extra = extras.get(field_name)
-        if extra or field_name in string_patterns:
-            return (annotation, Field(field_default, json_schema_extra=extra, validate_default=field_name in string_patterns))
+        if extra or field_name in string_patterns or nullable.get(field_name) is False:
+            return (annotation, Field(field_default, json_schema_extra=extra, validate_default=field_name in string_patterns or nullable.get(field_name) is False))
         return (annotation, field_default)
 
     definitions: dict[str, tuple[Any, Any]] = {field_name: _spec(field_name, dtype, required, default) for field_name, (dtype, required, default) in fields.items()}
@@ -411,6 +449,7 @@ COMMON_LEAF_KEYS = {
     "dtype",
     "default",
     "required",
+    "nullable",
     "implicit",
     "choices",
     "string_pattern",

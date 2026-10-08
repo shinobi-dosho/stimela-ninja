@@ -61,6 +61,8 @@ nitpicky = True
 # (which re-evaluates its values, and here yields `TypeAliasForwardRef`).
 _QUALIFY_XREFS = {
     "BaseModel": "pydantic.BaseModel",
+    "AuxiliaryMutationRecord": "shinobi.dataset_lifecycle.AuxiliaryMutationRecord",
+    "DerivedAddress": "shinobi.derived.DerivedAddress",
     "CliSettingsSource": "pydantic_settings.CliSettingsSource",
     "Path": "pathlib.Path",
     "PydanticBaseSettingsSource": "pydantic_settings.PydanticBaseSettingsSource",

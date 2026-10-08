@@ -167,6 +167,8 @@ def state_name(cache_key: str, producer_field: str, element_index: int | None = 
     standing between a restore and the wrong data, and a birthday collision
     on a shortened key would be both silent and catastrophic.
     """
+    if producer_field.startswith("__derived."):
+        return f"{cache_key}__derived.{producer_field.removeprefix('__derived.')}"
     if element_index is not None:
         if isinstance(element_index, bool) or not isinstance(element_index, int) or element_index < 0:
             raise ValueError("state element index must be a non-negative integer")
@@ -187,12 +189,24 @@ def gen0_name(path: Path, fingerprint: Any) -> str:
     return f"gen0__{hashlib.sha256(blob.encode()).hexdigest()[:32]}"
 
 
+def remove_snapshot_path(path, *, ignore_errors=False):
+    """Remove a file, symlink or tree without following its top-level link."""
+    try:
+        if Path(path).is_symlink() or not Path(path).is_dir():
+            Path(path).unlink(missing_ok=True)
+        else:
+            shutil.rmtree(path)
+    except OSError:
+        if not ignore_errors:
+            raise
+
+
 def _replace_tree_from_snapshot(path: Path, source: Path, run_id: str, *, force_copy: bool = False) -> None:
     """Atomically replace ``path`` from ``source``, restoring it on error."""
 
     failed = path.with_name(path.name + TRASH_SUFFIX + run_id + "-failed")
     if failed.exists():
-        shutil.rmtree(failed)
+        remove_snapshot_path(failed)
     present = path.exists()
     if present:
         os.rename(path, failed)
@@ -201,12 +215,12 @@ def _replace_tree_from_snapshot(path: Path, source: Path, run_id: str, *, force_
         clone_tree(source, path, tier=tier)
     except BaseException:
         if path.exists():
-            shutil.rmtree(path, ignore_errors=True)
+            remove_snapshot_path(path, ignore_errors=True)
         if present:
             os.rename(failed, path)
         raise
     if present:
-        shutil.rmtree(failed, ignore_errors=True)
+        remove_snapshot_path(failed, ignore_errors=True)
 
 
 @dataclass
@@ -228,6 +242,7 @@ class Generation:
     # reuse can ask whether the live head *descends* from a state (see
     # `strict_reuse_issue`). The generation list is commit order, not lineage.
     parent: str | None = None
+    identity_profile: str | None = None
 
     def as_json(self) -> dict[str, Any]:
         data: dict[str, Any] = {"name": self.name, "size": self.size, "snapshot_present": self.snapshot_present}
@@ -238,6 +253,8 @@ class Generation:
             data["content_fingerprint"] = self.content_fingerprint
         if self.parent is not None:
             data["parent"] = self.parent
+        if self.identity_profile is not None:
+            data["identity_profile"] = self.identity_profile
         return data
 
 
@@ -277,6 +294,7 @@ class Marker:
     strict_rollback_source: str | None = None
     strict_rollback_signature: str | None = None
     strict_rollback_fingerprint: str | None = None
+    identity_profile: str | None = None
 
     def as_json(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -289,6 +307,8 @@ class Marker:
             "success_step_path": self.success_step_path,
             "path_was_absent": self.path_was_absent,
         }
+        if self.identity_profile is not None:
+            data["identity_profile"] = self.identity_profile
         if self.success_kind is not None:
             data["success_kind"] = self.success_kind
         if self.strict_rollback_state is not None:
@@ -676,6 +696,9 @@ class StrictMutation:
 
     identity: Callable[[Path], StateIdentity]
     create_fields: frozenset[str] = frozenset()
+    profiles: dict[str, str] = dataclass_field(default_factory=dict)
+    predecessors: dict[str, str] = dataclass_field(default_factory=dict)
+    predecessor_identities: dict[str, StateIdentity] = dataclass_field(default_factory=dict)
 
 
 @dataclass
@@ -758,6 +781,14 @@ class SnapshotGuard:
         # but it must still record that they *wrote*, or a later restore
         # would roll the path back over work nothing will regenerate.
         self.tainting = dict(tainting or {})
+
+    def _identity(self, plan, path):
+        profile = self.strict.profiles.get(plan.field)
+        if profile is not None:
+            from shinobi.derived import profile_identity
+
+            return profile_identity(path, profile)
+        return self.strict.identity(path)
 
     # -- pre-run ----------------------------------------------------------
 
@@ -854,7 +885,7 @@ class SnapshotGuard:
                     generation = chain.generation(name) if chain is not None else None
                     if generation is None:
                         self._refuse(plan, f"snapshot {name} has no journal identity")
-                    identity = self.strict.identity(source)
+                    identity = self._identity(plan, source)
                     if generation.structural_signature != identity.signature or generation.content_fingerprint != identity.fingerprint:
                         self._refuse(plan, f"snapshot {name} does not match its journal identity")
             reserve(plan.path, self.journal.root)  # successor estimate
@@ -872,7 +903,7 @@ class SnapshotGuard:
             trusted = chain is None or chain.status is HeadStatus.TRUSTED
             live_state = chain.head if chain is not None else plan.required
             if trusted:
-                identity = self.strict.identity(plan.path)
+                identity = self._identity(plan, plan.path)
                 if chain is None:
                     st = plan.path.stat()
                     self.journal.update_chain(plan.cid, lambda _, plan=plan, st=st: Chain(dev=st.st_dev, ino=st.st_ino, ctime_ns=st.st_ctime_ns, path=str(plan.path)))
@@ -891,7 +922,7 @@ class SnapshotGuard:
             if plan.path_was_absent:
                 continue
             plan.rollback_source = self.journal.snapshot_dir(plan.rollback_state)
-            plan.rollback_identity = self.strict.identity(plan.rollback_source)
+            plan.rollback_identity = self._identity(plan, plan.rollback_source)
             if plan.rollback_state == state_name(self.cache_key, plan.address.field, plan.address.element_index):
                 backup = _rollback_backup(self.journal, self.run_id, plan.path)
                 backup.parent.mkdir(parents=True, exist_ok=True)
@@ -899,7 +930,7 @@ class SnapshotGuard:
                 original = plan.rollback_source
                 plan.rollback_source = backup
                 clone_tree(original, backup, tier=tier)
-                if self.strict.identity(backup) != plan.rollback_identity:
+                if self._identity(plan, backup) != plan.rollback_identity:
                     self._refuse(plan, "same-key rollback backup does not preserve the frozen identity")
         self.group = (
             [
@@ -915,6 +946,11 @@ class SnapshotGuard:
                     "rollback_fingerprint": plan.rollback_identity.fingerprint if plan.rollback_identity is not None else None,
                     "absent": plan.path_was_absent,
                     "successor": state_name(self.cache_key, plan.address.field, plan.address.element_index),
+                    **(
+                        {"identity_profile": self.strict.profiles[plan.field], "derived_address": plan.address.model_dump(mode="json")}
+                        if plan.field in self.strict.profiles
+                        else {}
+                    ),
                 }
                 for plan in self.plans
             ]
@@ -933,7 +969,10 @@ class SnapshotGuard:
             return
         if plan.required is None:
             self._refuse(plan, "the journal names no predecessor state for this dataset (an uncached writer detached its chain)")
-        identity = self.strict.identity(plan.path)
+        identity = self._identity(plan, plan.path)
+        expected = self.strict.predecessor_identities.get(plan.field)
+        if expected is not None and expected != identity:
+            self._refuse(plan, "restored auxiliary predecessor differs from the frozen cache identity")
         chain = self.journal.get(plan.cid) if plan.cid is not None else None
         generation = chain.generation(plan.required) if chain is not None and plan.required is not None else None
         if generation is not None and generation.structural_signature is not None and generation.structural_signature != identity.signature:
@@ -955,7 +994,7 @@ class SnapshotGuard:
             if plan.trash is not None:
                 try:
                     if plan.path.exists():
-                        shutil.rmtree(plan.path)
+                        remove_snapshot_path(plan.path)
                     os.rename(plan.trash, plan.path)
                     plan.trash = None
                     self._refresh_identity(plan)
@@ -982,6 +1021,9 @@ class SnapshotGuard:
     def _prepare(self, plan: _FieldPlan) -> None:
         """Resolve the chain and compute R, the state name this step needs."""
         plan.cid = chain_id(plan.path)
+        if self.strict is not None and plan.field in self.strict.predecessor_identities and self.journal.get(plan.cid) is None:
+            if self._identity(plan, plan.path) != self.strict.predecessor_identities[plan.field]:
+                self._refuse(plan, "auxiliary predecessor changed after cache identity was frozen")
         try:
             st = plan.path.stat()
         except OSError:
@@ -1052,7 +1094,7 @@ class SnapshotGuard:
             # file in place, so a trusted head is also checked member by
             # member. A mismatch is a write this journal never saw.
             head = chain.generation(chain.head)
-            if head is not None and head.content_fingerprint is not None and head.content_fingerprint != self.strict.identity(plan.path).fingerprint:
+            if head is not None and head.content_fingerprint is not None and head.content_fingerprint != self._identity(plan, plan.path).fingerprint:
                 self._refuse(
                     plan,
                     f"its table files changed since the journal recorded head state {chain.head}, so a write outside this pipeline "
@@ -1081,6 +1123,8 @@ class SnapshotGuard:
 
     def _required_state(self, plan: _FieldPlan, chain: Chain | None, st: os.stat_result) -> str | None:
         """R: the name of the state this step's DAG position calls for."""
+        if self.strict is not None and plan.field in self.strict.predecessors:
+            return self.strict.predecessors[plan.field]
         raw_key = self.input_keys.get(plan.address.field)
         if plan.address.element_index is not None:
             key = raw_key[plan.address.element_index] if isinstance(raw_key, list) else None
@@ -1201,7 +1245,7 @@ class SnapshotGuard:
             # Never leave the workspace without its tree because a restore
             # failed halfway.
             if plan.path.exists():
-                shutil.rmtree(plan.path, ignore_errors=True)
+                remove_snapshot_path(plan.path, ignore_errors=True)
             os.rename(trash, plan.path)
             raise
         plan.trash = trash
@@ -1250,6 +1294,7 @@ class SnapshotGuard:
             strict_rollback_state=plan.rollback_state if self.strict is not None else None,
             strict_predecessor_state=plan.required if self.strict is not None else None,
             strict_group=getattr(self, "group", None),
+            identity_profile=self.strict.profiles.get(plan.field) if self.strict else None,
             strict_rollback_source=str(plan.rollback_source) if plan.rollback_source is not None else None,
             strict_rollback_signature=plan.rollback_identity.signature if plan.rollback_identity is not None else None,
             strict_rollback_fingerprint=plan.rollback_identity.fingerprint if plan.rollback_identity is not None else None,
@@ -1400,7 +1445,7 @@ class SnapshotGuard:
                 os.rename(stale, dest)
             raise
         if stale is not None:
-            shutil.rmtree(stale, ignore_errors=True)
+            remove_snapshot_path(stale, ignore_errors=True)
 
     def _rule_b(self, plan: _FieldPlan) -> None:
         """Rule B -- snapshot the state this step produced.
@@ -1446,7 +1491,7 @@ class SnapshotGuard:
         dest.parent.mkdir(parents=True, exist_ok=True)
         staging = dest.with_name(dest.name + ".partial." + self.run_id)
         if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
+            remove_snapshot_path(staging, ignore_errors=True)
         try:
             clone_tree(plan.path, staging, tier=tier)
             # Rename last, so the name only ever appears over a complete
@@ -1454,7 +1499,7 @@ class SnapshotGuard:
             # indistinguishable from a good one at restore time.
             os.rename(staging, dest)
         except Exception:
-            shutil.rmtree(staging, ignore_errors=True)
+            remove_snapshot_path(staging, ignore_errors=True)
             raise
         if rule == "A":
             # Apparent size, recorded once at insert -- eviction must never
@@ -1481,6 +1526,7 @@ class SnapshotGuard:
                     name=name,
                     size=size,
                     snapshot_present=present,
+                    identity_profile=self.strict.profiles.get(plan.field) if self.strict else None,
                     structural_signature=identity.signature if identity is not None else None,
                     content_fingerprint=identity.fingerprint if identity is not None else None,
                 )
@@ -1531,6 +1577,7 @@ class SnapshotGuard:
                         structural_signature=successor.signature if successor is not None else None,
                         content_fingerprint=successor.fingerprint if successor is not None else None,
                         parent=parent,
+                        identity_profile=self.strict.profiles.get(plan.field) if self.strict else None,
                     )
                 )
             elif self.strict is not None:
@@ -1599,7 +1646,7 @@ class SnapshotGuard:
                     if plan.path.is_symlink() or plan.path.is_file():
                         plan.path.unlink(missing_ok=True)
                     elif plan.path.exists():
-                        shutil.rmtree(plan.path)
+                        remove_snapshot_path(plan.path)
                 except OSError:
                     plan.outcome = "untrusted"
                     logger.exception("step %s: could not restore the pre-run absence of %s", self.step_path, plan.path)
@@ -1613,7 +1660,7 @@ class SnapshotGuard:
                 continue
             try:
                 if plan.path.exists():
-                    shutil.rmtree(plan.path, ignore_errors=True)
+                    remove_snapshot_path(plan.path, ignore_errors=True)
                 os.rename(plan.trash, plan.path)
                 logger.info("step %s: rolled '%s' at %s back to its pre-run state after failure", self.step_path, plan.field, plan.path)
             except OSError:
@@ -1632,11 +1679,11 @@ class SnapshotGuard:
                     if plan.path.is_symlink() or plan.path.is_file():
                         plan.path.unlink()
                     elif plan.path.exists():
-                        shutil.rmtree(plan.path)
+                        remove_snapshot_path(plan.path)
                     plan.outcome = "absent-restored"
                 else:
                     _replace_tree_from_snapshot(plan.path, plan.rollback_source, self.run_id, force_copy=self.force_copy)
-                    if self.strict.identity(plan.path) != plan.rollback_identity:
+                    if self._identity(plan, plan.path) != plan.rollback_identity:
                         raise DatasetLifecycleUnavailableError("rollback did not restore frozen identity")
                     original = self.journal.snapshot_dir(plan.rollback_state)
                     if plan.rollback_source != original:
@@ -1690,7 +1737,7 @@ class SnapshotGuard:
         _discard_rollback_backup(self.journal, self.run_id, plan.path, plan.rollback_source)
         plan.rollback_source = None
         if plan.trash is not None:
-            shutil.rmtree(plan.trash, ignore_errors=True)
+            remove_snapshot_path(plan.trash, ignore_errors=True)
             plan.trash = None
 
     def _clear_marker(self, plan: _FieldPlan) -> None:
@@ -1729,6 +1776,29 @@ class SnapshotGuard:
             return chain
 
         self.journal.update_chain(cid, mutate)
+
+
+def required_predecessor(journal, step_path, derived_read):
+    """Inspect a regular-file predecessor without changing disk or journal."""
+    from shinobi.derived import regular_file_identity
+
+    path, address = derived_read.path, derived_read.address
+    identity = regular_file_identity(path)
+    chain = journal.get(chain_id(path))
+    if chain is None:
+        return gen0_name(path, ["file", identity.fingerprint]), identity
+    if chain.marker is not None or chain.status is not HeadStatus.TRUSTED or chain.head is None:
+        raise DatasetLifecycleUnavailableError(f"auxiliary file {path} has unresolved or untrusted history; inspect and reconcile it first")
+    head = chain.generation(chain.head)
+    if head is None or head.identity_profile != "regular-file/v1" or head.content_fingerprint != identity.fingerprint:
+        raise DatasetLifecycleUnavailableError(f"auxiliary file {path} changed outside this pipeline; inspect it, then 'ninja cache invalidate' before rerunning")
+    selected = chain.consumed.get(f"{step_path}::{address.field}", chain.head)
+    generation = chain.generation(selected)
+    if generation is None or generation.identity_profile != "regular-file/v1" or chain.taint_blocks(selected):
+        raise DatasetLifecycleUnavailableError(f"auxiliary file {path} has no trustworthy predecessor identity")
+    source = journal.snapshot_dir(selected)
+    _verify_strict_snapshot_identity(journal, chain, selected, source)
+    return selected, StateIdentity(generation.structural_signature, generation.content_fingerprint)
 
 
 def strict_reuse_issue(journal: ChainJournal, path: Path, produced: str, live: StateIdentity) -> str | None:
@@ -1931,18 +2001,18 @@ def _discard_rollback_backup(journal, run_id, path, source):
     """Delete only a settled invocation's explicitly frozen backup address."""
     backup = _rollback_backup(journal, run_id, Path(path))
     if source is not None and Path(source) == backup and backup.exists():
-        shutil.rmtree(backup)
+        remove_snapshot_path(backup)
 
 
 def _frozen_rollback_source(journal, marker, item):
     """Validate a frozen physical source independently of mutable generations."""
-    from shinobi.dataset_lifecycle import dataset_identity
-
     source = Path(item["rollback_source"])
     expected = journal.snapshot_dir(item["rollback"])
     if source not in (expected, _rollback_backup(journal, marker.run_id, Path(item["path"]))):
         raise DatasetLifecycleUnavailableError("strict group rollback source is not its exact frozen path")
-    observed = dataset_identity(source, source.parent)
+    from shinobi.derived import profile_identity
+
+    observed = profile_identity(source, item.get("identity_profile"))
     if observed.signature != item["rollback_signature"] or observed.fingerprint != item["rollback_fingerprint"]:
         raise DatasetLifecycleUnavailableError("strict group rollback source does not match its frozen identity")
     return source
@@ -1954,10 +2024,10 @@ def _verify_strict_snapshot_identity(journal, chain, name, path, identity=None):
     if generation is None or not generation.snapshot_present or not journal.snapshot_dir(name).exists():
         raise DatasetLifecycleUnavailableError(f"strict recovery has no exact journalled snapshot {name}")
     if identity is None:
-        from shinobi.dataset_lifecycle import dataset_identity
+        from shinobi.derived import profile_identity
 
         def identity(path):
-            return dataset_identity(path, path.parent)
+            return profile_identity(path, generation.identity_profile)
 
     observed = identity(path)
     if generation.structural_signature != observed.signature or generation.content_fingerprint != observed.fingerprint:
@@ -1968,11 +2038,20 @@ def _validate_group_evidence(leaf, participants):
     from shinobi.dataset_lifecycle import DatasetMutationOutcome
 
     mutations = leaf.mutations
-    if len(mutations) != len(participants):
+    auxiliary = leaf.auxiliary_mutations
+    if len(mutations) + len(auxiliary) != len(participants):
         return False
-    expected = {(item["label"], item["element_index"], item["path"], item["successor"]) for item in participants}
-    actual = {(item.field, item.element_index, str(item.root), item.successor_state) for item in mutations if item.outcome is DatasetMutationOutcome.COMMITTED}
-    return actual == expected and len(actual) == len(mutations)
+    expected = {
+        (item["label"], item["element_index"], item["path"], item["successor"], item.get("identity_profile"), json.dumps(item.get("derived_address"), sort_keys=True))
+        for item in participants
+    }
+    actual = {(item.field, item.element_index, str(item.root), item.successor_state, None, "null") for item in mutations if item.outcome is DatasetMutationOutcome.COMMITTED}
+    actual.update(
+        (item.address.field, None, str(item.path), item.successor_state, item.profile, json.dumps(item.address.model_dump(mode="json"), sort_keys=True))
+        for item in auxiliary
+        if item.outcome is DatasetMutationOutcome.COMMITTED
+    )
+    return actual == expected and len(actual) == len(mutations) + len(auxiliary)
 
 
 def _marker_completed(marker: Marker, manifest, *, strict: bool = False) -> bool:
@@ -2068,11 +2147,20 @@ def _reconcile_group(journal, manifest, chains, group, selected, exact):
     if not exact or selected is None:
         raise DatasetLifecycleUnavailableError("grouped strict mutation requires exact participant paths for recovery")
     required = {"path", "field", "element_index", "label", "rollback", "rollback_source", "rollback_signature", "rollback_fingerprint", "absent", "successor"}
-    if not isinstance(group, list) or len(group) < 2 or any(not isinstance(item, dict) or not required <= set(item) or set(item) - required - {"predecessor"} for item in group):
+    if (
+        not isinstance(group, list)
+        or len(group) < 2
+        or any(not isinstance(item, dict) or not required <= set(item) or set(item) - required - {"predecessor", "identity_profile", "derived_address"} for item in group)
+    ):
         raise DatasetLifecycleUnavailableError("strict mutation group participant payload is malformed")
     from shinobi.dataset_access import DatasetAddress
 
     for item in group:
+        if "identity_profile" in item:
+            from shinobi.derived import DerivedAddress
+
+            if item["identity_profile"] != "regular-file/v1" or DerivedAddress.model_validate(item.get("derived_address")).field != item["field"]:
+                raise DatasetLifecycleUnavailableError("invalid auxiliary mutation profile/address")
         if (
             not isinstance(item["path"], str)
             or not isinstance(item["field"], str)
@@ -2098,7 +2186,8 @@ def _reconcile_group(journal, manifest, chains, group, selected, exact):
             raise DatasetLifecycleUnavailableError("strict mutation group has contradictory invocation/oracle identities")
         oracle = frozen
         if (
-            marker.field != item["label"]
+            marker.identity_profile != item.get("identity_profile")
+            or marker.field != item["label"]
             or marker.strict_predecessor_state != item.get("predecessor")
             or marker.strict_rollback_state != item["rollback"]
             or marker.path_was_absent != item["absent"]
@@ -2144,13 +2233,13 @@ def _settle_group(journal, manifest, members, completed):
                 if path.is_symlink() or path.is_file():
                     path.unlink()
                 elif path.exists():
-                    shutil.rmtree(path)
+                    remove_snapshot_path(path)
             else:
                 source = _frozen_rollback_source(journal, marker, item)
                 _replace_tree_from_snapshot(path, source, marker.run_id)
-                from shinobi.dataset_lifecycle import dataset_identity
+                from shinobi.derived import profile_identity
 
-                live = dataset_identity(path, path.parent)
+                live = profile_identity(path, item.get("identity_profile"))
                 if live.signature != item["rollback_signature"] or live.fingerprint != item["rollback_fingerprint"]:
                     raise DatasetLifecycleUnavailableError("strict group live restore did not match frozen identity")
                 original = journal.snapshot_dir(item["rollback"])
@@ -2161,7 +2250,7 @@ def _settle_group(journal, manifest, members, completed):
         path = Path(chain.path)
         trash = _trash_for(path, marker.run_id)
         if trash is not None:
-            shutil.rmtree(trash)
+            remove_snapshot_path(trash)
         if not completed and item["absent"]:
             changes.append((cid, lambda _: None))
         else:
@@ -2218,7 +2307,7 @@ def _reconcile_locked(journal: ChainJournal, manifest, *, paths: set[Path] | Non
             # Crashed in S4/S5, after the step had really finished and
             # recorded. S1-before-S3 guarantees its tip snapshot exists.
             if trash is not None:
-                shutil.rmtree(trash, ignore_errors=True)
+                remove_snapshot_path(trash, ignore_errors=True)
             notes.append(f"{chain.path}: run {marker.run_id} of '{marker.step_path}' completed and recorded; discarded its trash")
 
             def clear(c: Chain | None) -> Chain | None:
@@ -2250,7 +2339,7 @@ def _reconcile_locked(journal: ChainJournal, manifest, *, paths: set[Path] | Non
                 if path.is_symlink() or path.is_file():
                     path.unlink(missing_ok=True)
                 elif path.exists():
-                    shutil.rmtree(path)
+                    remove_snapshot_path(path)
                 notes.append(f"{chain.path}: run {marker.run_id} of '{marker.step_path}' did not complete; restored its pre-run absence")
                 journal.update_chain(cid, lambda _chain: None)
             except OSError:
@@ -2281,7 +2370,7 @@ def _reconcile_locked(journal: ChainJournal, manifest, *, paths: set[Path] | Non
             if source != journal.snapshot_dir(rollback):
                 _replace_tree_from_snapshot(journal.snapshot_dir(rollback), source, marker.run_id)
             if trash is not None:
-                shutil.rmtree(trash, ignore_errors=True)
+                remove_snapshot_path(trash, ignore_errors=True)
             st = path.stat()
 
             def recovered(c: Chain | None) -> Chain | None:
@@ -2303,7 +2392,7 @@ def _reconcile_locked(journal: ChainJournal, manifest, *, paths: set[Path] | Non
         if trash is not None:
             try:
                 if Path(chain.path).exists():
-                    shutil.rmtree(chain.path, ignore_errors=True)
+                    remove_snapshot_path(chain.path, ignore_errors=True)
                 os.rename(trash, chain.path)
                 notes.append(f"{chain.path}: run {marker.run_id} of '{marker.step_path}' did not complete; rolled back to its pre-run state")
             except OSError:
@@ -2448,7 +2537,7 @@ def evict(cache_dir: str, target_bytes: int) -> list[tuple[str, int]]:
         if name in seen:
             continue
         seen.add(name)
-        shutil.rmtree(journal.snapshot_dir(name), ignore_errors=True)
+        remove_snapshot_path(journal.snapshot_dir(name), ignore_errors=True)
         removed.append((name, size))
         freed += size
 
@@ -2525,7 +2614,7 @@ def invalidate(cache_dir: str, step_path: str, manifest) -> list[str]:
             notes.append(f"removed the manifest entry for '{name}', downstream of '{step_path}' on {chain.path}")
 
         for name in produced:
-            shutil.rmtree(journal.snapshot_dir(name), ignore_errors=True)
+            remove_snapshot_path(journal.snapshot_dir(name), ignore_errors=True)
         surviving = [gen for gen in chain.generations if gen.name not in produced]
         previous = surviving[-1].name if surviving else None
 

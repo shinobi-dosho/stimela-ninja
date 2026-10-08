@@ -212,3 +212,65 @@ separate downstream work. Engine fixture tests cover naming, sparse capture,
 evidence, cache deletion, bundles, selection, mounts and worker transport;
 real-tool conformance additionally requires supported tool versions, modes,
 input dimensions and container builds.
+
+Finite derived dependencies
+---------------------------
+
+A tool may read a file whose name it derives from a string prefix, or a saved
+version beside an input MS. ``Scope.derived_reads`` declares these dependencies
+without converting naming parameters into path inputs or emitting extra argv.
+Each named ``DerivedRead`` has ``member: file`` or ``member: directory`` and a
+finite ``FamilySpec``. Discovery captures and attribute/index expressions are
+refused. Rules can use finite ``when`` values and ``when_set`` presence checks;
+an empty string/list or ``None`` means absent for a presence check.
+
+.. code-block:: yaml
+
+   derived_reads:
+     saved_version:
+       member: directory
+       family:
+         root: "{ms}.flagversions"
+         coordinates: {}
+         rules:
+           - path: "flags.{name}"
+             required: true
+
+Planning claims canonical paths even before a producer creates them. Required
+members must exist before cache lookup or execution; optional absence is part
+of cache identity. Read-only dependencies use the framework's recursive
+mtime/size fingerprint plus kind inventory even when the naming input is wired.
+They reject symlinks and unsupported member kinds. Container mounts retain
+nested read-only binds. Relative dependencies are staged before sandbox product
+capture; unchanged staged prediction inputs are never harvested as products.
+
+An existing regular file that exactly matches an ``accept_existing`` family
+output can participate in an existing strict MS mutation lifecycle. Its named,
+typed coordinate address is separate from an MS list address. These auxiliary
+participants use the same snapshot guard, group fences and success oracle as
+the MS; no second transaction or dataset record is invented. Their allowlisted
+``regular-file/v1`` identity hashes bytes independently of a snapshot basename,
+and refuses hardlinks. Failure and S1--S5 recovery settle every participant
+jointly. The same logical step keys its original consumed predecessor; a new
+logical step consumes the trusted current head. Untracked file edits refuse
+with inspection/invalidation guidance rather than being overwritten by restore.
+Directory mutation is outside this strict profile.
+
+Read-only derived dependencies round-trip and execute in worker bundles.
+Workflows with strict auxiliary mutation are explicitly refused during worker
+preparation in the initial profile; their local recovery evidence cannot be
+silently omitted from detached results. Historical attempts omit the empty
+auxiliary evidence field and retain their serialized shape.
+
+A derived dependency cannot also be a newly declared product at the same
+path or inside a product tree that would replace it. Planning rejects these
+contradictions before clearing or preparing outputs. The supported exception
+is an exact finite ``accept_existing`` output member, which declares the
+existing file as a mutation participant. Scratch writes must also be disjoint
+from readonly dependencies. A writable parent reservation alone remains
+compatible with a separately protected readonly child.
+
+Relative readonly directory dependencies and their descendants are excluded
+from sandbox harvesting and product inventories. A harvest target that would
+carry a readonly dependency inside an ancestor tree is refused rather than
+moving that tree over the original input.

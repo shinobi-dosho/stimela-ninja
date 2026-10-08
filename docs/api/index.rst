@@ -17,6 +17,9 @@ Schema helpers
 
 Supporting types used when defining cabs, not re-exported at the top level.
 
+.. autoclass:: shinobi.derived.DerivedAddress
+   :members:
+
 .. autoclass:: shinobi.steps.schema.ParamMeta
    :members:
 

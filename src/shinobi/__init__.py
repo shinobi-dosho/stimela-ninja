@@ -50,6 +50,7 @@ from shinobi.steps import (  # noqa: E402
     step,
 )
 from shinobi.dataset_closure import DatasetClosure, resolve_dataset_closure  # noqa: E402
+from shinobi.derived import DerivedRead  # noqa: E402
 from shinobi.dataset_access import DatasetAccessError, RecipeAccessPlan, plan_recipe_accesses  # noqa: E402
 from shinobi.dataset_backends import (  # noqa: E402
     DATASET_BACKEND_CAPABILITY_PROFILE,
@@ -70,6 +71,7 @@ from shinobi.dataset_lifecycle import (  # noqa: E402
     DatasetLifecycleSnapshot,
     DatasetMutationOutcome,
     DatasetMutationRecord,
+    AuxiliaryMutationRecord,
     DatasetOverwrite,
     dataset_attempt_path,
     read_dataset_attempt,
@@ -78,6 +80,7 @@ from shinobi.exceptions import DatasetLifecycleUnavailableError, DatasetLifecycl
 from shinobi.products import DirectoryBundle, ProductFamily, ProductMember, FamilySpec, AxisSpec, MemberRule  # noqa: E402
 
 __all__ = [
+    "DerivedRead",
     "DirectoryBundle",
     "ProductFamily",
     "ProductMember",
@@ -107,6 +110,7 @@ __all__ = [
     "DatasetMode",
     "DatasetMutationOutcome",
     "DatasetMutationRecord",
+    "AuxiliaryMutationRecord",
     "DatasetNamespaceMode",
     "DatasetOverwrite",
     "DatasetSelection",

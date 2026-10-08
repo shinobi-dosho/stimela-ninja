@@ -166,6 +166,7 @@ from shinobi.loaders._modelgen import (
     resolve_use,
     sanitize_unique,
     validate_choices,
+    validate_nullable,
 )
 from shinobi.steps.schema import Cab, Mutability, ParamMeta, ParamPattern, ParamSegment, Policies
 
@@ -423,12 +424,19 @@ def _build_cab(name: str, spec: dict[str, Any], package_roots: dict[str, Path], 
         f"{name}_Inputs",
         in_fields,
         choices=in_choices,
+        nullable={field: meta.nullable for field, meta in field_meta.items() if meta.nullable is not None},
+        error=CabLoadError,
         extras=in_extras,
         string_patterns={field: meta.string_pattern for field, meta in field_meta.items() if meta.string_pattern is not None},
         allow_extra=bool(input_patterns),
     )
     outputs_model = build_model(
-        f"{name}_Outputs", out_fields, choices=out_choices, string_patterns={field: meta.string_pattern for field, meta in out_meta.items() if meta.string_pattern is not None}
+        f"{name}_Outputs",
+        out_fields,
+        choices=out_choices,
+        nullable={field: meta.nullable for field, meta in out_meta.items() if meta.nullable is not None},
+        error=CabLoadError,
+        string_patterns={field: meta.string_pattern for field, meta in out_meta.items() if meta.string_pattern is not None},
     )
     for model in (inputs_model, outputs_model):
         _validate_dataset_shapes(model)
@@ -447,6 +455,7 @@ def _build_cab(name: str, spec: dict[str, Any], package_roots: dict[str, Path], 
         inputs_model=inputs_model,
         outputs_model=outputs_model,
         dataset_accesses=_dataset_accesses(spec.get("dataset_accesses"), cab=name),
+        derived_reads=spec.get("derived_reads", {}),
         # Output metas merged over input ones, the same way
         # `dosho._builder.define_cab` composes them, so a cab built from a
         # document and the same cab built in Python agree. Without the output
@@ -604,6 +613,7 @@ def _param_meta(value: dict[str, Any], *, nom_de_guerre: str | None = None, with
         positional_head=bool(policies.get("positional_head", False)),
         repeat_as_tokens=policies.get("repeat") == "list",
         choices=validate_choices(value.get("choices"), error=CabLoadError),
+        nullable=validate_nullable(value, error=CabLoadError),
         string_pattern=value.get("string_pattern"),
         dtype=value.get("dtype") if with_dtype else None,
         write_path=bool(value.get("write_path", False)),
