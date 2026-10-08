@@ -27,7 +27,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal, get_args, get_origin
 
-from pydantic import ConfigDict, Field, create_model
+from pydantic import ConfigDict, Field, StringConstraints, create_model
 
 from shinobi.datasets import CasaTab, DatasetDeclarationError, MSv2, annotation_has_dataset
 
@@ -237,7 +237,7 @@ def constrain_string(py_type: Any, pattern: Any, *, dtype: str, error: type[Exce
     """
     if pattern is None:
         return py_type
-    if not isinstance(pattern, str) or dtype.strip().lower() not in {"str", "string"}:
+    if not isinstance(pattern, str) or not isinstance(dtype, str) or dtype.strip().lower() not in {"str", "string"}:
         raise error("string_pattern requires a string regex and a scalar str dtype")
     if get_origin(py_type) is Literal and any(not isinstance(item, str) for item in get_args(py_type)):
         raise error("string_pattern choices must all be strings")
@@ -245,7 +245,7 @@ def constrain_string(py_type: Any, pattern: Any, *, dtype: str, error: type[Exce
         compiled = re.compile(pattern)
     except re.error as exc:
         raise error(f"invalid string_pattern: {exc}") from exc
-    return Annotated[py_type, Field(pattern=compiled)]
+    return Annotated[py_type, StringConstraints(pattern=compiled)]
 
 
 def required_field_spec(py_type: Any, required: bool, default: Any) -> tuple[Any, Any]:

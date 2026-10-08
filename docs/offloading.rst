@@ -97,13 +97,18 @@ preparation responsibilities, not compilation side effects.
 Serialization is deliberately closed: finite JSON scalars, ``Path``, lists,
 tuples and string-keyed dictionaries; models built from these types, unions,
 scalar ``Literal`` choices and nested data-only models; numeric/length
-constraints and ``Strict``; and builtin ``list``/``dict``/``tuple`` default
+constraints, ``Strict`` and string patterns; and builtin ``list``/``dict``/``tuple`` default
 factories. Framework ``ParamMeta`` is preserved explicitly. Executable default
 factories, validators, serializers, custom initialization/core schemas,
 recursive models, model-instance defaults (including inside containers) and unrecognized types/constraints
 are rejected rather than silently weakened. Unsupported protocol versions or
 unknown protocol fields also fail. No Recipe pickle, class-name import or
 expression evaluation is involved.
+String patterns retain compiled Python regex flags (including lookaround
+support) or their original plain-string representation. The loaders'
+``string_pattern`` constraints survive freezing and worker reconstruction,
+including optional values, choices and validation of defaults. Other string
+transformations, such as whitespace stripping, remain unsupported.
 Scope settings and the configuration snapshot use the same finite tagged
 encoding as parameter values, including nested metadata. Non-finite numbers
 are rejected during freezing, before any submission directory is created.

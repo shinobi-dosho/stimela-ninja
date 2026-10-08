@@ -81,6 +81,14 @@ def test_worker_constraints_share_the_same_model_behavior(tmp_path):
         load_worker_schema(path)
 
 
+@pytest.mark.parametrize("dtype", [3, None, True, ["str"], {"type": "str"}])
+def test_worker_constraint_rejects_malformed_dtype(tmp_path, dtype):
+    path = tmp_path / "worker.yaml"
+    path.write_text(yaml.safe_dump({"name": "worker", "inputs": {"sols": {"dtype": dtype, "string_pattern": _PATTERN}}}))
+    with pytest.raises(ConfigLoadError, match="scalar str"):
+        load_worker_schema(path)
+
+
 def test_string_pattern_rejects_non_string_choices():
     with pytest.raises(ValueError, match="choices must all be strings"):
         build_model("BadChoice", {"value": ("str", True, None)}, choices={"value": [1]}, string_patterns={"value": _PATTERN})
