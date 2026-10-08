@@ -419,8 +419,17 @@ def _build_cab(name: str, spec: dict[str, Any], package_roots: dict[str, Path], 
             in_extras[field] = extra
 
     input_patterns = _param_patterns(spec.get("input_patterns"), cab=name, key="input_patterns")
-    inputs_model = build_model(f"{name}_Inputs", in_fields, choices=in_choices, extras=in_extras, allow_extra=bool(input_patterns))
-    outputs_model = build_model(f"{name}_Outputs", out_fields, choices=out_choices)
+    inputs_model = build_model(
+        f"{name}_Inputs",
+        in_fields,
+        choices=in_choices,
+        extras=in_extras,
+        string_patterns={field: meta.string_pattern for field, meta in field_meta.items() if meta.string_pattern is not None},
+        allow_extra=bool(input_patterns),
+    )
+    outputs_model = build_model(
+        f"{name}_Outputs", out_fields, choices=out_choices, string_patterns={field: meta.string_pattern for field, meta in out_meta.items() if meta.string_pattern is not None}
+    )
     for model in (inputs_model, outputs_model):
         _validate_dataset_shapes(model)
     return Cab(
@@ -583,6 +592,8 @@ def _param_meta(value: dict[str, Any], *, nom_de_guerre: str | None = None, with
     `ParamMeta.dtype` exists (see its docstring): it is the only way a backend
     can tell a dynamically-named input is file-like.
     """
+    if with_dtype and value.get("string_pattern") is not None:
+        raise CabLoadError("string_pattern is supported only on literal fields, not dynamic parameter attrs")
     policies = value.get("policies") or {}
     return ParamMeta(
         nom_de_guerre=nom_de_guerre,
@@ -593,6 +604,7 @@ def _param_meta(value: dict[str, Any], *, nom_de_guerre: str | None = None, with
         positional_head=bool(policies.get("positional_head", False)),
         repeat_as_tokens=policies.get("repeat") == "list",
         choices=validate_choices(value.get("choices"), error=CabLoadError),
+        string_pattern=value.get("string_pattern"),
         dtype=value.get("dtype") if with_dtype else None,
         write_path=bool(value.get("write_path", False)),
         abbreviation=value.get("abbreviation"),

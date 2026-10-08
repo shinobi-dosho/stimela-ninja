@@ -134,6 +134,11 @@ class ParamMeta(BaseModel):
     declared model field for a dynamically-matched name -- can still carry
     it.
 
+    `string_pattern`: a literal scalar string field's validation regex. Static
+    loaders attach it to the generated pydantic annotation, preserving its
+    JSON-schema pattern. Python authors use a constrained model field. It is
+    not a path classifier, a dynamic attr validator, or executable cab code.
+
     `abbreviation`: a short single-dash CLI alias for the field's generated
     `--long-flag` (cult-cargo/classic's `abbreviation` key, e.g. simms'
     `ascii-sky` -> `-as`). Purely a `ninja run` convenience -- carried onto
@@ -159,6 +164,7 @@ class ParamMeta(BaseModel):
     repeat_as_tokens: bool = False
     dtype: str | None = None
     choices: list[Any] | None = None
+    string_pattern: str | None = None
     abbreviation: str | None = None
     write_path: bool = False
     writable: bool | None = None

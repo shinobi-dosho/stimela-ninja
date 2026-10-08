@@ -25,9 +25,9 @@ from collections.abc import Hashable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Annotated, Any, Callable, Literal, get_args, get_origin
 
-from pydantic import ConfigDict, Field, create_model
+from pydantic import ConfigDict, Field, StringConstraints, create_model
 
 from shinobi.datasets import CasaTab, DatasetDeclarationError, MSv2, annotation_has_dataset
 
@@ -228,6 +228,26 @@ def narrow_choices(py_type: Any, choices: list[Any] | None) -> Any:
     return Literal[tuple(choices)]
 
 
+def constrain_string(py_type: Any, pattern: Any, *, dtype: str, error: type[Exception]) -> Any:
+    """Apply a literal field's declarative regex through pydantic's model.
+
+    A compiled Python regex supports the same expressions as existing schema
+    key/name patterns. Non-string dtypes are rejected rather than losing path
+    metadata or creating an ineffective constraint.
+    """
+    if pattern is None:
+        return py_type
+    if not isinstance(pattern, str) or not isinstance(dtype, str) or dtype.strip().lower() not in {"str", "string"}:
+        raise error("string_pattern requires a string regex and a scalar str dtype")
+    if get_origin(py_type) is Literal and any(not isinstance(item, str) for item in get_args(py_type)):
+        raise error("string_pattern choices must all be strings")
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        raise error(f"invalid string_pattern: {exc}") from exc
+    return Annotated[py_type, StringConstraints(pattern=compiled)]
+
+
 def required_field_spec(py_type: Any, required: bool, default: Any) -> tuple[Any, Any]:
     """`(annotation, default)` for a `pydantic.create_model`/`Field` slot: a
     required field with no default is `(py_type, ...)`; everything else is
@@ -248,6 +268,7 @@ def build_model(
     allow_extra: bool = False,
     choices: dict[str, list[Any]] | None = None,
     extras: dict[str, dict[str, Any]] | None = None,
+    string_patterns: dict[str, str] | None = None,
 ) -> type:
     """Create a pydantic model class named `name`.
 
@@ -259,16 +280,20 @@ def build_model(
     `json_schema_extra` dict carried onto that field (e.g. `abbreviation`
     for the CLI); a field absent from `extras` gets none. Mirrors what
     `worker_schema._leaf_field` builds per field, so both scabha-dialect
-    loaders attach field-level hints the same way.
+    loaders attach field-level hints the same way. ``string_patterns`` adds
+    pydantic regex constraints to literal scalar string fields; constrained
+    defaults are validated when the model is instantiated.
     """
     choices = choices or {}
     extras = extras or {}
+    string_patterns = string_patterns or {}
 
     def _spec(field_name: str, dtype: str, required: bool, default: Any) -> tuple[Any, Any]:
-        annotation, field_default = required_field_spec(narrow_choices(dtype_to_type(dtype), choices.get(field_name)), required, default)
+        py_type = constrain_string(narrow_choices(dtype_to_type(dtype), choices.get(field_name)), string_patterns.get(field_name), dtype=dtype, error=ValueError)
+        annotation, field_default = required_field_spec(py_type, required, default)
         extra = extras.get(field_name)
-        if extra:
-            return (annotation, Field(field_default, json_schema_extra=extra))
+        if extra or field_name in string_patterns:
+            return (annotation, Field(field_default, json_schema_extra=extra, validate_default=field_name in string_patterns))
         return (annotation, field_default)
 
     definitions: dict[str, tuple[Any, Any]] = {field_name: _spec(field_name, dtype, required, default) for field_name, (dtype, required, default) in fields.items()}
@@ -388,6 +413,7 @@ COMMON_LEAF_KEYS = {
     "required",
     "implicit",
     "choices",
+    "string_pattern",
     "abbreviation",
     "policies",
     "writable",

@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import re
 import types
 from pathlib import Path
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 import annotated_types
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, Strict, WithJsonSchema, create_model, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, Strict, StringConstraints, WithJsonSchema, create_model, model_validator
 from pydantic_core import PydanticUndefined
 
 from shinobi.dataset_access import DatasetAccess
@@ -140,6 +141,10 @@ def _has_model_instance(value: Any) -> bool:
 _SCALARS = {"str": str, "int": int, "float": float, "bool": bool, "path": Path, "none": type(None), "any": Any}
 _CONSTRAINTS = {name: getattr(annotated_types, name) for name in ("Gt", "Ge", "Lt", "Le", "MultipleOf", "MinLen", "MaxLen")}
 _CONSTRAINTS["Strict"] = Strict
+# Required fields flatten StringConstraints into pydantic's general metadata;
+# optional annotations retain StringConstraints. Discover the metadata type
+# through the public Field factory and accept only its pattern-only shape.
+_PATTERN_METADATA = type(Field(pattern="").metadata[0])
 _FACTORIES = {"list": list, "dict": dict, "tuple": tuple}
 # Only explicitly-set attributes are emitted. Unknown future Field options
 # fail at freeze time, so upgrading pydantic cannot quietly weaken validation.
@@ -170,6 +175,18 @@ class Constraint(WireModel):
             return cls(name="DatasetType", attributes={"kind": pack(value.kind.value), "profile": pack(value.profile)})
         if type(value) is WithJsonSchema:
             return cls(name="WithJsonSchema", attributes={"json_schema": pack(value.json_schema), "mode": pack(value.mode)})
+        if type(value) in (StringConstraints, _PATTERN_METADATA):
+            attrs = dataclasses.asdict(value) if type(value) is StringConstraints else vars(value)
+            known = {"pattern", "strip_whitespace", "to_upper", "to_lower", "strict", "min_length", "max_length", "ascii_only"} if type(value) is StringConstraints else {"pattern"}
+            if attrs.keys() - known or any(v is not None for k, v in attrs.items() if k != "pattern"):
+                raise BundleError("unsupported string constraint options")
+            pattern = attrs.get("pattern")
+            flags = None
+            if type(pattern) is re.Pattern:
+                pattern, flags = pattern.pattern, pattern.flags
+            if type(pattern) is not str:
+                raise BundleError("string pattern must be a text regex")
+            return cls(name="StringPattern", attributes={"pattern": pack(pattern), "flags": pack(flags)})
         if type(value) not in _CONSTRAINTS.values():
             raise BundleError(f"unsupported field constraint {type(value).__name__}")
         return cls(name=type(value).__name__, attributes={k: pack(v) for k, v in dataclasses.asdict(value).items()})
@@ -179,6 +196,18 @@ class Constraint(WireModel):
             return DatasetType(kind=unpack(self.attributes["kind"]), profile=unpack(self.attributes["profile"]))
         if self.name == "WithJsonSchema":
             return WithJsonSchema(json_schema=unpack(self.attributes["json_schema"]), mode=unpack(self.attributes["mode"]))
+        if self.name == "StringPattern":
+            if self.attributes.keys() != {"pattern", "flags"}:
+                raise BundleError("invalid string pattern attributes")
+            pattern, flags = unpack(self.attributes["pattern"]), unpack(self.attributes["flags"])
+            if type(pattern) is not str or flags is not None and (type(flags) is not int or flags < 0):
+                raise BundleError("invalid string pattern or flags")
+            if flags is not None:
+                try:
+                    pattern = re.compile(pattern, flags)
+                except (re.error, ValueError, OverflowError) as exc:
+                    raise BundleError(f"invalid compiled string pattern: {exc}") from exc
+            return StringConstraints(pattern=pattern)
         constructor = _CONSTRAINTS.get(self.name)
         if constructor is None:
             raise BundleError(f"unknown field constraint {self.name!r}")
