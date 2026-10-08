@@ -177,6 +177,29 @@ lifecycle: dispatch refuses strict declarations beneath a cache path or an
 already claimed workspace rather than letting nested execution bypass claims,
 validation or recovery. See :doc:`datasets` for the execution boundary.
 
+Literal string constraints
+--------------------------
+
+Both static schema loaders accept ``string_pattern`` on a literal scalar
+``str`` field. It is a Python regular expression applied by the generated
+pydantic model, before execution, and is retained in JSON schema. Defaults
+are validated too; omitted optional values remain ``None``. Use anchors
+when the complete value must match, as with pydantic's ``Field(pattern=...)``.
+
+.. code-block:: yaml
+
+   inputs:
+     destination:
+       dtype: str
+       required: true
+       string_pattern: '\A(?!.*(?:None|[#\s])).+\Z'
+
+This permits a cab to restrict tokens its native CLI would reinterpret,
+without a cab-specific validator or an embedded callback. Constraints do
+not change string fields into filesystem paths. Invalid regexes, non-string
+dtypes and dynamic parameter attrs with this key are rejected at load time.
+Python-authored models use ordinary pydantic constrained fields.
+
 Stimela classic parameter files
 --------------------------------
 
