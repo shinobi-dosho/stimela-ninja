@@ -51,6 +51,22 @@ Implemented, verified against real upstream cab files:
   imports a cab package to find its data directory, which would execute
   arbitrary ``__init__.py`` code; see ``SECURITY.md``.
 
+Nullability and omission
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Both cab and worker schema fields may declare ``nullable: false`` to reject
+an explicit null independently of whether callers can omit the field. A
+non-null default lets callers omit it; Pydantic validates that default against
+the dtype, choices and constraints. Without a default, ``nullable: false``
+requires ``required: true``. A null default or an explicitly nullable dtype
+such as ``Optional[int]`` conflicts with this declaration and fails loading.
+The generated annotation carries the contract through compiled worker bundles.
+
+With ``nullable: true``, a required field without a default must still be
+supplied, but may contain null. With no ``nullable`` key, the historical rule
+is preserved: a required field without a default is non-nullable; other
+fields allow null and use their declared default (or null when absent).
+
 Unsupported features
 ~~~~~~~~~~~~~~~~~~~~
 

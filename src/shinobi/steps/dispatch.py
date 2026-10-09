@@ -369,6 +369,9 @@ def _prepare_inputs(scope: Scope, kwargs: dict[str, Any], *, validated: Any = No
     """
     if validated is None:
         validated = _validate_inputs(scope, kwargs)
+    from shinobi.derived import validate_derived_read_scope
+
+    validate_derived_read_scope(scope)
     prepared: dict[str, Any] = {}
     for name in type(validated).model_fields:
         if scope.mutability_of(name) is Mutability.MUTABLE:
@@ -413,9 +416,13 @@ def _prepare_inputs(scope: Scope, kwargs: dict[str, Any], *, validated: Any = No
 def _validate_inputs(scope: Scope, kwargs: dict[str, Any]) -> BaseModel:
     """Validate one raw input mapping with dispatch's public error contract."""
     try:
-        return scope.inputs_model(**kwargs)
+        validated = scope.inputs_model(**kwargs)
     except ValidationError as exc:
         raise ParameterError(f"{scope.name}: parameter validation failed:\n{exc}") from exc
+    from shinobi.derived import validate_derived_read_scope
+
+    validate_derived_read_scope(scope)
+    return validated
 
 
 def _snapshot_product_inputs(scope: Scope, inputs: BaseModel | dict[str, Any] | _ProductReservations | None) -> _ProductReservations | None:
@@ -425,13 +432,17 @@ def _snapshot_product_inputs(scope: Scope, inputs: BaseModel | dict[str, Any] | 
     try:
         if isinstance(inputs, _ProductReservations):
             return inputs.with_inputs(copy.deepcopy(inputs.inputs))
-        if not (scope.harvest or scope.scratch or any(meta.family for meta in scope.field_meta.values())):
+        if not (scope.harvest or scope.scratch or scope.derived_reads or any(meta.family for meta in scope.field_meta.values())):
             return None
         from shinobi.ownership import _model_values
 
         values = _model_values(inputs) if isinstance(inputs, BaseModel) else inputs
         return _ProductReservations(
-            tuple(scope.harvest), tuple(scope.scratch), copy.deepcopy(values), copy.deepcopy({name: meta.family for name, meta in scope.field_meta.items() if meta.family})
+            tuple(scope.harvest),
+            tuple(scope.scratch),
+            copy.deepcopy(values),
+            copy.deepcopy({name: meta.family for name, meta in scope.field_meta.items() if meta.family}),
+            copy.deepcopy(scope.derived_reads),
         )
     except Exception as exc:
         raise DatasetLifecycleUnavailableError(f"scope {scope.name!r} cannot freeze product directory reservation inputs: {exc}") from exc
@@ -525,6 +536,9 @@ class ExecContext:
         self.scope = scope
         self._raw = raw_inputs
         self.inputs = validated_inputs if validated_inputs is not None else _validate_inputs(scope, raw_inputs)
+        from shinobi.derived import validate_derived_read_scope
+
+        validate_derived_read_scope(scope)
         self.outputs = None
         self._backend_override = backend_override
         self._recipe_backend = recipe_backend
@@ -558,7 +572,11 @@ class ExecContext:
         self._leaf_inputs = leaf_inputs
         # Original ownership/order inputs remain authoritative when runtime
         # wiring or ctx.run overrides select another product directory.
-        self._planned_inputs = _snapshot_product_inputs(scope, planned_inputs) if dataset_lifecycle is not None else None
+        self._planned_inputs = (
+            _snapshot_product_inputs(scope, planned_inputs if planned_inputs is not None or not scope.derived_reads else self.inputs)
+            if dataset_lifecycle is not None or scope.derived_reads
+            else None
+        )
         self._planned_leaf_inputs = (
             (planned_leaf_inputs if planned_leaf_inputs is not None else _snapshot_product_leaf_inputs(scope, leaf_inputs)) if dataset_lifecycle is not None else None
         )
@@ -983,6 +1001,9 @@ def _dispatch(
     overwrite_steps: Sequence[str] = (),
     **kwargs: Any,
 ) -> StepResult:
+    from shinobi.derived import validate_derived_read_scope
+
+    validate_derived_read_scope(scope)
     config = _config or AppConfig.load()
     run_id = _run_id or new_run_id()
     dataset_declarations = _scope_dataset_declarations(scope)
@@ -1166,6 +1187,16 @@ def _dispatch(
                 # can hold these paths now. Roots it only reads stay under a
                 # shared claim and are left to the check below.
                 written_roots = {access.root for access in revalidated.accesses if access.writes and access.root is not None}
+                from shinobi.derived import derived_reads
+                from shinobi.ownership import _resolved_leaf_inputs
+                from shinobi.dataset_lifecycle import _claimed_for
+
+                for leaf, values, _ in _resolved_leaf_inputs(scope, validated_inputs, step_inputs={}, validated_steps=leaf_inputs, known_steps=known_steps):
+                    for read in derived_reads(leaf, values, launch_workspace):
+                        if read.mutable and read.member == "file":
+                            if not _claimed_for(lease.owner, read.path, True):
+                                raise DatasetLifecycleUnavailableError(f"auxiliary recovery requires an exclusive claim for {read.path}")
+                            written_roots.add(read.path)
                 notes = reconcile(effective_cache_dir, get_cache_manifest(effective_cache_dir), paths=written_roots, exact=True) if written_roots else []
                 if notes:
                     for note in notes:
@@ -1487,6 +1518,11 @@ def _dispatch(
     # each get their own cache check via their own recursive _dispatch
     # call (see shinobi.cache's module docstring for why).
     cacheable = cache_enabled and not isinstance(scope, Recipe)
+    # Input factories can change the scope declaration. Validate once and
+    # recheck support before announcing this run or recovering snapshots.
+    if _validated_inputs is None:
+        _validated_inputs = _validate_inputs(scope, kwargs)
+    validate_derived_read_scope(scope)
     # Mutation-chain snapshots (shinobi.snapshots) ride on caching being on
     # *somewhere* in the effective chain, not on this scope being cacheable.
     # An uncached mutating step inside an otherwise-cached recipe still has
@@ -1592,7 +1628,8 @@ def _dispatch(
     if cacheable:
         manifest = get_cache_manifest(cache_dir_value)
         prepared_for_key = ctx.prepare_inputs()
-        cache_key = compute_cache_key(scope, func, prepared_for_key, _input_keys, execution_identity)
+        derived_identity = strict_leaf.select_derived_states(get_journal(cache_dir_value)) if strict_leaf is not None else None
+        cache_key = compute_cache_key(scope, func, prepared_for_key, _input_keys, execution_identity, derived_identity)
         hit = manifest.check(cache_path, cache_key, scope, prepared_for_key)
         if hit is not None and strict_leaf is not None and not strict_leaf.decide_reuse(cache_key, _input_keys, get_journal(cache_dir_value)):
             # The key and outputs match, but the dataset has moved on to a
@@ -1923,8 +1960,18 @@ def _run_cab(
     sandbox_dir = None
     run_inputs = prepared
     workspace = Path.cwd()
-    planned = _snapshot_product_inputs(cab, planned_inputs if planned_inputs is not None else prepared) if dataset_resources else None
+    planned = _snapshot_product_inputs(cab, planned_inputs if planned_inputs is not None else prepared) if dataset_resources or cab.derived_reads else None
     run_planned = planned
+    if cab.derived_reads:
+        from shinobi.derived import derived_reads
+
+        if (
+            planned is None
+            or planned.derived != cab.derived_reads
+            or [(read.address, read.path) for read in derived_reads(cab, planned.inputs, workspace)]
+            != [(read.address, read.path) for read in derived_reads(cab, prepared, workspace)]
+        ):
+            raise DatasetLifecycleUnavailableError("derived dependency paths/declarations changed after planning")
     if dataset_resources:
         from shinobi.ownership import validate_contained_execution
 
@@ -1947,14 +1994,19 @@ def _run_cab(
 
         validate_contained_execution(cab, run_inputs, workspace=run_cwd, dataset_resources=dataset_resources, planned_inputs=run_planned)
     validate_declared_writes(cab, run_inputs, run_cwd, error_type=BackendError if uses_mounts else ParameterError)
+    from shinobi.derived import derived_reads, read_fingerprint, stage_derived_reads
+
+    for read in derived_reads(cab, run_inputs, workspace):
+        read_fingerprint(read, require=True)
+    staged_reads = stage_derived_reads(cab, run_inputs, workspace, sandbox_dir) if sandbox_dir is not None else {}
     if clear_outputs:
         clear_stale_outputs(cab, run_inputs, workspace, sandboxed=sandbox_dir is not None)
     created = prepare_output_parents(cab, run_inputs, run_cwd)
     prepared_observations = observe_prepared_parents(created)
     precreated = [path for path in created if sandbox_dir is not None and path.resolve().is_relative_to(sandbox_dir)]
     capture = (
-        ProductCapture(cab, run_inputs, workspace, sandbox_dir, prepared_observations=prepared_observations)
-        if product_captures is not None or any(meta.family for meta in cab.field_meta.values())
+        ProductCapture(cab, run_inputs, workspace, sandbox_dir, prepared_observations=prepared_observations, staged_reads=staged_reads)
+        if product_captures is not None or cab.derived_reads or any(meta.family for meta in cab.field_meta.values())
         else None
     )
     argv = build_argv(cab, run_inputs)

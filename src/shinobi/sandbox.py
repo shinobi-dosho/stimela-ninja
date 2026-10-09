@@ -228,7 +228,7 @@ def absolutize_path_inputs(scope: Scope, prepared: dict[str, Any], workspace: Pa
     return anchored
 
 
-def _input_paths_to_keep(scope: Scope, run_inputs: dict[str, Any]) -> list[Path]:
+def _input_paths_to_keep(scope: Scope, run_inputs: dict[str, Any], workspace: Path | None = None) -> list[Path]:
     """Resolved values of every path input that carries data *in* -- the
     paths `clear_stale_outputs` must never delete.
 
@@ -248,6 +248,9 @@ def _input_paths_to_keep(scope: Scope, run_inputs: dict[str, Any]) -> list[Path]
         from shinobi.products import iter_product_paths
 
         keep.extend(path.resolve() for path in iter_product_paths(value))
+    from shinobi.derived import derived_reads
+
+    keep.extend(read.path for read in derived_reads(scope, run_inputs, workspace or Path.cwd()))
     return keep
 
 
@@ -324,7 +327,7 @@ def clear_stale_outputs(scope: Scope, run_inputs: dict[str, Any], workspace: Pat
                 candidates.append((candidate.path, f"output {name!r}"))
     if not candidates:
         return []
-    keep = _input_paths_to_keep(scope, run_inputs)
+    keep = _input_paths_to_keep(scope, run_inputs, workspace)
     workspace = workspace.resolve()
     removed: list[Path] = []
     for path, source in candidates:
@@ -689,6 +692,20 @@ def harvest_outputs(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbo
             _capture.complete = False
             # Actual harvest checks/moves still run and retain their failures.
 
+    if _capture is not None:
+        from shinobi.derived import read_fingerprint
+
+        for path, (source, staged) in _capture.staged_reads.items():
+            if not source.mutable:
+                if read_fingerprint(staged, require=True) != read_fingerprint(source, require=True):
+                    raise ValueError(f"read-only staged dependency changed: {path}")
+                for rel in list(targets):
+                    target = sandbox_dir / rel
+                    if target == path or target.is_relative_to(path):
+                        targets.pop(rel)
+                    elif path.is_relative_to(target):
+                        raise ValueError(f"harvest ancestor would carry read-only staged dependency: {target} / {path}")
+    candidates = {rel for rel in candidates if rel in targets}
     for rel in sorted(targets, key=lambda rel: Path(rel).parts):
         src = sandbox_dir / rel
         if not src.exists() and not src.is_symlink():
@@ -728,10 +745,12 @@ class ProductCapture:
         *,
         created_dirs: Sequence[Path] = (),
         prepared_observations: dict[Path, Any] | None = None,
+        staged_reads: dict | None = None,
     ):
         from shinobi.products import family_plans
         from shinobi.steps.schema import protected_family_inputs, validate_family_inputs
 
+        self.staged_reads = staged_reads or {}
         self.family_plans = family_plans(scope, prepared, sandbox_dir or workspace)
         self.destination_plans = family_plans(scope, prepared, workspace)
         self.protected_inputs = protected_family_inputs(scope, prepared, sandbox_dir or workspace)
@@ -749,7 +768,7 @@ class ProductCapture:
                 self.family_before[candidate.path] = observe_product_path(candidate.path, recursive=True) if candidate.path.exists() else None
                 if candidate.rule.accept_existing and sandbox_dir is not None and candidate.path.is_relative_to(sandbox_dir):
                     prior = workspace / candidate.path.relative_to(sandbox_dir)
-                    if prior.exists():
+                    if prior.exists() and candidate.path not in self.staged_reads:
                         raise ValueError("relative sandbox accept_existing needs explicit staging; use an absolute shared output root or direct execution")
         self.scope = scope
         self.prepared = prepared

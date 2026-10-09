@@ -29,6 +29,7 @@ from pydantic_core import PydanticUndefined
 from shinobi._annotations import walk_annotation
 from shinobi.dataset_access import DatasetAccess, validate_scope_dataset_accesses
 from shinobi.exceptions import ParameterError
+from shinobi.derived import DerivedRead, derived_reads, validate_derived_read_scope
 from shinobi.resources import Resources
 from shinobi.products import Coordinate, FamilySpec, family_annotation, family_plans, framework_type, iter_product_paths, resolve_reference
 
@@ -164,6 +165,7 @@ class ParamMeta(BaseModel):
     repeat_as_tokens: bool = False
     dtype: str | None = None
     choices: list[Any] | None = None
+    nullable: bool | None = None
     string_pattern: str | None = None
     abbreviation: str | None = None
     write_path: bool = False
@@ -442,6 +444,14 @@ def validate_declared_writes(scope: Scope, prepared: dict[str, Any], cwd: Path, 
     def canonical(path: Path) -> Path:
         return (path if path.is_absolute() else cwd / path).resolve()
 
+    if scope.derived_reads:
+        from shinobi.derived import derived_reads
+
+        try:
+            derived_reads(scope, prepared, cwd)
+        except ValueError as exc:
+            raise error_type(str(exc)) from exc
+
     readonly: list[tuple[Path, str]] = []
     for name, writable in path_input_modes(scope, prepared).items():
         if writable:
@@ -676,6 +686,7 @@ class _ProductReservations:
     scratch: tuple[str, ...]
     inputs: dict[str, Any]
     families: dict[str, FamilySpec] | None = None
+    derived: dict[str, DerivedRead] | None = None
 
     @property
     def declarations(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
@@ -683,7 +694,7 @@ class _ProductReservations:
 
     def with_inputs(self, inputs: dict[str, Any]) -> _ProductReservations:
         """Retain original declarations when anchoring execution input paths."""
-        return _ProductReservations(self.harvest, self.scratch, inputs, self.families)
+        return _ProductReservations(self.harvest, self.scratch, inputs, self.families, self.derived)
 
 
 def _resolved_product_patterns(
@@ -715,6 +726,12 @@ def _resolved_product_patterns(
             yield f"family {name!r} pattern", pattern
     for kind, patterns in declarations if declarations is not None else (("harvest", scope.harvest), ("scratch", scope.scratch)):
         for pattern in patterns:
+            if kind == "scratch" and any(
+                field in prepared and prepared[field] is None and field in path_fields(scope.inputs_model) and not scope.inputs_model.model_fields[field].is_required()
+                for _, field, _, _ in formatter.parse(pattern)
+                if field is not None
+            ):
+                continue  # a validated unset optional scratch destination has no write
             source = f"{kind} pattern {pattern!r}"
             try:
                 require_present_fields(pattern)
@@ -895,6 +912,8 @@ def _path_access_contributors(
     for name, plan in family_plans(scope, prepared, root, best_effort=True).items():
         for candidate in plan.candidates:
             yield candidate.path.resolve(), True, f"output {name!r}", name
+    for read in derived_reads(scope, prepared, root, best_effort=True):
+        yield read.path, read.mutable, f"derived read {read.address.name!r}", read.address.field
     # Preserve conservative literal-prefix reservations for ordinary glob
     # declarations, including the workspace parent of a flat family.
     for source, pattern in _resolved_product_patterns(scope, prepared, workspace=workspace):
@@ -963,6 +982,9 @@ class Scope(BaseModel):
     # Resolution is an explicit planning operation; constructing a Scope
     # performs validation only and never imports casacore or touches a path.
     dataset_accesses: list[DatasetAccess] = Field(default_factory=list)
+    # Storage shared by framework consumers; nonempty declarations are supported
+    # only on Cab, whose execution stages and verifies the dependencies.
+    derived_reads: dict[str, DerivedRead] = Field(default_factory=dict, exclude_if=lambda value: not value)
     # Step-level skip-if-unchanged caching (shinobi.cache), same precedence
     # shape as `backend`: explicit call-time `cache=`/`cache_dir=` kwarg >
     # this Scope's own value > the enclosing recipe's > `AppConfig.cache`'s
@@ -1009,6 +1031,9 @@ class Scope(BaseModel):
 
     @model_validator(mode="after")
     def _families(self):
+        validate_derived_read_scope(self)
+        for declaration in self.derived_reads.values():
+            declaration.validate_inputs(set(self.inputs_model.model_fields))
         for name, meta in self.field_meta.items():
             if meta.family is not None and name not in self.outputs_model.model_fields:
                 raise ValueError(f"{name}: family metadata requires a declared family output")

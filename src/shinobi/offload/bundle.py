@@ -72,6 +72,9 @@ class ScopeSpec(WireModel):
 
     @classmethod
     def capture(cls, scope: Scope) -> ScopeSpec:
+        from shinobi.derived import validate_derived_read_scope
+
+        validate_derived_read_scope(scope)
         kinds = {Cab: "cab", Scope: "pyfunc", Recipe: "recipe"}
         if type(scope) not in kinds:
             raise BundleError(f"custom scope {type(scope).__name__!r} cannot be frozen")

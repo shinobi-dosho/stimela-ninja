@@ -84,6 +84,7 @@ from shinobi.loaders._modelgen import (
     resolve_use,
     sanitize_unique,
     validate_choices,
+    validate_nullable,
 )
 
 
@@ -373,5 +374,9 @@ def _leaf_field(value: dict[str, Any]) -> tuple[Any, Any]:
         extra["abbreviation"] = value["abbreviation"]
 
     py_type = constrain_string(py_type, value.get("string_pattern"), dtype=value.get("dtype", "str"), error=ConfigLoadError)
-    annotation, field_default = required_field_spec(py_type, required, default)
-    return (annotation, Field(field_default, description=value.get("info"), json_schema_extra=extra or None, validate_default=value.get("string_pattern") is not None))
+    nullable = validate_nullable(value, error=ConfigLoadError)
+    annotation, field_default = required_field_spec(py_type, required, default, nullable=nullable, error=ConfigLoadError)
+    return (
+        annotation,
+        Field(field_default, description=value.get("info"), json_schema_extra=extra or None, validate_default=value.get("string_pattern") is not None or nullable is False),
+    )

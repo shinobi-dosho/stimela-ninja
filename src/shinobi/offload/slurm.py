@@ -741,6 +741,16 @@ def _prepare_worker_slurm(
     attempts = tuple(PlannedAttempt(step_path=step.name, attempt_id=uuid4()) for step in pinned.steps)
 
     recipe = pinned.declaration()
+    from shinobi.derived import derived_reads
+    from shinobi.dataset_access import scope_has_dataset_contract
+    from shinobi.ownership import _resolved_leaf_inputs
+
+    for leaf, known, unresolved in _resolved_leaf_inputs(recipe, unpack(pinned.inputs), step_inputs={}):
+        if scope_has_dataset_contract(leaf):
+            if unresolved and leaf.derived_reads:
+                raise ValueError("auxiliary mutation offload requires resolved declarations and is unsupported in v1")
+            if any(read.mutable for read in derived_reads(leaf, known, Path(pinned.workspace), best_effort=True)):
+                raise ValueError("strict auxiliary mutation workflows cannot be offloaded in v1")
     graph = build_graph(recipe)
     step_index = {name: i for i, name in enumerate(graph.names)}
     recipe_inputs = unpack(pinned.inputs)

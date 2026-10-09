@@ -518,6 +518,7 @@ def compute_cache_key(
     prepared: dict[str, Any],
     input_keys: dict[str, Any] | None = None,
     execution: ExecutionIdentity | None = None,
+    derived_identity: Any | None = None,
 ) -> str:
     """Hash execution identity, canonicalized params and upstream state.
 
@@ -559,6 +560,9 @@ def compute_cache_key(
     non-MAIN dataset writers additionally key their access contracts under
     a versioned component, invalidating historical unchecked subtable work.
     """
+    from shinobi.derived import validate_derived_read_scope
+
+    validate_derived_read_scope(scope)
     input_paths = path_fields(scope.inputs_model)
     mutated_paths = mutated_path_fields(scope)
     wired = set(input_keys or ())
@@ -654,6 +658,15 @@ def compute_cache_key(
     if any(access.allow_present_subtable_rewrite for access in scope.dataset_accesses):
         parts.append(["__msv2_present_subtable_rewrite_v1__", [access.model_dump(mode="json") for access in scope.dataset_accesses]])
 
+    if scope.derived_reads:
+        from shinobi.derived import derived_reads, read_fingerprint
+
+        physical = (
+            derived_identity
+            if derived_identity is not None
+            else [[read.address.model_dump(mode="json"), str(read.path), read_fingerprint(read, require=True)] for read in derived_reads(scope, prepared, Path.cwd())]
+        )
+        parts.append(["__derived_reads_v1__", {name: declaration.model_dump(mode="json") for name, declaration in scope.derived_reads.items()}, physical])
     blob = json.dumps(parts, default=str, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()
 
