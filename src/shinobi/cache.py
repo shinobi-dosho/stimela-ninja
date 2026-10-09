@@ -560,6 +560,9 @@ def compute_cache_key(
     non-MAIN dataset writers additionally key their access contracts under
     a versioned component, invalidating historical unchecked subtable work.
     """
+    from shinobi.derived import validate_derived_read_scope
+
+    validate_derived_read_scope(scope)
     input_paths = path_fields(scope.inputs_model)
     mutated_paths = mutated_path_fields(scope)
     wired = set(input_keys or ())

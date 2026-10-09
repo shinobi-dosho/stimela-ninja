@@ -29,7 +29,7 @@ from pydantic_core import PydanticUndefined
 from shinobi._annotations import walk_annotation
 from shinobi.dataset_access import DatasetAccess, validate_scope_dataset_accesses
 from shinobi.exceptions import ParameterError
-from shinobi.derived import DerivedRead, derived_reads
+from shinobi.derived import DerivedRead, derived_reads, validate_derived_read_scope
 from shinobi.resources import Resources
 from shinobi.products import Coordinate, FamilySpec, family_annotation, family_plans, framework_type, iter_product_paths, resolve_reference
 
@@ -982,6 +982,8 @@ class Scope(BaseModel):
     # Resolution is an explicit planning operation; constructing a Scope
     # performs validation only and never imports casacore or touches a path.
     dataset_accesses: list[DatasetAccess] = Field(default_factory=list)
+    # Storage shared by framework consumers; nonempty declarations are supported
+    # only on Cab, whose execution stages and verifies the dependencies.
     derived_reads: dict[str, DerivedRead] = Field(default_factory=dict, exclude_if=lambda value: not value)
     # Step-level skip-if-unchanged caching (shinobi.cache), same precedence
     # shape as `backend`: explicit call-time `cache=`/`cache_dir=` kwarg >
@@ -1029,6 +1031,7 @@ class Scope(BaseModel):
 
     @model_validator(mode="after")
     def _families(self):
+        validate_derived_read_scope(self)
         for declaration in self.derived_reads.values():
             declaration.validate_inputs(set(self.inputs_model.model_fields))
         for name, meta in self.field_meta.items():

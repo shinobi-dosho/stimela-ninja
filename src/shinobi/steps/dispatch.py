@@ -369,6 +369,9 @@ def _prepare_inputs(scope: Scope, kwargs: dict[str, Any], *, validated: Any = No
     """
     if validated is None:
         validated = _validate_inputs(scope, kwargs)
+    from shinobi.derived import validate_derived_read_scope
+
+    validate_derived_read_scope(scope)
     prepared: dict[str, Any] = {}
     for name in type(validated).model_fields:
         if scope.mutability_of(name) is Mutability.MUTABLE:
@@ -413,9 +416,13 @@ def _prepare_inputs(scope: Scope, kwargs: dict[str, Any], *, validated: Any = No
 def _validate_inputs(scope: Scope, kwargs: dict[str, Any]) -> BaseModel:
     """Validate one raw input mapping with dispatch's public error contract."""
     try:
-        return scope.inputs_model(**kwargs)
+        validated = scope.inputs_model(**kwargs)
     except ValidationError as exc:
         raise ParameterError(f"{scope.name}: parameter validation failed:\n{exc}") from exc
+    from shinobi.derived import validate_derived_read_scope
+
+    validate_derived_read_scope(scope)
+    return validated
 
 
 def _snapshot_product_inputs(scope: Scope, inputs: BaseModel | dict[str, Any] | _ProductReservations | None) -> _ProductReservations | None:
@@ -529,6 +536,9 @@ class ExecContext:
         self.scope = scope
         self._raw = raw_inputs
         self.inputs = validated_inputs if validated_inputs is not None else _validate_inputs(scope, raw_inputs)
+        from shinobi.derived import validate_derived_read_scope
+
+        validate_derived_read_scope(scope)
         self.outputs = None
         self._backend_override = backend_override
         self._recipe_backend = recipe_backend
@@ -991,6 +1001,9 @@ def _dispatch(
     overwrite_steps: Sequence[str] = (),
     **kwargs: Any,
 ) -> StepResult:
+    from shinobi.derived import validate_derived_read_scope
+
+    validate_derived_read_scope(scope)
     config = _config or AppConfig.load()
     run_id = _run_id or new_run_id()
     dataset_declarations = _scope_dataset_declarations(scope)
@@ -1505,6 +1518,11 @@ def _dispatch(
     # each get their own cache check via their own recursive _dispatch
     # call (see shinobi.cache's module docstring for why).
     cacheable = cache_enabled and not isinstance(scope, Recipe)
+    # Input factories can change the scope declaration. Validate once and
+    # recheck support before announcing this run or recovering snapshots.
+    if _validated_inputs is None:
+        _validated_inputs = _validate_inputs(scope, kwargs)
+    validate_derived_read_scope(scope)
     # Mutation-chain snapshots (shinobi.snapshots) ride on caching being on
     # *somewhere* in the effective chain, not on this scope being cacheable.
     # An uncached mutating step inside an otherwise-cached recipe still has

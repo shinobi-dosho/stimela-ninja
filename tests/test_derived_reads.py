@@ -396,3 +396,222 @@ def test_unrelated_scope_does_not_evaluate_output_default_factory(tmp_path):
     cab = Cab(name="ordinary", command="true", inputs_model=Empty, outputs_model=Outputs)
     assert derived_reads(cab, {}, tmp_path) == ()
     assert calls == []
+
+
+@pytest.mark.parametrize("kind", ["scope", "recipe"])
+def test_derived_reads_refuse_non_cab_construction(kind):
+    from shinobi.steps.schema import Recipe, Scope
+
+    constructor = {"scope": Scope, "recipe": Recipe}[kind]
+    with pytest.raises(ValidationError, match="scope 'unsupported'.*derived_reads supports only Cab"):
+        constructor(name="unsupported", inputs_model=Inputs, outputs_model=Empty, derived_reads=reader().derived_reads)
+    empty = constructor(name="empty", inputs_model=Inputs, outputs_model=Empty)
+    assert empty.derived_reads == {}
+    assert "derived_reads" not in empty.model_dump()
+
+
+@pytest.mark.parametrize("construction", ["copy", "construct"])
+def test_derived_reads_refuse_non_cab_resolver_and_cache_bypass(tmp_path, construction):
+    from shinobi.steps.schema import Scope
+
+    scope = Scope(name="unsupported", inputs_model=Inputs, outputs_model=Empty)
+    if construction == "copy":
+        scope = scope.model_copy(update={"derived_reads": reader().derived_reads})
+    else:
+        scope = Scope.model_construct(name="unsupported", inputs_model=Inputs, outputs_model=Empty, derived_reads=reader().derived_reads)
+    for best_effort in [False, True]:
+        with pytest.raises(ValueError, match="unsupported.*supports only Cab"):
+            derived_reads(scope, Inputs().model_dump(), tmp_path, best_effort=best_effort)
+    with pytest.raises(ValueError, match="unsupported.*supports only Cab"):
+        compute_cache_key(scope, None, Inputs().model_dump(), derived_identity=[])
+
+
+@pytest.mark.parametrize("backend,cache", [("native", False), ("native", True), ("docker", True), ("venv", False)])
+def test_derived_reads_refuse_public_pystep_before_dispatch_work(monkeypatch, backend, cache):
+    from shinobi.config import AppConfig
+    from shinobi.steps import pystep
+
+    def untouched(prefix: str = "image") -> None:
+        pytest.fail("unsupported derived reads reached the Python function")
+
+    ref = pystep()(untouched)
+    ref.step = ref.step.model_copy(update={"derived_reads": reader().derived_reads})
+    monkeypatch.setattr(AppConfig, "load", lambda: pytest.fail("unsupported derived reads reached config/cache/backend setup"))
+    with pytest.raises(ValueError, match="untouched.*supports only Cab"):
+        ref(backend=backend, cache=cache)
+
+
+def test_derived_reads_refuse_direct_python_adapter_after_context_creation():
+    from shinobi.steps import pystep
+    from shinobi.steps.dispatch import ExecContext
+
+    def untouched(prefix: str = "image") -> None:
+        pytest.fail("unsupported derived reads reached the direct Python adapter")
+
+    ref = pystep()(untouched)
+    ctx = ExecContext(ref.step, {})
+    ref.step.derived_reads.update(reader().derived_reads)
+    with pytest.raises(ValueError, match="untouched.*supports only Cab"):
+        ref.func(ctx)
+
+
+def test_derived_reads_refuse_mutation_from_input_default_factory():
+    from pydantic import Field
+    from shinobi.steps.dispatch import _prepare_inputs
+    from shinobi.steps.schema import Scope
+
+    scope = Scope(name="mutated-by-default", inputs_model=Empty, outputs_model=Empty)
+
+    def mutate_scope():
+        scope.derived_reads.update(reader().derived_reads)
+        return "image"
+
+    class MutatingInputs(BaseModel):
+        prefix: str = Field(default_factory=mutate_scope)
+
+    scope = scope.model_copy(update={"inputs_model": MutatingInputs})
+    with pytest.raises(ValueError, match="mutated-by-default.*supports only Cab"):
+        _prepare_inputs(scope, {})
+
+
+@pytest.mark.parametrize("location", ["root", "deep"])
+def test_derived_reads_refuse_recipe_tree_before_sibling_execution(monkeypatch, location):
+    from shinobi.config import AppConfig
+    from shinobi.graph import RecipeGraphError, build_graph
+    from shinobi.steps import pystep
+    from shinobi.steps.schema import Recipe, StepRef
+
+    def earlier() -> None:
+        pytest.fail("an earlier sibling executed before the unsupported declaration was checked")
+
+    recipe = Recipe(name="root", inputs_model=Empty, outputs_model=Empty, steps=[pystep()(earlier)])
+    if location == "root":
+        recipe = recipe.model_copy(update={"derived_reads": reader().derived_reads})
+        unsupported_name = "root"
+    else:
+        bad = Recipe(name="bad-nested", inputs_model=Empty, outputs_model=Empty)
+        middle = Recipe(name="middle", inputs_model=Empty, outputs_model=Empty)
+        middle.steps.append(StepRef(name="bad", step=bad))
+        recipe.steps.append(StepRef(name="middle", step=middle))
+        bad.derived_reads.update(reader().derived_reads)
+        unsupported_name = "bad-nested"
+    with pytest.raises(RecipeGraphError, match=f"{unsupported_name}.*supports only Cab"):
+        build_graph(recipe)
+    monkeypatch.setattr(AppConfig, "load", lambda: pytest.fail("unsupported recipe tree reached dispatch setup"))
+    with pytest.raises(ValueError, match=f"{unsupported_name}.*supports only Cab"):
+        recipe()
+
+
+@pytest.mark.parametrize("kind", ["scope", "recipe"])
+def test_derived_reads_refuse_non_cab_worker_capture_and_restore(kind):
+    from shinobi.offload._codec import pack
+    from shinobi.offload.bundle import ScopeSpec
+    from shinobi.steps.schema import Recipe, Scope
+
+    constructor = {"scope": Scope, "recipe": Recipe}[kind]
+    scope = constructor(name="worker-python", inputs_model=Inputs, outputs_model=Empty)
+    spec = ScopeSpec.capture(scope)
+    assert "derived_reads" not in spec.settings
+    assert spec.restore().derived_reads == {}
+    unsupported = scope.model_copy(update={"derived_reads": reader().derived_reads})
+    with pytest.raises(ValueError, match="worker-python.*supports only Cab"):
+        ScopeSpec.capture(unsupported)
+    malicious = spec.model_copy(update={"settings": {**spec.settings, "derived_reads": pack(reader().model_dump()["derived_reads"])}})
+    with pytest.raises(ValidationError, match="worker-python.*supports only Cab"):
+        malicious.restore()
+
+
+@pytest.mark.parametrize("cache", [False, True])
+def test_derived_reads_refuse_manual_step_mutation_from_input_default_factory(tmp_path, monkeypatch, cache):
+    from pydantic import Field
+    from shinobi.config import AppConfig
+    from shinobi.steps.schema import Scope, StepRef
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "ownership.json"))
+    config = AppConfig(cache={"dir": str(tmp_path / "cache")})
+    monkeypatch.setattr(AppConfig, "load", lambda: config)
+    monkeypatch.setattr("shinobi.steps.dispatch.announce_run", lambda *args, **kwargs: pytest.fail("unsupported derived reads announced a run"))
+    monkeypatch.setattr("shinobi.steps.dispatch.reconcile", lambda *args, **kwargs: pytest.fail("unsupported derived reads reached snapshot recovery"))
+    scope = Scope(name="manual-mutated-by-default", inputs_model=Empty, outputs_model=Empty)
+
+    def mutate_scope():
+        scope.derived_reads.update(reader().derived_reads)
+        return "image"
+
+    class MutatingInputs(BaseModel):
+        prefix: str = Field(default_factory=mutate_scope)
+
+    def untouched(ctx):
+        pytest.fail("unsupported derived reads reached the manual StepRef body")
+
+    scope = scope.model_copy(update={"inputs_model": MutatingInputs})
+    ref = StepRef(name=scope.name, step=scope, func=untouched)
+    with pytest.raises(ValueError, match="manual-mutated-by-default.*supports only Cab"):
+        ref(cache=cache)
+
+
+@pytest.mark.parametrize("cache", [False, True])
+def test_manual_step_input_default_factory_runs_once_before_execution(tmp_path, monkeypatch, cache):
+    from pydantic import Field
+    from shinobi.config import AppConfig
+    from shinobi.results import StepResult
+    from shinobi.steps.schema import Scope, StepRef
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "ownership.json"))
+    config = AppConfig(cache={"dir": str(tmp_path / "cache")})
+    monkeypatch.setattr(AppConfig, "load", lambda: config)
+    calls = []
+
+    def default_prefix():
+        calls.append("default")
+        return "image"
+
+    class DefaultInputs(BaseModel):
+        prefix: str = Field(default_factory=default_prefix)
+
+    scope = Scope(name="manual-default", inputs_model=DefaultInputs, outputs_model=Empty)
+
+    def body(ctx):
+        assert calls == ["default"]
+        assert ctx.inputs.prefix == "image"
+        return StepResult(name=scope.name, returncode=0, outputs=Empty(), inputs=ctx.inputs)
+
+    assert StepRef(name=scope.name, step=scope, func=body)(cache=cache).success
+    assert calls == ["default"]
+
+
+def test_derived_reads_refuse_strict_creator_factory_before_dataset_overwrite(tmp_path, monkeypatch):
+    from pydantic import Field
+    from shinobi import MeasurementSetV2, pystep
+    from shinobi.config import AppConfig
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "ownership.json"))
+    config = AppConfig(cache={"dir": str(tmp_path / "cache")})
+    monkeypatch.setattr(AppConfig, "load", lambda: config)
+    existing = tmp_path / "existing.ms"
+    existing.mkdir()
+    marker = existing / "table.dat"
+    marker.write_bytes(b"existing dataset must survive")
+
+    class CreatedOutputs(BaseModel):
+        ms: MeasurementSetV2 = Path("existing.ms")
+
+    def creator(prefix: str = "image") -> CreatedOutputs:
+        pytest.fail("unsupported derived reads reached the strict creator body")
+
+    ref = pystep()(creator)
+
+    def mutate_scope():
+        ref.step.derived_reads.update(reader().derived_reads)
+        return "image"
+
+    class MutatingInputs(BaseModel):
+        prefix: str = Field(default_factory=mutate_scope)
+
+    ref.step = ref.step.model_copy(update={"inputs_model": MutatingInputs})
+    with pytest.raises(ValueError, match="creator.*supports only Cab"):
+        ref(overwrite_steps=("creator",))
+    assert marker.read_bytes() == b"existing dataset must survive"

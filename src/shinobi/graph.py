@@ -93,8 +93,15 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
     wiring or in `output_wiring`) to an unknown step or to a field that is not
     an output of that step; a wiring field that is not an input of the
     consuming step; a recipe output field that is not in the recipe's outputs
-    model; or a dependency cycle.
+    model; a dependency cycle; or non-Cab derived reads anywhere in the
+    declared recipe tree.
     """
+    from shinobi.derived import validate_derived_read_scope
+
+    try:
+        validate_derived_read_scope(recipe)
+    except ValueError as exc:
+        raise RecipeGraphError(str(exc)) from exc
     names = [ref.name for ref in recipe.steps]
     index: dict[str, int] = {}
     for i, name in enumerate(names):

@@ -217,10 +217,11 @@ Finite derived dependencies
 ---------------------------
 
 A tool may read a file whose name it derives from a string prefix, or a saved
-version beside an input MS. ``Scope.derived_reads`` declares these dependencies
+version beside an input MS. ``Cab.derived_reads`` declares these dependencies
 without converting naming parameters into path inputs or emitting extra argv.
-Each named ``DerivedRead`` has ``member: file`` or ``member: directory`` and a
-finite ``FamilySpec``. Discovery captures and attribute/index expressions are
+Nonempty declarations on Python scopes (including ``@pystep``) and recipes
+are unsupported and refused before execution. Each named ``DerivedRead`` has
+``member: file`` or ``member: directory`` and a finite ``FamilySpec``. Discovery captures and attribute/index expressions are
 refused. Rules can use finite ``when`` values and ``when_set`` presence checks;
 an empty string/list or ``None`` means absent for a presence check.
 

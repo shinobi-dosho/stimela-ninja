@@ -72,7 +72,24 @@ class ResolvedDerivedRead:
     mutable: bool = False
 
 
+def validate_derived_read_scope(scope):
+    """Reject derived reads outside Cabs, including a recipe's declared tree.
+
+    The field stays on Scope for shared planning and serialization consumers,
+    but only Cab execution implements staging and verification of these reads.
+    Imports are deferred because Scope itself uses this construction validator.
+    """
+    from shinobi.steps.schema import Cab, Recipe
+
+    if scope.derived_reads and not isinstance(scope, Cab):
+        raise ValueError(f"scope {scope.name!r}: derived_reads supports only Cab; remove the declaration from Python scopes and recipes")
+    if isinstance(scope, Recipe):
+        for ref in scope.steps:
+            validate_derived_read_scope(ref.step)
+
+
 def derived_reads(scope, inputs: dict[str, Any], workspace: Path, *, best_effort=False):
+    validate_derived_read_scope(scope)
     if not scope.derived_reads:
         return ()
     resolved = []
