@@ -12,12 +12,14 @@ to recipe inputs or earlier step outputs, and the resulting graph can be
 validated and rendered before execution. Python builders select which nodes
 to declare, and typed wiring records their data dependencies.
 
-The execution layer is usable end to end: native, virtualenv, container,
-Slurm, and Kubernetes backends; concurrent and resource-aware scheduling;
+The execution layer provides native, virtualenv, container, and Slurm
+backends; concurrent and resource-aware scheduling;
 scatter and bounded declared loops; sandboxed execution; caching and mutation
 snapshots; provenance/replay; and remote or compiled cluster runs. Backend
 limitations and live-verification status are stated in :doc:`concepts/backends`
-and :doc:`offloading`.
+and :doc:`offloading`. Kubernetes support is experimental and untested for
+the initial full release and Paper I qualification; strict MSv2 execution
+through that backend remains unavailable.
 
 .. code-block:: python
 

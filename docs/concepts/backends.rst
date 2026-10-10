@@ -81,11 +81,16 @@ Available backends
     ``sacct``.
 
 ``kubernetes``
+    Experimental and untested for the initial full release and Paper I
+    qualification. It is outside the qualified backend matrix; live
+    Kubernetes conformance is follow-up work, not a release or paper gate.
     Runs the command as a batch ``Job`` via ``kubectl``. Mounts carry the same
     read-only classification and nested shadowing as the
     container backends: a writable parent is mounted first and the protected
     input is re-asserted as a nested ``readOnly`` volumeMount. This behavior is
-    live-verified on a real kubelet. ``namespace`` is required, and pods run
+    covered by historical ordinary-path checks on a single-node ``kind``
+    kubelet; these do not qualify strict MSv2 execution or general cluster
+    support. ``namespace`` is required, and pods run
     with the caller's uid/gid, privilege escalation disabled, and all
     capabilities dropped.
 
@@ -122,8 +127,9 @@ or ``unsupported`` for every effective backend in the flat workflow:
        authority are explicit and validated.
    * - ``kubernetes``
      - unproven
-     - Unavailable because ``hostPath`` alone does not establish node
-       identity and there is no pod-side validation/recovery adapter.
+     - Experimental and untested for release/paper qualification. Strict
+       execution is unavailable because ``hostPath`` alone does not establish
+       node identity and there is no pod-side validation/recovery adapter.
    * - remote ``ninja`` launch
      - remote delegated
      - The remote process replans paths, claims resources and applies the
@@ -302,12 +308,16 @@ Verification status
 --------------------
 
 The ``native``, ``docker``, ``podman``, and ``apptainer`` paths were
-verified with real runtimes and bind-mounted host data, and ``kubernetes``
-against a real ``kind`` cluster (``hostPath`` volumes there only work if the
-node running the pod
-has the path -- fine for a single-node dev cluster or nodes with shared
-storage, not a general multi-node cluster without a shared filesystem, which
-would need ``PersistentVolumeClaim``\ s instead).
+verified with real runtimes and bind-mounted host data. Kubernetes is
+**experimental and untested for the initial full release and Paper I
+qualification**. Historical ordinary-path checks against a single-node
+``kind`` cluster and the unit tests establish individual mechanisms, not
+qualified Kubernetes execution. No live Kubernetes run is included in the
+release acceptance campaign, and strict MSv2 execution remains unavailable.
+``hostPath`` volumes only work if the selected node has the path; general
+multi-node volume provisioning and pod-side MS validation/recovery require
+separate qualification. Kubernetes conformance is deferred beyond the initial
+release and paper, rather than counted as a missing release gate.
 
 Both Slurm paths -- the ``slurm`` step backend and the separate
 compile-and-offload path (:doc:`../offloading`) -- were verified against a
@@ -316,5 +326,6 @@ the offload path has automated live coverage (``tests/test_slurm_live.py``
 against the throwaway cluster in ``tests/slurm_live/``, skipped unless it
 is up), while the step backend's automated tests mock the
 ``sbatch``/``sacct`` calls (``tests/test_slurm_backend.py``). Both live
-setups are single-node, so multi-node scheduling and cross-node shared
-storage remain unproven either way.
+setups are single-node and do not themselves establish multi-node scheduling
+or cross-node shared storage. Detached strict-MS workers require the separate
+physical storage qualification described in :doc:`../offloading`.

@@ -9,6 +9,10 @@ Requirements
   (for example ``wsclean``, or a container runtime such as ``docker`` /
   ``podman`` / ``apptainer``, or a ``slurm`` / ``kubernetes`` cluster).
 
+Kubernetes support is experimental and untested for the initial full release
+and Paper I qualification. See :doc:`concepts/backends` for the release
+boundary and strict MSv2 refusal behavior.
+
 From PyPI
 ---------
 
