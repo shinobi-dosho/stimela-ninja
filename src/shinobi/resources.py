@@ -30,8 +30,8 @@ on the leaf cgroup a process is in (see its docstring).
 
 **The declaration is not enforcement.** Locally, shinobi decides *whether to
 start* a step; it cannot hold a running process to its word. Container and
-cluster backends do enforce it (`--memory`/`--cpus`, `#SBATCH --mem`, k8s
-`resources.limits`), which is a real difference -- a containerised runaway
+cluster backends do enforce it (`--memory`/`--cpus`, `#SBATCH --mem`), which
+is a real difference -- a containerised runaway
 dies in its own cgroup instead of eating the shared slice. A native or venv
 step has no such backstop at all. Enforcement is also *per dimension*: a
 rootless runtime can only apply the controllers systemd delegated to the
@@ -137,8 +137,8 @@ def format_size(size: int) -> str:
     """Render a byte count for humans, in binary units.
 
     For log lines and error messages only -- every backend wants its own
-    grammar (docker takes raw bytes, kubernetes a `Quantity`, Slurm
-    megabytes), so this is deliberately not the shared emitter for those.
+    grammar (docker takes raw bytes, Slurm megabytes), so this is deliberately
+    not the shared emitter for those.
 
     Args:
         size: Size in bytes.

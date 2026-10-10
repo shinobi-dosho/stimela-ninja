@@ -83,6 +83,17 @@ def test_happy_path_standalone_call():
     assert result.shifted == "x.ms+2.0"  # StepResult.__getattr__ read-through
 
 
+@pytest.mark.parametrize("backend", ["kubernetes", "quagga"])
+@pytest.mark.parametrize("image", [None, "tool:latest"])
+def test_unknown_backend_is_refused_before_python_body(backend, image):
+    @pystep(image=image)
+    def forbidden() -> None:
+        pytest.fail("unknown backend ran Python locally")
+
+    with pytest.raises(ValueError, match=f"unknown backend '{backend}'"):
+        forbidden(backend=backend)
+
+
 def test_wraps_an_existing_function_without_decorator_syntax():
     # matches the precedent already established for shinobi.step
     ref = pystep()(add_offset)

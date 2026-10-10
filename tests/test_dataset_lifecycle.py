@@ -729,8 +729,8 @@ def test_local_adapter_reader_routes_commit_with_capability_evidence(tmp_path, m
     assert capability.namespace_mode is (DatasetNamespaceMode.LOCAL if backend == "venv" else DatasetNamespaceMode.IDENTITY_BIND)
 
 
-@pytest.mark.parametrize("backend", ["slurm", "kubernetes"])
-def test_distributed_reader_routes_record_an_explicit_capability_refusal(tmp_path, monkeypatch, backend):
+@pytest.mark.parametrize("backend,status", [("slurm", DatasetBackendStatus.UNAVAILABLE), ("kubernetes", DatasetBackendStatus.UNSUPPORTED)])
+def test_distributed_reader_routes_record_an_explicit_capability_refusal(tmp_path, monkeypatch, backend, status):
     ms = tmp_path / "observation.ms"
     ms.mkdir()
     (ms / "table.dat").write_text("data")
@@ -741,14 +741,14 @@ def test_distributed_reader_routes_record_an_explicit_capability_refusal(tmp_pat
     def read(ms: MeasurementSetV2) -> None:
         pytest.fail("unsupported route executed")
 
-    with pytest.raises(DatasetLifecycleUnavailableError, match="storage namespace"):
+    with pytest.raises(DatasetLifecycleUnavailableError, match="namespace"):
         read(ms=ms, backend=backend)
 
     attempt = _attempts(tmp_path)[0]
     assert attempt.phase is DatasetLifecyclePhase.REFUSED
     [capability] = attempt.backend_capabilities
     assert capability.backend == backend
-    assert capability.status is DatasetBackendStatus.UNAVAILABLE
+    assert capability.status is status
     assert capability.namespace_mode is DatasetNamespaceMode.UNPROVEN
 
 

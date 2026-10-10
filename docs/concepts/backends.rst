@@ -80,14 +80,11 @@ Available backends
     Submits the command as a batch job via ``sbatch`` and tracks it with
     ``sacct``.
 
-``kubernetes``
-    Runs the command as a batch ``Job`` via ``kubectl``. Mounts carry the same
-    read-only classification and nested shadowing as the
-    container backends: a writable parent is mounted first and the protected
-    input is re-asserted as a nested ``readOnly`` volumeMount. This behavior is
-    live-verified on a real kubelet. ``namespace`` is required, and pods run
-    with the caller's uid/gid, privilege escalation disabled, and all
-    capabilities dropped.
+The built-in ``kubernetes`` backend has been removed for the initial full
+release. Existing selections of ``backend="kubernetes"`` are rejected as an
+unknown backend. Shinobi does not provide Kubernetes job submission or cluster
+support tooling. Whole-graph compile-and-offload currently targets Slurm
+(:doc:`../offloading`).
 
 Strict dataset routes
 ---------------------
@@ -120,10 +117,6 @@ or ``unsupported`` for every effective backend in the flat workflow:
      - unproven
      - Unavailable until submission-to-compute storage mapping and lifecycle
        authority are explicit and validated.
-   * - ``kubernetes``
-     - unproven
-     - Unavailable because ``hostPath`` alone does not establish node
-       identity and there is no pod-side validation/recovery adapter.
    * - remote ``ninja`` launch
      - remote delegated
      - The remote process replans paths, claims resources and applies the
@@ -131,8 +124,8 @@ or ``unsupported`` for every effective backend in the flat workflow:
        dataset claim. This is a CLI launch surface, not a value for a step's
        ``backend=``.
 
-An unavailable or unsupported route is refused before a tool, scheduler job
-or pod starts. See :doc:`datasets` for the lifecycle and closure guarantees.
+An unavailable or unsupported route is refused before a tool or scheduler
+job starts. See :doc:`datasets` for the lifecycle and closure guarantees.
 
 Choosing a backend
 ------------------
@@ -174,11 +167,11 @@ the same teardown reaches *every* in-flight step -- an interrupt is delivered
 only to the main thread, while the workers sit blocked on children that would
 otherwise never hear about it.
 
-``slurm`` and ``kubernetes`` are the exception, and are **not** covered: they
-hand work to a scheduler and poll it, so what would need stopping is a job on
-a cluster rather than a child of this process. Interrupting a run that has
+The blocking ``slurm`` backend is **not** covered: it hands work to a
+scheduler and polls it, so what would need stopping is a job on a cluster
+rather than a child of this process. Interrupting a run that has
 submitted one leaves the job running, exactly as it did before any of this
-existed; cancel it with ``scancel`` or ``kubectl delete job`` yourself.
+existed; cancel it with ``scancel`` yourself.
 
 Docker and podman need more than signals, and this is worth knowing if you
 ever inspect a run by hand: their containers are **not** descendants of the
@@ -259,11 +252,6 @@ between a soft scheduling hint and a real limit:
        systemd -- and delegation is **per controller**, so shinobi emits only
        the dimensions this session can enforce and warns about the rest (see
        below).
-   * - ``kubernetes``
-     - Sets container ``resources.requests`` and ``resources.limits`` to the
-       same values, so the cluster reserves exactly what was declared. If no
-       node can satisfy the request the pod would sit ``Pending`` forever, so
-       shinobi surfaces that as an error instead of waiting.
    * - ``slurm``
      - Emits ``#SBATCH --cpus-per-task`` / ``--mem``, rounded up. Any
        explicitly configured ``sbatch_opts`` win over the derived values.
@@ -302,12 +290,7 @@ Verification status
 --------------------
 
 The ``native``, ``docker``, ``podman``, and ``apptainer`` paths were
-verified with real runtimes and bind-mounted host data, and ``kubernetes``
-against a real ``kind`` cluster (``hostPath`` volumes there only work if the
-node running the pod
-has the path -- fine for a single-node dev cluster or nodes with shared
-storage, not a general multi-node cluster without a shared filesystem, which
-would need ``PersistentVolumeClaim``\ s instead).
+verified with real runtimes and bind-mounted host data.
 
 Both Slurm paths -- the ``slurm`` step backend and the separate
 compile-and-offload path (:doc:`../offloading`) -- were verified against a
@@ -316,5 +299,7 @@ the offload path has automated live coverage (``tests/test_slurm_live.py``
 against the throwaway cluster in ``tests/slurm_live/``, skipped unless it
 is up), while the step backend's automated tests mock the
 ``sbatch``/``sacct`` calls (``tests/test_slurm_backend.py``). Both live
-setups are single-node, so multi-node scheduling and cross-node shared
-storage remain unproven either way.
+setups are single-node. They do not establish multi-node scheduling or
+cross-node shared-storage qualification. Detached worker qualification is
+recorded separately for the exact shared tree (:doc:`../offloading`); it does
+not qualify the blocking step backend.

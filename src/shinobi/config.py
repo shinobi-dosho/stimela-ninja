@@ -267,8 +267,7 @@ class AppConfig(BaseSettings):
             init_settings: Source for values passed directly to `__init__`.
             env_settings: Source for `SHINOBI_*` environment variables.
             dotenv_settings: Unused; `.env` files are not supported.
-            file_secret_settings: Unused; Docker/Kubernetes secret files
-                are not supported.
+            file_secret_settings: Unused; secret files are not supported.
 
         Returns:
             The ordered tuple of settings sources pydantic-settings should

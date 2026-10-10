@@ -434,7 +434,7 @@ def live_holders(path: Path) -> tuple[list[str], list[str]]:
     exist rather than more:
 
     * Only this machine. A step still running on a cluster node through the
-      slurm or kubernetes backends holds paths on shared storage that no
+      slurm backend holds paths on shared storage that no
       local `/proc` will ever show.
     * Only processes we can read. A rootful docker container's payload runs
       as root by default (`backend.run_as_host_user` controls the `--user`

@@ -274,8 +274,8 @@ def test_a_hostless_engine_names_itself_not_slurm(tmp_path):
     true of the only hostless engine that exists today -- makes the host
     column state something false about the next one to arrive.
     """
-    launch = Launch(name="x", handle_path=tmp_path / "h.json", engine="kubernetes", handle={"engine": "kubernetes"})
-    assert launch.host == "(kubernetes)"
+    launch = Launch(name="x", handle_path=tmp_path / "h.json", engine="external", handle={"engine": "external"})
+    assert launch.host == "(external)"
 
 
 def test_launch_log_path_joins_the_remote_dir_and_filename(tmp_path):

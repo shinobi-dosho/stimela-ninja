@@ -817,16 +817,20 @@ class PystepCallable:
 
 def _make_adapter(func: Callable, outputs_model: type[BaseModel], is_empty: bool, wants_ctx: bool) -> PystepCallable:
     def _adapter(ctx: ExecContext) -> StepResult:
-        # Check the cheap local fields first: resolving the backend name can
-        # fall through to a config-file read, which plain pysteps (no image,
-        # no venv, no venv override -- the common case) should never pay on
-        # every call. `backend == "venv"` is included so an explicit per-step
-        # venv backend still honours `backend.venv.default` even when the
-        # scope names no venv of its own.
+        from shinobi.backends import registered_backend_names
+        from shinobi.steps.dispatch import get_step_backend
+
+        backend_name = ctx.resolve_backend_name()
+        # Reject removed or misspelled backends before falling through to a
+        # local Python call. The existing resolver also accepts instance
+        # overrides; registered classes need no eager construction here.
+        if backend_name not in registered_backend_names():
+            get_step_backend(backend_name)
+        # An explicit venv backend honours backend.venv.default even when
+        # the scope names no virtualenv of its own.
         if ctx.scope.image or ctx.scope.venv or ctx.scope.backend == "venv":
             from shinobi.backends.container import CONTAINER_RUNTIMES
 
-            backend_name = ctx.resolve_backend_name()
             # The resolved backend name decides, so a scope carrying both
             # `image` and `venv` is well-defined.
             if backend_name in CONTAINER_RUNTIMES and ctx.scope.image:

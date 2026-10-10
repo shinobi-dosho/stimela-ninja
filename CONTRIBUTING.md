@@ -112,13 +112,13 @@ pytest -q
 ```
 
 Most tests are unit/mocked and always run. The **live-backend integration
-tests** (`tests/test_docker_live.py`, `tests/test_kubernetes_live.py`,
-`tests/test_slurm_live.py`) **auto-skip when the infrastructure isn't present** —
+tests** (`tests/test_docker_live.py`, `tests/test_slurm_live.py`) **auto-skip
+when the infrastructure isn't present** —
 they probe at runtime (`shutil.which(...)` plus a liveness check such as
-`docker image inspect`, `kubectl cluster-info`, or `sinfo`), so you don't need
-to set any opt-in flag. To run them locally, see the docstrings at the top of
-each file for the exact setup (a `kind` cluster for Kubernetes; the throwaway
-Slurm cluster in `tests/slurm_live/` for Slurm).
+`docker image inspect` or `sinfo`), so you don't need to set any opt-in flag.
+To run them locally, see the docstrings at the top of
+each file for the exact setup (including the throwaway Slurm cluster in
+`tests/slurm_live/`).
 
 **New features and bug fixes should come with tests.** Follow the existing
 layout in `tests/` (flat directory, shared fixtures in `tests/fixtures/`; no
