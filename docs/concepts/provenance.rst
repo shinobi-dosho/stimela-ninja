@@ -293,3 +293,38 @@ MS list ``element_index``. Whole-family values and bundle roots use the shared
 path walker for boundary fingerprints and mounts. Family product declarations
 and recursive kind inventories are product-cache evidence, independent of
 scientific keys, mutation snapshots and reusable dataset-state identities.
+
+FITS byte observations and exact recovery
+----------------------------------------
+
+Strict FITS records use closed ``fits-lifecycle/v1`` observations and attempts,
+with selected HDU layout, declared WCS diagnostics, parser version and the
+whole-file ``fits-file-bytes/v1`` SHA256 identity. These are independent of
+cache keys, physical snapshots, logical states and attempt identities.
+
+Scalar and indexed file mutations freeze one exact participant set in a single
+journal transaction. All predecessor and pre-run rollback copies are verified
+before mutation; success snapshots successors (S1), journals heads (S2), publishes
+the exact durable FITS leaf oracle (S3), updates cache (S4), then clears fences
+and rollback sources (S5). Same-key reruns retain a separate frozen pre-run copy.
+Before the oracle, failure restores all pre-run files or CREATE absence; after
+it, successors remain committed. Unknown or incomplete oracle evidence retains
+all fences and sources. Recovery requires authority over every exact writable
+participant, and a later restore failure leaves the entire set fenced. A fresh
+process verifies byte-profile snapshots without importing Astropy.
+
+Writer reuse checks a trustworthy live journal generation descending from the
+produced state. It does not reapply an ancestor's dimensions or table schema to
+a legitimate descendant. Returned current FITS products still satisfy their
+present declared contracts. Boundary reader cache identity includes full current
+file bytes as well as the selected profile and HDU policy. Wired readers retain
+the producing state's identity; partially wired lists hash only unwired elements.
+Workflow planning and final observations revalidate the exact journal head's
+historical selected-HDU contract from matching durable committed leaf evidence,
+rather than imposing an ancestor selector on a later file generation. Each
+executing leaf validates its own selector after predecessor restoration and
+before successor publication. Missing or malformed historical evidence refuses.
+
+The transaction log is authoritative for success evidence. An existing empty or
+malformed attempt store retains recovery fences even when its materialized JSON
+view is absent. A genuinely absent pre-success oracle permits exact rollback.

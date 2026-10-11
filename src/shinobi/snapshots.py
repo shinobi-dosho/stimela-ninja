@@ -947,20 +947,28 @@ class SnapshotGuard:
                     "absent": plan.path_was_absent,
                     "successor": state_name(self.cache_key, plan.address.field, plan.address.element_index),
                     **(
-                        {"identity_profile": self.strict.profiles[plan.field], "derived_address": plan.address.model_dump(mode="json")}
+                        {
+                            "identity_profile": self.strict.profiles[plan.field],
+                            **(
+                                {"dataset_address": {"field": plan.address.field, "element_index": plan.address.element_index}}
+                                if self.strict.profiles[plan.field] == "fits-file-bytes/v1"
+                                else {"derived_address": plan.address.model_dump(mode="json")}
+                            ),
+                        }
                         if plan.field in self.strict.profiles
                         else {}
                     ),
                 }
                 for plan in self.plans
             ]
-            if len(self.plans) > 1
+            if len(self.plans) > 1 or any(self.strict.profiles.get(plan.field) == "fits-file-bytes/v1" for plan in self.plans)
             else None
         )
 
     def _refuse(self, plan: _FieldPlan, reason: str) -> None:
         """A strict guard's replacement for "warn and run against live disk"."""
-        raise DatasetLifecycleUnavailableError(f"strict MSv2 mutation of '{plan.field}' at {plan.path} refused before launch: {reason}")
+        format_name = "FITS" if self.strict and self.strict.profiles.get(plan.field) == "fits-file-bytes/v1" else "MSv2"
+        raise DatasetLifecycleUnavailableError(f"strict {format_name} mutation of '{plan.field}' at {plan.path} refused before launch: {reason}")
 
     def _verify_predecessor(self, plan: _FieldPlan) -> None:
         """Strict: the disk must structurally be the state this step consumes."""
@@ -2038,14 +2046,34 @@ def _validate_group_evidence(leaf, participants):
     from shinobi.dataset_lifecycle import DatasetMutationOutcome
 
     mutations = leaf.mutations
-    auxiliary = leaf.auxiliary_mutations
+    auxiliary = getattr(leaf, "auxiliary_mutations", ())
     if len(mutations) + len(auxiliary) != len(participants):
         return False
     expected = {
-        (item["label"], item["element_index"], item["path"], item["successor"], item.get("identity_profile"), json.dumps(item.get("derived_address"), sort_keys=True))
+        (
+            item["label"],
+            item["element_index"],
+            item["path"],
+            item["successor"],
+            item.get("identity_profile"),
+            json.dumps(item.get("dataset_address", item.get("derived_address")), sort_keys=True),
+        )
         for item in participants
     }
-    actual = {(item.field, item.element_index, str(item.root), item.successor_state, None, "null") for item in mutations if item.outcome is DatasetMutationOutcome.COMMITTED}
+    actual = {
+        (
+            item.field,
+            item.element_index,
+            str(item.root),
+            item.successor_state,
+            getattr(item, "profile", None),
+            json.dumps({"field": item.field.removesuffix(f"[{item.element_index}]"), "element_index": item.element_index}, sort_keys=True)
+            if getattr(item, "profile", None) == "fits-file-bytes/v1"
+            else "null",
+        )
+        for item in mutations
+        if item.outcome is DatasetMutationOutcome.COMMITTED
+    }
     actual.update(
         (item.address.field, None, str(item.path), item.successor_state, item.profile, json.dumps(item.address.model_dump(mode="json"), sort_keys=True))
         for item in auxiliary
@@ -2063,7 +2091,7 @@ def _marker_completed(marker: Marker, manifest, *, strict: bool = False) -> bool
     oracle; the mutable cache manifest is only an index and cannot turn a
     missing attempt result into success.
     """
-    if strict and marker.success_kind not in (None, "dataset-lifecycle"):
+    if strict and marker.success_kind not in (None, "dataset-lifecycle", "fits-lifecycle"):
         raise DatasetLifecycleUnavailableError("strict success oracle kind is unknown")
     if marker.success_record is None:
         if strict and marker.strict_group is not None:
@@ -2071,8 +2099,11 @@ def _marker_completed(marker: Marker, manifest, *, strict: bool = False) -> bool
         entry = manifest.entry(marker.step_path)
         return entry is not None and entry.get("cache_key") == marker.cache_key and marker.cache_key is not None and entry.get("run_id") == marker.run_id
 
-    if marker.success_kind == "dataset-lifecycle":
-        from shinobi.dataset_lifecycle import mutation_committed
+    if marker.success_kind in ("dataset-lifecycle", "fits-lifecycle"):
+        if marker.success_kind == "fits-lifecycle":
+            from shinobi.fits_lifecycle import mutation_committed
+        else:
+            from shinobi.dataset_lifecycle import mutation_committed
 
         return mutation_committed(
             Path(marker.success_record),
@@ -2149,8 +2180,12 @@ def _reconcile_group(journal, manifest, chains, group, selected, exact):
     required = {"path", "field", "element_index", "label", "rollback", "rollback_source", "rollback_signature", "rollback_fingerprint", "absent", "successor"}
     if (
         not isinstance(group, list)
-        or len(group) < 2
-        or any(not isinstance(item, dict) or not required <= set(item) or set(item) - required - {"predecessor", "identity_profile", "derived_address"} for item in group)
+        or not group
+        or (len(group) == 1 and group[0].get("identity_profile") != "fits-file-bytes/v1")
+        or any(
+            not isinstance(item, dict) or not required <= set(item) or set(item) - required - {"predecessor", "identity_profile", "derived_address", "dataset_address"}
+            for item in group
+        )
     ):
         raise DatasetLifecycleUnavailableError("strict mutation group participant payload is malformed")
     from shinobi.dataset_access import DatasetAddress
@@ -2159,7 +2194,16 @@ def _reconcile_group(journal, manifest, chains, group, selected, exact):
         if "identity_profile" in item:
             from shinobi.derived import DerivedAddress
 
-            if item["identity_profile"] != "regular-file/v1" or DerivedAddress.model_validate(item.get("derived_address")).field != item["field"]:
+            if item["identity_profile"] == "fits-file-bytes/v1":
+                address = item.get("dataset_address")
+                if (
+                    not isinstance(address, dict)
+                    or set(address) != {"field", "element_index"}
+                    or address != {"field": item["field"], "element_index": item["element_index"]}
+                    or "derived_address" in item
+                ):
+                    raise DatasetLifecycleUnavailableError("invalid FITS mutation profile/address")
+            elif item["identity_profile"] != "regular-file/v1" or "dataset_address" in item or DerivedAddress.model_validate(item.get("derived_address")).field != item["field"]:
                 raise DatasetLifecycleUnavailableError("invalid auxiliary mutation profile/address")
         if (
             not isinstance(item["path"], str)

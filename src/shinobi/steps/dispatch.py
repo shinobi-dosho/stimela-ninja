@@ -97,12 +97,14 @@ _BACKFILL_LOOKAHEAD = 8
 def _scope_dataset_declarations(scope: Scope, prefix: str = "") -> list[str]:
     """Describe strict dataset fields in a scope tree without inspecting I/O."""
 
-    from shinobi.datasets import dataset_declarations
+    from shinobi.dataset_access import scope_has_dataset_contract
+    from shinobi.fits_access import scope_has_fits_contract
 
     declarations = []
-    for side, model in (("input", scope.inputs_model), ("output", scope.outputs_model)):
-        declarations.extend(f"{prefix}{scope.name} {side} '{name}' ({declaration.profile})" for name, declaration in dataset_declarations(model).items())
-    declarations.extend(f"{prefix}{scope.name} access '{access.field}' ({access.mode.value} {access.table.value})" for access in scope.dataset_accesses)
+    if scope_has_dataset_contract(scope):
+        declarations.append(f"{prefix}{scope.name}: CASA/MS dataset contract")
+    if scope_has_fits_contract(scope):
+        declarations.append(f"{prefix}{scope.name}: FITS dataset contract")
     if isinstance(scope, Recipe):
         for ref in scope.steps:
             declarations.extend(_scope_dataset_declarations(ref.step, f"{prefix}{ref.name}/"))
@@ -132,8 +134,12 @@ def _leaf_dataset_writes(scope: Scope) -> set[str]:
     from shinobi.datasets import executable_dataset_fields
     from shinobi.steps.schema import mutated_path_fields, write_path_fields
 
-    inputs = executable_dataset_fields(scope.inputs_model, reject_unsupported=False)
-    outputs = executable_dataset_fields(scope.outputs_model, reject_unsupported=False)
+    from shinobi.fits_access import FITS_KINDS, fits_writes, scope_has_fits_contract
+
+    if scope_has_fits_contract(scope):
+        return fits_writes(scope)
+    inputs = {name: shape for name, shape in executable_dataset_fields(scope.inputs_model, reject_unsupported=False).items() if shape.declaration.kind not in FITS_KINDS}
+    outputs = {name: shape for name, shape in executable_dataset_fields(scope.outputs_model, reject_unsupported=False).items() if shape.declaration.kind not in FITS_KINDS}
     declared = {access.field for access in scope.dataset_accesses if access.mode is not DatasetMode.READ}
     inferred = (set(outputs) - set(inputs)) | ((mutated_path_fields(scope) | write_path_fields(scope)) & (set(inputs) | set(outputs)))
     explicit_reads = {access.field for access in scope.dataset_accesses if access.mode is DatasetMode.READ}
@@ -209,22 +215,26 @@ def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: 
     from shinobi.datasets import DatasetKind, executable_dataset_fields
     from shinobi.steps.pyfunc import PystepCallable
 
+    from shinobi.fits_access import scope_tree_has_fits_contract, scope_has_fits_contract, FITS_KINDS
+
+    fits_route = scope_tree_has_fits_contract(scope)
+    format_name = "FITS" if fits_route else "MSv2"
     backends: set[str] = set()
 
     def visit(current: Scope, current_func: Callable | None, backend_name: str, *, nested: bool = False, scattered: bool = False) -> None:
-        has_contract = scope_has_dataset_contract(current)
+        has_contract = scope_has_dataset_contract(current) or scope_has_fits_contract(current)
         if isinstance(current, Recipe):
             # Recipe boundary annotations describe values crossing the
             # boundary; access contracts still belong to the atomic leaves.
             # ``Recipe`` validation already rejects recipe-level accesses.
-            if current_func is not None and scope_tree_has_dataset_contract(current):
-                raise DatasetLifecycleUnavailableError("contained MSv2 execution refused: recipe orchestration functions are not an ordinary dataset route")
+            if current_func is not None and (scope_tree_has_dataset_contract(current) or scope_tree_has_fits_contract(current)):
+                raise DatasetLifecycleUnavailableError(f"contained {format_name} execution refused: recipe orchestration functions are not an ordinary dataset route")
             for ref in current.steps:
-                child_has_contract = scope_tree_has_dataset_contract(ref.step)
+                child_has_contract = scope_tree_has_dataset_contract(ref.step) or scope_tree_has_fits_contract(ref.step)
                 if isinstance(ref.step, Recipe) and child_has_contract:
-                    raise DatasetLifecycleUnavailableError(f"contained MSv2 execution refused: step {ref.name!r} is a nested dataset recipe; flatten it")
+                    raise DatasetLifecycleUnavailableError(f"contained {format_name} execution refused: step {ref.name!r} is a nested dataset recipe; flatten it")
                 if ref.scatter is not None and child_has_contract:
-                    raise DatasetLifecycleUnavailableError(f"contained MSv2 execution refused: step {ref.name!r} scatters a dataset contract")
+                    raise DatasetLifecycleUnavailableError(f"contained {format_name} execution refused: step {ref.name!r} scatters a dataset contract")
                 visit(ref.step, ref.func, ref.step.backend or backend_name, nested=True, scattered=ref.scatter is not None)
             return
         # One outer lifecycle claim covers the whole flat recipe, not merely
@@ -234,14 +244,14 @@ def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: 
         if not has_contract:
             return
         if nested and isinstance(current, Recipe):
-            raise DatasetLifecycleUnavailableError("contained MSv2 execution refused: nested dataset recipes are not supported")
+            raise DatasetLifecycleUnavailableError(f"contained {format_name} execution refused: nested dataset recipes are not supported")
         if scattered:
-            raise DatasetLifecycleUnavailableError("contained MSv2 execution refused: scattered dataset access is not supported")
+            raise DatasetLifecycleUnavailableError(f"contained {format_name} execution refused: scattered dataset access is not supported")
         if isinstance(current, Cab):
             if current_func is not None:
-                raise DatasetLifecycleUnavailableError("contained MSv2 execution refused: cab orchestration functions are not an ordinary dataset route")
+                raise DatasetLifecycleUnavailableError(f"contained {format_name} execution refused: cab orchestration functions are not an ordinary dataset route")
             if current.flavour != "binary":
-                raise DatasetLifecycleUnavailableError(f"contained MSv2 execution refused: cab flavour {current.flavour!r} is not the supported binary route")
+                raise DatasetLifecycleUnavailableError(f"contained {format_name} execution refused: cab flavour {current.flavour!r} is not the supported binary route")
         elif not isinstance(current_func, PystepCallable):
             raise DatasetLifecycleUnavailableError(
                 "strict dataset annotations remain declarative for manual Scope execution; use a Cab or @pystep for the contained native lifecycle"
@@ -253,7 +263,7 @@ def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: 
                 name
                 for fields in (input_declarations, output_declarations)
                 for name, declaration in fields.items()
-                if declaration.declaration.kind is not DatasetKind.MEASUREMENT_SET_V2
+                if declaration.declaration.kind not in (FITS_KINDS if fits_route else (DatasetKind.MEASUREMENT_SET_V2, *FITS_KINDS))
             }
         )
         if unsupported:
@@ -645,6 +655,11 @@ class ExecContext:
 
         if self._dataset_lifecycle is None or isinstance(self.scope, Recipe):
             return None
+        if getattr(self._dataset_lifecycle, "kind", None) == "fits":
+            self._dataset_lifecycle.resolve_claimed_leaf_accesses(self.scope, prepared if prepared is not None else self.prepare_inputs())
+            if backend_name not in ("native", "venv"):
+                raise DatasetLifecycleUnavailableError("strict FITS supports native/venv controller namespace only")
+            return None
         from shinobi.dataset_backends import plan_dataset_backend
         from shinobi.dataset_lifecycle import resolve_claimed_leaf_accesses
 
@@ -941,7 +956,8 @@ def _strict_snapshot_guard(
         elif key is None and address.field in (wired or ()) and not boundary:
             issues.append(f"'{label}' is wired to a producer with no cache key")
     if issues:
-        raise LeafMutationError(f"strict MSv2 mutation of {cache_path!r} refused before launch: " + "; ".join(issues))
+        format_name = "FITS" if getattr(leaf.lifecycle, "kind", None) == "fits" else "MSv2"
+        raise LeafMutationError(f"strict {format_name} mutation of {cache_path!r} refused before launch: " + "; ".join(issues))
     detached_oracle = success_record is not None
     return SnapshotGuard(
         journal=get_journal(cache_dir),
@@ -956,7 +972,7 @@ def _strict_snapshot_guard(
         success_record=success_record or leaf.lifecycle.store.path,
         success_step_path=success_step_path or cache_path,
         strict=leaf.policy(),
-        success_kind=None if detached_oracle else "dataset-lifecycle",
+        success_kind=None if detached_oracle else getattr(leaf.lifecycle, "success_kind", "dataset-lifecycle"),
     )
 
 
@@ -1004,6 +1020,16 @@ def _dispatch(
     from shinobi.derived import validate_derived_read_scope
 
     validate_derived_read_scope(scope)
+    from shinobi.fits_access import FITS_KINDS
+    from shinobi.datasets import dataset_declarations as discover_datasets
+    from shinobi.products import framework_type
+    from shinobi._annotations import walk_annotation
+
+    for name, field in scope.inputs_model.model_fields.items():
+        if any(framework_type(node.annotation) for node in walk_annotation(field.annotation, descend_models=False)) and any(
+            one.kind in FITS_KINDS for qualified, one in discover_datasets(scope.inputs_model).items() if qualified.split(".")[0] == name
+        ):
+            raise DatasetLifecycleUnavailableError("FITS family inputs require selecting members into declared scalar or list accesses")
     config = _config or AppConfig.load()
     run_id = _run_id or new_run_id()
     dataset_declarations = _scope_dataset_declarations(scope)
@@ -1029,6 +1055,21 @@ def _dispatch(
             pending_dataset_recovery,
             resolve_lifecycle_snapshot,
         )
+        from shinobi.fits_access import scope_tree_has_fits_contract
+        from shinobi.dataset_access import scope_tree_has_dataset_contract
+
+        fits_route = scope_tree_has_fits_contract(scope)
+        format_name = "FITS" if fits_route else "MSv2"
+        if fits_route and scope_tree_has_dataset_contract(scope):
+            raise DatasetLifecycleUnavailableError("mixed strict FITS and MS lifecycle accesses are unsupported")
+        if fits_route:
+            from shinobi.fits_lifecycle import (
+                FITSLifecycle as DatasetLifecycle,
+                dataset_observation_matches,
+                dataset_snapshot_matches,
+                resolve_lifecycle_snapshot,
+                observe_current_accesses,
+            )
         from shinobi.ownership import (
             WorkspaceOwnershipError,
             acquire_workspace,
@@ -1083,7 +1124,7 @@ def _dispatch(
                 primary.add_note(
                     f"dataset lifecycle record update also failed: {type(transition_exc).__name__}: {transition_exc}; inspect the pending attempt record before recovery"
                 )
-                logger.exception("contained MSv2 %s failed and its lifecycle record update also failed", noun)
+                logger.exception("contained %s %s failed and its lifecycle record update also failed", format_name, noun)
 
         def resolve_snapshot():
             return resolve_lifecycle_snapshot(
@@ -1092,13 +1133,19 @@ def _dispatch(
                 workspace=launch_workspace,
                 validated_steps=leaf_inputs,
                 mutation=mutation,
+                **({"cache_dir": effective_cache_dir} if fits_route else {}),
             )
 
         try:
             backends = _dataset_execution_backends(scope, func, root_backend)
             from shinobi.dataset_backends import DatasetBackendStatus, DatasetNamespaceMode, dataset_backend_capability
 
-            backend_capabilities = tuple(dataset_backend_capability(name, mutation=mutation) for name in backends)
+            if fits_route:
+                from shinobi.fits_lifecycle import fits_backend_capability
+
+                backend_capabilities = tuple(fits_backend_capability(name, mutation=mutation) for name in backends)
+            else:
+                backend_capabilities = tuple(dataset_backend_capability(name, mutation=mutation) for name in backends)
             lifecycle.amend(backends=backends, backend_capabilities=backend_capabilities)
             unavailable = tuple(
                 capability
@@ -1107,7 +1154,7 @@ def _dispatch(
             )
             if unavailable:
                 raise DatasetLifecycleUnavailableError(
-                    f"contained MSv2 {noun} refused by backend capability {unavailable[0].profile}: "
+                    f"contained {format_name} {noun} refused by backend capability {unavailable[0].profile}: "
                     + "; ".join(f"{capability.backend} is {capability.status.value}: {capability.reason}" for capability in unavailable)
                 )
             validated_inputs = _validated_inputs if _validated_inputs is not None else _validate_inputs(scope, kwargs)
@@ -1115,7 +1162,7 @@ def _dispatch(
             if mutation:
                 cache_issues = _strict_mutation_cache_issues(scope, cache, _recipe_cache, cache_dir, _recipe_cache_dir, config)
                 if cache_issues:
-                    raise DatasetLifecycleUnavailableError("contained MSv2 mutation refused: " + "; ".join(cache_issues))
+                    raise DatasetLifecycleUnavailableError(f"contained {format_name} mutation refused: " + "; ".join(cache_issues))
             if overwrite_steps:
                 if not mutation:
                     raise DatasetLifecycleUnavailableError("overwrite applies only to steps that create a strict MeasurementSetV2; this workflow only reads")
@@ -1142,9 +1189,9 @@ def _dispatch(
             lifecycle.transition(
                 DatasetLifecyclePhase.PLANNED,
                 (
-                    f"resolved {len(planned.observations) + len(planned.absent_roots)} contained ordinary MSv2 root(s) for mutation"
+                    f"resolved {len(planned.observations) + len(planned.absent_roots)} contained ordinary {format_name} root(s) for mutation"
                     if mutation
-                    else f"resolved {len(planned.observations)} contained ordinary MSv2 read root(s)"
+                    else f"resolved {len(planned.observations)} contained ordinary {format_name} read root(s)"
                 ),
                 backends=backends,
                 backend_capabilities=backend_capabilities,
@@ -1162,7 +1209,7 @@ def _dispatch(
                 validated_steps=leaf_inputs,
             )
             if access_issues:
-                raise DatasetLifecycleUnavailableError(f"contained MSv2 {noun} refused: " + "; ".join(access_issues))
+                raise DatasetLifecycleUnavailableError(f"contained {format_name} {noun} refused: " + "; ".join(access_issues))
             writable_paths = [path for path, writes in accesses if writes]
             claim_workspace = ownership_workspace(launch_workspace, writable_paths) if writable_paths else launch_workspace
             lease = acquire_workspace(
@@ -1179,7 +1226,7 @@ def _dispatch(
             revalidated = resolve_snapshot()
             covered = not claim_covers_accesses(lease.owner, revalidated.accesses) if mutation else claim_covers_snapshot(lease.owner, revalidated)
             if not dataset_snapshot_matches(planned, revalidated) or not covered:
-                raise DatasetLifecycleUnavailableError(f"contained MSv2 {noun} refused before backend execution: the access plan or observation changed after claim")
+                raise DatasetLifecycleUnavailableError(f"contained {format_name} {noun} refused before backend execution: the access plan or observation changed after claim")
             if mutation:
                 # Crash recovery for the datasets this workflow writes, under
                 # its exclusive claim -- which is what makes it safe without
@@ -1208,7 +1255,8 @@ def _dispatch(
             pending = pending_dataset_recovery(effective_cache_dir, revalidated)
             if pending:
                 raise DatasetLifecycleUnavailableError(
-                    f"contained MSv2 {noun} refused before backend execution: pending mutation recovery requires an exclusive writer claim: " + ", ".join(map(str, pending))
+                    f"contained {format_name} {noun} refused before backend execution: pending mutation recovery requires an exclusive writer claim: "
+                    + ", ".join(map(str, pending))
                 )
             if mutation and notes:
                 # Recovery may have rolled a dataset back; the baseline the
@@ -1272,7 +1320,9 @@ def _dispatch(
                     # Each leaf has already validated, rolled back or marked
                     # its own datasets; the workflow record states the end.
                     try:
-                        final, _absent = observe_roots(planned_roots, launch_workspace)
+                        final, _absent = (
+                            observe_current_accesses(planned.accesses, lifecycle, effective_cache_dir) if fits_route else observe_roots(planned_roots, launch_workspace)
+                        )
                     except BaseException as observe_exc:
                         exc.add_note(f"final dataset observation also failed: {type(observe_exc).__name__}: {observe_exc}")
                         final = ()
@@ -1291,7 +1341,7 @@ def _dispatch(
                         validated_steps=leaf_inputs,
                     )
                 except BaseException as observe_exc:
-                    violation = DatasetLifecycleViolationError("strict MSv2 reader failed and its read-only postcondition could not be established")
+                    violation = DatasetLifecycleViolationError(f"strict {format_name} reader failed and its read-only postcondition could not be established")
                     transition_preserving(
                         DatasetLifecyclePhase.FAILED,
                         f"execution raised {type(exc).__name__}; post-execution observation failed: {type(observe_exc).__name__}: {observe_exc}",
@@ -1299,10 +1349,10 @@ def _dispatch(
                     )
                     raise violation from exc
                 if not dataset_snapshot_matches(planned, post):
-                    violation = DatasetLifecycleViolationError("strict MSv2 reader changed its dataset before failing")
+                    violation = DatasetLifecycleViolationError(f"strict {format_name} reader changed its dataset before failing")
                     transition_preserving(
                         DatasetLifecyclePhase.FAILED,
-                        f"execution raised {type(exc).__name__} and the MSv2 changed",
+                        f"execution raised {type(exc).__name__} and the {format_name} changed",
                         violation,
                         post_observations=post.observations,
                     )
@@ -1316,9 +1366,9 @@ def _dispatch(
                 raise
             if mutation:
                 try:
-                    final, _absent = observe_roots(planned_roots, launch_workspace)
+                    final, _absent = observe_current_accesses(planned.accesses, lifecycle, effective_cache_dir) if fits_route else observe_roots(planned_roots, launch_workspace)
                 except BaseException as exc:
-                    violation = DatasetLifecycleViolationError("strict MSv2 workflow completed but its final dataset observation could not be established")
+                    violation = DatasetLifecycleViolationError(f"strict {format_name} workflow completed but its final dataset observation could not be established")
                     transition_preserving(DatasetLifecyclePhase.FAILED, f"final observation failed: {type(exc).__name__}: {exc}", violation)
                     raise violation from exc
                 # Written roots were validated leaf by leaf; a root nothing
@@ -1330,7 +1380,7 @@ def _dispatch(
                     key=str,
                 )
                 if changed:
-                    violation = DatasetLifecycleViolationError("strict MSv2 workflow changed a dataset it declared only as read: " + ", ".join(map(str, changed)))
+                    violation = DatasetLifecycleViolationError(f"strict {format_name} workflow changed a dataset it declared only as read: " + ", ".join(map(str, changed)))
                     transition_preserving(DatasetLifecyclePhase.FAILED, str(violation), violation, post_observations=final)
                     raise violation
                 lifecycle.transition(
@@ -1339,7 +1389,7 @@ def _dispatch(
                     post_observations=final,
                 )
                 if result.success:
-                    lifecycle.transition(DatasetLifecyclePhase.COMMITTED, "contained local MSv2 mutation workflow committed")
+                    lifecycle.transition(DatasetLifecyclePhase.COMMITTED, f"contained local {format_name} mutation workflow committed")
                 else:
                     lifecycle.transition(DatasetLifecyclePhase.FAILED, f"native workflow returned non-zero status {result.returncode}")
                 return result
@@ -1351,7 +1401,7 @@ def _dispatch(
                     validated_steps=leaf_inputs,
                 )
             except BaseException as exc:
-                violation = DatasetLifecycleViolationError("strict MSv2 reader completed but its read-only postcondition could not be established")
+                violation = DatasetLifecycleViolationError(f"strict {format_name} reader completed but its read-only postcondition could not be established")
                 transition_preserving(
                     DatasetLifecyclePhase.FAILED,
                     f"post-execution observation failed: {type(exc).__name__}: {exc}",
@@ -1359,10 +1409,10 @@ def _dispatch(
                 )
                 raise violation from exc
             if not dataset_snapshot_matches(planned, post):
-                violation = DatasetLifecycleViolationError("strict MSv2 reader changed its dataset")
+                violation = DatasetLifecycleViolationError(f"strict {format_name} reader changed its dataset")
                 transition_preserving(
                     DatasetLifecyclePhase.FAILED,
-                    "read-only postcondition failed: the MSv2 access plan or observation changed during execution",
+                    f"read-only postcondition failed: the {format_name} access plan or observation changed during execution",
                     violation,
                     post_observations=post.observations,
                 )
@@ -1374,7 +1424,7 @@ def _dispatch(
             )
             publish_validated_result()
             if result.success:
-                lifecycle.transition(DatasetLifecyclePhase.COMMITTED, "contained local MSv2 read committed")
+                lifecycle.transition(DatasetLifecyclePhase.COMMITTED, f"contained local {format_name} read committed")
             else:
                 lifecycle.transition(
                     DatasetLifecyclePhase.FAILED,
@@ -1391,7 +1441,7 @@ def _dispatch(
                 phase = DatasetLifecyclePhase.FAILED if executing else DatasetLifecyclePhase.REFUSED
                 transition_preserving(phase, f"{type(exc).__name__}: {exc}", exc)
             if isinstance(exc, WorkspaceOwnershipError):
-                wrapped = DatasetLifecycleUnavailableError(f"contained MSv2 {noun} claim refused: {exc}")
+                wrapped = DatasetLifecycleUnavailableError(f"contained {format_name} {noun} claim refused: {exc}")
                 primary_error = wrapped
                 raise wrapped from exc
             raise
@@ -1405,7 +1455,7 @@ def _dispatch(
                     primary_error.add_note(
                         f"workspace lease cleanup also failed: {type(cleanup_exc).__name__}: {cleanup_exc}; the exact claim remains for inspection/reconciliation"
                     )
-                    logger.exception("contained MSv2 %s failed and its workspace lease cleanup also failed", noun)
+                    logger.exception("contained %s %s failed and its workspace lease cleanup also failed", format_name, noun)
     if dataset_declarations and _dataset_lifecycle is None:
         _refuse_unenforced_datasets(scope)
     if _cache_path is None and not _workspace_claimed:
@@ -1609,7 +1659,13 @@ def _dispatch(
     if _dataset_lifecycle is not None and not isinstance(scope, Recipe):
         from shinobi.dataset_access import scope_has_dataset_contract
 
-        if scope_has_dataset_contract(scope):
+        from shinobi.fits_access import scope_has_fits_contract
+
+        if getattr(_dataset_lifecycle, "kind", None) == "fits" and scope_has_fits_contract(scope):
+            from shinobi.fits_lifecycle import StrictFITSLeaf
+
+            strict_leaf = StrictFITSLeaf(_dataset_lifecycle, cache_path, scope, ctx.prepare_inputs())
+        elif scope_has_dataset_contract(scope):
             from shinobi.dataset_lifecycle import StrictLeaf
 
             strict_leaf = StrictLeaf(_dataset_lifecycle, cache_path, scope, ctx.prepare_inputs())
@@ -1620,23 +1676,30 @@ def _dispatch(
             logger.warning("step %s: cache disabled -- selected execution environment could not be fingerprinted", cache_path)
             cacheable = False
     if strict_leaf is not None and strict_leaf.writes and not (cacheable and snapshots_enabled):
-        reason = "exact MSv2 mutation recovery names states by cache key and needs Tier 1 snapshots, but " + (
+        format_name = "FITS" if getattr(strict_leaf.lifecycle, "kind", None) == "fits" else "MSv2"
+        reason = f"exact {format_name} mutation recovery names states by cache key and needs Tier 1 snapshots, but " + (
             "this step is not cacheable (disabled, or its execution environment could not be fingerprinted)" if not cacheable else "snapshots are off"
         )
         strict_leaf.fail(None, reason, refused=True)
-        raise DatasetLifecycleUnavailableError(f"strict MSv2 mutation of {cache_path!r} refused before launch: {reason}")
+        raise DatasetLifecycleUnavailableError(f"strict {format_name} mutation of {cache_path!r} refused before launch: {reason}")
     if cacheable:
         manifest = get_cache_manifest(cache_dir_value)
         prepared_for_key = ctx.prepare_inputs()
         derived_identity = strict_leaf.select_derived_states(get_journal(cache_dir_value)) if strict_leaf is not None else None
         cache_key = compute_cache_key(scope, func, prepared_for_key, _input_keys, execution_identity, derived_identity)
-        hit = manifest.check(cache_path, cache_key, scope, prepared_for_key)
+        hit = manifest.check(
+            cache_path,
+            cache_key,
+            scope,
+            prepared_for_key,
+            defer_fits_fields=strict_leaf.deferred_output_fields() if strict_leaf is not None and getattr(strict_leaf.lifecycle, "kind", None) == "fits" else (),
+        )
         if hit is not None and strict_leaf is not None and not strict_leaf.decide_reuse(cache_key, _input_keys, get_journal(cache_dir_value)):
             # The key and outputs match, but the dataset has moved on to a
             # state that does not contain this step's work (see
             # `snapshots.strict_reuse_issue`). Re-run it: the guard restores
             # its exact predecessor first.
-            logger.warning("step %s: cache hit rejected for strict MSv2 reuse -- %s", cache_path, strict_leaf.cache.reason)
+            logger.warning("step %s: cache hit rejected for strict dataset reuse -- %s", cache_path, strict_leaf.cache.reason)
             hit = None
         if hit is not None:
             # A hit stands in for the run that first produced this key, so it
@@ -1723,6 +1786,8 @@ def _dispatch(
             guard.before_run()
     if strict_leaf is not None:
         try:
+            if getattr(strict_leaf.lifecycle, "kind", None) == "fits":
+                strict_leaf.materialize_reads(cache_dir_value, _input_keys, cache_key, run_id, force_copy=config.cache.snapshots.mode == "copy")
             strict_leaf.observe_before(guard)
         except BaseException as exc:
             if guard is not None:
@@ -1746,6 +1811,10 @@ def _dispatch(
                 result = ctx.run()
             elif not isinstance(result, StepResult):
                 raise TypeError(f"step function {getattr(func, '__name__', func)!r} must return StepResult or None, got {type(result).__name__}")
+        if result.success:
+            from shinobi.fits_products import validate_fits_outputs
+
+            validate_fits_outputs(scope, result.outputs)
         if cacheable and result.success:
             captured = ctx._product_captures.get(id(result))
             products = captured[1] if captured is not None else fallback_capture.finish(result.outputs)

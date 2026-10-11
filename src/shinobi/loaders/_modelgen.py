@@ -30,7 +30,7 @@ from typing import Annotated, Any, Callable, Literal, Union, get_args, get_origi
 
 from pydantic import ConfigDict, Field, StringConstraints, create_model
 
-from shinobi.datasets import CasaTab, DatasetDeclarationError, MSv2, annotation_has_dataset
+from shinobi.datasets import FITSImage, FITSTable, CasaTab, DatasetDeclarationError, MSv2, annotation_has_dataset
 
 
 class ResolutionCycleGuard:
@@ -117,7 +117,7 @@ _SCALAR_TYPES: dict[str, type] = {
 }
 
 _FILE_TYPES: dict[str, Any] = dict.fromkeys(("file", "ms", "directory", "dir", "uri", "url"), Path)
-_FILE_TYPES.update(msv2=MSv2, measurementsetv2=MSv2, casatab=CasaTab, casatable=CasaTab)
+_FILE_TYPES.update(fitsimage=FITSImage, fitstable=FITSTable, msv2=MSv2, measurementsetv2=MSv2, casatab=CasaTab, casatable=CasaTab)
 
 
 def is_file_dtype(dtype: str) -> bool:
@@ -179,9 +179,13 @@ def dtype_to_type(dtype: str) -> Any:
 
         if lower == "productfamily[file]":
             return ProductFamily[Path]
+        if lower == "productfamily[fitsimage]":
+            return ProductFamily[FITSImage]
+        if lower == "productfamily[fitstable]":
+            return ProductFamily[FITSTable]
         if lower == "productfamily[directorybundle]":
             return ProductFamily[DirectoryBundle]
-        raise ValueError("ProductFamily supports only File and DirectoryBundle")
+        raise ValueError("ProductFamily supports only File, FITSImage, FITSTable and DirectoryBundle")
     if lower == "msv4":
         raise DatasetDeclarationError("MSv4 is reserved and unsupported as a dataset dtype")
     if lower.startswith("list:"):

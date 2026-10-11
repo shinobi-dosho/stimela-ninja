@@ -26,6 +26,7 @@ dependencies = [
 # Structural CASA/MS inspection is explicit and lazy; keep its comparatively
 # specialised binary dependency out of default workflow installations.
 casacore = ["python-casacore>=3.7,<4"]
+fits = ["astropy>=7.2,<9"]
 
 [dependency-groups]
 dev = [
@@ -38,6 +39,7 @@ dev = [
 # environment, while MS work has one reproducible group that must not silently
 # skip its real-table tests. Keep the unreleased msutils commit here rather than
 # in project metadata: PyPI rejects direct references in Requires-Dist.
+fits = ["astropy>=7.2,<9"]
 measurement-set = [
     "python-casacore>=3.7,<4",
     "msutils[exact-native] @ git+https://github.com/shinobi-dosho/msutils.git@d56043cf725bfad4c4815e4a942c3a9d746a438f",

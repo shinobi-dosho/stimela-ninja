@@ -28,6 +28,7 @@ from pydantic_core import PydanticUndefined
 
 from shinobi._annotations import walk_annotation
 from shinobi.dataset_access import DatasetAccess, validate_scope_dataset_accesses
+from shinobi.fits_access import FITSAccess, validate_scope_fits_accesses
 from shinobi.exceptions import ParameterError
 from shinobi.derived import DerivedRead, derived_reads, validate_derived_read_scope
 from shinobi.resources import Resources
@@ -982,6 +983,7 @@ class Scope(BaseModel):
     # Resolution is an explicit planning operation; constructing a Scope
     # performs validation only and never imports casacore or touches a path.
     dataset_accesses: list[DatasetAccess] = Field(default_factory=list)
+    fits_accesses: list[FITSAccess] = Field(default_factory=list)
     # Storage shared by framework consumers; nonempty declarations are supported
     # only on Cab, whose execution stages and verifies the dependencies.
     derived_reads: dict[str, DerivedRead] = Field(default_factory=dict, exclude_if=lambda value: not value)
@@ -1050,6 +1052,7 @@ class Scope(BaseModel):
     @model_validator(mode="after")
     def _dataset_access_fields_exist(self) -> "Scope":
         validate_scope_dataset_accesses(self)
+        validate_scope_fits_accesses(self)
         return self
 
     @field_serializer("inputs_model", "outputs_model")
@@ -1141,7 +1144,7 @@ def mutated_path_fields(scope: Scope) -> set[str]:
     computation and both import it.
     """
     input_paths = path_fields(scope.inputs_model)
-    declared_writes = {access.field for access in scope.dataset_accesses if access.mode.value == "write"}
+    declared_writes = {access.field for access in (*scope.dataset_accesses, *scope.fits_accesses) if access.mode.value == "write"}
     return (input_paths & path_fields(scope.outputs_model)) | {name for name in input_paths if scope.mutability_of(name) is Mutability.MUTABLE} | (input_paths & declared_writes)
 
 

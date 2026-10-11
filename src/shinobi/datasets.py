@@ -27,11 +27,15 @@ from shinobi._annotations import walk_annotation, walk_model_annotations
 
 CASA_TABLE_PROFILE = "casa-table/v1"
 MSV2_STRUCTURAL_PROFILE = "msv2-structural/v1"
+FITS_IMAGE_PROFILE = "fits-image/v1"
+FITS_TABLE_PROFILE = "fits-table/v1"
 
 
 class DatasetKind(str, Enum):
     """Dataset families understood by the structural inspector."""
 
+    FITS_IMAGE = "fits-image"
+    FITS_TABLE = "fits-table"
     CASA_TABLE = "casa-table"
     MEASUREMENT_SET_V2 = "measurement-set-v2"
 
@@ -59,6 +63,10 @@ CASA_TABLE_V1 = DatasetType(kind=DatasetKind.CASA_TABLE, profile=CASA_TABLE_PROF
 MSV2_STRUCTURAL_V1 = DatasetType(kind=DatasetKind.MEASUREMENT_SET_V2, profile=MSV2_STRUCTURAL_PROFILE)
 
 
+FITS_IMAGE_V1 = DatasetType(kind=DatasetKind.FITS_IMAGE, profile=FITS_IMAGE_PROFILE)
+FITS_TABLE_V1 = DatasetType(kind=DatasetKind.FITS_TABLE, profile=FITS_TABLE_PROFILE)
+
+
 def _json_schema(declaration: DatasetType) -> WithJsonSchema:
     return WithJsonSchema(
         {
@@ -68,6 +76,9 @@ def _json_schema(declaration: DatasetType) -> WithJsonSchema:
         }
     )
 
+
+FITSImage = Annotated[Path, FITS_IMAGE_V1, _json_schema(FITS_IMAGE_V1)]
+FITSTable = Annotated[Path, FITS_TABLE_V1, _json_schema(FITS_TABLE_V1)]
 
 CasaTab = Annotated[Path, CASA_TABLE_V1, _json_schema(CASA_TABLE_V1)]
 """A path declared to contain a readable CASA table (profile v1)."""
@@ -300,7 +311,7 @@ def _executable_dataset_shape(field: Any, qualified: str, name: str, declaration
     if is_list:
         valid = valid and leaves[0].path == "[]" and any(get_origin(node.annotation) is list for node in list_nodes)
         valid = valid and all(node.annotation is not type(None) for node in nodes if node.path == "[]")
-        valid = valid and declaration.kind is DatasetKind.MEASUREMENT_SET_V2
+        valid = valid and declaration.kind in (DatasetKind.MEASUREMENT_SET_V2, DatasetKind.FITS_IMAGE, DatasetKind.FITS_TABLE)
     else:
         valid = valid and not leaves[0].path
     if not valid:
@@ -318,8 +329,15 @@ def executable_dataset_fields(model: type[BaseModel], *, error: type[Exception] 
     callers set reject_unsupported=False to retain unsupported recursive keys
     until the authoritative execution boundary rejects them.
     """
+    from shinobi.products import framework_type
+
+    product_fields = {
+        name for name, field in model.model_fields.items() if any(framework_type(node.annotation) for node in walk_annotation(field.annotation, descend_models=False))
+    }
     result = {}
     for qualified, declaration in dataset_declarations(model, error=error).items():
+        if qualified.split(".")[0] in product_fields:
+            continue
         name = qualified.removesuffix("[]")
         try:
             if name not in model.model_fields:
@@ -598,3 +616,5 @@ __all__ = [
     "inspect_dataset",
     "inspect_measurement_set_v2",
 ]
+
+__all__ += ["FITSImage", "FITSTable", "FITS_IMAGE_V1", "FITS_TABLE_V1", "FITS_IMAGE_PROFILE", "FITS_TABLE_PROFILE"]

@@ -407,6 +407,7 @@ class _MissingDatasetAttempt(DatasetLifecycleUnavailableError):
 
 
 class DatasetLifecycleStore(JsonFileStore):
+    record_model = DatasetLifecycleAttempt
     """Transactionally update one lifecycle attempt."""
 
     def create(self, record: DatasetLifecycleAttempt) -> None:
@@ -423,7 +424,7 @@ class DatasetLifecycleStore(JsonFileStore):
             raise DatasetLifecycleUnavailableError(f"dataset lifecycle attempt store is not a mapping: {self.path}")
         if "record" not in data:
             raise _MissingDatasetAttempt(f"dataset lifecycle attempt record is missing: {self.path}")
-        return DatasetLifecycleAttempt.model_validate(data["record"])
+        return self.record_model.model_validate(data["record"])
 
     def replace(self, record: DatasetLifecycleAttempt) -> None:
         self.update(lambda data: data.__setitem__("record", record.model_dump(mode="json")))
@@ -474,6 +475,8 @@ class DatasetLifecycle:
     entry, so every update is a read-modify-write under one lock.
     """
 
+    record_model = DatasetLifecycleAttempt
+
     def __init__(self, store: DatasetLifecycleStore, record: DatasetLifecycleAttempt, *, workspace: Path | None = None):
         self.store = store
         self.record = record
@@ -523,7 +526,7 @@ class DatasetLifecycle:
     def _publish(self, update: dict[str, Any]) -> None:
         record = self.record.model_copy(update=update)
         # model_copy does not re-run validators; round-trip before publication.
-        record = DatasetLifecycleAttempt.model_validate(record.model_dump())
+        record = self.record_model.model_validate(record.model_dump())
         self.store.replace(record)
         self.record = record
 
@@ -551,7 +554,7 @@ class DatasetLifecycle:
                     **changes,
                 }
             )
-            return DatasetLifecycleAttempt.model_validate(record.model_dump())
+            return self.record_model.model_validate(record.model_dump())
 
     def adopt(self, record: DatasetLifecycleAttempt) -> None:
         """Publish a record previewed from the current one."""

@@ -73,3 +73,9 @@ __all__ = [
     "register_step_backend",
     "step",
 ]
+
+from shinobi.datasets import FITSImage, FITSTable
+from shinobi.fits import FITSHDU, FITSDescriptor, FITSStatus, FITSInspectionLimits, inspect_fits, inspect_fits_image, inspect_fits_table
+from shinobi.fits_access import FITSAccess
+
+__all__ += ["FITSImage", "FITSTable", "FITSHDU", "FITSAccess", "FITSDescriptor", "FITSStatus", "FITSInspectionLimits", "inspect_fits", "inspect_fits_image", "inspect_fits_table"]

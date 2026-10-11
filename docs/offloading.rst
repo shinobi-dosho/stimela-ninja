@@ -783,3 +783,10 @@ Selections resolve after the producing dependency commits, against its saved
 member table. The legacy argv compiler refuses families and selections because
 it cannot preserve post-execution membership/evidence. Remote stores and
 store-relative subresources remain gated. See :doc:`concepts/products`.
+
+Strict FITS declarations currently qualify only local native and venv routes.
+Both legacy compilation and detached worker preparation refuse FITS accesses
+and typed FITS products before submission, including table/image families.
+They do not downgrade those declarations to generic paths. FITS mutation
+recovery remains in the qualified controller namespace until a separate
+shared-storage/backend acceptance gate is provided.

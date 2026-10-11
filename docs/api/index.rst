@@ -304,3 +304,23 @@ Product declaration helpers
 .. py:data:: Coordinate
 
    Strict integer or string coordinate; bool values are rejected.
+
+FITS contracts
+--------------
+
+.. autodata:: shinobi.datasets.FITSImage
+.. autodata:: shinobi.datasets.FITSTable
+.. autoclass:: shinobi.fits.FITSHDU
+   :members:
+.. autoclass:: shinobi.fits_access.FITSAccess
+   :members:
+.. autoclass:: shinobi.fits.FITSDescriptor
+   :members:
+.. autoclass:: shinobi.fits.FITSInspectionLimits
+.. autoclass:: shinobi.fits.FITSStatus
+   :members:
+.. autofunction:: shinobi.fits.inspect_fits
+.. autofunction:: shinobi.fits.inspect_fits_image
+.. autofunction:: shinobi.fits.inspect_fits_table
+.. autoclass:: shinobi.fits_lifecycle.FITSLifecycleAttempt
+   :members:

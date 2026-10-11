@@ -104,7 +104,9 @@ def framework_type(annotation):
         return "bundle", None
     metadata = getattr(annotation, "__pydantic_generic_metadata__", {})
     origin, args = metadata.get("origin"), metadata.get("args", ())
-    if origin in (ProductFamily, ProductMember) and len(args) == 1 and args[0] in (Path, DirectoryBundle) and annotation is origin[args[0]]:
+    from shinobi.datasets import FITSImage, FITSTable
+
+    if origin in (ProductFamily, ProductMember) and len(args) == 1 and args[0] in (Path, DirectoryBundle, FITSImage, FITSTable) and annotation is origin[args[0]]:
         return ("family" if origin is ProductFamily else "member"), args[0]
     return None
 

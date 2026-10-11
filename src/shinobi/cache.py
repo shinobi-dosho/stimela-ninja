@@ -667,6 +667,28 @@ def compute_cache_key(
             else [[read.address.model_dump(mode="json"), str(read.path), read_fingerprint(read, require=True)] for read in derived_reads(scope, prepared, Path.cwd())]
         )
         parts.append(["__derived_reads_v1__", {name: declaration.model_dump(mode="json") for name, declaration in scope.derived_reads.items()}, physical])
+    from shinobi.fits_products import fits_product_contract
+    from shinobi.fits_access import FITS_KINDS
+    from shinobi.datasets import dataset_declarations
+
+    fits_inputs = [[name, one.kind.value, one.profile] for name, one in sorted(dataset_declarations(scope.inputs_model).items()) if one.kind in FITS_KINDS]
+    fits_outputs = fits_product_contract(scope)
+    if fits_inputs or fits_outputs or scope.fits_accesses:
+        from shinobi.fits_access import resolve_scope_fits_accesses
+        from shinobi.fits_lifecycle import fits_file_identity
+        from shinobi.dataset_access import DatasetMode
+
+        byte_reads = [
+            [one.field, fits_file_identity(one.root).fingerprint]
+            for one in resolve_scope_fits_accesses(scope, prepared, workspace=Path.cwd())
+            if one.mode is DatasetMode.READ
+            and (
+                one.declaration.field not in wired
+                or (one.element_index is not None and isinstance(input_keys[one.declaration.field], list) and input_keys[one.declaration.field][one.element_index] is None)
+            )
+        ]
+        parts.append(["__fits_read_bytes_v1__", byte_reads])
+        parts.append(["__fits_contract_v1__", fits_inputs, fits_outputs, [one.model_dump(mode="json") for one in scope.fits_accesses]])
     blob = json.dumps(parts, default=str, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()
 
@@ -732,7 +754,11 @@ def product_contract(scope: Scope, prepared: dict[str, Any], workspace: Path | N
             ]
         )
     families = {name: meta.family.model_dump(mode="json") for name, meta in scope.field_meta.items() if meta.family is not None}
+    from shinobi.fits_products import fits_product_contract
+
+    fits = fits_product_contract(scope)
     return {
+        **({"fits": fits} if fits else {}),
         "families": families,
         "version": PRODUCT_CONTRACT_VERSION,
         "workspace": str(workspace or Path.cwd()),
@@ -747,7 +773,7 @@ class CacheManifest(JsonFileStore):
     :class:`shinobi.storage.JsonFileStore` for its transaction contract.
     """
 
-    def check(self, step_path: str, cache_key: str, scope: Scope, prepared: dict[str, Any]) -> StepResult | None:
+    def check(self, step_path: str, cache_key: str, scope: Scope, prepared: dict[str, Any], *, defer_fits_fields=()) -> StepResult | None:
         """`None` on any kind of miss (no entry, key mismatch, or a
         required output or recorded concrete product that no longer exists) -- otherwise
         a synthesized `StepResult(cached=True)` restored from the
@@ -805,6 +831,19 @@ class CacheManifest(JsonFileStore):
                         if isinstance(member.value, DirectoryBundle) and not any(Path(item["root"]).resolve() == member.value.path.resolve() for item in inventories):
                             return None
         except (OSError, ValueError, KeyError, TypeError):
+            return None
+        from shinobi.fits_products import validate_fits_outputs
+        from shinobi.exceptions import DatasetLifecycleViolationError
+
+        try:
+
+            def canonical(value):
+                return tuple(path.resolve() for path in iter_product_paths(value))
+
+            if any(name not in prepared or canonical(getattr(outputs, name, None)) != canonical(prepared[name]) for name in defer_fits_fields):
+                return None
+            validate_fits_outputs(scope, outputs, skip_fields=defer_fits_fields)
+        except (OSError, ValueError, DatasetLifecycleViolationError):
             return None
         # Restore provenance too (missing on entries written by older
         # versions -- `.get` defaults keep those readable), so a cached step
