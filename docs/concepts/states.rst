@@ -72,7 +72,7 @@ operations. Its historical runtime-record key remains, with ``not-installed``
 when absent, so old records remain parseable without bypassing exact-stack
 verification. Settle attempts before upgrading and use their original stack
 to reopen older states; this writer change does not widen the profile.
-casacore recomputes ``StandardStMan IndexLength``,
+Casacore recomputes ``StandardStMan IndexLength``,
 the native model's explicit exclusion. After msutils succeeds Shinobi checks
 its existing structural signature and independently recomputes the native
 logical root before publication. Consumers needing identical files refuse.
