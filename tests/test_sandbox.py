@@ -778,15 +778,14 @@ def test_native_absolute_outputs_and_scratch_keep_external_parents(workspace, sa
 
 @pytest.mark.parametrize("symlink", [False, True])
 @pytest.mark.parametrize("sandbox", [False, True])
-@pytest.mark.parametrize("backend", ["native", "docker", "kubernetes", "slurm"])
+@pytest.mark.parametrize("backend", ["native", "docker", "slurm"])
 def test_readonly_collision_refused_before_mkdir_clear_or_tool(workspace, monkeypatch, symlink, sandbox, backend):
     from shinobi.steps.dispatch import _STEP_BACKENDS
     from shinobi.backends.container import DockerBackend
-    from shinobi.backends.kubernetes import KubernetesBackend
     from shinobi.backends.slurm import SlurmBackend
 
     if backend != "native":
-        instance = {"docker": DockerBackend, "kubernetes": lambda: KubernetesBackend(namespace="test"), "slurm": SlurmBackend}[backend]()
+        instance = {"docker": DockerBackend, "slurm": SlurmBackend}[backend]()
         monkeypatch.setitem(_STEP_BACKENDS, backend, instance)
     protected = workspace / "protected"
     protected.mkdir()

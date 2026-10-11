@@ -253,10 +253,11 @@ def dataset_backend_capability(backend: str, *, mutation: bool) -> DatasetBacken
     namespace directly. The four local container runtimes use identity bind
     mounts augmented from the resolved closure plan; daemon-backed runtimes
     are unavailable when their configuration does not prove a local daemon.
-    Slurm and Kubernetes deliberately remain unavailable: neither carries a
-    validated submit-host-to-executor namespace mapping or runs observation
-    and recovery at the execution authority.  ``remote`` is a launch surface,
-    not a local backend; the remote ``ninja run`` must make its own decision.
+    The blocking Slurm backend deliberately remains unavailable: it has no
+    validated submit-host-to-executor namespace mapping and does not run
+    observation and recovery at the execution authority. ``remote`` is a
+    launch surface, not a local backend; the remote ``ninja run`` must make
+    its own decision.
     """
 
     lifecycle = DATASET_MUTATION_CAPABILITY if mutation else DATASET_READ_CAPABILITY
@@ -305,17 +306,6 @@ def dataset_backend_capability(backend: str, *, mutation: bool) -> DatasetBacken
             inspection_location="submission host",
             recovery_location="submission host",
             reason="no validated submission-host to compute-node storage namespace mapping or compute-side lifecycle adapter is configured",
-        )
-    if backend == "kubernetes":
-        return DatasetBackendCapability(
-            backend=backend,
-            lifecycle=lifecycle,
-            status=DatasetBackendStatus.UNAVAILABLE,
-            namespace_mode=DatasetNamespaceMode.UNPROVEN,
-            execution_location="Kubernetes pod node",
-            inspection_location="client host",
-            recovery_location="client host",
-            reason="hostPath spelling does not prove that the scheduled node exposes the claimed storage namespace, and pod-side lifecycle validation is not implemented",
         )
     if backend == "remote":
         return DatasetBackendCapability(

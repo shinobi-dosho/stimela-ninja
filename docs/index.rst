@@ -13,7 +13,7 @@ validated and rendered before execution. Python builders select which nodes
 to declare, and typed wiring records their data dependencies.
 
 The execution layer is usable end to end: native, virtualenv, container,
-Slurm, and Kubernetes backends; concurrent and resource-aware scheduling;
+and Slurm backends; concurrent and resource-aware scheduling;
 scatter and bounded declared loops; sandboxed execution; caching and mutation
 snapshots; provenance/replay; and remote or compiled cluster runs. Backend
 limitations and live-verification status are stated in :doc:`concepts/backends`

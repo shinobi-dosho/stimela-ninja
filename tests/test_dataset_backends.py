@@ -61,9 +61,8 @@ def test_local_route_capabilities_are_versioned_and_tested(backend, mutation):
     assert capability.lifecycle.endswith("mutation/v1" if mutation else "read/v1")
 
 
-@pytest.mark.parametrize("backend", ["slurm", "kubernetes"])
-def test_distributed_routes_are_explicitly_unavailable_without_a_namespace_mapping(backend):
-    capability = dataset_backend_capability(backend, mutation=True)
+def test_blocking_slurm_is_explicitly_unavailable_without_a_namespace_mapping():
+    capability = dataset_backend_capability("slurm", mutation=True)
 
     assert capability.status is DatasetBackendStatus.UNAVAILABLE
     assert capability.namespace_mode is DatasetNamespaceMode.UNPROVEN
@@ -82,8 +81,10 @@ def test_worker_route_requires_persisted_site_qualification(tmp_path):
     assert str(qualification.qualification_id) in qualified.reason
 
 
-def test_unknown_route_is_explicitly_unsupported():
-    capability = dataset_backend_capability("recording", mutation=False)
+@pytest.mark.parametrize("backend", ["recording", "kubernetes"])
+@pytest.mark.parametrize("mutation", [False, True])
+def test_unknown_route_is_explicitly_unsupported(backend, mutation):
+    capability = dataset_backend_capability(backend, mutation=mutation)
 
     assert capability.status is DatasetBackendStatus.UNSUPPORTED
     assert "no strict dataset" in capability.reason

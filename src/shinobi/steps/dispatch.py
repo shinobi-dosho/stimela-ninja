@@ -1988,7 +1988,7 @@ def _run_cab(
     from shinobi.backends.container import CONTAINER_RUNTIMES
 
     backend = get_step_backend(backend_name)
-    uses_mounts = backend_name in CONTAINER_RUNTIMES or backend_name == "kubernetes" or (backend_name == "slurm" and cab.image and getattr(backend, "container_runtime", None))
+    uses_mounts = backend_name in CONTAINER_RUNTIMES or (backend_name == "slurm" and cab.image and getattr(backend, "container_runtime", None))
     if dataset_resources:
         from shinobi.ownership import validate_contained_execution
 

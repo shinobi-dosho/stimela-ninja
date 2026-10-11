@@ -29,7 +29,7 @@ assignees: ""
 
 - stimela-ninja version (`ninja version`):
 - Python version:
-- Backend (native / docker / podman / apptainer / slurm / kubernetes):
+- Backend (native / docker / podman / apptainer / slurm):
 - OS:
 
 ## Additional context

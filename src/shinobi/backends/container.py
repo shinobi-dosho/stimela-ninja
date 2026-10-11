@@ -37,7 +37,7 @@ another input -- both hold by nesting: the directory goes read-write and each
 read-only input inside it is re-asserted ``:ro`` at its own path. A cab that
 declares something writable *inside* a read-only input is refused instead;
 no arrangement of mounts satisfies that. Verified
-identical on docker, podman, apptainer and a real kubelet, in either emission
+identical on docker, podman and apptainer, in either emission
 order. See ``bind_dir_modes``.
 """
 
@@ -571,10 +571,9 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
     "never write this" and "write here" over one tree -- whether that is a
     write target, another input, or the working directory. All three are
     refused outright, on every backend. Every runtime shadows a nested
-    mount the same way -- verified on docker, podman, apptainer and a real
-    kubelet (`readOnly` volumeMounts on a kind cluster), in both emission
-    orders and for file- and directory-valued inputs alike. The returned list
-    is ordered parent-before-nested anyway, so a runtime that honoured
+    mount the same way -- verified on docker, podman and apptainer, in both
+    emission orders and for file- and directory-valued inputs alike. The
+    returned list is ordered parent-before-nested anyway, so a runtime that honoured
     emission order rather than path depth would still get it right.
 
     Raises:

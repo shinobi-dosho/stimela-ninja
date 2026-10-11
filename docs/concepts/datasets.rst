@@ -492,9 +492,9 @@ Podman connection makes the route ``unavailable``: a daemon resolves bind
 sources in its own host namespace, which might contain different bytes at the
 same spelling.
 
-The blocking ``slurm`` step backend and ``kubernetes`` are currently
-``unavailable`` for strict dataset execution.  Submitting one opaque step from
-a host does not prove that its executor sees the same storage namespace or run
+The blocking ``slurm`` step backend is currently ``unavailable`` for strict
+dataset execution. Submitting one opaque step from a host does not prove that
+its executor sees the same storage namespace or runs
 validation and recovery at the execution authority.  This is distinct from
 the detached worker compiler described below: its short-lived compute worker
 is the lifecycle authority and re-resolves the frozen shared-storage mapping

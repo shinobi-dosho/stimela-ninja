@@ -201,8 +201,8 @@ Limits, by design
   ``<ms>.flagversions`` beside the measurement set writes into the real
   workspace, because the MS necessarily lives there. If such a by-product
   matters, declare it as an output.
-* The ``slurm``/``kubernetes`` backends accept and ignore the sandbox cwd
-  (the job runs in a remote/pod working directory shinobi can't scope), so
+* The ``slurm`` backend accepts and ignores the sandbox cwd
+  (the job runs in a remote working directory shinobi can't scope), so
   a sandboxed step degrades gracefully to an unsandboxed run there.
 * Concurrent steps each get their own sandbox, so parallel recipe steps
   can no longer see each other's droppings at all.

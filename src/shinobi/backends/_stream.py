@@ -28,12 +28,11 @@ KeyboardInterrupt lands only in the main thread while the workers sit
 blocked on their own children. See `_teardown` for why signalling a process
 group is necessary but, for docker and podman, nowhere near sufficient.
 
-**Not** the slurm or kubernetes backends: those hand work to a scheduler and
-poll it (`sbatch`/`sacct`, `kubectl`), so what needs stopping is a job on a
-cluster, not a child of this process. Nothing here registers or cancels one,
-and an interrupt leaves such a job running -- as it did before any of this
-existed. Fixing that means `scancel`/`kubectl delete job` on the way out, and
-is deliberately not attempted here.
+The slurm backend hands work to a scheduler and polls it (`sbatch`/`sacct`),
+so what needs stopping is a job on a cluster, not a child of this process.
+Nothing here registers or cancels one, and an interrupt leaves such a job
+running. Cancellation would require `scancel` on the way out, which is
+not attempted here.
 """
 
 from __future__ import annotations

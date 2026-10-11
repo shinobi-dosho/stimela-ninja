@@ -1,5 +1,5 @@
 """Backend abstraction: a backend takes a cab and a resolved argv and runs
-it somewhere -- natively, in a container, on Slurm, on Kubernetes, ...
+it somewhere -- natively, in a container, on Slurm, ...
 
 A backend knows nothing about recipes or output schemas beyond the argv
 it's handed and the cab's ``image``/``command`` metadata; it only knows
@@ -51,16 +51,15 @@ class Backend(ABC):
 
         ``label``/``stream`` control live stdout/stderr echo (see
         `shinobi.backends._stream.run_streaming`) -- only `native` and
-        `container` act on them today; `slurm`/`kubernetes` accept and
-        ignore both (neither has any log-tailing infrastructure yet, so
-        they keep reading output once after the job/pod finishes).
+        `container` act on them today; `slurm` accepts and ignores both
+        (it reads output once after the job finishes).
 
         ``cwd`` is the working directory to run in (`shinobi.sandbox` passes
-        the step's sandbox here), defaulting to the process cwd. `slurm`/
-        `kubernetes` accept and ignore it too: they run in a remote/pod cwd
-        the dispatch layer can't scope, so a sandboxed step on those
-        backends degrades gracefully to an unsandboxed run (harvest finds
-        the outputs already in the workspace and moves nothing).
+        the step's sandbox here), defaulting to the process cwd. `slurm`
+        accepts and ignores it too: it runs in a remote cwd the dispatch
+        layer can't scope, so a sandboxed Slurm step degrades gracefully
+        to an unsandboxed run (harvest finds the outputs already in the
+        workspace and moves nothing).
 
         ``dataset_plan`` is a closed, data-only strict-dataset namespace plan
         produced after claim acquisition. Local-process backends need no
@@ -135,7 +134,6 @@ def registered_backend_classes() -> list[type[Backend]]:
 
 # Import submodules for their @register side effects.
 from shinobi.backends import container as _container  # noqa: E402,F401
-from shinobi.backends import kubernetes as _kubernetes  # noqa: E402,F401
 from shinobi.backends import native as _native  # noqa: E402,F401
 from shinobi.backends import recording as _recording  # noqa: E402,F401
 from shinobi.backends import slurm as _slurm  # noqa: E402,F401

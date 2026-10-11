@@ -627,9 +627,9 @@ object, and no shared filesystem can carry one across a node boundary.
    the node that runs the job.
 
    The container boundary is *not* affected -- every container backend
-   identity-mounts (``-v {d}:{d}``, ``--bind {d}:{d}``, and Kubernetes
-   ``mountPath == hostPath.path``), so a container-side path equals its
-   host-side path by construction and comparison holds straight through.
+   identity-mounts (``-v {d}:{d}`` or ``--bind {d}:{d}``), so a
+   container-side path equals its host-side path by construction and
+   comparison holds straight through.
 
    Closing the cross-node case needs a canonical naming the cluster itself
    agrees to, which shinobi cannot derive. Until then: give steps that share
