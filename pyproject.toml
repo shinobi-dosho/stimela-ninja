@@ -40,9 +40,10 @@ dev = [
 # in project metadata: PyPI rejects direct references in Requires-Dist.
 measurement-set = [
     "python-casacore>=3.7,<4",
-    "msutils[exact-native] @ git+https://github.com/shinobi-dosho/msutils.git@91675064fbe466369a775286a8e35fccb591d883",
+    "msutils[exact-native] @ git+https://github.com/shinobi-dosho/msutils.git@76525da894af32c18a677d2183bc680d13f14c43",
     "xarray-ms==0.5.8",
     "xarray==2026.7.0",
+    "dask[array]==2026.8.0",
     "arcae==0.5.4",
     "numcodecs==0.16.5",
     "zarr==3.1.6; python_version < '3.12'",

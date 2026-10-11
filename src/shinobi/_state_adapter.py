@@ -13,7 +13,7 @@ import threading
 import warnings
 from pathlib import Path
 
-MSUTILS_COMMIT = "91675064fbe466369a775286a8e35fccb591d883"
+MSUTILS_COMMIT = "76525da894af32c18a677d2183bc680d13f14c43"
 ADAPTER = "shinobi-xarray-ms-native/v1"
 MSV4_SCHEMA = "xarray-ms-0.5.8-msv4/v1"
 PACKAGES = ("stimela-ninja", "msutils", "xarray-ms", "xarray", "zarr", "numcodecs", "dask-ms", "arcae", "numpy", "python-casacore", "dask", "pyarrow", "pandas")
@@ -23,7 +23,7 @@ _EXPORT_WARNING_LOCK = threading.Lock()
 def runtime() -> dict[str, str]:
     """Refuse unqualified builds, including msutils 3.0.0 before preservation v2."""
     try:
-        versions = {name: metadata.version(name) for name in PACKAGES}
+        versions = {name: metadata.version(name) for name in PACKAGES if name != "dask-ms"}
         direct = json.loads(metadata.distribution("msutils").read_text("direct_url.json") or "{}")
     except (metadata.PackageNotFoundError, ValueError) as exc:
         raise ImportError("state operations require the pinned measurement-set development group") from exc
@@ -32,12 +32,18 @@ def runtime() -> dict[str, str]:
         "xarray-ms": "0.5.8",
         "xarray": "2026.7.0",
         "numcodecs": "0.16.5",
-        "dask-ms": "0.2.32",
         "arcae": "0.5.4",
         "zarr": "3.1.6" if sys.version_info < (3, 12) else "3.3.0",
     }
     if any(versions[name] != version for name, version in required.items()) or direct.get("vcs_info", {}).get("commit_id") != MSUTILS_COMMIT:
         raise ImportError("unqualified state stack: install the pinned measurement-set development group (including the msutils commit)")
+    # Keep the historical record key so old manifests remain parseable. The
+    # arcae writer does not require dask-ms, but exact recorded-stack checks
+    # still distinguish its presence from absence when reopening a state.
+    try:
+        versions["dask-ms"] = metadata.version("dask-ms")
+    except metadata.PackageNotFoundError:
+        versions["dask-ms"] = "not-installed"
     import msutils
 
     if not all(callable(getattr(msutils, name, None)) for name in ("native_logical_id", "capture_native_preservation", "verify_native_preservation", "to_msv2")):
