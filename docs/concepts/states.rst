@@ -35,7 +35,8 @@ Identity and fidelity
 ---------------------
 
 The store key is ``msutils.native_logical_id``: ``msutils-logical-hash/v1``
-over ``msutils-native-model/v1``. msutils owns scientific hashing,
+over ``msutils-native-model/v1`` or ``/v2``, as selected by the source's
+native content. msutils owns scientific hashing,
 preservation and native writing. Each state can have several representations:
 an xarray-ms MSv4-compatible Zarr v3 tree, a
 ``msutils-native-preservation/v2`` manifest and its native Zarr payload.
@@ -71,9 +72,12 @@ independently verifies the result. dask-ms is no longer required for state
 operations. Its historical runtime-record key remains, with ``not-installed``
 when absent, so old records remain parseable without bypassing exact-stack
 verification. Settle attempts before upgrading and use their original stack
-to reopen older states; this writer change does not widen the profile.
-Casacore recomputes ``StandardStMan IndexLength``,
-the native model's explicit exclusion. After msutils succeeds Shinobi checks
+to reopen older states. Keeping v1 IDs and representation serialization does
+not bypass the recorded-stack check: an old state still needs its original
+qualified runtime for replay. Native profile v2 accepts typed empty column
+keywords, uniformly defined zero-length cells and TiledColumn/TiledShape
+managers. Casacore can regenerate physical manager fields, which the v2
+native model excludes from its logical identity. After msutils succeeds Shinobi checks
 its existing structural signature and independently recomputes the native
 logical root before publication. Consumers needing identical files refuse.
 
@@ -114,8 +118,8 @@ claim successful exact replay; a later publication failure may retain the
 validated staged-reconstruction evidence while its attempt remains failed. Legacy
 ``shinobi-state-attempt/v1`` recovery records remain readable.
 
-Materialization is the reusable-state replay path for the
-``fixed-shape-defined-or-empty/v1`` state profile. Before writing, it
+Materialization is the reusable-state replay path for the paired
+``fixed-shape-defined-or-empty/v1`` and ``/v2`` native profiles. Before writing, it
 strictly reopens the selected representation and rejects different MSv2,
 closure, mapping, MSv4 or preservation profiles, any software-stack mismatch,
 and any fidelity other than exact-logical.  Recipes and detached workers still
@@ -153,19 +157,25 @@ the contract. Cleanup is not GC; persistent lock inodes must never be removed.
 Profile and costs
 -----------------
 
-``fixed-shape-defined-or-empty/v1`` preserves row order, supported fixed-shape
-custom columns, units/measures, native descriptors/keywords/references, empty
-tables and wholly undefined columns. Ragged cells, mixed definedness and
-unsupported structures/typed metadata fail with msutils code and
+Both native profiles preserve row order, supported fixed-shape custom columns,
+units/measures, native descriptors/keywords/references, empty tables and wholly
+undefined columns. V2 additionally accepts typed empty keywords, defined
+zero-length cells and supported tiled managers. Ragged cells, mixed definedness
+and unsupported structures/typed metadata fail with msutils code and
 table/column/row diagnostics. xarray-ms irregular-grid/imputation warnings
 are recorded; native reconstruction does not use the padded MSv4 view.
+
 Explicit MSv4 codec and precision artifacts
 -------------------------------------------
 
 ``export`` accepts an optional named lossless profile: ``--codec zstd|gzip|blosc-zstd``,
 ``--level``, ``--chunk-rows`` and, for Blosc only, ``--shuffle none|byte|bit``.
-The historical export and its v1 representation manifest remain the default.
-An explicit selection uses ``shinobi-state-representation/v2`` and rewrites
+For native profile v1, the historical export keeps its v1 representation
+manifest; an explicit lossless selection uses ``shinobi-state-representation/v2``.
+Native profile v2 uses ``shinobi-state-representation/v3`` with explicit
+preservation profile/model fields, whether or not a lossless layout is selected.
+No new fields are serialized into historical v1/v2 representation manifests,
+so their representation digests remain unchanged. An explicit selection rewrites
 the MSv4 tree inside private export staging. It checks the public
 ``msutils.logical_id`` before and after rewriting, then captures the usual
 native preservation sidecar against the final MSv4 tree. Numeric copies use

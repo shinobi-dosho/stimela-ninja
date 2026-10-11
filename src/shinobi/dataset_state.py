@@ -34,9 +34,9 @@ LogicalID = Annotated[str, Field(pattern=r"^msutils-logical-hash/v1:[0-9a-f]{64}
 RepresentationID = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
 MAX_METADATA = 64 * 1024 * 1024
 _MSV4_SCHEMA = adapter.MSV4_SCHEMA
-NativeModel = Literal["msutils-native-model/v1"]
+NativeModel = Literal["msutils-native-model/v1", "msutils-native-model/v2"]
 LogicalHash = Literal["msutils-logical-hash/v1"]
-StateProfile = Literal["fixed-shape-defined-or-empty/v1"]
+StateProfile = Literal["fixed-shape-defined-or-empty/v1", "fixed-shape-defined-or-empty/v2"]
 StructuralProfile = Literal["msv2-structural/v1"]
 ClosureProfile = Literal["msv2-dataset-closure/v1", "msv2-dataset-closure/v2"]
 StateFidelity = Literal["exact-logical"]
@@ -73,6 +73,14 @@ def _complete_state_stack(value: dict[str, str]) -> dict[str, str]:
 StateStack = Annotated[dict[str, str], AfterValidator(_complete_state_stack)]
 
 
+def _profile_model_pair(profile: StateProfile, native_model: NativeModel) -> None:
+    if (profile, native_model) not in (
+        ("fixed-shape-defined-or-empty/v1", "msutils-native-model/v1"),
+        ("fixed-shape-defined-or-empty/v2", "msutils-native-model/v2"),
+    ):
+        raise ValueError("native preservation profile and model versions disagree")
+
+
 class StateError(ShinobiError):
     """Stable refusal code plus any upstream table/column/row diagnostics."""
 
@@ -97,6 +105,11 @@ class LogicalState(_Record):
     structural_profile: StructuralProfile = "msv2-structural/v1"
     closure_profile: ClosureProfile = "msv2-dataset-closure/v1"
     fidelity: StateFidelity = "exact-logical"
+
+    @model_validator(mode="after")
+    def compatible_native_contract(self):
+        _profile_model_pair(self.profile, self.native_model)
+        return self
 
 
 class FileEntry(_Record):
@@ -168,6 +181,28 @@ class StateRepresentationV2(StateRepresentation):
     lossless_profile: LosslessProfile
 
 
+class StateRepresentationV3(StateRepresentation):
+    """Physical representation of the msutils native profile/model v2 pair."""
+
+    schema_version: Literal["shinobi-state-representation/v3"] = "shinobi-state-representation/v3"
+    profile: StateProfile
+    native_model: NativeModel
+    lossless_profile: LosslessProfile | None = None
+
+    @model_validator(mode="after")
+    def compatible_native_contract(self):
+        _profile_model_pair(self.profile, self.native_model)
+        if self.profile != "fixed-shape-defined-or-empty/v2":
+            raise ValueError("representation v3 requires native profile v2")
+        return self
+
+
+def _representation_contract(physical: StateRepresentation) -> tuple[StateProfile, NativeModel]:
+    if isinstance(physical, StateRepresentationV3):
+        return physical.profile, physical.native_model
+    return "fixed-shape-defined-or-empty/v1", "msutils-native-model/v1"
+
+
 class StateResult(_Record):
     state_id: LogicalID
     representation_id: RepresentationID
@@ -212,6 +247,11 @@ class StateProvenance(_Record):
     structural_signature: str = Field(pattern=r"^[0-9a-f]{64}$")
     evidence: tuple[StateEvidence, ...] = _STATE_EVIDENCE
 
+    @model_validator(mode="after")
+    def compatible_native_contract(self):
+        _profile_model_pair(self.profile, self.native_model)
+        return self
+
     @classmethod
     def from_representation(
         cls,
@@ -220,11 +260,14 @@ class StateProvenance(_Record):
         operation: Literal["export", "materialize"],
     ) -> "StateProvenance":
         export = operation == "export"
+        profile, native_model = _representation_contract(representation)
         return cls(
             state_id=representation.state_id,
             representation_id=representation.representation_id,
             msv4_id=representation.msv4_id,
             payload_id=representation.payload_id,
+            profile=profile,
+            native_model=native_model,
             closure_profile=representation.observation.closure_profile,
             mapping_profile=representation.adapter,
             msv4_schema=representation.msv4_schema,
@@ -484,12 +527,18 @@ class DatasetStateStore:
         rep = self._representation(state_id, representation_id)
         logical = _manifest(state / "logical.json", LogicalState)
         raw = json.loads(_read(rep / "representation.json"))
-        model = StateRepresentationV2 if raw.get("schema_version") == "shinobi-state-representation/v2" else StateRepresentation
+        model = {
+            "shinobi-state-representation/v1": StateRepresentation,
+            "shinobi-state-representation/v2": StateRepresentationV2,
+            "shinobi-state-representation/v3": StateRepresentationV3,
+        }.get(raw.get("schema_version"), StateRepresentation)
         physical = _manifest(rep / "representation.json", model)
         if logical.state_id != state_id or physical.state_id != state_id or physical.representation_id != "sha256:" + rep.name:
             raise StateError("identity", "directory and manifest identities disagree")
         if _digest(physical.model_dump(mode="json", exclude={"representation_id"})) != physical.representation_id:
             raise StateError("representation-digest", "representation manifest changed")
+        if (logical.profile, logical.native_model) != _representation_contract(physical):
+            raise StateError("native-contract", "logical state and representation profile/model disagree")
         if {p.name for p in state.iterdir()} != {"logical.json", "representations"}:
             raise StateError("extra-entry", "unexpected entry in logical state directory")
         return rep, logical, physical
@@ -529,6 +578,8 @@ class DatasetStateStore:
         ids = adapter.verify(rep / "msv4.zarr", rep / "preservation")
         if (ids.native_logical_id, ids.msv4_logical_id, ids.payload_logical_id) != (physical.state_id, physical.msv4_id, physical.payload_id):
             raise StateError("logical-integrity", "verified native/MSv4/payload roots disagree with the state manifest")
+        if (ids.profile, ids.native_model) != _representation_contract(physical):
+            raise StateError("native-contract", "verified preservation profile/model disagree with the representation")
         if structural_signature(physical.observation) != physical.structural_signature:
             raise StateError("structural-signature", "recorded source signature disagrees with observation")
 
@@ -616,11 +667,15 @@ class DatasetStateStore:
                 adapter.capture(source, rep / "msv4.zarr", rep / "preservation", block_rows)
                 attempt = self._save(attempt, phase="validating")
                 ids = adapter.verify(rep / "msv4.zarr", rep / "preservation")
+                _profile_model_pair(ids.profile, ids.native_model)
                 after = observe_dataset(source, source.parent)
                 if ids.native_logical_id != state_id or adapter.native_id(source) != state_id or member_fingerprint(before) != member_fingerprint(after):
                     raise StateError("source-changed", "source changed during export/capture")
                 files, nodes = _inventory(rep)
-                physical = (StateRepresentationV2 if lossless_profile is not None else StateRepresentation)(
+                representation_type = (
+                    StateRepresentationV3 if ids.profile == "fixed-shape-defined-or-empty/v2" else StateRepresentationV2 if lossless_profile is not None else StateRepresentation
+                )
+                physical = representation_type(
                     representation_id="sha256:" + "0" * 64,
                     state_id=state_id,
                     msv4_id=ids.msv4_logical_id,
@@ -636,6 +691,7 @@ class DatasetStateStore:
                     captured_at=datetime.now(timezone.utc),
                     files=files,
                     zarr_metadata=nodes,
+                    **({"profile": ids.profile, "native_model": ids.native_model} if representation_type is StateRepresentationV3 else {}),
                     **({"lossless_profile": lossless_profile} if lossless_profile is not None else {}),
                 )
                 physical = physical.model_copy(update={"representation_id": _digest(physical.model_dump(mode="json", exclude={"representation_id"}))})
@@ -644,7 +700,15 @@ class DatasetStateStore:
                 self._verify_rep(rep, physical)
                 publication = stage / "state"
                 (publication / "representations").mkdir(parents=True)
-                _write(publication / "logical.json", LogicalState(state_id=state_id, closure_profile=before.closure_profile))
+                _write(
+                    publication / "logical.json",
+                    LogicalState(
+                        state_id=state_id,
+                        closure_profile=before.closure_profile,
+                        profile=ids.profile,
+                        native_model=ids.native_model,
+                    ),
+                )
                 rep.rename(publication / "representations" / physical.representation_id.split(":")[1])
                 _sync_tree(stage)
                 attempt = self._save(

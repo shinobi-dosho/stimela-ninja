@@ -16,7 +16,9 @@ passed; four targeted symlink tests also passed after the final store-root guard
 Repository-wide Ruff lint and formatting and ``git diff --check`` passed.
 Strict Sphinx built with no warnings. ``evidence/validation.json`` distinguishes
 these runs; the retained full-suite JUnit/log are from before remediation.
-The benchmark source and dependency hashes remain unchanged.
+The benchmark source and dependency hashes were unchanged by that remediation.
+These measurements use the earlier msutils pin ``76525da``; subsequent native
+profile qualification is recorded separately in ``../native-profile/README.rst``.
 
 Corpus and execution
 --------------------
@@ -41,7 +43,7 @@ match the samples read before relocation.
 All 30 profile trials preserved the decoded Zarr logical ID and independently
 compared decoded values. All six reports preserve source MS and flag-version
 stat fingerprints. ``evidence/verification.json`` records these checks and
-the benchmark-source hash comparison against the current local tree.
+the benchmark-source hash comparison against the tree used for these runs.
 
 Measured configurations
 -----------------------
@@ -118,9 +120,11 @@ pin. No redundancy between flag versions is inferred from matching samples.
 Full state and precision boundary
 --------------------------------
 
-The supplied original MS is refused by the public pinned native logical-ID
-API: ``empty-typed-keyword at MAIN/FLAG_CATEGORY``. The receipt is
-``evidence/profile-probe.json``. No original-corpus exact round trip is claimed.
+At the benchmark pin ``76525da``, the supplied original MS was refused by
+the public native logical-ID API: ``empty-typed-keyword at MAIN/FLAG_CATEGORY``. The receipt is
+``evidence/profile-probe.json``. No original-corpus exact round trip is claimed
+for these codec runs. The later native-profile extension and expanded real-MS
+qualification are described in ``../native-profile/README.rst``.
 
 A separate local six-row supported MS probe exported, verified and
 materialized the default, Zstd, Gzip and Blosc profiles. All four preserved
@@ -142,7 +146,8 @@ and symlink rejection for reads, publication and recovery.
 Reproduction
 ------------
 
-Use the pinned measurement-set environment and the exact file hashes in
+Use the benchmark-era measurement-set environment (msutils ``76525da``) and
+the exact file hashes in
 ``evidence/source-sha256.txt``. From the source directory on kudu::
 
     export TMPDIR=/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/scratch

@@ -1,0 +1,8 @@
+{
+  "source": "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-applied-CHI-OPH-avg.ms",
+  "mode": "scan",
+  "source_sha256": "60ce787a5249eb71a3b9d6f1c19413815192df6e83d804609399aaa3718fcc8c",
+  "native_id": "msutils-logical-hash/v1:af683b8f46b5a0f24c7dd1597110df3f553570b68b7b64743550142d704cef0a",
+  "success": true,
+  "seconds": 147.47383803501725
+}

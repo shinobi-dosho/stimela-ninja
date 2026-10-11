@@ -1,0 +1,8 @@
+{
+  "source": "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-xc-calibrators.ms",
+  "mode": "scan",
+  "source_sha256": "60ce787a5249eb71a3b9d6f1c19413815192df6e83d804609399aaa3718fcc8c",
+  "native_id": "msutils-logical-hash/v1:b3f08309cdd76f4cb209793fef67e088c910749ac6335fb56b80b24458772736",
+  "success": true,
+  "seconds": 197.62636238895357
+}

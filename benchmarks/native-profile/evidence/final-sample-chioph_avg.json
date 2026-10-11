@@ -1,0 +1,38 @@
+{
+  "source": "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-applied-CHI-OPH-avg.ms",
+  "mode": "sample",
+  "source_sha256": "a49958d004b0211682052ece2092c619582504612817dd5639181f8be3ea278d",
+  "selected_rows": [
+    0,
+    1,
+    2,
+    753695,
+    1507388,
+    1507389,
+    1507390
+  ],
+  "sample_native_id": "msutils-logical-hash/v1:e68f82b73a6f76b4a23b453cc02eb5ae84a94e02026540b1de0e92b896b92527",
+  "profile": "fixed-shape-defined-or-empty/v2",
+  "native_model": "msutils-native-model/v2",
+  "restored_native_id": "msutils-logical-hash/v1:e68f82b73a6f76b4a23b453cc02eb5ae84a94e02026540b1de0e92b896b92527",
+  "category": "[]",
+  "flag_category_defined": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+  ],
+  "rest_frequency": {
+    "defined": true,
+    "shape": [
+      0
+    ],
+    "dtype": "float64"
+  },
+  "source_independent_restore": true,
+  "success": true,
+  "seconds": 7.622657710686326
+}

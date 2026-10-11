@@ -144,6 +144,13 @@ fidelity decision.  See :doc:`states`.  Recipes cannot consume state IDs in the
 current profile, so ordinary run replay never substitutes a stored state for a
 recorded path.
 
+The state record and attempt provenance carry the same validated native
+profile/model pair reported by msutils. Historical v1/v1 records keep their
+canonical serialization; v2/v2 source content uses representation schema v3.
+Verification compares the recorded pair with the preservation bundle before
+materialization, while the exact producer-stack check remains in force for
+older states.
+
 A recipe's sub-steps appear, in declaration order, under ``steps``.
 
 ``pinned``

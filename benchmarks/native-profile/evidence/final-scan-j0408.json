@@ -1,0 +1,8 @@
+{
+  "source": "/data/projects/katplus/katplus-jul20/msdir/1783252863_2026-07-20T14-53-01_Jdz-J0408-6545.ms",
+  "mode": "scan",
+  "source_sha256": "60ce787a5249eb71a3b9d6f1c19413815192df6e83d804609399aaa3718fcc8c",
+  "native_id": "msutils-logical-hash/v1:b3f5c7ff91a2666b639cecb89a16a72da90b2b53e7fe12fa34b836f19e0a2e2e",
+  "success": true,
+  "seconds": 130.5277783088386
+}
