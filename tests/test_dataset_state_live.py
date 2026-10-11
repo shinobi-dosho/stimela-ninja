@@ -384,11 +384,11 @@ boundary = sys.argv[4]
 def kill():
     os.kill(os.getpid(), signal.SIGKILL)
 if boundary == "write":
-    original = native.DaskMsWriter.write
+    original = native.ArcaeWriter.write
     def write(self, plan, destination):
         original(self, plan, destination)
         kill()
-    native.DaskMsWriter.write = write
+    native.ArcaeWriter.write = write
 elif boundary == "verify":
     original = native._verify_target
     def verify(plan, destination):

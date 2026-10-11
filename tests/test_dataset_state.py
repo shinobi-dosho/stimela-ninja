@@ -195,6 +195,37 @@ def test_adapter_runtime_reports_missing_stack(monkeypatch):
         adapter.runtime()
 
 
+def test_adapter_runtime_qualifies_arcae_without_dask_ms(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    versions = {
+        "msutils": "3.0.0",
+        "xarray-ms": "0.5.8",
+        "xarray": "2026.7.0",
+        "numcodecs": "0.16.5",
+        "arcae": "0.5.4",
+        "zarr": "3.1.6" if sys.version_info < (3, 12) else "3.3.0",
+    }
+
+    def version(name):
+        if name == "dask-ms":
+            raise adapter.metadata.PackageNotFoundError(name)
+        return versions.get(name, "test")
+
+    direct = json.dumps({"vcs_info": {"commit_id": adapter.MSUTILS_COMMIT}})
+    monkeypatch.setattr(adapter.metadata, "version", version)
+    monkeypatch.setattr(adapter.metadata, "distribution", lambda _: SimpleNamespace(read_text=lambda _: direct))
+    monkeypatch.setitem(
+        sys.modules, "msutils", SimpleNamespace(**dict.fromkeys(("native_logical_id", "capture_native_preservation", "verify_native_preservation", "to_msv2"), lambda: None))
+    )
+    qualified = adapter.runtime()
+    assert qualified["dask-ms"] == "not-installed"
+    assert qualified["arcae"] == "0.5.4"
+    assert qualified["msutils_commit"] == adapter.MSUTILS_COMMIT
+    assert set(qualified) == {*adapter.PACKAGES, "msutils_commit"}
+
+
 def test_no_replace_including_empty_directory(tmp_path):
     source, target = tmp_path / "source", tmp_path / "target"
     source.mkdir()

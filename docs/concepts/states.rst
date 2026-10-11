@@ -66,7 +66,13 @@ Verification reads every physical file and both logical trees. This is
 integrity, not authentication, for caller-owned local stores.
 
 Fidelity is **exact-logical**, never physical. The writer is msutils' pinned
-dask-ms 0.2.32 writer. casacore recomputes ``StandardStMan IndexLength``,
+arcae 0.5.4 value writer; python-casacore constructs schema and metadata and
+independently verifies the result. dask-ms is no longer required for state
+operations. Its historical runtime-record key remains, with ``not-installed``
+when absent, so old records remain parseable without bypassing exact-stack
+verification. Settle attempts before upgrading and use their original stack
+to reopen older states; this writer change does not widen the profile.
+Casacore recomputes ``StandardStMan IndexLength``,
 the native model's explicit exclusion. After msutils succeeds Shinobi checks
 its existing structural signature and independently recomputes the native
 logical root before publication. Consumers needing identical files refuse.
