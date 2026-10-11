@@ -41,7 +41,7 @@ For development
 Explicit MSv2 state operations currently require a source checkout and
 ``uv sync --group measurement-set``. This pins
 xarray-ms, xarray, Zarr, arcae, numcodecs and ``msutils[exact-native]`` at
-commit ``0e9b136c52e7798b2662228293a60a978d007aa4``. Nominal msutils 3.0.0
+commit ``d56043cf725bfad4c4815e4a942c3a9d746a438f``. Nominal msutils 3.0.0
 alone does not establish preservation v2 capability, and the direct commit
 reference deliberately lives in the unpublished development group because
 PyPI rejects it in wheel metadata. A public extra can be restored after an
