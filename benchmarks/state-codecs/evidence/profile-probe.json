@@ -1,0 +1,10 @@
+{
+  "source": "/home/sphemakh/sandbox/shinobiMSv24-16/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms",
+  "supported": false,
+  "error_type": "NativePreservationRefusal",
+  "message": "empty-typed-keyword at MAIN/FLAG_CATEGORY: CATEGORY has an ambiguous empty type",
+  "code": "empty-typed-keyword",
+  "table": "MAIN",
+  "column": "FLAG_CATEGORY",
+  "reason": "CATEGORY has an ambiguous empty type"
+}

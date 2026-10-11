@@ -1,0 +1,125 @@
+........................................................................ [  2%]
+........................................................................ [  5%]
+........................................................................ [  7%]
+........................................................................ [ 10%]
+........................................................................ [ 13%]
+..........sss...sss...sss............................................... [ 15%]
+........................................................................ [ 18%]
+........................................................................ [ 20%]
+........................................................................ [ 23%]
+........................................................................ [ 26%]
+........................................................................ [ 28%]
+........................................................................ [ 31%]
+........................................................................ [ 33%]
+........................................................................ [ 36%]
+........................................................................ [ 39%]
+........................................................................ [ 41%]
+.................................................ssss................... [ 44%]
+........................................................................ [ 46%]
+........................................................................ [ 49%]
+........................................................................ [ 52%]
+........................................................................ [ 54%]
+........................................................................ [ 57%]
+........................................................................ [ 60%]
+........................................................................ [ 62%]
+........................................................................ [ 65%]
+........................................................................ [ 67%]
+........................................................................ [ 70%]
+........................................................................ [ 73%]
+........................................................................ [ 75%]
+........................................................................ [ 78%]
+.............ss......................................................... [ 80%]
+........................................................................ [ 83%]
+........................................................................ [ 86%]
+........................................................................ [ 88%]
+........................................................................ [ 91%]
+..................................................s...s................. [ 93%]
+........................................................................ [ 96%]
+........................................................................ [ 99%]
+.......................                                                  [100%]
+=============================== warnings summary ===============================
+tests/test_cli_download.py::TestDownloadCLI::test_cli_download_cult_cargo
+  /home/sphemakh/work/softdev/stimela-ninja/tests/test_cli_download.py:426: DeprecationWarning: 'isolated_filesystem' is deprecated and will be removed in Click 9.0. Use 'tempfile.TemporaryDirectory' or pytest's 'tmp_path' fixture with absolute paths instead.
+    with runner.isolated_filesystem():
+
+tests/test_cli_download.py::TestDownloadCLI::test_cli_download_custom_dest_dir
+  /home/sphemakh/work/softdev/stimela-ninja/tests/test_cli_download.py:453: DeprecationWarning: 'isolated_filesystem' is deprecated and will be removed in Click 9.0. Use 'tempfile.TemporaryDirectory' or pytest's 'tmp_path' fixture with absolute paths instead.
+    with runner.isolated_filesystem():
+
+tests/test_cli_download.py::TestDownloadCLI::test_cli_download_error_handling
+  /home/sphemakh/work/softdev/stimela-ninja/tests/test_cli_download.py:481: DeprecationWarning: 'isolated_filesystem' is deprecated and will be removed in Click 9.0. Use 'tempfile.TemporaryDirectory' or pytest's 'tmp_path' fixture with absolute paths instead.
+    with runner.isolated_filesystem():
+
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[False-False-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[False-True-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[False-True-True]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-False-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-True-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-True-True]
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:602: UserWarning: 'produce': parameter(s) ['prefix'] matched a dynamic parameter pattern and are passed through to the tool as-is -- shinobi has no declared field for them, so it cannot type/range-check them the way it does for the cab's declared parameters.
+    return _prepare_inputs(self.scope, self._raw, validated=self.inputs)
+
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[False-False-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[False-True-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[False-True-True]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-False-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-True-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-True-True]
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:759: UserWarning: 'produce': parameter(s) ['prefix'] matched a dynamic parameter pattern and are passed through to the tool as-is -- shinobi has no declared field for them, so it cannot type/range-check them the way it does for the cab's declared parameters.
+    prepared = _prepare_inputs(self.scope, raw, validated=validated)
+
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-False-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-True-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-True-True]
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/offload/worker.py:944: UserWarning: 'produce': parameter(s) ['prefix'] matched a dynamic parameter pattern and are passed through to the tool as-is -- shinobi has no declared field for them, so it cannot type/range-check them the way it does for the cab's declared parameters.
+    prepared = _prepare_inputs(scope, kwargs)
+
+tests/test_dataset_list_writes.py::test_detached_group_failed_tool_and_failed_immutable_publication[True]
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:764: UserWarning: step 'first' failed (returncode 7); its sandbox is kept for post-mortem at /tmp/pytest-of-sphemakh/pytest-13/test_detached_group_failed_too1/runs/2a501b23-9249-4ee1-8cc9-bd531dd1b12b/sandboxes/c5078cf6-b40b-46e7-bf69-7b9a2e07b6df/first-lhtn4ocq
+    result = _run_cab(
+
+tests/test_dataset_list_writes.py::test_yaml_binary_joint_writer_passthrough_and_nonzero[7]
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:764: UserWarning: step 'joint' failed (returncode 7); its sandbox is kept for post-mortem at /tmp/pytest-of-sphemakh/pytest-13/work851/joint-q0qdsoon
+    result = _run_cab(
+
+tests/test_dataset_mutation.py::test_binary_cab_writer_runs_sandboxed_and_rolls_back_on_nonzero_exit
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:764: UserWarning: step 'renumber_tool' failed (returncode 3); its sandbox is kept for post-mortem at /tmp/pytest-of-sphemakh/pytest-13/work959/renumber_tool-4a0pvofh
+    result = _run_cab(
+
+tests/test_derived_mutations_live.py::test_continuation_resume_changed_params_and_joint_rollback[True]
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:764: UserWarning: step 'continue' failed (returncode 1); its sandbox is kept for post-mortem at /tmp/pytest-of-sphemakh/pytest-13/test_continuation_resume_chang1/sandboxes/continue-y34c97aj
+    result = _run_cab(
+
+tests/test_ninja_selfcal.py::test_module_imports_and_builds_recipe
+tests/test_ninja_selfcal.py::test_dryrun_dag_renders
+tests/test_ninja_selfcal.py::test_vendored_cab_schemas_load
+tests/test_ninja_selfcal.py::test_cubical_argv_restores_hyphenated_flag_names
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/loaders/yaml_cab.py:339: UserWarning: cab 'wsclean' uses dynamic_schema ('cultcargo.genesis.wsclean.make_stimela_schema'), which shinobi doesn't resolve -- it's a dotted reference to a Python function that would need importing and calling to get the real schema. Any static 'inputs:'/'outputs:' present are used as-is, but may be incomplete relative to the tool's actual interface. Check whether dosho (the native shinobi cab repository) already has a real port of this cab.
+    return _build_cab(name, spec, package_roots, images)
+
+tests/test_offload_dataset_lifecycle.py::test_failed_writer_is_restored_before_failed_attempt_publication
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:764: UserWarning: step 'tool' failed (returncode 7); its sandbox is kept for post-mortem at /tmp/pytest-of-sphemakh/pytest-13/test_failed_writer_is_restored0/runs/c435ee3d-c922-4727-9dd9-b08bf170e56b/sandboxes/327f4a84-9f6c-40be-861f-c5fd209e7706/tool-w15tio7d
+    result = _run_cab(
+
+tests/test_offload_dataset_lifecycle.py::test_finalizer_releases_failed_writer_only_after_verified_recovery
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:764: UserWarning: step 'tool' failed (returncode 7); its sandbox is kept for post-mortem at /tmp/pytest-of-sphemakh/pytest-13/test_finalizer_releases_failed0/runs/d0908f99-cf01-4dbb-98a8-1af852ade2a1/sandboxes/30a7215a-108d-4a4e-acbd-faf2075a959d/tool-9bvhtemc
+    result = _run_cab(
+
+tests/test_offload_dataset_lifecycle.py::test_finalizer_republishes_failure_after_missing_attempt_record
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:764: UserWarning: step 'tool' failed (returncode 7); its sandbox is kept for post-mortem at /tmp/pytest-of-sphemakh/pytest-13/test_finalizer_republishes_fai0/runs/314709f5-2389-4625-aace-f633cdd6200b/sandboxes/acb6d3f3-c33b-4824-8356-5aee9947ac85/tool-hq2xoehc
+    result = _run_cab(
+
+tests/test_offload_worker.py::test_interrupted_worker_mutation_recovers_before_retry
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:764: UserWarning: step 'cal' failed (returncode 9); its sandbox is kept for post-mortem at /tmp/pytest-of-sphemakh/pytest-13/test_interrupted_worker_mutati0/runs/61b1a689-025d-4830-b08f-2d07e2b23394/sandboxes/bf040682-8441-4f1a-a8c0-2104a8fa38e9/cal-8z848v9n
+    result = _run_cab(
+
+tests/test_offload_worker.py::test_failed_worker_keeps_shared_sandbox_and_publishes_no_success
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:764: UserWarning: step 'bad' failed (returncode 7); its sandbox is kept for post-mortem at /tmp/pytest-of-sphemakh/pytest-13/test_failed_worker_keeps_share0/runs/81c7f049-0218-451a-be0a-2b0f6a422e77/sandboxes/adc48a41-b150-4c15-87fc-d0f7d342420a/bad-pibctemd
+    result = _run_cab(
+
+tests/test_storage.py: 36 warnings
+  /home/sphemakh/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/multiprocessing/popen_fork.py:66: DeprecationWarning: This process (pid=15191) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    self.pid = os.fork()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+2742 passed, 18 skipped, 67 warnings in 685.51s (0:11:25)

@@ -1,0 +1,21 @@
+{
+  "copies": [
+    {
+      "original": "/home/sphemakh/sandbox/shinobiMSv24-16/og-data/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms",
+      "working_copy": "/home/sphemakh/sandbox/shinobiMSv24-16/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms",
+      "entries": 108,
+      "matching_names_modes_sizes_mtimes": true,
+      "independent_inodes": true
+    },
+    {
+      "original": "/home/sphemakh/sandbox/shinobiMSv24-16/og-data/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms.flagversions",
+      "working_copy": "/home/sphemakh/sandbox/shinobiMSv24-16/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms.flagversions",
+      "entries": 36,
+      "matching_names_modes_sizes_mtimes": true,
+      "independent_inodes": true
+    }
+  ],
+  "benchmark_workspace": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work",
+  "old_workspace": "/tmp/shinobi-issue16.VrAFrzFi",
+  "old_workspace_exists": false
+}

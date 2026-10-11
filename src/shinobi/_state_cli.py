@@ -9,6 +9,7 @@ import click
 
 from shinobi.config import AppConfig
 from shinobi.dataset_state import DatasetStateStore, StateError
+from shinobi.state_codecs import LosslessProfile
 
 
 def _run(operation, as_json):
@@ -25,8 +26,9 @@ def _run(operation, as_json):
             if hasattr(row, "phase"):
                 click.echo(f"{row.attempt_id}: {row.phase}")
             else:
-                click.echo(f"{row.state_id}  {row.representation_id}  exact-logical  {'verified' if row.verified else 'metadata only'}")
-                if row.destination:
+                identity = getattr(row, "state_id", None) or row.derived_id
+                click.echo(f"{identity}  {row.representation_id}  {row.fidelity}  {'verified' if row.verified else 'metadata only'}")
+                if getattr(row, "destination", None):
                     click.echo(f"Destination: {row.destination}")
                 if row.attempt:
                     click.echo(f"Attempt: {row.attempt}")
@@ -49,11 +51,21 @@ def state(ctx, store):
 @state.command("export")
 @click.argument("source", type=click.Path(path_type=Path))
 @click.option("--block-rows", type=click.IntRange(min=1), help="Native payload rows per chunk.")
+@click.option("--codec", type=click.Choice(["zstd", "gzip", "blosc-zstd"]), help="Explicit lossless MSv4 codec; omitted keeps historical export.")
+@click.option("--level", type=click.IntRange(1, 9), default=3)
+@click.option("--shuffle", type=click.Choice(["none", "byte", "bit"]), default="none")
+@click.option("--chunk-rows", type=click.IntRange(1, 1_048_576))
 @click.option("--json", "as_json", is_flag=True)
 @click.pass_obj
-def export(store, source, block_rows, as_json):
+def export(store, source, block_rows, codec, level, shuffle, chunk_rows, as_json):
     """Export a contained MSv2 under a shared read claim."""
-    _run(lambda: store.export(source, block_rows=block_rows), as_json)
+    if codec is None and (level != 3 or shuffle != "none" or chunk_rows is not None):
+        raise click.ClickException("--codec is required with codec options")
+    try:
+        profile = LosslessProfile(codec=codec, level=level, shuffle=shuffle, chunk_rows=chunk_rows) if codec else None
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _run(lambda: store.export(source, block_rows=block_rows, lossless_profile=profile), as_json)
 
 
 @state.command("list")
@@ -92,3 +104,49 @@ def materialize(store, state_id, destination, representation_id, as_json):
 def recover(store, destination, as_json):
     """Settle dead attempts and sweep only their recorded private staging."""
     _run(lambda: store.recover(destination), as_json)
+
+
+@state.command("derive-precision")
+@click.argument("state_id")
+@click.option("--representation", "representation_id")
+@click.option("--array", "arrays", multiple=True, required=True, help="Explicit MSv4 array path; repeat for each selected array.")
+@click.option("--keep-bits", type=click.IntRange(0, 51), required=True)
+@click.option("--atol", type=float, required=True)
+@click.option("--rtol", type=float, required=True)
+@click.option("--json", "as_json", is_flag=True)
+@click.pass_obj
+def derive_precision(store, state_id, representation_id, arrays, keep_bits, atol, rtol, as_json):
+    """Round selected MSv4 floating arrays under an explicit numerical policy."""
+    from shinobi.state_precision import PrecisionPolicy
+
+    try:
+        policy = PrecisionPolicy(arrays=tuple(sorted(arrays)), keep_bits=keep_bits, atol=atol, rtol=rtol)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _run(lambda: store.derive_precision(state_id, policy, representation_id=representation_id), as_json)
+
+
+@state.command("verify-derived")
+@click.argument("derived_id")
+@click.option("--representation", "representation_id")
+@click.option("--json", "as_json", is_flag=True)
+@click.pass_obj
+def verify_derived(store, derived_id, representation_id, as_json):
+    """Independently verify derived bytes and the numerical policy."""
+    _run(lambda: store.verify_derived(derived_id, representation_id), as_json)
+
+
+@state.command("list-derived")
+@click.option("--json", "as_json", is_flag=True)
+@click.pass_obj
+def list_derived(store, as_json):
+    """List approximate artifacts, including their parent exact state."""
+    _run(store.list_derived, as_json)
+
+
+@state.command("recover-derived")
+@click.option("--json", "as_json", is_flag=True)
+@click.pass_obj
+def recover_derived(store, as_json):
+    """Settle interrupted derived publications by their recorded paths."""
+    _run(store.recover_derived, as_json)

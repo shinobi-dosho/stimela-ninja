@@ -1,6 +1,20 @@
 Provenance
 ==========
 
+Reusable-state precision lineage
+--------------------------------
+
+The explicit approximate MSv4 path is separate from the exact native-state
+store. An exact state can have several lossless physical representations with
+one native identity. A derived artifact records its exact parent native ID,
+parent MSv4 logical ID, versioned precision policy and transformed MSv4
+logical ID in its logical identity. Its physical record separately identifies
+the exact source representation and a complete file/metadata inventory.
+Recompressing the parent MSv4 without changing its logical contents cannot
+change the derived logical identity. Exact materialization and rollback do
+not use these approximate artifacts. See :doc:`states` for verification and
+CLI operations.
+
 Detached worker provenance
 --------------------------
 

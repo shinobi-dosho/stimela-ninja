@@ -1,0 +1,47 @@
+{
+  "full_suite": {
+    "tests": 2760,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 18,
+    "scope": "before remediation; retained full-suite.xml and full-suite.log"
+  },
+  "passed": 2742,
+  "ruff_check": "passed",
+  "ruff_format": "185 files already formatted",
+  "git_diff_check": "passed",
+  "sphinx": {
+    "built": true,
+    "warnings": 0,
+    "strict": true,
+    "log": "fix-docs.log"
+  },
+  "review": {
+    "independent_reviewers": 3,
+    "confirmed_findings": 2,
+    "status": "both confirmed findings fixed; three independent remediation reviews found no further actionable code defects",
+    "reproduction": "review-probes.json",
+    "post_fix_confirmed_code_findings": 0,
+    "reviewer_test_scope": "code and evidence inspection; live tests executed by implementation and primary agents",
+    "evidence_status_correction": "updated README and validation to distinguish historical failures and pre-fix full suite from post-fix validation"
+  },
+  "post_fix": {
+    "state_suite": {
+      "passed": 86,
+      "seconds": 166.35,
+      "command": "python -m pytest tests/test_dataset_state.py tests/test_dataset_state_live.py tests/test_state_precision.py -q",
+      "evidence": "implementation agent successful tool result; no XML captured"
+    },
+    "final_root_guard": {
+      "passed": 4,
+      "scope": "targeted symlink regression cases"
+    },
+    "ownership_storage": {
+      "passed": 56,
+      "seconds": 9.99,
+      "log": "fix-support.log",
+      "junit": "fix-support.xml"
+    },
+    "benchmark_source_hashes": "unchanged"
+  }
+}

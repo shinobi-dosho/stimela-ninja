@@ -1,0 +1,12 @@
+{
+  "ownership_release": {
+    "finished_after_release_failure": true,
+    "retry_results": 0,
+    "release_calls": 1
+  },
+  "symlink_publication": {
+    "new_representation_outside_store": true,
+    "same_derived_id": true,
+    "different_representation_id": true
+  }
+}

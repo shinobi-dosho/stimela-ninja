@@ -159,7 +159,40 @@ tables and wholly undefined columns. Ragged cells, mixed definedness and
 unsupported structures/typed metadata fail with msutils code and
 table/column/row diagnostics. xarray-ms irregular-grid/imputation warnings
 are recorded; native reconstruction does not use the padded MSv4 view.
-Codec selection and Zarr rewrite commands are not exposed. msutils enforces
-its lossless policy. Its residual memory risk applies here: variable-length
-string chunks can expand beyond memory during decoding. Provision for full
-data reads during verification and duplicate native/MSv4 storage.
+Explicit MSv4 codec and precision artifacts
+-------------------------------------------
+
+``export`` accepts an optional named lossless profile: ``--codec zstd|gzip|blosc-zstd``,
+``--level``, ``--chunk-rows`` and, for Blosc only, ``--shuffle none|byte|bit``.
+The historical export and its v1 representation manifest remain the default.
+An explicit selection uses ``shinobi-state-representation/v2`` and rewrites
+the MSv4 tree inside private export staging. It checks the public
+``msutils.logical_id`` before and after rewriting, then captures the usual
+native preservation sidecar against the final MSv4 tree. Numeric copies use
+bounded N-dimensional tiles. Variable-length strings retain the upstream
+decode expansion risk. The native payload retains msutils' existing codec;
+the profile describes the companion MSv4 tree only.
+
+``derive-precision`` creates a separate approximate MSv4 artifact under
+``derived/``. Its closed ``mantissa-round-nearest-even/v1`` policy names exact
+MSv4 array paths with repeated ``--array`` options and gives ``--keep-bits``,
+``--atol`` and ``--rtol``. Only floating and complex arrays are eligible.
+Each finite value must satisfy ``abs(new-old) <= atol + rtol*abs(old)``;
+complex magnitudes use the same inequality. Non-finite bit patterns and signed
+zero are preserved. Unselected arrays retain their exact values. A no-change
+derivation refuses. The derived logical ID binds the exact native state ID,
+exact parent MSv4 logical ID, policy and transformed MSv4 logical ID, while
+the physical record names the source representation. Recompression of the
+same exact content therefore keeps one derived logical identity.
+
+``verify-derived``, ``list-derived`` and ``recover-derived`` operate only on
+that separate namespace. Verification rereads the exact parent, checks every
+physical byte and node, redoes numerical rounding and bounds, and compares
+untouched arrays. Approximate artifacts have no native preservation sidecar
+or native replay path. ``materialize`` refuses a derived ID before creating a
+destination. Recipes, workers, skip cache and snapshot rollback continue to
+consume only exact states.
+
+Provision for full data reads during verification and duplicate native/MSv4
+storage. Existing exact states can carry multiple lossless representations;
+derived artifacts add separate storage and are opt-in.

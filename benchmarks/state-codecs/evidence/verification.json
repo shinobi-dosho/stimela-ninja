@@ -1,0 +1,8 @@
+{
+  "reports": 6,
+  "lossless_profile_trials": 30,
+  "all_logical_ids_preserved": true,
+  "all_ms_and_flag_version_stat_fingerprints_unchanged": true,
+  "working_copy_samples_match_original": true,
+  "benchmark_source_hashes_match_local_tree": true
+}

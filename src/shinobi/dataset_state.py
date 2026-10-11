@@ -23,6 +23,7 @@ from typing import Annotated, Any, Literal
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from shinobi import _state_adapter as adapter
+from shinobi.state_codecs import LosslessProfile, rewrite_lossless
 from shinobi.dataset_lifecycle import DatasetObservation, member_fingerprint, observe_dataset, structural_signature
 from shinobi.exceptions import ShinobiError
 from shinobi.ownership import acquire_workspace, inspect_ownership, ownership_registry, release_workspace
@@ -158,6 +159,13 @@ class StateRepresentation(_Record):
         if self.captured_at.tzinfo is None:
             raise ValueError("capture date must be timezone-aware")
         return self
+
+
+class StateRepresentationV2(StateRepresentation):
+    """Physical representation with an explicit lossless MSv4 layout."""
+
+    schema_version: Literal["shinobi-state-representation/v2"] = "shinobi-state-representation/v2"
+    lossless_profile: LosslessProfile
 
 
 class StateResult(_Record):
@@ -475,7 +483,9 @@ class DatasetStateStore:
         state = self._state(state_id)
         rep = self._representation(state_id, representation_id)
         logical = _manifest(state / "logical.json", LogicalState)
-        physical = _manifest(rep / "representation.json", StateRepresentation)
+        raw = json.loads(_read(rep / "representation.json"))
+        model = StateRepresentationV2 if raw.get("schema_version") == "shinobi-state-representation/v2" else StateRepresentation
+        physical = _manifest(rep / "representation.json", model)
         if logical.state_id != state_id or physical.state_id != state_id or physical.representation_id != "sha256:" + rep.name:
             raise StateError("identity", "directory and manifest identities disagree")
         if _digest(physical.model_dump(mode="json", exclude={"representation_id"})) != physical.representation_id:
@@ -555,12 +565,14 @@ class DatasetStateStore:
             if chain.marker is not None and paths_overlap(source, Path(chain.path)):
                 raise StateError("pending-mutation", "source has an interrupted mutation; recover it through its workflow before exporting")
 
-    def export(self, source: str | Path, *, block_rows: int | None = None) -> StateResult:
+    def export(self, source: str | Path, *, block_rows: int | None = None, lossless_profile: LosslessProfile | None = None) -> StateResult:
         """Capture a supported contained MS under a shared READ ownership claim."""
         attempt = lease = None
         try:
             if block_rows is not None and (type(block_rows) is not int or block_rows < 1):
                 raise StateError("block-rows", "block_rows must be a positive integer")
+            if lossless_profile is not None:
+                lossless_profile = LosslessProfile.model_validate(lossless_profile)
             versions = adapter.runtime()
             spelling = str(Path(source).expanduser().absolute())
             source = Path(source).expanduser().resolve(strict=True)
@@ -596,6 +608,11 @@ class DatasetStateStore:
                 rep.mkdir()
                 attempt = self._save(attempt, phase="writing")
                 warnings = adapter.export(source, rep / "msv4.zarr")
+                if lossless_profile is not None:
+                    original = rep / "original-msv4.zarr"
+                    (rep / "msv4.zarr").rename(original)
+                    rewrite_lossless(original, rep / "msv4.zarr", lossless_profile)
+                    shutil.rmtree(original)
                 adapter.capture(source, rep / "msv4.zarr", rep / "preservation", block_rows)
                 attempt = self._save(attempt, phase="validating")
                 ids = adapter.verify(rep / "msv4.zarr", rep / "preservation")
@@ -603,7 +620,7 @@ class DatasetStateStore:
                 if ids.native_logical_id != state_id or adapter.native_id(source) != state_id or member_fingerprint(before) != member_fingerprint(after):
                     raise StateError("source-changed", "source changed during export/capture")
                 files, nodes = _inventory(rep)
-                physical = StateRepresentation(
+                physical = (StateRepresentationV2 if lossless_profile is not None else StateRepresentation)(
                     representation_id="sha256:" + "0" * 64,
                     state_id=state_id,
                     msv4_id=ids.msv4_logical_id,
@@ -619,6 +636,7 @@ class DatasetStateStore:
                     captured_at=datetime.now(timezone.utc),
                     files=files,
                     zarr_metadata=nodes,
+                    **({"lossless_profile": lossless_profile} if lossless_profile is not None else {}),
                 )
                 physical = physical.model_copy(update={"representation_id": _digest(physical.model_dump(mode="json", exclude={"representation_id"}))})
                 provenance = StateProvenance.from_representation(physical, operation="export")
@@ -698,6 +716,8 @@ class DatasetStateStore:
         """Create a fresh native MS after independent validation, never overwrite."""
         attempt = lease = None
         try:
+            if state_id.startswith("shinobi-derived/"):
+                raise StateError("approximate-refused", "derived MSv4 artifacts cannot be materialized as exact native states")
             self._setup()
             target = self._target(destination)
             with self._lock("destinations", str(target)):
@@ -783,6 +803,39 @@ class DatasetStateStore:
         finally:
             if lease is not None:
                 lease.release()
+
+    def derive_precision(self, state_id: str, policy, *, representation_id: str | None = None):
+        """Create a separate approximate MSv4 artifact from a verified exact state."""
+        from shinobi.state_precision import DerivedStateStore
+
+        try:
+            return DerivedStateStore(self).derive(state_id, policy, representation_id)
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    def verify_derived(self, derived_id: str, representation_id: str | None = None):
+        from shinobi.state_precision import DerivedStateStore
+
+        try:
+            return DerivedStateStore(self).verify(derived_id, representation_id)
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    def list_derived(self):
+        from shinobi.state_precision import DerivedStateStore
+
+        try:
+            return DerivedStateStore(self).list()
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    def recover_derived(self):
+        from shinobi.state_precision import DerivedStateStore
+
+        try:
+            return DerivedStateStore(self).recover()
+        except Exception as exc:
+            raise _error(exc) from exc
 
     def recover(self, destination: str | Path | None = None) -> list[StateAttempt]:
         """Settle dead attempts and sweep only their recorded private stage trees.

@@ -1,0 +1,105 @@
+Running Sphinx v9.1.0
+loading translations [en]... done
+making output directory... done
+[autosummary] generating autosummary for: api/index.rst, cli.rst, concepts/backends.rst, concepts/cabs.rst, concepts/config.rst, concepts/datasets.rst, concepts/loaders.rst, concepts/products.rst, concepts/provenance.rst, concepts/recipes.rst, ..., concepts/sandbox.rst, concepts/states.rst, concepts/steps.rst, contributing.rst, index.rst, installation.rst, migration.rst, offloading.rst, quickstart.rst, security.rst
+loading intersphinx inventory 'python' from https://docs.python.org/3/objects.inv ...
+loading intersphinx inventory 'pydantic' from https://docs.pydantic.dev/latest/objects.inv ...
+intersphinx inventory has moved: https://docs.pydantic.dev/latest/objects.inv -> https://pydantic.dev/docs/validation/latest/objects.inv
+myst v5.1.0: MdParserConfig(commonmark_only=False, gfm_only=False, enable_extensions={'colon_fence', 'deflist'}, disable_syntax=[], all_links_external=False, links_external_new_tab=False, url_schemes=('http', 'https', 'mailto', 'ftp'), ref_domains=None, fence_as_directive=set(), number_code_blocks=[], title_to_header=False, heading_anchors=0, heading_slug_func=None, html_meta={}, footnote_sort=True, footnote_transition=True, words_per_minute=200, substitutions={}, linkify_fuzzy_links=True, dmath_allow_labels=True, dmath_allow_space=True, dmath_allow_digits=True, dmath_double_inline=False, update_mathjax=True, mathjax_classes='tex2jax_process|mathjax_process|math|output_area', enable_checkboxes=False, strikethrough_single_tilde=False, colon_fence_exact_match=False, suppress_warnings=[], highlight_code_blocks=True)
+building [mo]: targets for 0 po files that are out of date
+writing output...
+building [html]: targets for 21 source files that are out of date
+updating environment: [new config] 21 added, 0 changed, 0 removed
+reading sources... [  5%] api/index
+reading sources... [ 10%] cli
+reading sources... [ 14%] concepts/backends
+reading sources... [ 19%] concepts/cabs
+reading sources... [ 24%] concepts/config
+reading sources... [ 29%] concepts/datasets
+reading sources... [ 33%] concepts/loaders
+reading sources... [ 38%] concepts/products
+reading sources... [ 43%] concepts/provenance
+reading sources... [ 48%] concepts/recipes
+reading sources... [ 52%] concepts/results
+reading sources... [ 57%] concepts/sandbox
+reading sources... [ 62%] concepts/states
+reading sources... [ 67%] concepts/steps
+reading sources... [ 71%] contributing
+reading sources... [ 76%] index
+reading sources... [ 81%] installation
+reading sources... [ 86%] migration
+reading sources... [ 90%] offloading
+reading sources... [ 95%] quickstart
+reading sources... [100%] security
+
+looking for now-outdated files... none found
+pickling environment... done
+checking consistency... done
+preparing documents... done
+copying assets...
+copying static files...
+Writing evaluated template result to /tmp/shinobi-issue16-docs-fixed/_static/language_data.js
+Writing evaluated template result to /tmp/shinobi-issue16-docs-fixed/_static/documentation_options.js
+Writing evaluated template result to /tmp/shinobi-issue16-docs-fixed/_static/basic.css
+Writing evaluated template result to /tmp/shinobi-issue16-docs-fixed/_static/copybutton.js
+copying static files: done
+copying extra files...
+copying extra files: done
+copying assets: done
+writing output... [  5%] api/index
+writing output... [ 10%] cli
+writing output... [ 14%] concepts/backends
+writing output... [ 19%] concepts/cabs
+writing output... [ 24%] concepts/config
+writing output... [ 29%] concepts/datasets
+writing output... [ 33%] concepts/loaders
+writing output... [ 38%] concepts/products
+writing output... [ 43%] concepts/provenance
+writing output... [ 48%] concepts/recipes
+writing output... [ 52%] concepts/results
+writing output... [ 57%] concepts/sandbox
+writing output... [ 62%] concepts/states
+writing output... [ 67%] concepts/steps
+writing output... [ 71%] contributing
+writing output... [ 76%] index
+writing output... [ 81%] installation
+writing output... [ 86%] migration
+writing output... [ 90%] offloading
+writing output... [ 95%] quickstart
+writing output... [100%] security
+
+generating indices... genindex py-modindex done
+highlighting module code... [  4%] shinobi.backends
+highlighting module code... [  7%] shinobi.cache
+highlighting module code... [ 11%] shinobi.config
+highlighting module code... [ 15%] shinobi.dataset_access
+highlighting module code... [ 19%] shinobi.dataset_backends
+highlighting module code... [ 22%] shinobi.dataset_closure
+highlighting module code... [ 26%] shinobi.dataset_lifecycle
+highlighting module code... [ 30%] shinobi.dataset_state
+highlighting module code... [ 33%] shinobi.datasets
+highlighting module code... [ 37%] shinobi.derived
+highlighting module code... [ 41%] shinobi.exceptions
+highlighting module code... [ 44%] shinobi.graph
+highlighting module code... [ 48%] shinobi.loaders._modelgen
+highlighting module code... [ 52%] shinobi.loaders.stimela_classic
+highlighting module code... [ 56%] shinobi.loaders.worker_schema
+highlighting module code... [ 59%] shinobi.loaders.yaml_cab
+highlighting module code... [ 63%] shinobi.ownership
+highlighting module code... [ 67%] shinobi.policies
+highlighting module code... [ 70%] shinobi.products
+highlighting module code... [ 74%] shinobi.resources
+highlighting module code... [ 78%] shinobi.results
+highlighting module code... [ 81%] shinobi.steps.decorator
+highlighting module code... [ 85%] shinobi.steps.dispatch
+highlighting module code... [ 89%] shinobi.steps.loops
+highlighting module code... [ 93%] shinobi.steps.pyfunc
+highlighting module code... [ 96%] shinobi.steps.schema
+highlighting module code... [100%] shinobi.wranglers
+
+writing additional pages... search done
+dumping search index in English (code: en)... done
+dumping object inventory... done
+build succeeded.
+
+The HTML pages are in ../../../../../tmp/shinobi-issue16-docs-fixed.

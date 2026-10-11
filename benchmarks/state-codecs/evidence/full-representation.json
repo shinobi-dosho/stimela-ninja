@@ -1,0 +1,92 @@
+{
+  "schema": "shinobi-issue16-full-representation-evidence/v1",
+  "scope": "Local six-row synthetic supported MS; includes unchanged native-preservation sidecar, complete representation, full verification and native materialization. Single descriptive run per profile, not comparative throughput evidence.",
+  "versions": {
+    "stimela-ninja": "0.1.0b7",
+    "msutils": "3.0.0",
+    "xarray-ms": "0.5.8",
+    "xarray": "2026.7.0",
+    "zarr": "3.3.0",
+    "numcodecs": "0.16.5",
+    "arcae": "0.5.4",
+    "numpy": "2.5.3",
+    "python-casacore": "3.8.1",
+    "dask": "2026.8.0",
+    "pyarrow": "23.0.1",
+    "pandas": "3.0.6",
+    "dask-ms": "not-installed",
+    "msutils_commit": "76525da894af32c18a677d2183bc680d13f14c43"
+  },
+  "results": [
+    {
+      "profile": null,
+      "state_id": "msutils-logical-hash/v1:c77a21868a0db751dbccf1ce8357c0cbbc81919b1065f65b824ee80e696b93b7",
+      "representation_id": "sha256:9091385f380b3235c3c5f27b9b985f958f283eae3f7af695124c31ae476b5bca",
+      "source_bytes": 185091,
+      "msv4_bytes": 64362,
+      "native_preservation_bytes": 165810,
+      "complete_representation_bytes": 516782,
+      "export_seconds": 3.9831820770000377,
+      "verify_seconds": 0.5474337420000666,
+      "materialize_seconds": 2.213687924000169,
+      "restored_native_id_matches": true
+    },
+    {
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 2
+      },
+      "state_id": "msutils-logical-hash/v1:c77a21868a0db751dbccf1ce8357c0cbbc81919b1065f65b824ee80e696b93b7",
+      "representation_id": "sha256:c3786262c14af4251324a4986dd760861ab751608fdcefefd606f8077c4390ed",
+      "source_bytes": 185091,
+      "msv4_bytes": 27753,
+      "native_preservation_bytes": 165810,
+      "complete_representation_bytes": 447411,
+      "export_seconds": 3.6752397769996605,
+      "verify_seconds": 0.552037460000065,
+      "materialize_seconds": 2.432787961000031,
+      "restored_native_id_matches": true
+    },
+    {
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "gzip",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 2
+      },
+      "state_id": "msutils-logical-hash/v1:c77a21868a0db751dbccf1ce8357c0cbbc81919b1065f65b824ee80e696b93b7",
+      "representation_id": "sha256:b6de9d6640ed69e979ec83a438cef3451fa72c1e25e3ab85d283c951edaca5ea",
+      "source_bytes": 185091,
+      "msv4_bytes": 27172,
+      "native_preservation_bytes": 165810,
+      "complete_representation_bytes": 445930,
+      "export_seconds": 3.778538344000026,
+      "verify_seconds": 0.5447025029998258,
+      "materialize_seconds": 2.50490304799996,
+      "restored_native_id_matches": true
+    },
+    {
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "blosc-zstd",
+        "level": 3,
+        "shuffle": "bit",
+        "chunk_rows": 2
+      },
+      "state_id": "msutils-logical-hash/v1:c77a21868a0db751dbccf1ce8357c0cbbc81919b1065f65b824ee80e696b93b7",
+      "representation_id": "sha256:cad0221ca3ec149209ea5fd5f92a8de698ff634c391312f0910394b14abb02e4",
+      "source_bytes": 185091,
+      "msv4_bytes": 31397,
+      "native_preservation_bytes": 165810,
+      "complete_representation_bytes": 453868,
+      "export_seconds": 3.8601593160001357,
+      "verify_seconds": 0.5391768029999184,
+      "materialize_seconds": 2.5010231940000267,
+      "restored_native_id_matches": true
+    }
+  ]
+}

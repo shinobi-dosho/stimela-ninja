@@ -1,0 +1,465 @@
+{
+  "schema_version": "shinobi-codec-benchmark/v1",
+  "selection": {
+    "kind": "real-msv2-sample",
+    "path": "/home/sphemakh/sandbox/shinobiMSv24-16/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms",
+    "total_rows": 247752,
+    "windows": [
+      [
+        0,
+        128
+      ],
+      [
+        123812,
+        128
+      ],
+      [
+        247624,
+        128
+      ]
+    ],
+    "columns": [
+      "ANTENNA1",
+      "ANTENNA2",
+      "CORRECTED_DATA",
+      "DATA",
+      "FLAG",
+      "MODEL_DATA",
+      "SIGMA",
+      "TIME",
+      "UVW",
+      "WEIGHT",
+      "WEIGHT_SPECTRUM"
+    ]
+  },
+  "source_observation_before": {
+    "entries": 108,
+    "stat_sha256": "3ba91704ebf2aae4c853c69c2c575d3644265d009d744b5004b66be751fa9dfa"
+  },
+  "source_observation_after": {
+    "entries": 108,
+    "stat_sha256": "3ba91704ebf2aae4c853c69c2c575d3644265d009d744b5004b66be751fa9dfa"
+  },
+  "sample_hashes": {
+    "DATA": "b8c5ee7373bac8aebc375aef14f5c1e898dba505423102a4792edb6f2dae1e43",
+    "MODEL_DATA": "fe1b20c7561581fdbc0ae5257664fc01c60f671a665eb77211fe5ad645bc5d1c",
+    "CORRECTED_DATA": "05889c452fbfe39ec233ad8b0684081e9608685a6955af14862a4469b0ef2405",
+    "WEIGHT_SPECTRUM": "f8a4cb4feb4d318cfb6d47338c8c6a29d880e1d73c1f2ce06e20193177e9eece",
+    "WEIGHT": "e405a851b5500f32e2eb5d9f5367147d5d1d3605036c6576dba1813f73e1a40c",
+    "SIGMA": "e33d1ab55ae1a71a592e8a834dbf9b3d08b2eddfb714a26444933d70a3fab013",
+    "FLAG": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+    "UVW": "6454a2056502d4a32b78e063a7358eee0f703bf3bf06ea61c32ec7044f3525fa",
+    "TIME": "1ee638b2bbd44fa010e85197f5f913dabdb29d8f4313f69990bd2763eadbca43",
+    "ANTENNA1": "d5bc39a022bb94df84a24fb177d9a2d4f88249733cafc86155f9b255a0ded633",
+    "ANTENNA2": "398f26127c8aa5b035c4a0bddb8c3e7deb25ef67a752a7a4a12d7ee69fc75c3c"
+  },
+  "baseline_msv4_logical_id": "msutils-logical-hash/v1:8c05b395f85f6e2d942dd420b37e914313a217d2a4749b68d944ae7ca03d780e",
+  "versions": {
+    "python": "3.12.14",
+    "numpy": "2.5.3",
+    "zarr": "3.3.0",
+    "numcodecs": "0.16.5"
+  },
+  "results": [
+    {
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:8c05b395f85f6e2d942dd420b37e914313a217d2a4749b68d944ae7ca03d780e",
+      "encoded_bytes": 59912516,
+      "copy_encode_seconds": 1.6063108090311289,
+      "rewrite_verified_seconds": 2.3266218081116676,
+      "decode_seconds": 0.14413293451070786,
+      "copy_encode_mib_s": 48.967929744053464,
+      "decode_mib_s": 545.7303364478879,
+      "peak_worker_rss_kib": 418108,
+      "per_column": {
+        "DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "b8c5ee7373bac8aebc375aef14f5c1e898dba505423102a4792edb6f2dae1e43",
+          "encoded_bytes": 21518041
+        },
+        "MODEL_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "fe1b20c7561581fdbc0ae5257664fc01c60f671a665eb77211fe5ad645bc5d1c",
+          "encoded_bytes": 17172421
+        },
+        "CORRECTED_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "05889c452fbfe39ec233ad8b0684081e9608685a6955af14862a4469b0ef2405",
+          "encoded_bytes": 21178276
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 11372544,
+          "sample_sha256": "f8a4cb4feb4d318cfb6d47338c8c6a29d880e1d73c1f2ce06e20193177e9eece",
+          "encoded_bytes": 2015
+        },
+        "WEIGHT": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e405a851b5500f32e2eb5d9f5367147d5d1d3605036c6576dba1813f73e1a40c",
+          "encoded_bytes": 945
+        },
+        "SIGMA": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e33d1ab55ae1a71a592e8a834dbf9b3d08b2eddfb714a26444933d70a3fab013",
+          "encoded_bytes": 945
+        },
+        "FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 26476
+        },
+        "UVW": {
+          "raw_bytes": 9216,
+          "sample_sha256": "6454a2056502d4a32b78e063a7358eee0f703bf3bf06ea61c32ec7044f3525fa",
+          "encoded_bytes": 10029
+        },
+        "TIME": {
+          "raw_bytes": 3072,
+          "sample_sha256": "1ee638b2bbd44fa010e85197f5f913dabdb29d8f4313f69990bd2763eadbca43",
+          "encoded_bytes": 961
+        },
+        "ANTENNA1": {
+          "raw_bytes": 1536,
+          "sample_sha256": "d5bc39a022bb94df84a24fb177d9a2d4f88249733cafc86155f9b255a0ded633",
+          "encoded_bytes": 1327
+        },
+        "ANTENNA2": {
+          "raw_bytes": 1536,
+          "sample_sha256": "398f26127c8aa5b035c4a0bddb8c3e7deb25ef67a752a7a4a12d7ee69fc75c3c",
+          "encoded_bytes": 1014
+        }
+      }
+    },
+    {
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "zstd",
+        "level": 6,
+        "shuffle": "none",
+        "chunk_rows": 128
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:8c05b395f85f6e2d942dd420b37e914313a217d2a4749b68d944ae7ca03d780e",
+      "encoded_bytes": 59880690,
+      "copy_encode_seconds": 0.9854264911264181,
+      "rewrite_verified_seconds": 1.7014740388840437,
+      "decode_seconds": 0.1463537085801363,
+      "copy_encode_mib_s": 79.82098670174595,
+      "decode_mib_s": 537.4494135260043,
+      "peak_worker_rss_kib": 578832,
+      "per_column": {
+        "DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "b8c5ee7373bac8aebc375aef14f5c1e898dba505423102a4792edb6f2dae1e43",
+          "encoded_bytes": 21518898
+        },
+        "MODEL_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "fe1b20c7561581fdbc0ae5257664fc01c60f671a665eb77211fe5ad645bc5d1c",
+          "encoded_bytes": 17147077
+        },
+        "CORRECTED_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "05889c452fbfe39ec233ad8b0684081e9608685a6955af14862a4469b0ef2405",
+          "encoded_bytes": 21180449
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 11372544,
+          "sample_sha256": "f8a4cb4feb4d318cfb6d47338c8c6a29d880e1d73c1f2ce06e20193177e9eece",
+          "encoded_bytes": 1731
+        },
+        "WEIGHT": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e405a851b5500f32e2eb5d9f5367147d5d1d3605036c6576dba1813f73e1a40c",
+          "encoded_bytes": 757
+        },
+        "SIGMA": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e33d1ab55ae1a71a592e8a834dbf9b3d08b2eddfb714a26444933d70a3fab013",
+          "encoded_bytes": 757
+        },
+        "FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 18846
+        },
+        "UVW": {
+          "raw_bytes": 9216,
+          "sample_sha256": "6454a2056502d4a32b78e063a7358eee0f703bf3bf06ea61c32ec7044f3525fa",
+          "encoded_bytes": 9632
+        },
+        "TIME": {
+          "raw_bytes": 3072,
+          "sample_sha256": "1ee638b2bbd44fa010e85197f5f913dabdb29d8f4313f69990bd2763eadbca43",
+          "encoded_bytes": 744
+        },
+        "ANTENNA1": {
+          "raw_bytes": 1536,
+          "sample_sha256": "d5bc39a022bb94df84a24fb177d9a2d4f88249733cafc86155f9b255a0ded633",
+          "encoded_bytes": 907
+        },
+        "ANTENNA2": {
+          "raw_bytes": 1536,
+          "sample_sha256": "398f26127c8aa5b035c4a0bddb8c3e7deb25ef67a752a7a4a12d7ee69fc75c3c",
+          "encoded_bytes": 826
+        }
+      }
+    },
+    {
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "gzip",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:8c05b395f85f6e2d942dd420b37e914313a217d2a4749b68d944ae7ca03d780e",
+      "encoded_bytes": 60000495,
+      "copy_encode_seconds": 4.1049216222018,
+      "rewrite_verified_seconds": 5.000706655904651,
+      "decode_seconds": 0.27853522449731827,
+      "copy_encode_mib_s": 19.161806748836177,
+      "decode_mib_s": 282.3977289971356,
+      "peak_worker_rss_kib": 578904,
+      "per_column": {
+        "DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "b8c5ee7373bac8aebc375aef14f5c1e898dba505423102a4792edb6f2dae1e43",
+          "encoded_bytes": 21418081
+        },
+        "MODEL_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "fe1b20c7561581fdbc0ae5257664fc01c60f671a665eb77211fe5ad645bc5d1c",
+          "encoded_bytes": 17385425
+        },
+        "CORRECTED_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "05889c452fbfe39ec233ad8b0684081e9608685a6955af14862a4469b0ef2405",
+          "encoded_bytes": 21084506
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 11372544,
+          "sample_sha256": "f8a4cb4feb4d318cfb6d47338c8c6a29d880e1d73c1f2ce06e20193177e9eece",
+          "encoded_bytes": 56288
+        },
+        "WEIGHT": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e405a851b5500f32e2eb5d9f5367147d5d1d3605036c6576dba1813f73e1a40c",
+          "encoded_bytes": 1026
+        },
+        "SIGMA": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e33d1ab55ae1a71a592e8a834dbf9b3d08b2eddfb714a26444933d70a3fab013",
+          "encoded_bytes": 1026
+        },
+        "FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 40437
+        },
+        "UVW": {
+          "raw_bytes": 9216,
+          "sample_sha256": "6454a2056502d4a32b78e063a7358eee0f703bf3bf06ea61c32ec7044f3525fa",
+          "encoded_bytes": 10158
+        },
+        "TIME": {
+          "raw_bytes": 3072,
+          "sample_sha256": "1ee638b2bbd44fa010e85197f5f913dabdb29d8f4313f69990bd2763eadbca43",
+          "encoded_bytes": 1014
+        },
+        "ANTENNA1": {
+          "raw_bytes": 1536,
+          "sample_sha256": "d5bc39a022bb94df84a24fb177d9a2d4f88249733cafc86155f9b255a0ded633",
+          "encoded_bytes": 1367
+        },
+        "ANTENNA2": {
+          "raw_bytes": 1536,
+          "sample_sha256": "398f26127c8aa5b035c4a0bddb8c3e7deb25ef67a752a7a4a12d7ee69fc75c3c",
+          "encoded_bytes": 1101
+        }
+      }
+    },
+    {
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "blosc-zstd",
+        "level": 3,
+        "shuffle": "byte",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:8c05b395f85f6e2d942dd420b37e914313a217d2a4749b68d944ae7ca03d780e",
+      "encoded_bytes": 56556023,
+      "copy_encode_seconds": 1.792932314798236,
+      "rewrite_verified_seconds": 2.5500378403812647,
+      "decode_seconds": 0.18251550011336803,
+      "copy_encode_mib_s": 43.870989548538304,
+      "decode_mib_s": 430.9645744876046,
+      "peak_worker_rss_kib": 578908,
+      "per_column": {
+        "DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "b8c5ee7373bac8aebc375aef14f5c1e898dba505423102a4792edb6f2dae1e43",
+          "encoded_bytes": 19643588
+        },
+        "MODEL_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "fe1b20c7561581fdbc0ae5257664fc01c60f671a665eb77211fe5ad645bc5d1c",
+          "encoded_bytes": 17222972
+        },
+        "CORRECTED_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "05889c452fbfe39ec233ad8b0684081e9608685a6955af14862a4469b0ef2405",
+          "encoded_bytes": 19646559
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 11372544,
+          "sample_sha256": "f8a4cb4feb4d318cfb6d47338c8c6a29d880e1d73c1f2ce06e20193177e9eece",
+          "encoded_bytes": 4612
+        },
+        "WEIGHT": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e405a851b5500f32e2eb5d9f5367147d5d1d3605036c6576dba1813f73e1a40c",
+          "encoded_bytes": 1346
+        },
+        "SIGMA": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e33d1ab55ae1a71a592e8a834dbf9b3d08b2eddfb714a26444933d70a3fab013",
+          "encoded_bytes": 1358
+        },
+        "FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 21667
+        },
+        "UVW": {
+          "raw_bytes": 9216,
+          "sample_sha256": "6454a2056502d4a32b78e063a7358eee0f703bf3bf06ea61c32ec7044f3525fa",
+          "encoded_bytes": 9620
+        },
+        "TIME": {
+          "raw_bytes": 3072,
+          "sample_sha256": "1ee638b2bbd44fa010e85197f5f913dabdb29d8f4313f69990bd2763eadbca43",
+          "encoded_bytes": 1362
+        },
+        "ANTENNA1": {
+          "raw_bytes": 1536,
+          "sample_sha256": "d5bc39a022bb94df84a24fb177d9a2d4f88249733cafc86155f9b255a0ded633",
+          "encoded_bytes": 1532
+        },
+        "ANTENNA2": {
+          "raw_bytes": 1536,
+          "sample_sha256": "398f26127c8aa5b035c4a0bddb8c3e7deb25ef67a752a7a4a12d7ee69fc75c3c",
+          "encoded_bytes": 1341
+        }
+      }
+    },
+    {
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "blosc-zstd",
+        "level": 3,
+        "shuffle": "bit",
+        "chunk_rows": 128
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:8c05b395f85f6e2d942dd420b37e914313a217d2a4749b68d944ae7ca03d780e",
+      "encoded_bytes": 50396954,
+      "copy_encode_seconds": 0.9788981713354588,
+      "rewrite_verified_seconds": 1.7141889948397875,
+      "decode_seconds": 0.15489916130900383,
+      "copy_encode_mib_s": 80.35331676679041,
+      "decode_mib_s": 507.7994882544136,
+      "peak_worker_rss_kib": 578908,
+      "per_column": {
+        "DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "b8c5ee7373bac8aebc375aef14f5c1e898dba505423102a4792edb6f2dae1e43",
+          "encoded_bytes": 19423502
+        },
+        "MODEL_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "fe1b20c7561581fdbc0ae5257664fc01c60f671a665eb77211fe5ad645bc5d1c",
+          "encoded_bytes": 11593210
+        },
+        "CORRECTED_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "05889c452fbfe39ec233ad8b0684081e9608685a6955af14862a4469b0ef2405",
+          "encoded_bytes": 19340088
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 11372544,
+          "sample_sha256": "f8a4cb4feb4d318cfb6d47338c8c6a29d880e1d73c1f2ce06e20193177e9eece",
+          "encoded_bytes": 6689
+        },
+        "WEIGHT": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e405a851b5500f32e2eb5d9f5367147d5d1d3605036c6576dba1813f73e1a40c",
+          "encoded_bytes": 978
+        },
+        "SIGMA": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e33d1ab55ae1a71a592e8a834dbf9b3d08b2eddfb714a26444933d70a3fab013",
+          "encoded_bytes": 1005
+        },
+        "FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 19129
+        },
+        "UVW": {
+          "raw_bytes": 9216,
+          "sample_sha256": "6454a2056502d4a32b78e063a7358eee0f703bf3bf06ea61c32ec7044f3525fa",
+          "encoded_bytes": 9135
+        },
+        "TIME": {
+          "raw_bytes": 3072,
+          "sample_sha256": "1ee638b2bbd44fa010e85197f5f913dabdb29d8f4313f69990bd2763eadbca43",
+          "encoded_bytes": 1054
+        },
+        "ANTENNA1": {
+          "raw_bytes": 1536,
+          "sample_sha256": "d5bc39a022bb94df84a24fb177d9a2d4f88249733cafc86155f9b255a0ded633",
+          "encoded_bytes": 1092
+        },
+        "ANTENNA2": {
+          "raw_bytes": 1536,
+          "sample_sha256": "398f26127c8aa5b035c4a0bddb8c3e7deb25ef67a752a7a4a12d7ee69fc75c3c",
+          "encoded_bytes": 1006
+        }
+      }
+    }
+  ],
+  "offline_candidates": {
+    "FLAG": [
+      {
+        "candidate": "packbits",
+        "encoded_bytes": 355393,
+        "raw_bytes": 2843136,
+        "reversible": true,
+        "publishable": false
+      }
+    ],
+    "ANTENNA1": [
+      {
+        "candidate": "delta",
+        "encoded_bytes": 1536,
+        "raw_bytes": 1536,
+        "reversible": true,
+        "publishable": false
+      }
+    ],
+    "ANTENNA2": [
+      {
+        "candidate": "delta",
+        "encoded_bytes": 1536,
+        "raw_bytes": 1536,
+        "reversible": true,
+        "publishable": false
+      }
+    ]
+  },
+  "scope": "sampled MSv2 columns encoded as independent Zarr v3 arrays; no native preservation sidecar or full export measured"
+}
