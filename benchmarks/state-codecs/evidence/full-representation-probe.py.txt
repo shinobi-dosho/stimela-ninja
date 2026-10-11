@@ -1,0 +1,30 @@
+import json, os, tempfile, time
+from pathlib import Path
+from tests._state_ms import make_state_ms
+from shinobi.dataset_state import DatasetStateStore
+from shinobi.state_codecs import LosslessProfile
+from shinobi import _state_adapter as adapter
+
+def size(path):
+    return sum(p.stat().st_size for p in path.rglob('*') if p.is_file())
+
+with tempfile.TemporaryDirectory(prefix='shinobi-issue16-full-representation-') as directory:
+    root=Path(directory)
+    os.environ['SHINOBI_OWNERSHIP_REGISTRY']=str(root/'owners.json')
+    source=make_state_ms(root/'source.ms')
+    store=DatasetStateStore(root/'store',cache_dir=root/'cache')
+    rows=[]
+    for index,profile in enumerate([None,LosslessProfile(codec='zstd',chunk_rows=2),LosslessProfile(codec='gzip',chunk_rows=2),LosslessProfile(codec='blosc-zstd',shuffle='bit',chunk_rows=2)]):
+        started=time.perf_counter()
+        exported=store.export(source,block_rows=2,lossless_profile=profile)
+        export_seconds=time.perf_counter()-started
+        rep,_,physical=store._load(exported.state_id,exported.representation_id)
+        started=time.perf_counter()
+        store.verify(exported.state_id,exported.representation_id)
+        verify_seconds=time.perf_counter()-started
+        started=time.perf_counter()
+        restored=store.materialize(exported.state_id,root/f'restored-{index}.ms',representation_id=exported.representation_id)
+        rows.append({'profile':None if profile is None else profile.model_dump(mode='json'),'state_id':exported.state_id,'representation_id':exported.representation_id,'source_bytes':size(source),'msv4_bytes':size(rep/'msv4.zarr'),'native_preservation_bytes':size(rep/'preservation'),'complete_representation_bytes':size(rep),'export_seconds':export_seconds,'verify_seconds':verify_seconds,'materialize_seconds':time.perf_counter()-started,'restored_native_id_matches':adapter.native_id(restored.destination)==exported.state_id})
+    assert len({r['state_id'] for r in rows})==1
+    report={'schema':'shinobi-issue16-full-representation-evidence/v1','scope':'Local six-row synthetic supported MS; includes unchanged native-preservation sidecar, complete representation, full verification and native materialization. Single descriptive run per profile, not comparative throughput evidence.','versions':adapter.runtime(),'results':rows}
+    Path('/tmp/shinobi-issue16-full-representation.json').write_text(json.dumps(report,indent=2)+'\n')

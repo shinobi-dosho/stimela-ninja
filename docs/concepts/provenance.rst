@@ -1,6 +1,20 @@
 Provenance
 ==========
 
+Reusable-state precision lineage
+--------------------------------
+
+The explicit approximate MSv4 path is separate from the exact native-state
+store. An exact state can have several lossless physical representations with
+one native identity. A derived artifact records its exact parent native ID,
+parent MSv4 logical ID, versioned precision policy and transformed MSv4
+logical ID in its logical identity. Its physical record separately identifies
+the exact source representation and a complete file/metadata inventory.
+Recompressing the parent MSv4 without changing its logical contents cannot
+change the derived logical identity. Exact materialization and rollback do
+not use these approximate artifacts. See :doc:`states` for verification and
+CLI operations.
+
 Detached worker provenance
 --------------------------
 
@@ -129,6 +143,13 @@ profiles, software stack, reconstruction sidecar, evidence coverage and exact
 fidelity decision.  See :doc:`states`.  Recipes cannot consume state IDs in the
 current profile, so ordinary run replay never substitutes a stored state for a
 recorded path.
+
+The state record and attempt provenance carry the same validated native
+profile/model pair reported by msutils. Historical v1/v1 records keep their
+canonical serialization; v2/v2 source content uses representation schema v3.
+Verification compares the recorded pair with the preservation bundle before
+materialization, while the exact producer-stack check remains in force for
+older states.
 
 A recipe's sub-steps appear, in declaration order, under ``steps``.
 

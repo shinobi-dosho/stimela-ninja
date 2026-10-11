@@ -35,7 +35,8 @@ Identity and fidelity
 ---------------------
 
 The store key is ``msutils.native_logical_id``: ``msutils-logical-hash/v1``
-over ``msutils-native-model/v1``. msutils owns scientific hashing,
+over ``msutils-native-model/v1`` or ``/v2``, as selected by the source's
+native content. msutils owns scientific hashing,
 preservation and native writing. Each state can have several representations:
 an xarray-ms MSv4-compatible Zarr v3 tree, a
 ``msutils-native-preservation/v2`` manifest and its native Zarr payload.
@@ -71,9 +72,12 @@ independently verifies the result. dask-ms is no longer required for state
 operations. Its historical runtime-record key remains, with ``not-installed``
 when absent, so old records remain parseable without bypassing exact-stack
 verification. Settle attempts before upgrading and use their original stack
-to reopen older states; this writer change does not widen the profile.
-Casacore recomputes ``StandardStMan IndexLength``,
-the native model's explicit exclusion. After msutils succeeds Shinobi checks
+to reopen older states. Keeping v1 IDs and representation serialization does
+not bypass the recorded-stack check: an old state still needs its original
+qualified runtime for replay. Native profile v2 accepts typed empty column
+keywords, uniformly defined zero-length cells and TiledColumn/TiledShape
+managers. Casacore can regenerate physical manager fields, which the v2
+native model excludes from its logical identity. After msutils succeeds Shinobi checks
 its existing structural signature and independently recomputes the native
 logical root before publication. Consumers needing identical files refuse.
 
@@ -114,8 +118,8 @@ claim successful exact replay; a later publication failure may retain the
 validated staged-reconstruction evidence while its attempt remains failed. Legacy
 ``shinobi-state-attempt/v1`` recovery records remain readable.
 
-Materialization is the reusable-state replay path for the
-``fixed-shape-defined-or-empty/v1`` state profile. Before writing, it
+Materialization is the reusable-state replay path for the paired
+``fixed-shape-defined-or-empty/v1`` and ``/v2`` native profiles. Before writing, it
 strictly reopens the selected representation and rejects different MSv2,
 closure, mapping, MSv4 or preservation profiles, any software-stack mismatch,
 and any fidelity other than exact-logical.  Recipes and detached workers still
@@ -153,13 +157,52 @@ the contract. Cleanup is not GC; persistent lock inodes must never be removed.
 Profile and costs
 -----------------
 
-``fixed-shape-defined-or-empty/v1`` preserves row order, supported fixed-shape
-custom columns, units/measures, native descriptors/keywords/references, empty
-tables and wholly undefined columns. Ragged cells, mixed definedness and
-unsupported structures/typed metadata fail with msutils code and
+Both native profiles preserve row order, supported fixed-shape custom columns,
+units/measures, native descriptors/keywords/references, empty tables and wholly
+undefined columns. V2 additionally accepts typed empty keywords, defined
+zero-length cells and supported tiled managers. Ragged cells, mixed definedness
+and unsupported structures/typed metadata fail with msutils code and
 table/column/row diagnostics. xarray-ms irregular-grid/imputation warnings
 are recorded; native reconstruction does not use the padded MSv4 view.
-Codec selection and Zarr rewrite commands are not exposed. msutils enforces
-its lossless policy. Its residual memory risk applies here: variable-length
-string chunks can expand beyond memory during decoding. Provision for full
-data reads during verification and duplicate native/MSv4 storage.
+
+Explicit MSv4 codec and precision artifacts
+-------------------------------------------
+
+``export`` accepts an optional named lossless profile: ``--codec zstd|gzip|blosc-zstd``,
+``--level``, ``--chunk-rows`` and, for Blosc only, ``--shuffle none|byte|bit``.
+For native profile v1, the historical export keeps its v1 representation
+manifest; an explicit lossless selection uses ``shinobi-state-representation/v2``.
+Native profile v2 uses ``shinobi-state-representation/v3`` with explicit
+preservation profile/model fields, whether or not a lossless layout is selected.
+No new fields are serialized into historical v1/v2 representation manifests,
+so their representation digests remain unchanged. An explicit selection rewrites
+the MSv4 tree inside private export staging. It checks the public
+``msutils.logical_id`` before and after rewriting, then captures the usual
+native preservation sidecar against the final MSv4 tree. Numeric copies use
+bounded N-dimensional tiles. Variable-length strings retain the upstream
+decode expansion risk. The native payload retains msutils' existing codec;
+the profile describes the companion MSv4 tree only.
+
+``derive-precision`` creates a separate approximate MSv4 artifact under
+``derived/``. Its closed ``mantissa-round-nearest-even/v1`` policy names exact
+MSv4 array paths with repeated ``--array`` options and gives ``--keep-bits``,
+``--atol`` and ``--rtol``. Only floating and complex arrays are eligible.
+Each finite value must satisfy ``abs(new-old) <= atol + rtol*abs(old)``;
+complex magnitudes use the same inequality. Non-finite bit patterns and signed
+zero are preserved. Unselected arrays retain their exact values. A no-change
+derivation refuses. The derived logical ID binds the exact native state ID,
+exact parent MSv4 logical ID, policy and transformed MSv4 logical ID, while
+the physical record names the source representation. Recompression of the
+same exact content therefore keeps one derived logical identity.
+
+``verify-derived``, ``list-derived`` and ``recover-derived`` operate only on
+that separate namespace. Verification rereads the exact parent, checks every
+physical byte and node, redoes numerical rounding and bounds, and compares
+untouched arrays. Approximate artifacts have no native preservation sidecar
+or native replay path. ``materialize`` refuses a derived ID before creating a
+destination. Recipes, workers, skip cache and snapshot rollback continue to
+consume only exact states.
+
+Provision for full data reads during verification and duplicate native/MSv4
+storage. Existing exact states can carry multiple lossless representations;
+derived artifacts add separate storage and are opt-in.

@@ -276,3 +276,39 @@ def test_historical_nested_observation_digest_loads_unchanged(tmp_path):
     _, _, loaded = store._load(state_id, representation_id)
     assert loaded.model_dump(mode="json") == historical
     assert _digest(loaded.model_dump(mode="json", exclude={"representation_id"})) == representation_id
+
+
+def test_native_profile_pairs_and_legacy_representation_shape(tmp_path):
+    from datetime import datetime, timezone
+    from shinobi.dataset_lifecycle import structural_signature
+    from shinobi.dataset_state import StateRepresentation, StateRepresentationV2, StateRepresentationV3
+    from shinobi.state_codecs import LosslessProfile
+    from tests.test_dataset_lifecycle import _snapshot
+
+    state_id = "msutils-logical-hash/v1:" + "a" * 64
+    with pytest.raises(ValidationError, match="profile and model versions disagree"):
+        LogicalState(state_id=state_id, profile="fixed-shape-defined-or-empty/v2")
+    observation = _snapshot(tmp_path / "source.ms").observations[0]
+    common = {
+        "representation_id": "sha256:" + "0" * 64,
+        "state_id": state_id,
+        "msv4_id": "msutils-logical-hash/v1:" + "b" * 64,
+        "payload_id": "msutils-logical-hash/v1:" + "c" * 64,
+        "versions": _versions(),
+        "source_spelling": str(observation.root),
+        "source": observation.root,
+        "observation": observation,
+        "structural_signature": structural_signature(observation),
+        "capture_attempt": uuid.uuid4(),
+        "captured_at": datetime.now(timezone.utc),
+        "files": (),
+        "zarr_metadata": {},
+    }
+    old = StateRepresentation(**common)
+    explicit = StateRepresentationV2(**common, lossless_profile=LosslessProfile())
+    assert "profile" not in old.model_dump() and "native_model" not in old.model_dump()
+    assert "profile" not in explicit.model_dump() and "native_model" not in explicit.model_dump()
+    current = StateRepresentationV3(**common, profile="fixed-shape-defined-or-empty/v2", native_model="msutils-native-model/v2")
+    assert current.lossless_profile is None
+    with pytest.raises(ValidationError, match="profile and model versions disagree"):
+        StateRepresentationV3(**common, profile="fixed-shape-defined-or-empty/v2", native_model="msutils-native-model/v1")

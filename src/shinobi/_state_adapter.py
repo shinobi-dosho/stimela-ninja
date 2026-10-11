@@ -13,7 +13,7 @@ import threading
 import warnings
 from pathlib import Path
 
-MSUTILS_COMMIT = "76525da894af32c18a677d2183bc680d13f14c43"
+MSUTILS_COMMIT = "d56043cf725bfad4c4815e4a942c3a9d746a438f"
 ADAPTER = "shinobi-xarray-ms-native/v1"
 MSV4_SCHEMA = "xarray-ms-0.5.8-msv4/v1"
 PACKAGES = ("stimela-ninja", "msutils", "xarray-ms", "xarray", "zarr", "numcodecs", "dask-ms", "arcae", "numpy", "python-casacore", "dask", "pyarrow", "pandas")

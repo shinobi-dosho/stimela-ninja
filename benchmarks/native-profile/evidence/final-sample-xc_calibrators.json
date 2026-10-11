@@ -1,0 +1,38 @@
+{
+  "source": "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-xc-calibrators.ms",
+  "mode": "sample",
+  "source_sha256": "a49958d004b0211682052ece2092c619582504612817dd5639181f8be3ea278d",
+  "selected_rows": [
+    0,
+    1,
+    2,
+    247239,
+    494476,
+    494477,
+    494478
+  ],
+  "sample_native_id": "msutils-logical-hash/v1:cff102ce100306058b3fa1ee932977ae87aaf92937cd5e49cd66cdc1c27f2f59",
+  "profile": "fixed-shape-defined-or-empty/v2",
+  "native_model": "msutils-native-model/v2",
+  "restored_native_id": "msutils-logical-hash/v1:cff102ce100306058b3fa1ee932977ae87aaf92937cd5e49cd66cdc1c27f2f59",
+  "category": "[]",
+  "flag_category_defined": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+  ],
+  "rest_frequency": {
+    "defined": true,
+    "shape": [
+      0
+    ],
+    "dtype": "float64"
+  },
+  "source_independent_restore": true,
+  "success": true,
+  "seconds": 6.781037265434861
+}

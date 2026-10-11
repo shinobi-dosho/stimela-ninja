@@ -1,0 +1,29 @@
+{
+  "msutils_commit": "0e9b136c52e7798b2662228293a60a978d007aa4",
+  "upstream_pr": "https://github.com/shinobi-dosho/msutils/pull/63",
+  "focused_state_tests": {
+    "passed": 87,
+    "seconds": 148.38,
+    "installation": "actual local Git commit; runtime qualifier passed"
+  },
+  "public_installation": {
+    "command": "uv sync --locked --group measurement-set --python 3.12",
+    "source": "https://github.com/shinobi-dosho/msutils.git",
+    "runtime_qualification": "passed",
+    "combined_v2_live_round_trip": {
+      "passed": 1,
+      "seconds": 14.55
+    }
+  },
+  "ruff": "full-tree lint and format passed",
+  "docs": "Sphinx HTML warnings-as-errors build passed",
+  "independent_reviews": "Luna high, Astra low, Sol medium: no actionable integration findings",
+  "full_suite": {
+    "passed": 2749,
+    "skipped": 18,
+    "warnings": 67,
+    "seconds": 686.83,
+    "python": "3.12.13",
+    "installation": "locked downstream environment with actual local msutils Git commit; separate public GitHub installation qualified above"
+  }
+}

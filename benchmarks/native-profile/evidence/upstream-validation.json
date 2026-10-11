@@ -1,0 +1,42 @@
+{
+  "upstream_commit": "0e9b136c52e7798b2662228293a60a978d007aa4",
+  "full_suite": {
+    "passed": 516,
+    "xfailed": 2,
+    "seconds": 116.35,
+    "scope": "locked msutils all-extras; source before final docstring-only edits"
+  },
+  "source_sha256": "60ce787a5249eb71a3b9d6f1c19413815192df6e83d804609399aaa3718fcc8c",
+  "sample_source_sha256": "a49958d004b0211682052ece2092c619582504612817dd5639181f8be3ea278d",
+  "source_difference": "final changes to docstrings/comments only",
+  "ruff": "lint/format passed",
+  "reviews": "three independent reviewers; confirmed numeric keyword promotion defect fixed and re-reviewed; maintained docs reconciled",
+  "extra_empty_cell_shapes": [
+    [
+      0,
+      2
+    ],
+    [
+      2,
+      0
+    ],
+    [
+      2,
+      0,
+      3
+    ]
+  ],
+  "extra_empty_cell_checks": "primary independent source-independent capture/restore; native IDs, definedness and shapes match",
+  "docs": "standard Sphinx HTML warnings-as-errors build passed on final commit",
+  "github_ci": {
+    "run": "https://github.com/shinobi-dosho/msutils/actions/runs/38165493350",
+    "result": "all passed",
+    "checks": [
+      "bare install (no extras)",
+      "docs",
+      "test (python 3.11)",
+      "test (python 3.12)",
+      "test (python 3.13)"
+    ]
+  }
+}

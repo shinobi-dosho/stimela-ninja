@@ -1,0 +1,1564 @@
+{
+  "schema_version": "shinobi-codec-benchmark/v1",
+  "selection": {
+    "kind": "real-msv2-sample",
+    "path": "/home/sphemakh/sandbox/shinobiMSv24-16/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms",
+    "total_rows": 247752,
+    "windows": [
+      [
+        0,
+        128
+      ],
+      [
+        123812,
+        128
+      ],
+      [
+        247624,
+        128
+      ]
+    ],
+    "columns": [
+      "ANTENNA1",
+      "ANTENNA2",
+      "ANTENNA_NAME",
+      "CORRECTED_DATA",
+      "DATA",
+      "FIELD_NAME",
+      "FLAG",
+      "FLAGVERSION_0_FLAG",
+      "FLAGVERSION_0_FLAG_ROW",
+      "FLAGVERSION_1_FLAG",
+      "FLAGVERSION_1_FLAG_ROW",
+      "FLAGVERSION_2_FLAG",
+      "FLAGVERSION_2_FLAG_ROW",
+      "FLAGVERSION_3_FLAG",
+      "FLAGVERSION_3_FLAG_ROW",
+      "FLAGVERSION_4_FLAG",
+      "FLAGVERSION_4_FLAG_ROW",
+      "MODEL_DATA",
+      "SIGMA",
+      "SPECTRAL_WINDOW_NAME",
+      "TIME",
+      "UVW",
+      "WEIGHT",
+      "WEIGHT_SPECTRUM"
+    ],
+    "flag_versions": [
+      {
+        "index": 0,
+        "name": "flags.applycal_1"
+      },
+      {
+        "index": 1,
+        "name": "flags.caracal_legacy"
+      },
+      {
+        "index": 2,
+        "name": "flags.mktp-caracal2-J0408_crosscal_before"
+      },
+      {
+        "index": 3,
+        "name": "flags.mktp-caracal2-J0408_flag_after"
+      },
+      {
+        "index": 4,
+        "name": "flags.mktp-caracal2-J0408_flag_before"
+      }
+    ],
+    "flag_versions_path": "/home/sphemakh/sandbox/shinobiMSv24-16/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms.flagversions"
+  },
+  "source_observation_before": {
+    "entries": 108,
+    "stat_sha256": "3ba91704ebf2aae4c853c69c2c575d3644265d009d744b5004b66be751fa9dfa"
+  },
+  "source_observation_after": {
+    "entries": 108,
+    "stat_sha256": "3ba91704ebf2aae4c853c69c2c575d3644265d009d744b5004b66be751fa9dfa"
+  },
+  "flag_versions_observation_before": {
+    "entries": 36,
+    "stat_sha256": "aae2dd03ea3bf94b3bd2d947bfcbd4deb2ab79bbf310e255a93582b040cfb783"
+  },
+  "flag_versions_observation_after": {
+    "entries": 36,
+    "stat_sha256": "aae2dd03ea3bf94b3bd2d947bfcbd4deb2ab79bbf310e255a93582b040cfb783"
+  },
+  "sample_hashes": {
+    "DATA": "b8c5ee7373bac8aebc375aef14f5c1e898dba505423102a4792edb6f2dae1e43",
+    "MODEL_DATA": "fe1b20c7561581fdbc0ae5257664fc01c60f671a665eb77211fe5ad645bc5d1c",
+    "CORRECTED_DATA": "05889c452fbfe39ec233ad8b0684081e9608685a6955af14862a4469b0ef2405",
+    "WEIGHT_SPECTRUM": "f8a4cb4feb4d318cfb6d47338c8c6a29d880e1d73c1f2ce06e20193177e9eece",
+    "WEIGHT": "e405a851b5500f32e2eb5d9f5367147d5d1d3605036c6576dba1813f73e1a40c",
+    "SIGMA": "e33d1ab55ae1a71a592e8a834dbf9b3d08b2eddfb714a26444933d70a3fab013",
+    "FLAG": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+    "UVW": "6454a2056502d4a32b78e063a7358eee0f703bf3bf06ea61c32ec7044f3525fa",
+    "TIME": "1ee638b2bbd44fa010e85197f5f913dabdb29d8f4313f69990bd2763eadbca43",
+    "ANTENNA1": "d5bc39a022bb94df84a24fb177d9a2d4f88249733cafc86155f9b255a0ded633",
+    "ANTENNA2": "398f26127c8aa5b035c4a0bddb8c3e7deb25ef67a752a7a4a12d7ee69fc75c3c",
+    "ANTENNA_NAME": "e259e3542778c0ebf2f3b8dded5fa4a201b8e3850acb6fbbc034f6744848b44a",
+    "FIELD_NAME": "f7f0d5773c1b297548c3f74285f3914032400abc9e62c61aea319df19b353198",
+    "SPECTRAL_WINDOW_NAME": "59df4a758bd5506698d3448bec4c55a9a882a80c06e6818c90f0e0224584e374",
+    "FLAGVERSION_0_FLAG": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+    "FLAGVERSION_0_FLAG_ROW": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+    "FLAGVERSION_1_FLAG": "c84a16bc21f483acd2215a6c27755cac665895b2003c06302a81a12cb106fe15",
+    "FLAGVERSION_1_FLAG_ROW": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+    "FLAGVERSION_2_FLAG": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+    "FLAGVERSION_2_FLAG_ROW": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+    "FLAGVERSION_3_FLAG": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+    "FLAGVERSION_3_FLAG_ROW": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+    "FLAGVERSION_4_FLAG": "c84a16bc21f483acd2215a6c27755cac665895b2003c06302a81a12cb106fe15",
+    "FLAGVERSION_4_FLAG_ROW": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca"
+  },
+  "baseline_msv4_logical_id": "msutils-logical-hash/v1:8c8d155b6f1b9884984e90eeabe0f56edeb573ef8b7e77b39d1f2f3081b3b5cd",
+  "versions": {
+    "python": "3.12.14",
+    "numpy": "2.5.3",
+    "zarr": "3.3.0",
+    "numcodecs": "0.16.5"
+  },
+  "results": [
+    {
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:8c8d155b6f1b9884984e90eeabe0f56edeb573ef8b7e77b39d1f2f3081b3b5cd",
+      "encoded_bytes": 60084649,
+      "copy_encode_seconds": 2.0792219787836075,
+      "rewrite_verified_seconds": 3.136089313775301,
+      "decode_seconds": 0.2521850373595953,
+      "copy_encode_mib_s": 44.35182665758168,
+      "decode_mib_s": 365.67313331183163,
+      "peak_worker_rss_kib": 414108,
+      "per_column": {
+        "DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "b8c5ee7373bac8aebc375aef14f5c1e898dba505423102a4792edb6f2dae1e43",
+          "encoded_bytes": 21518041,
+          "copy_encode_seconds": 0.33493408001959324,
+          "decode_seconds": 0.02092050202190876,
+          "copy_encode_mib_s": 64.76321026731911,
+          "decode_mib_s": 1036.8492222263078,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "MODEL_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "fe1b20c7561581fdbc0ae5257664fc01c60f671a665eb77211fe5ad645bc5d1c",
+          "encoded_bytes": 17172421,
+          "copy_encode_seconds": 0.48900384455919266,
+          "decode_seconds": 0.031727707013487816,
+          "copy_encode_mib_s": 44.35835523860449,
+          "decode_mib_s": 683.6739333472391,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "CORRECTED_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "05889c452fbfe39ec233ad8b0684081e9608685a6955af14862a4469b0ef2405",
+          "encoded_bytes": 21178276,
+          "copy_encode_seconds": 0.32507059909403324,
+          "decode_seconds": 0.029053108766674995,
+          "copy_encode_mib_s": 66.72829320908632,
+          "decode_mib_s": 746.6122274281662,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 11372544,
+          "sample_sha256": "f8a4cb4feb4d318cfb6d47338c8c6a29d880e1d73c1f2ce06e20193177e9eece",
+          "encoded_bytes": 2015,
+          "copy_encode_seconds": 0.08641296252608299,
+          "decode_seconds": 0.010593943297863007,
+          "copy_encode_mib_s": 125.51014116344315,
+          "decode_mib_s": 1023.7645058179402,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "WEIGHT": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e405a851b5500f32e2eb5d9f5367147d5d1d3605036c6576dba1813f73e1a40c",
+          "encoded_bytes": 945,
+          "copy_encode_seconds": 0.05439390428364277,
+          "decode_seconds": 0.009824400767683983,
+          "copy_encode_mib_s": 0.10772116981060358,
+          "decode_mib_s": 0.5964104212109923,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "SIGMA": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e33d1ab55ae1a71a592e8a834dbf9b3d08b2eddfb714a26444933d70a3fab013",
+          "encoded_bytes": 945,
+          "copy_encode_seconds": 0.04717651382088661,
+          "decode_seconds": 0.010033706203103065,
+          "copy_encode_mib_s": 0.1242011018924815,
+          "decode_mib_s": 0.5839691616830385,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 26476,
+          "copy_encode_seconds": 0.06511212885379791,
+          "decode_seconds": 0.010750096291303635,
+          "copy_encode_mib_s": 41.64240716715325,
+          "decode_mib_s": 252.22339482144238,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "UVW": {
+          "raw_bytes": 9216,
+          "sample_sha256": "6454a2056502d4a32b78e063a7358eee0f703bf3bf06ea61c32ec7044f3525fa",
+          "encoded_bytes": 10029,
+          "copy_encode_seconds": 0.04402276128530502,
+          "decode_seconds": 0.009739059954881668,
+          "copy_encode_mib_s": 0.19964814208357767,
+          "decode_mib_s": 0.9024549125600685,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "TIME": {
+          "raw_bytes": 3072,
+          "sample_sha256": "1ee638b2bbd44fa010e85197f5f913dabdb29d8f4313f69990bd2763eadbca43",
+          "encoded_bytes": 961,
+          "copy_encode_seconds": 0.05408165045082569,
+          "decode_seconds": 0.009791096672415733,
+          "copy_encode_mib_s": 0.054171562361319744,
+          "decode_mib_s": 0.29921954588128535,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "ANTENNA1": {
+          "raw_bytes": 1536,
+          "sample_sha256": "d5bc39a022bb94df84a24fb177d9a2d4f88249733cafc86155f9b255a0ded633",
+          "encoded_bytes": 1327,
+          "copy_encode_seconds": 0.04352693818509579,
+          "decode_seconds": 0.010605473071336746,
+          "copy_encode_mib_s": 0.033653728267557824,
+          "decode_mib_s": 0.13812149068192076,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "ANTENNA2": {
+          "raw_bytes": 1536,
+          "sample_sha256": "398f26127c8aa5b035c4a0bddb8c3e7deb25ef67a752a7a4a12d7ee69fc75c3c",
+          "encoded_bytes": 1014,
+          "copy_encode_seconds": 0.04910513013601303,
+          "decode_seconds": 0.010944318026304245,
+          "copy_encode_mib_s": 0.02983076810798845,
+          "decode_mib_s": 0.1338451374018285,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "ANTENNA_NAME": {
+          "raw_bytes": 592,
+          "sample_sha256": "e259e3542778c0ebf2f3b8dded5fa4a201b8e3850acb6fbbc034f6744848b44a",
+          "encoded_bytes": 920,
+          "copy_encode_seconds": 0.009357066825032234,
+          "decode_seconds": 0.0030111465603113174,
+          "copy_encode_mib_s": 0.06033677068567426,
+          "decode_mib_s": 0.18749508999459977,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "FIELD_NAME": {
+          "raw_bytes": 40,
+          "sample_sha256": "f7f0d5773c1b297548c3f74285f3914032400abc9e62c61aea319df19b353198",
+          "encoded_bytes": 784,
+          "copy_encode_seconds": 0.005959721282124519,
+          "decode_seconds": 0.002352844923734665,
+          "copy_encode_mib_s": 0.006400798099513033,
+          "decode_mib_s": 0.01621312661596898,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "SPECTRAL_WINDOW_NAME": {
+          "raw_bytes": 16,
+          "sample_sha256": "59df4a758bd5506698d3448bec4c55a9a882a80c06e6818c90f0e0224584e374",
+          "encoded_bytes": 766,
+          "copy_encode_seconds": 0.00812770240008831,
+          "decode_seconds": 0.0023662522435188293,
+          "copy_encode_mib_s": 0.001877380385179237,
+          "decode_mib_s": 0.006448504847399029,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "FLAGVERSION_0_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 26476,
+          "copy_encode_seconds": 0.0606579277664423,
+          "decode_seconds": 0.010873489081859589,
+          "copy_encode_mib_s": 44.70027053495946,
+          "decode_mib_s": 249.36115361292025,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "FLAGVERSION_0_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 599,
+          "copy_encode_seconds": 0.0262043047696352,
+          "decode_seconds": 0.005497243255376816,
+          "copy_encode_mib_s": 0.013975220511263278,
+          "decode_mib_s": 0.06661719710908037,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "FLAGVERSION_1_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "c84a16bc21f483acd2215a6c27755cac665895b2003c06302a81a12cb106fe15",
+          "encoded_bytes": 43620,
+          "copy_encode_seconds": 0.0576363243162632,
+          "decode_seconds": 0.01084756851196289,
+          "copy_encode_mib_s": 47.04369706804705,
+          "decode_mib_s": 249.95700909930108,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "FLAGVERSION_1_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 599,
+          "copy_encode_seconds": 0.02454959787428379,
+          "decode_seconds": 0.005510443821549416,
+          "copy_encode_mib_s": 0.01491718680588302,
+          "decode_mib_s": 0.06645761201082884,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "FLAGVERSION_2_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 26476,
+          "copy_encode_seconds": 0.0587149802595377,
+          "decode_seconds": 0.010427488014101982,
+          "copy_encode_mib_s": 46.17945487275463,
+          "decode_mib_s": 260.0267463825523,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "FLAGVERSION_2_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 599,
+          "copy_encode_seconds": 0.027545515447854996,
+          "decode_seconds": 0.0052265506237745285,
+          "copy_encode_mib_s": 0.01329475711548238,
+          "decode_mib_s": 0.07006742378695809,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "FLAGVERSION_3_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 26476,
+          "copy_encode_seconds": 0.05605780892074108,
+          "decode_seconds": 0.010791637003421783,
+          "copy_encode_mib_s": 48.36838673241093,
+          "decode_mib_s": 251.25250046774815,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "FLAGVERSION_3_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 599,
+          "copy_encode_seconds": 0.0250827856361866,
+          "decode_seconds": 0.005212109535932541,
+          "copy_encode_mib_s": 0.014600090389150094,
+          "decode_mib_s": 0.07026155819929027,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "FLAGVERSION_4_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "c84a16bc21f483acd2215a6c27755cac665895b2003c06302a81a12cb106fe15",
+          "encoded_bytes": 43620,
+          "copy_encode_seconds": 0.06490453891456127,
+          "decode_seconds": 0.010711763054132462,
+          "copy_encode_mib_s": 41.77559576872203,
+          "decode_mib_s": 253.126004332589,
+          "worker_highwater_rss_kib_after_copy": 413736
+        },
+        "FLAGVERSION_4_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 599,
+          "copy_encode_seconds": 0.023718826472759247,
+          "decode_seconds": 0.005323003977537155,
+          "copy_encode_mib_s": 0.015439673540366272,
+          "decode_mib_s": 0.0687977952008667,
+          "worker_highwater_rss_kib_after_copy": 413736
+        }
+      }
+    },
+    {
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "zstd",
+        "level": 6,
+        "shuffle": "none",
+        "chunk_rows": 128
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:8c8d155b6f1b9884984e90eeabe0f56edeb573ef8b7e77b39d1f2f3081b3b5cd",
+      "encoded_bytes": 60018851,
+      "copy_encode_seconds": 1.4390595462173223,
+      "rewrite_verified_seconds": 2.440702637657523,
+      "decode_seconds": 0.19352774508297443,
+      "copy_encode_mib_s": 64.0816379197405,
+      "decode_mib_s": 476.50683237231254,
+      "peak_worker_rss_kib": 602228,
+      "per_column": {
+        "DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "b8c5ee7373bac8aebc375aef14f5c1e898dba505423102a4792edb6f2dae1e43",
+          "encoded_bytes": 21518898,
+          "copy_encode_seconds": 0.19754068367183208,
+          "decode_seconds": 0.030094752088189125,
+          "copy_encode_mib_s": 109.80728550092105,
+          "decode_mib_s": 720.7703916761265,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "MODEL_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "fe1b20c7561581fdbc0ae5257664fc01c60f671a665eb77211fe5ad645bc5d1c",
+          "encoded_bytes": 17147077,
+          "copy_encode_seconds": 0.4046006388962269,
+          "decode_seconds": 0.04201197810471058,
+          "copy_encode_mib_s": 53.6118932218579,
+          "decode_mib_s": 516.31480421932,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "CORRECTED_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "05889c452fbfe39ec233ad8b0684081e9608685a6955af14862a4469b0ef2405",
+          "encoded_bytes": 21180449,
+          "copy_encode_seconds": 0.19022122025489807,
+          "decode_seconds": 0.038976918905973434,
+          "copy_encode_mib_s": 114.03252602907988,
+          "decode_mib_s": 556.519264704519,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 11372544,
+          "sample_sha256": "f8a4cb4feb4d318cfb6d47338c8c6a29d880e1d73c1f2ce06e20193177e9eece",
+          "encoded_bytes": 1731,
+          "copy_encode_seconds": 0.07251800410449505,
+          "decode_seconds": 0.008040908724069595,
+          "copy_encode_mib_s": 149.55876487405595,
+          "decode_mib_s": 1348.8155999749822,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "WEIGHT": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e405a851b5500f32e2eb5d9f5367147d5d1d3605036c6576dba1813f73e1a40c",
+          "encoded_bytes": 757,
+          "copy_encode_seconds": 0.025701455771923065,
+          "decode_seconds": 0.004029354080557823,
+          "copy_encode_mib_s": 0.22797833134420864,
+          "decode_mib_s": 1.4541722774556534,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "SIGMA": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e33d1ab55ae1a71a592e8a834dbf9b3d08b2eddfb714a26444933d70a3fab013",
+          "encoded_bytes": 757,
+          "copy_encode_seconds": 0.022876452654600143,
+          "decode_seconds": 0.003755969926714897,
+          "copy_encode_mib_s": 0.25613127561636,
+          "decode_mib_s": 1.5600164842440085,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 18846,
+          "copy_encode_seconds": 0.052385320886969566,
+          "decode_seconds": 0.004143277183175087,
+          "copy_encode_mib_s": 51.75926643840499,
+          "decode_mib_s": 654.4157345447434,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "UVW": {
+          "raw_bytes": 9216,
+          "sample_sha256": "6454a2056502d4a32b78e063a7358eee0f703bf3bf06ea61c32ec7044f3525fa",
+          "encoded_bytes": 9632,
+          "copy_encode_seconds": 0.02852153219282627,
+          "decode_seconds": 0.003582216799259186,
+          "copy_encode_mib_s": 0.3081553417460028,
+          "decode_mib_s": 2.4535261243310584,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "TIME": {
+          "raw_bytes": 3072,
+          "sample_sha256": "1ee638b2bbd44fa010e85197f5f913dabdb29d8f4313f69990bd2763eadbca43",
+          "encoded_bytes": 744,
+          "copy_encode_seconds": 0.029475664719939232,
+          "decode_seconds": 0.0036796443164348602,
+          "copy_encode_mib_s": 0.09939343278043773,
+          "decode_mib_s": 0.7961876877378519,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "ANTENNA1": {
+          "raw_bytes": 1536,
+          "sample_sha256": "d5bc39a022bb94df84a24fb177d9a2d4f88249733cafc86155f9b255a0ded633",
+          "encoded_bytes": 907,
+          "copy_encode_seconds": 0.02085811085999012,
+          "decode_seconds": 0.0036978982388973236,
+          "copy_encode_mib_s": 0.07022897518537274,
+          "decode_mib_s": 0.3961287345854065,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "ANTENNA2": {
+          "raw_bytes": 1536,
+          "sample_sha256": "398f26127c8aa5b035c4a0bddb8c3e7deb25ef67a752a7a4a12d7ee69fc75c3c",
+          "encoded_bytes": 826,
+          "copy_encode_seconds": 0.022490667179226875,
+          "decode_seconds": 0.0035335514694452286,
+          "copy_encode_mib_s": 0.06513118256238207,
+          "decode_mib_s": 0.41455282671458643,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "ANTENNA_NAME": {
+          "raw_bytes": 592,
+          "sample_sha256": "e259e3542778c0ebf2f3b8dded5fa4a201b8e3850acb6fbbc034f6744848b44a",
+          "encoded_bytes": 863,
+          "copy_encode_seconds": 0.006937997415661812,
+          "decode_seconds": 0.002089623361825943,
+          "copy_encode_mib_s": 0.08137437382695327,
+          "decode_mib_s": 0.27018036150742786,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "FIELD_NAME": {
+          "raw_bytes": 40,
+          "sample_sha256": "f7f0d5773c1b297548c3f74285f3914032400abc9e62c61aea319df19b353198",
+          "encoded_bytes": 784,
+          "copy_encode_seconds": 0.00603669136762619,
+          "decode_seconds": 0.0022336281836032867,
+          "copy_encode_mib_s": 0.006319185516229322,
+          "decode_mib_s": 0.01707847928150304,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "SPECTRAL_WINDOW_NAME": {
+          "raw_bytes": 16,
+          "sample_sha256": "59df4a758bd5506698d3448bec4c55a9a882a80c06e6818c90f0e0224584e374",
+          "encoded_bytes": 766,
+          "copy_encode_seconds": 0.010962489992380142,
+          "decode_seconds": 0.0018037613481283188,
+          "copy_encode_mib_s": 0.0013919090528799706,
+          "decode_mib_s": 0.008459427894013447,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "FLAGVERSION_0_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 18846,
+          "copy_encode_seconds": 0.0405745729804039,
+          "decode_seconds": 0.00463486835360527,
+          "copy_encode_mib_s": 66.82573794577021,
+          "decode_mib_s": 585.0059968026698,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "FLAGVERSION_0_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 600,
+          "copy_encode_seconds": 0.02007194422185421,
+          "decode_seconds": 0.0024953950196504593,
+          "copy_encode_mib_s": 0.018244916060561375,
+          "decode_mib_s": 0.1467546959965067,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "FLAGVERSION_1_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "c84a16bc21f483acd2215a6c27755cac665895b2003c06302a81a12cb106fe15",
+          "encoded_bytes": 38105,
+          "copy_encode_seconds": 0.05648873560130596,
+          "decode_seconds": 0.005848165601491928,
+          "copy_encode_mib_s": 47.999406472594416,
+          "decode_mib_s": 463.63697029343473,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "FLAGVERSION_1_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 600,
+          "copy_encode_seconds": 0.01857912912964821,
+          "decode_seconds": 0.002574443817138672,
+          "copy_encode_mib_s": 0.01971087745526284,
+          "decode_mib_s": 0.14224856454899054,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "FLAGVERSION_2_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 18846,
+          "copy_encode_seconds": 0.04563936032354832,
+          "decode_seconds": 0.006051663309335709,
+          "copy_encode_mib_s": 59.40981122496143,
+          "decode_mib_s": 448.04637050233276,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "FLAGVERSION_2_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 600,
+          "copy_encode_seconds": 0.012902503833174706,
+          "decode_seconds": 0.0025910865515470505,
+          "copy_encode_mib_s": 0.028382935764638524,
+          "decode_mib_s": 0.14133489183576203,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "FLAGVERSION_3_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 18846,
+          "copy_encode_seconds": 0.038047123700380325,
+          "decode_seconds": 0.00648428313434124,
+          "copy_encode_mib_s": 71.26493457435512,
+          "decode_mib_s": 418.1535144401838,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "FLAGVERSION_3_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 600,
+          "copy_encode_seconds": 0.012938009575009346,
+          "decode_seconds": 0.0027591772377490997,
+          "copy_encode_mib_s": 0.028305044557036158,
+          "decode_mib_s": 0.13272468781264304,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "FLAGVERSION_4_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "c84a16bc21f483acd2215a6c27755cac665895b2003c06302a81a12cb106fe15",
+          "encoded_bytes": 38105,
+          "copy_encode_seconds": 0.05346020311117172,
+          "decode_seconds": 0.0058226510882377625,
+          "copy_encode_mib_s": 50.718583609035825,
+          "decode_mib_s": 465.66860012053695,
+          "worker_highwater_rss_kib_after_copy": 602228
+        },
+        "FLAGVERSION_4_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 600,
+          "copy_encode_seconds": 0.011965198442339897,
+          "decode_seconds": 0.0025323815643787384,
+          "copy_encode_mib_s": 0.030606340485263554,
+          "decode_mib_s": 0.14461127922080788,
+          "worker_highwater_rss_kib_after_copy": 602228
+        }
+      }
+    },
+    {
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "gzip",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:8c8d155b6f1b9884984e90eeabe0f56edeb573ef8b7e77b39d1f2f3081b3b5cd",
+      "encoded_bytes": 60246303,
+      "copy_encode_seconds": 5.170563001185656,
+      "rewrite_verified_seconds": 6.427639057859778,
+      "decode_seconds": 0.42028733529150486,
+      "copy_encode_mib_s": 17.83505834171217,
+      "decode_mib_s": 219.414874163848,
+      "peak_worker_rss_kib": 602360,
+      "per_column": {
+        "DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "b8c5ee7373bac8aebc375aef14f5c1e898dba505423102a4792edb6f2dae1e43",
+          "encoded_bytes": 21418081,
+          "copy_encode_seconds": 1.1833015326410532,
+          "decode_seconds": 0.08246325328946114,
+          "copy_encode_mib_s": 18.331258476092877,
+          "decode_mib_s": 263.0432997090133,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "MODEL_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "fe1b20c7561581fdbc0ae5257664fc01c60f671a665eb77211fe5ad645bc5d1c",
+          "encoded_bytes": 17385425,
+          "copy_encode_seconds": 1.1016989089548588,
+          "decode_seconds": 0.07274517230689526,
+          "copy_encode_mib_s": 19.68905122233246,
+          "decode_mib_s": 298.18344726010014,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "CORRECTED_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "05889c452fbfe39ec233ad8b0684081e9608685a6955af14862a4469b0ef2405",
+          "encoded_bytes": 21084506,
+          "copy_encode_seconds": 1.219869563356042,
+          "decode_seconds": 0.0622578002512455,
+          "copy_encode_mib_s": 17.781742328518902,
+          "decode_mib_s": 348.4126673679906,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 11372544,
+          "sample_sha256": "f8a4cb4feb4d318cfb6d47338c8c6a29d880e1d73c1f2ce06e20193177e9eece",
+          "encoded_bytes": 56288,
+          "copy_encode_seconds": 0.20842843689024448,
+          "decode_seconds": 0.014653872698545456,
+          "copy_encode_mib_s": 52.03562089136233,
+          "decode_mib_s": 740.1253817413431,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "WEIGHT": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e405a851b5500f32e2eb5d9f5367147d5d1d3605036c6576dba1813f73e1a40c",
+          "encoded_bytes": 1026,
+          "copy_encode_seconds": 0.052771683782339096,
+          "decode_seconds": 0.008926434442400932,
+          "copy_encode_mib_s": 0.11103255723594962,
+          "decode_mib_s": 0.6564071060856871,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "SIGMA": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e33d1ab55ae1a71a592e8a834dbf9b3d08b2eddfb714a26444933d70a3fab013",
+          "encoded_bytes": 1026,
+          "copy_encode_seconds": 0.13469979166984558,
+          "decode_seconds": 0.009594347327947617,
+          "copy_encode_mib_s": 0.043499510484482085,
+          "decode_mib_s": 0.6107111614494171,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 40437,
+          "copy_encode_seconds": 0.09950398467481136,
+          "decode_seconds": 0.012659912928938866,
+          "copy_encode_mib_s": 27.249419107297076,
+          "decode_mib_s": 214.17412556227333,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "UVW": {
+          "raw_bytes": 9216,
+          "sample_sha256": "6454a2056502d4a32b78e063a7358eee0f703bf3bf06ea61c32ec7044f3525fa",
+          "encoded_bytes": 10158,
+          "copy_encode_seconds": 0.1580234318971634,
+          "decode_seconds": 0.011498771607875824,
+          "copy_encode_mib_s": 0.05561872941551884,
+          "decode_mib_s": 0.7643479494783713,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "TIME": {
+          "raw_bytes": 3072,
+          "sample_sha256": "1ee638b2bbd44fa010e85197f5f913dabdb29d8f4313f69990bd2763eadbca43",
+          "encoded_bytes": 1014,
+          "copy_encode_seconds": 0.05672459490597248,
+          "decode_seconds": 0.011331675574183464,
+          "copy_encode_mib_s": 0.05164757024455253,
+          "decode_mib_s": 0.25853965557173186,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "ANTENNA1": {
+          "raw_bytes": 1536,
+          "sample_sha256": "d5bc39a022bb94df84a24fb177d9a2d4f88249733cafc86155f9b255a0ded633",
+          "encoded_bytes": 1367,
+          "copy_encode_seconds": 0.059390610083937645,
+          "decode_seconds": 0.01233326829969883,
+          "copy_encode_mib_s": 0.024664568151930317,
+          "decode_mib_s": 0.1187717411479462,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "ANTENNA2": {
+          "raw_bytes": 1536,
+          "sample_sha256": "398f26127c8aa5b035c4a0bddb8c3e7deb25ef67a752a7a4a12d7ee69fc75c3c",
+          "encoded_bytes": 1101,
+          "copy_encode_seconds": 0.05349603295326233,
+          "decode_seconds": 0.011676328256726265,
+          "copy_encode_mib_s": 0.027382287417083512,
+          "decode_mib_s": 0.12545414258597623,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "ANTENNA_NAME": {
+          "raw_bytes": 592,
+          "sample_sha256": "e259e3542778c0ebf2f3b8dded5fa4a201b8e3850acb6fbbc034f6744848b44a",
+          "encoded_bytes": 897,
+          "copy_encode_seconds": 0.0161660797894001,
+          "decode_seconds": 0.0036658328026533127,
+          "copy_encode_mib_s": 0.03492344480958735,
+          "decode_mib_s": 0.15401007784748477,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FIELD_NAME": {
+          "raw_bytes": 40,
+          "sample_sha256": "f7f0d5773c1b297548c3f74285f3914032400abc9e62c61aea319df19b353198",
+          "encoded_bytes": 755,
+          "copy_encode_seconds": 0.006277039647102356,
+          "decode_seconds": 0.0025427043437957764,
+          "copy_encode_mib_s": 0.006077223468527816,
+          "decode_mib_s": 0.015002519954523612,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "SPECTRAL_WINDOW_NAME": {
+          "raw_bytes": 16,
+          "sample_sha256": "59df4a758bd5506698d3448bec4c55a9a882a80c06e6818c90f0e0224584e374",
+          "encoded_bytes": 745,
+          "copy_encode_seconds": 0.010681215673685074,
+          "decode_seconds": 0.002488996833562851,
+          "copy_encode_mib_s": 0.0014285629584367002,
+          "decode_mib_s": 0.006130497579082072,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_0_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 40437,
+          "copy_encode_seconds": 0.1431325003504753,
+          "decode_seconds": 0.014662925153970718,
+          "copy_encode_mib_s": 18.9434668898453,
+          "decode_mib_s": 184.917112566434,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_0_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 572,
+          "copy_encode_seconds": 0.03513745591044426,
+          "decode_seconds": 0.0063177235424518585,
+          "copy_encode_mib_s": 0.010422238264300387,
+          "decode_mib_s": 0.05796564775891989,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_1_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "c84a16bc21f483acd2215a6c27755cac665895b2003c06302a81a12cb106fe15",
+          "encoded_bytes": 59620,
+          "copy_encode_seconds": 0.1773043107241392,
+          "decode_seconds": 0.015453431755304337,
+          "copy_encode_mib_s": 15.292497797578088,
+          "decode_mib_s": 175.4578416097973,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_1_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 572,
+          "copy_encode_seconds": 0.03402694687247276,
+          "decode_seconds": 0.005608752369880676,
+          "copy_encode_mib_s": 0.010762380147490064,
+          "decode_mib_s": 0.06529276269470798,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_2_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 40437,
+          "copy_encode_seconds": 0.09190673008561134,
+          "decode_seconds": 0.01425187662243843,
+          "copy_encode_mib_s": 29.50192851735994,
+          "decode_mib_s": 190.25043880755175,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_2_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 572,
+          "copy_encode_seconds": 0.03401665948331356,
+          "decode_seconds": 0.00550692155957222,
+          "copy_encode_mib_s": 0.010765634928957093,
+          "decode_mib_s": 0.06650011872122025,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_3_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 40437,
+          "copy_encode_seconds": 0.09809975139796734,
+          "decode_seconds": 0.014175493270158768,
+          "copy_encode_mib_s": 27.63947657981712,
+          "decode_mib_s": 191.2755859408363,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_3_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 572,
+          "copy_encode_seconds": 0.02393481321632862,
+          "decode_seconds": 0.0057564061135053635,
+          "copy_encode_mib_s": 0.01530034657843774,
+          "decode_mib_s": 0.06361798147646602,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_4_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "c84a16bc21f483acd2215a6c27755cac665895b2003c06302a81a12cb106fe15",
+          "encoded_bytes": 59620,
+          "copy_encode_seconds": 0.10814018920063972,
+          "decode_seconds": 0.014030875638127327,
+          "copy_encode_mib_s": 25.073247987566496,
+          "decode_mib_s": 193.24708244737096,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_4_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 572,
+          "copy_encode_seconds": 0.02589135244488716,
+          "decode_seconds": 0.005638996139168739,
+          "copy_encode_mib_s": 0.014144140916528936,
+          "decode_mib_s": 0.06494257638452368,
+          "worker_highwater_rss_kib_after_copy": 602360
+        }
+      }
+    },
+    {
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "blosc-zstd",
+        "level": 3,
+        "shuffle": "byte",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:8c8d155b6f1b9884984e90eeabe0f56edeb573ef8b7e77b39d1f2f3081b3b5cd",
+      "encoded_bytes": 56712551,
+      "copy_encode_seconds": 3.506501656025648,
+      "rewrite_verified_seconds": 4.562971532344818,
+      "decode_seconds": 0.2398572526872158,
+      "copy_encode_mib_s": 26.298944598293957,
+      "decode_mib_s": 384.4673936372475,
+      "peak_worker_rss_kib": 602360,
+      "per_column": {
+        "DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "b8c5ee7373bac8aebc375aef14f5c1e898dba505423102a4792edb6f2dae1e43",
+          "encoded_bytes": 19643588,
+          "copy_encode_seconds": 0.580999244004488,
+          "decode_seconds": 0.020136317238211632,
+          "copy_encode_mib_s": 37.33465486201638,
+          "decode_mib_s": 1077.2280746966658,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "MODEL_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "fe1b20c7561581fdbc0ae5257664fc01c60f671a665eb77211fe5ad645bc5d1c",
+          "encoded_bytes": 17222972,
+          "copy_encode_seconds": 0.6704381201416254,
+          "decode_seconds": 0.023671787232160568,
+          "copy_encode_mib_s": 32.3540765334433,
+          "decode_mib_s": 916.3400311629189,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "CORRECTED_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "05889c452fbfe39ec233ad8b0684081e9608685a6955af14862a4469b0ef2405",
+          "encoded_bytes": 19646559,
+          "copy_encode_seconds": 0.5166273824870586,
+          "decode_seconds": 0.02186685800552368,
+          "copy_encode_mib_s": 41.98655933717056,
+          "decode_mib_s": 991.9763618769847,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 11372544,
+          "sample_sha256": "f8a4cb4feb4d318cfb6d47338c8c6a29d880e1d73c1f2ce06e20193177e9eece",
+          "encoded_bytes": 4612,
+          "copy_encode_seconds": 0.12946291267871857,
+          "decode_seconds": 0.011577410623431206,
+          "copy_encode_mib_s": 83.7745953693721,
+          "decode_mib_s": 936.798691673739,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "WEIGHT": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e405a851b5500f32e2eb5d9f5367147d5d1d3605036c6576dba1813f73e1a40c",
+          "encoded_bytes": 1346,
+          "copy_encode_seconds": 0.1776428148150444,
+          "decode_seconds": 0.009542020037770271,
+          "copy_encode_mib_s": 0.03298402474707789,
+          "decode_mib_s": 0.6140602280027477,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "SIGMA": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e33d1ab55ae1a71a592e8a834dbf9b3d08b2eddfb714a26444933d70a3fab013",
+          "encoded_bytes": 1358,
+          "copy_encode_seconds": 0.0598552580922842,
+          "decode_seconds": 0.009845336899161339,
+          "copy_encode_mib_s": 0.09789240221746397,
+          "decode_mib_s": 0.5951421530835702,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 21667,
+          "copy_encode_seconds": 0.2577950581908226,
+          "decode_seconds": 0.01019970141351223,
+          "copy_encode_mib_s": 10.517757013181278,
+          "decode_mib_s": 265.8338387884563,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "UVW": {
+          "raw_bytes": 9216,
+          "sample_sha256": "6454a2056502d4a32b78e063a7358eee0f703bf3bf06ea61c32ec7044f3525fa",
+          "encoded_bytes": 9620,
+          "copy_encode_seconds": 0.045191988348960876,
+          "decode_seconds": 0.009783491492271423,
+          "copy_encode_mib_s": 0.19448275725628902,
+          "decode_mib_s": 0.8983564310290469,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "TIME": {
+          "raw_bytes": 3072,
+          "sample_sha256": "1ee638b2bbd44fa010e85197f5f913dabdb29d8f4313f69990bd2763eadbca43",
+          "encoded_bytes": 1362,
+          "copy_encode_seconds": 0.05123035982251167,
+          "decode_seconds": 0.010437516495585442,
+          "copy_encode_mib_s": 0.05718654934593364,
+          "decode_mib_s": 0.28068817915057803,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "ANTENNA1": {
+          "raw_bytes": 1536,
+          "sample_sha256": "d5bc39a022bb94df84a24fb177d9a2d4f88249733cafc86155f9b255a0ded633",
+          "encoded_bytes": 1532,
+          "copy_encode_seconds": 0.04693545959889889,
+          "decode_seconds": 0.010956913232803345,
+          "copy_encode_mib_s": 0.031209745521153166,
+          "decode_mib_s": 0.1336912795489225,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "ANTENNA2": {
+          "raw_bytes": 1536,
+          "sample_sha256": "398f26127c8aa5b035c4a0bddb8c3e7deb25ef67a752a7a4a12d7ee69fc75c3c",
+          "encoded_bytes": 1341,
+          "copy_encode_seconds": 0.04088744334876537,
+          "decode_seconds": 0.010541219264268875,
+          "copy_encode_mib_s": 0.03582624957753031,
+          "decode_mib_s": 0.13896340767384652,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "ANTENNA_NAME": {
+          "raw_bytes": 592,
+          "sample_sha256": "e259e3542778c0ebf2f3b8dded5fa4a201b8e3850acb6fbbc034f6744848b44a",
+          "encoded_bytes": 997,
+          "copy_encode_seconds": 0.012478234246373177,
+          "decode_seconds": 0.0034422799944877625,
+          "copy_encode_mib_s": 0.04524479859613109,
+          "decode_mib_s": 0.16401199095267469,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FIELD_NAME": {
+          "raw_bytes": 40,
+          "sample_sha256": "f7f0d5773c1b297548c3f74285f3914032400abc9e62c61aea319df19b353198",
+          "encoded_bytes": 875,
+          "copy_encode_seconds": 0.008858732879161835,
+          "decode_seconds": 0.0024466831237077713,
+          "copy_encode_mib_s": 0.004306143234771434,
+          "decode_mib_s": 0.015591300845873748,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "SPECTRAL_WINDOW_NAME": {
+          "raw_bytes": 16,
+          "sample_sha256": "59df4a758bd5506698d3448bec4c55a9a882a80c06e6818c90f0e0224584e374",
+          "encoded_bytes": 851,
+          "copy_encode_seconds": 0.011904438957571983,
+          "decode_seconds": 0.0023929551243782043,
+          "copy_encode_mib_s": 0.001281773052630459,
+          "decode_mib_s": 0.006376546265766229,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_0_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 21667,
+          "copy_encode_seconds": 0.06351923570036888,
+          "decode_seconds": 0.011101247742772102,
+          "copy_encode_mib_s": 42.68668776243247,
+          "decode_mib_s": 244.2451374905473,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_0_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 676,
+          "copy_encode_seconds": 0.042332056909799576,
+          "decode_seconds": 0.005855061113834381,
+          "copy_encode_mib_s": 0.00865091290698007,
+          "decode_mib_s": 0.06254604868849517,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_1_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "c84a16bc21f483acd2215a6c27755cac665895b2003c06302a81a12cb106fe15",
+          "encoded_bytes": 42712,
+          "copy_encode_seconds": 0.08069784380495548,
+          "decode_seconds": 0.011547548696398735,
+          "copy_encode_mib_s": 33.59973022084014,
+          "decode_mib_s": 234.80531258513733,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_1_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 676,
+          "copy_encode_seconds": 0.03367183357477188,
+          "decode_seconds": 0.005918504670262337,
+          "copy_encode_mib_s": 0.01087588344979164,
+          "decode_mib_s": 0.06187558478073614,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_2_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 21667,
+          "copy_encode_seconds": 0.14013007283210754,
+          "decode_seconds": 0.011310845613479614,
+          "copy_encode_mib_s": 19.34934968954601,
+          "decode_mib_s": 239.7191044689602,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_2_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 676,
+          "copy_encode_seconds": 0.026367859914898872,
+          "decode_seconds": 0.005201263353228569,
+          "copy_encode_mib_s": 0.013888534704065099,
+          "decode_mib_s": 0.07040807446765461,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_3_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 21667,
+          "copy_encode_seconds": 0.14922190457582474,
+          "decode_seconds": 0.010398603975772858,
+          "copy_encode_mib_s": 18.170427384353832,
+          "decode_mib_s": 260.74901857664776,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_3_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 676,
+          "copy_encode_seconds": 0.024286961182951927,
+          "decode_seconds": 0.005530020222067833,
+          "copy_encode_mib_s": 0.015078499724249543,
+          "decode_mib_s": 0.06622235051485277,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_4_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "c84a16bc21f483acd2215a6c27755cac665895b2003c06302a81a12cb106fe15",
+          "encoded_bytes": 42712,
+          "copy_encode_seconds": 0.2677097041159868,
+          "decode_seconds": 0.010747212916612625,
+          "copy_encode_mib_s": 10.128231212998012,
+          "decode_mib_s": 252.29106395191846,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_4_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 676,
+          "copy_encode_seconds": 0.025265343487262726,
+          "decode_seconds": 0.005352843552827835,
+          "copy_encode_mib_s": 0.014494595637879281,
+          "decode_mib_s": 0.06841427997770189,
+          "worker_highwater_rss_kib_after_copy": 602360
+        }
+      }
+    },
+    {
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "blosc-zstd",
+        "level": 3,
+        "shuffle": "bit",
+        "chunk_rows": 128
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:8c8d155b6f1b9884984e90eeabe0f56edeb573ef8b7e77b39d1f2f3081b3b5cd",
+      "encoded_bytes": 50514866,
+      "copy_encode_seconds": 1.3099316712468863,
+      "rewrite_verified_seconds": 2.313050551339984,
+      "decode_seconds": 0.20656880550086498,
+      "copy_encode_mib_s": 70.39855193199928,
+      "decode_mib_s": 446.4240985566351,
+      "peak_worker_rss_kib": 602360,
+      "per_column": {
+        "DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "b8c5ee7373bac8aebc375aef14f5c1e898dba505423102a4792edb6f2dae1e43",
+          "encoded_bytes": 19423502,
+          "copy_encode_seconds": 0.21137545257806778,
+          "decode_seconds": 0.02920370362699032,
+          "copy_encode_mib_s": 102.62027111208036,
+          "decode_mib_s": 742.7621690405258,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "MODEL_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "fe1b20c7561581fdbc0ae5257664fc01c60f671a665eb77211fe5ad645bc5d1c",
+          "encoded_bytes": 11593210,
+          "copy_encode_seconds": 0.25181848742067814,
+          "decode_seconds": 0.04727566987276077,
+          "copy_encode_mib_s": 86.13905385653112,
+          "decode_mib_s": 458.82810985821953,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "CORRECTED_DATA": {
+          "raw_bytes": 22745088,
+          "sample_sha256": "05889c452fbfe39ec233ad8b0684081e9608685a6955af14862a4469b0ef2405",
+          "encoded_bytes": 19340088,
+          "copy_encode_seconds": 0.2288308832794428,
+          "decode_seconds": 0.03277030400931835,
+          "copy_encode_mib_s": 94.7923022414373,
+          "decode_mib_s": 661.9226432514014,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 11372544,
+          "sample_sha256": "f8a4cb4feb4d318cfb6d47338c8c6a29d880e1d73c1f2ce06e20193177e9eece",
+          "encoded_bytes": 6689,
+          "copy_encode_seconds": 0.0749321524053812,
+          "decode_seconds": 0.011262137442827225,
+          "copy_encode_mib_s": 144.740312093599,
+          "decode_mib_s": 963.0235095299385,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "WEIGHT": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e405a851b5500f32e2eb5d9f5367147d5d1d3605036c6576dba1813f73e1a40c",
+          "encoded_bytes": 978,
+          "copy_encode_seconds": 0.02309667319059372,
+          "decode_seconds": 0.003727247938513756,
+          "copy_encode_mib_s": 0.2536891331339559,
+          "decode_mib_s": 1.5720378940866575,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "SIGMA": {
+          "raw_bytes": 6144,
+          "sample_sha256": "e33d1ab55ae1a71a592e8a834dbf9b3d08b2eddfb714a26444933d70a3fab013",
+          "encoded_bytes": 1005,
+          "copy_encode_seconds": 0.024082764983177185,
+          "decode_seconds": 0.003832085058093071,
+          "copy_encode_mib_s": 0.24330158950157998,
+          "decode_mib_s": 1.529030517635679,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 19129,
+          "copy_encode_seconds": 0.04143770411610603,
+          "decode_seconds": 0.006058968603610992,
+          "copy_encode_mib_s": 65.433784015947,
+          "decode_mib_s": 447.50616130178634,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "UVW": {
+          "raw_bytes": 9216,
+          "sample_sha256": "6454a2056502d4a32b78e063a7358eee0f703bf3bf06ea61c32ec7044f3525fa",
+          "encoded_bytes": 9135,
+          "copy_encode_seconds": 0.027690304443240166,
+          "decode_seconds": 0.00388178788125515,
+          "copy_encode_mib_s": 0.317405773490714,
+          "decode_mib_s": 2.264178973416269,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "TIME": {
+          "raw_bytes": 3072,
+          "sample_sha256": "1ee638b2bbd44fa010e85197f5f913dabdb29d8f4313f69990bd2763eadbca43",
+          "encoded_bytes": 1054,
+          "copy_encode_seconds": 0.024780960753560066,
+          "decode_seconds": 0.003988277167081833,
+          "copy_encode_mib_s": 0.11822332189356771,
+          "decode_mib_s": 0.7345746991159122,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "ANTENNA1": {
+          "raw_bytes": 1536,
+          "sample_sha256": "d5bc39a022bb94df84a24fb177d9a2d4f88249733cafc86155f9b255a0ded633",
+          "encoded_bytes": 1092,
+          "copy_encode_seconds": 0.025110701099038124,
+          "decode_seconds": 0.0037354417145252228,
+          "copy_encode_mib_s": 0.0583354381155097,
+          "decode_mib_s": 0.3921473983395248,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "ANTENNA2": {
+          "raw_bytes": 1536,
+          "sample_sha256": "398f26127c8aa5b035c4a0bddb8c3e7deb25ef67a752a7a4a12d7ee69fc75c3c",
+          "encoded_bytes": 1006,
+          "copy_encode_seconds": 0.019416213035583496,
+          "decode_seconds": 0.003719756379723549,
+          "copy_encode_mib_s": 0.07544435917114352,
+          "decode_mib_s": 0.3938009913726841,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "ANTENNA_NAME": {
+          "raw_bytes": 592,
+          "sample_sha256": "e259e3542778c0ebf2f3b8dded5fa4a201b8e3850acb6fbbc034f6744848b44a",
+          "encoded_bytes": 969,
+          "copy_encode_seconds": 0.00743776373565197,
+          "decode_seconds": 0.002132432535290718,
+          "copy_encode_mib_s": 0.07590657829130562,
+          "decode_mib_s": 0.2647564159564516,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FIELD_NAME": {
+          "raw_bytes": 40,
+          "sample_sha256": "f7f0d5773c1b297548c3f74285f3914032400abc9e62c61aea319df19b353198",
+          "encoded_bytes": 878,
+          "copy_encode_seconds": 0.008637070655822754,
+          "decode_seconds": 0.002094872295856476,
+          "copy_encode_mib_s": 0.004416656315128428,
+          "decode_mib_s": 0.018209688834828874,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "SPECTRAL_WINDOW_NAME": {
+          "raw_bytes": 16,
+          "sample_sha256": "59df4a758bd5506698d3448bec4c55a9a882a80c06e6818c90f0e0224584e374",
+          "encoded_bytes": 854,
+          "copy_encode_seconds": 0.009621145203709602,
+          "decode_seconds": 0.0021033454686403275,
+          "copy_encode_mib_s": 0.0015859639096411002,
+          "decode_mib_s": 0.007254532976156213,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_0_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 19129,
+          "copy_encode_seconds": 0.07109356112778187,
+          "decode_seconds": 0.006562728434801102,
+          "copy_encode_mib_s": 38.13883758581945,
+          "decode_mib_s": 413.1552612891525,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_0_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 680,
+          "copy_encode_seconds": 0.014754291623830795,
+          "decode_seconds": 0.002639228478074074,
+          "copy_encode_mib_s": 0.024820638417401515,
+          "decode_mib_s": 0.13875681493374736,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_1_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "c84a16bc21f483acd2215a6c27755cac665895b2003c06302a81a12cb106fe15",
+          "encoded_bytes": 27212,
+          "copy_encode_seconds": 0.03494165278971195,
+          "decode_seconds": 0.007860448211431503,
+          "copy_encode_mib_s": 77.59866991890947,
+          "decode_mib_s": 344.94544182693744,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_1_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 680,
+          "copy_encode_seconds": 0.013743450865149498,
+          "decode_seconds": 0.0027159377932548523,
+          "copy_encode_mib_s": 0.026646214338251387,
+          "decode_mib_s": 0.13483774864413337,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_2_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 19129,
+          "copy_encode_seconds": 0.0402089636772871,
+          "decode_seconds": 0.007735501974821091,
+          "copy_encode_mib_s": 67.43336642574569,
+          "decode_mib_s": 350.51710801388697,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_2_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 680,
+          "copy_encode_seconds": 0.01412769965827465,
+          "decode_seconds": 0.0026632975786924362,
+          "copy_encode_mib_s": 0.0259214837771207,
+          "decode_mib_s": 0.13750282372869266,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_3_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "dd15b112227da60fdffd8bf5029b1cf2a6eded2c560b6c3b78669aa43ce4bffe",
+          "encoded_bytes": 19129,
+          "copy_encode_seconds": 0.037030356004834175,
+          "decode_seconds": 0.007798349484801292,
+          "copy_encode_mib_s": 73.22170440100639,
+          "decode_mib_s": 347.6922631557451,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_3_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 680,
+          "copy_encode_seconds": 0.01761307567358017,
+          "decode_seconds": 0.0026474352926015854,
+          "copy_encode_mib_s": 0.020791992510957126,
+          "decode_mib_s": 0.1383266811179099,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_4_FLAG": {
+          "raw_bytes": 2843136,
+          "sample_sha256": "c84a16bc21f483acd2215a6c27755cac665895b2003c06302a81a12cb106fe15",
+          "encoded_bytes": 27212,
+          "copy_encode_seconds": 0.03523709625005722,
+          "decode_seconds": 0.007704984396696091,
+          "copy_encode_mib_s": 76.94804821624872,
+          "decode_mib_s": 351.90542143247734,
+          "worker_highwater_rss_kib_after_copy": 602360
+        },
+        "FLAGVERSION_4_FLAG_ROW": {
+          "raw_bytes": 384,
+          "sample_sha256": "a1a4f5721c1c4610af7f71078f3a68c330536d679803b0e0507ee8dc10c5dfca",
+          "encoded_bytes": 680,
+          "copy_encode_seconds": 0.011733416467905045,
+          "decode_seconds": 0.0024089161306619644,
+          "copy_encode_mib_s": 0.03121093830613732,
+          "decode_mib_s": 0.15202311647079472,
+          "worker_highwater_rss_kib_after_copy": 602360
+        }
+      }
+    }
+  ],
+  "offline_candidates": {
+    "FLAG": [
+      {
+        "candidate": "packbits",
+        "encoded_bytes": 355393,
+        "candidate_plus_zstd_bytes": 17252,
+        "raw_plus_zstd_bytes": 25527,
+        "raw_bytes": 2843136,
+        "reversible": true,
+        "publishable": false
+      }
+    ],
+    "ANTENNA1": [
+      {
+        "candidate": "delta",
+        "encoded_bytes": 1536,
+        "candidate_plus_zstd_bytes": 138,
+        "raw_plus_zstd_bytes": 167,
+        "raw_bytes": 1536,
+        "reversible": true,
+        "publishable": false
+      }
+    ],
+    "ANTENNA2": [
+      {
+        "candidate": "delta",
+        "encoded_bytes": 1536,
+        "candidate_plus_zstd_bytes": 146,
+        "raw_plus_zstd_bytes": 108,
+        "raw_bytes": 1536,
+        "reversible": true,
+        "publishable": false
+      }
+    ],
+    "FLAGVERSION_0_FLAG": [
+      {
+        "candidate": "packbits",
+        "encoded_bytes": 355393,
+        "candidate_plus_zstd_bytes": 17252,
+        "raw_plus_zstd_bytes": 25527,
+        "raw_bytes": 2843136,
+        "reversible": true,
+        "publishable": false
+      }
+    ],
+    "FLAGVERSION_0_FLAG_ROW": [
+      {
+        "candidate": "packbits",
+        "encoded_bytes": 49,
+        "candidate_plus_zstd_bytes": 17,
+        "raw_plus_zstd_bytes": 19,
+        "raw_bytes": 384,
+        "reversible": true,
+        "publishable": false
+      }
+    ],
+    "FLAGVERSION_1_FLAG": [
+      {
+        "candidate": "packbits",
+        "encoded_bytes": 355393,
+        "candidate_plus_zstd_bytes": 23776,
+        "raw_plus_zstd_bytes": 42526,
+        "raw_bytes": 2843136,
+        "reversible": true,
+        "publishable": false
+      }
+    ],
+    "FLAGVERSION_1_FLAG_ROW": [
+      {
+        "candidate": "packbits",
+        "encoded_bytes": 49,
+        "candidate_plus_zstd_bytes": 17,
+        "raw_plus_zstd_bytes": 19,
+        "raw_bytes": 384,
+        "reversible": true,
+        "publishable": false
+      }
+    ],
+    "FLAGVERSION_2_FLAG": [
+      {
+        "candidate": "packbits",
+        "encoded_bytes": 355393,
+        "candidate_plus_zstd_bytes": 17252,
+        "raw_plus_zstd_bytes": 25527,
+        "raw_bytes": 2843136,
+        "reversible": true,
+        "publishable": false
+      }
+    ],
+    "FLAGVERSION_2_FLAG_ROW": [
+      {
+        "candidate": "packbits",
+        "encoded_bytes": 49,
+        "candidate_plus_zstd_bytes": 17,
+        "raw_plus_zstd_bytes": 19,
+        "raw_bytes": 384,
+        "reversible": true,
+        "publishable": false
+      }
+    ],
+    "FLAGVERSION_3_FLAG": [
+      {
+        "candidate": "packbits",
+        "encoded_bytes": 355393,
+        "candidate_plus_zstd_bytes": 17252,
+        "raw_plus_zstd_bytes": 25527,
+        "raw_bytes": 2843136,
+        "reversible": true,
+        "publishable": false
+      }
+    ],
+    "FLAGVERSION_3_FLAG_ROW": [
+      {
+        "candidate": "packbits",
+        "encoded_bytes": 49,
+        "candidate_plus_zstd_bytes": 17,
+        "raw_plus_zstd_bytes": 19,
+        "raw_bytes": 384,
+        "reversible": true,
+        "publishable": false
+      }
+    ],
+    "FLAGVERSION_4_FLAG": [
+      {
+        "candidate": "packbits",
+        "encoded_bytes": 355393,
+        "candidate_plus_zstd_bytes": 23776,
+        "raw_plus_zstd_bytes": 42526,
+        "raw_bytes": 2843136,
+        "reversible": true,
+        "publishable": false
+      }
+    ],
+    "FLAGVERSION_4_FLAG_ROW": [
+      {
+        "candidate": "packbits",
+        "encoded_bytes": 49,
+        "candidate_plus_zstd_bytes": 17,
+        "raw_plus_zstd_bytes": 19,
+        "raw_bytes": 384,
+        "reversible": true,
+        "publishable": false
+      }
+    ]
+  },
+  "scope": "sampled MSv2 columns encoded as independent Zarr v3 arrays; no native preservation sidecar or full export measured",
+  "rss_scope": "Each codec runs in a fresh worker; per-column RSS is that worker\u2019s cumulative high-water when copying the column ends."
+}

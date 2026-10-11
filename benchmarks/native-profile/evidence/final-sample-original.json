@@ -1,0 +1,38 @@
+{
+  "source": "/home/sphemakh/sandbox/shinobiMSv24-16/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms",
+  "mode": "sample",
+  "source_sha256": "a49958d004b0211682052ece2092c619582504612817dd5639181f8be3ea278d",
+  "selected_rows": [
+    0,
+    1,
+    2,
+    123876,
+    247749,
+    247750,
+    247751
+  ],
+  "sample_native_id": "msutils-logical-hash/v1:ee6550cea04d951802e21f962176b5774c9f60f17cdc7284e80cec079d461be6",
+  "profile": "fixed-shape-defined-or-empty/v2",
+  "native_model": "msutils-native-model/v2",
+  "restored_native_id": "msutils-logical-hash/v1:ee6550cea04d951802e21f962176b5774c9f60f17cdc7284e80cec079d461be6",
+  "category": "[]",
+  "flag_category_defined": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+  ],
+  "rest_frequency": {
+    "defined": true,
+    "shape": [
+      0
+    ],
+    "dtype": "float64"
+  },
+  "source_independent_restore": true,
+  "success": true,
+  "seconds": 9.972456455230713
+}

@@ -1,0 +1,38 @@
+{
+  "source": "/data/projects/katplus/katplus-jul20/msdir/1783252863_2026-07-20T14-53-01_Jdz-J0408-6545.ms",
+  "mode": "sample",
+  "source_sha256": "a49958d004b0211682052ece2092c619582504612817dd5639181f8be3ea278d",
+  "selected_rows": [
+    0,
+    1,
+    2,
+    123876,
+    247749,
+    247750,
+    247751
+  ],
+  "sample_native_id": "msutils-logical-hash/v1:50b0b0685dcf84975d9b9f44a61ae9b479832e575f63b03b28f3e92b4baffe7e",
+  "profile": "fixed-shape-defined-or-empty/v2",
+  "native_model": "msutils-native-model/v2",
+  "restored_native_id": "msutils-logical-hash/v1:50b0b0685dcf84975d9b9f44a61ae9b479832e575f63b03b28f3e92b4baffe7e",
+  "category": "[]",
+  "flag_category_defined": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+  ],
+  "rest_frequency": {
+    "defined": true,
+    "shape": [
+      0
+    ],
+    "dtype": "float64"
+  },
+  "source_independent_restore": true,
+  "success": true,
+  "seconds": 5.633465267717838
+}

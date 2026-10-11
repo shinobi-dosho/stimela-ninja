@@ -1,0 +1,66 @@
+"""Read-only original profile scan and source-independent sampled native replay."""
+import argparse
+import json
+import hashlib
+import time
+from pathlib import Path
+
+import numpy as np
+from casacore.tables import table
+import msutils
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--source', required=True, type=Path)
+parser.add_argument('--workdir', required=True, type=Path)
+parser.add_argument('--mode', choices=['scan', 'sample'], required=True)
+args = parser.parse_args()
+args.workdir.mkdir(exist_ok=False)
+start = time.monotonic()
+from msutils import _native_preservation
+report = {'source': str(args.source), 'mode': args.mode, 'source_sha256': hashlib.sha256(Path(_native_preservation.__file__).read_bytes()).hexdigest()}
+try:
+    if args.mode == 'scan':
+        report['native_id'] = msutils.native_logical_id(args.source)
+    else:
+        import zarr
+        sample = args.workdir / 'sample.ms'
+        with table(str(args.source), readonly=True, ack=False, lockoptions='usernoread') as source:
+            rows = [0, 1, 2, source.nrows() // 2, source.nrows() - 3, source.nrows() - 2, source.nrows() - 1]
+            with source.selectrows(rows) as selected:
+                copied = selected.copy(str(sample), deep=True, valuecopy=True)
+                copied.close()
+        report['selected_rows'] = rows
+        report['sample_native_id'] = msutils.native_logical_id(sample)
+        # This companion tests the native preservation layer only, not MSv4 mapping.
+        companion = args.workdir / 'companion.zarr'
+        zarr.open_group(str(companion), mode='w').create_array('probe', data=np.arange(3, dtype=np.int32))
+        bundle = args.workdir / 'bundle'
+        msutils.capture_native_preservation(sample, companion, bundle)
+        ids = msutils.verify_native_preservation(companion, bundle)
+        report['profile'] = ids.profile
+        report['native_model'] = ids.native_model
+        hidden = args.workdir / 'source-unavailable.ms'
+        sample.rename(hidden)
+        target = args.workdir / 'restored.ms'
+        msutils.to_msv2(companion, target, fidelity='exact-native-v1', preservation=bundle,
+                       expected_native_logical_id=report['sample_native_id'])
+        report['restored_native_id'] = msutils.native_logical_id(target)
+        assert report['restored_native_id'] == report['sample_native_id']
+        with table(str(target), readonly=True, ack=False) as restored:
+            report['category'] = repr(restored.getcolkeyword('FLAG_CATEGORY', 'CATEGORY'))
+            report['flag_category_defined'] = [restored.iscelldefined('FLAG_CATEGORY', r) for r in range(restored.nrows())]
+        if (target / 'SOURCE').exists():
+            with table(str(target / 'SOURCE'), readonly=True, ack=False) as source_table:
+                if source_table.nrows() and 'REST_FREQUENCY' in source_table.colnames():
+                    defined = source_table.iscelldefined('REST_FREQUENCY', 0)
+                    cell = source_table.getcell('REST_FREQUENCY', 0) if defined else None
+                    report['rest_frequency'] = {'defined': defined, 'shape': list(cell.shape) if defined else None, 'dtype': str(cell.dtype) if defined else None}
+        report['source_independent_restore'] = not sample.exists()
+    report['success'] = True
+except Exception as exc:
+    report.update(success=False, error_type=type(exc).__name__, error=str(exc))
+    raise
+finally:
+    report['seconds'] = time.monotonic() - start
+    (args.workdir / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
+    print(json.dumps(report, indent=2), flush=True)

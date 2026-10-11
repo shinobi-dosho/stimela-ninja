@@ -56,6 +56,10 @@ Datasets
 .. autoclass:: shinobi.dataset_state.DatasetStateStore
    :members:
 
+.. py:class:: shinobi.state_codecs.LosslessProfile
+
+   Closed, versioned MSv4 lossless codec and chunk layout selection.
+
 .. py:class:: shinobi.dataset_state.LogicalState
 
    Strict ``shinobi-logical-state/v1`` manifest: native state ID, native model,

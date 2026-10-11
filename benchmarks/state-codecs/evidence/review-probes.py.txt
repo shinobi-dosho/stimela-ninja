@@ -1,0 +1,46 @@
+import json, os, tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
+from unittest.mock import patch
+import numpy as np
+from casacore.tables import table
+import zarr
+from tests._state_ms import make_state_ms
+from shinobi.dataset_state import DatasetStateStore, _identity
+from shinobi.state_precision import DerivedAttempt, DerivedStateStore, PrecisionPolicy
+from shinobi.storage import JsonFileStore
+results={}
+with tempfile.TemporaryDirectory(prefix='issue16-review-') as directory:
+    root=Path(directory)
+    exact=DatasetStateStore(root/'recovery-store',cache_dir=root/'cache')
+    exact._setup()
+    attempts=exact.root/'derived-attempts'; attempts.mkdir()
+    operation=uuid4(); registry=root/'registry'
+    record=DerivedAttempt(attempt_id=operation,store=exact.root,authority=exact.root,registry=registry,parent_state_id='msutils-logical-hash/v1:'+'1'*64,source_representation_id='sha256:'+'2'*64,policy=PrecisionPolicy(arrays=('VISIBILITY',),keep_bits=10,atol=1,rtol=0),versions={},stage=exact.root/'staging'/f'derived-{operation}',parent_identity=_identity(exact.root/'staging'))
+    path=attempts/f'{operation}.json'
+    JsonFileStore(path).update(lambda data:data.update(record.model_dump(mode='json')))
+    with patch('shinobi.state_precision.inspect_ownership',return_value=SimpleNamespace(owner=SimpleNamespace(registry=str(registry)),liveness='dead')),patch('shinobi.state_precision.release_workspace',side_effect=OSError('injected release failure')) as release:
+        try: DerivedStateStore(exact).recover()
+        except OSError: pass
+        finished=JsonFileStore(path).read()['finished']
+        retry=DerivedStateStore(exact).recover()
+        results['ownership_release']={'finished_after_release_failure':finished,'retry_results':len(retry),'release_calls':release.call_count}
+    os.environ['SHINOBI_OWNERSHIP_REGISTRY']=str(root/'owners.json')
+    source=make_state_ms(root/'source.ms')
+    with table(str(source),readonly=False,ack=False) as main:
+        main.putcol('DATA',main.getcol('DATA')+np.complex64(.1234+.4567j))
+    store=DatasetStateStore(root/'live-store',cache_dir=root/'live-cache')
+    exported=store.export(source,block_rows=2)
+    rep,_,_=store._load(exported.state_id,exported.representation_id)
+    visibility=next(name for name,_ in zarr.open_group(rep/'msv4.zarr',mode='r').members(max_depth=None) if name.endswith('/VISIBILITY'))
+    policy=PrecisionPolicy(arrays=(visibility,),keep_bits=10,atol=.1,rtol=.1)
+    first=store.derive_precision(exported.state_id,policy,representation_id=exported.representation_id)
+    base=store.root/'derived'/first.derived_id.split(':')[1]
+    external=root/'external-representations'
+    (base/'representations').rename(external)
+    (base/'representations').symlink_to(external,target_is_directory=True)
+    second=store.derive_precision(exported.state_id,policy,representation_id=exported.representation_id)
+    results['symlink_publication']={'new_representation_outside_store':(external/second.representation_id.split(':')[1]).is_dir(),'same_derived_id':first.derived_id==second.derived_id,'different_representation_id':first.representation_id!=second.representation_id}
+Path('/tmp/shinobi-issue16-review-probes.json').write_text(json.dumps(results,indent=2)+'\n')
+print(json.dumps(results,indent=2))

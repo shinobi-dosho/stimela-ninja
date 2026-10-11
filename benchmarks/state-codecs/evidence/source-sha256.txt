@@ -1,0 +1,3 @@
+7236a1c040207f9e4a22e251501ed1cc96fd968cc0c95ffd2da0dbb294480b06  examples/state_codec_benchmark.py
+111f5a5e28e9e19786db2307eff4a8d44387b059cdf8e954f6a44ebefc5ba8db  src/shinobi/state_codecs.py
+d7859845eab845ea0ba1253f73d8fb7f730aa6c95fb89d7335f4143b49c70d4d  uv.lock

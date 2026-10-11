@@ -548,26 +548,110 @@ def test_lossless_codec_change_keeps_native_identity(tmp_path, monkeypatch):
     assert store.verify(second.state_id, second.representation_id).verified
 
 
-@pytest.mark.parametrize("case", ["ragged", "mixed", "empty-keyword"])
+@pytest.mark.parametrize("case", ["ragged", "mixed"])
 def test_profile_refusal_preserves_diagnostics(tmp_path, monkeypatch, case):
     import numpy as np
     from casacore.tables import makearrcoldesc, table
 
     monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "owners.json"))
-    source = make_state_ms(tmp_path / "source.ms", set_category=case != "empty-keyword")
+    source = make_state_ms(tmp_path / "source.ms")
     with table(str(source), readonly=False, ack=False) as main:
-        if case != "empty-keyword":
-            main.addcols(makearrcoldesc("CUSTOM_VARIABLE", 0.0, ndim=1, valuetype="float"))
-            for row in range(6 if case == "ragged" else 1):
-                main.putcell("CUSTOM_VARIABLE", row, np.arange(row + 1, dtype=np.float32))
+        main.addcols(makearrcoldesc("CUSTOM_VARIABLE", 0.0, ndim=1, valuetype="float"))
+        for row in range(6 if case == "ragged" else 1):
+            main.putcell("CUSTOM_VARIABLE", row, np.arange(row + 1, dtype=np.float32))
     store = DatasetStateStore(tmp_path / "store", cache_dir=tmp_path / "cache")
     with pytest.raises(StateError) as error:
         store.export(source)
-    assert error.value.code == {"ragged": "ragged-cell", "mixed": "mixed-definedness", "empty-keyword": "empty-typed-keyword"}[case]
-    if case != "empty-keyword":
-        assert error.value.details["table"] == "MAIN" and error.value.details["column"] == "CUSTOM_VARIABLE"
+    assert error.value.code == {"ragged": "ragged-cell", "mixed": "mixed-definedness"}[case]
+    assert error.value.details["table"] == "MAIN" and error.value.details["column"] == "CUSTOM_VARIABLE"
     assert store.list() == []
     assert not list((store.root / "staging").iterdir())
+
+
+def test_native_profile_v2_state_round_trip_and_contract(tmp_path, monkeypatch):
+    import numpy as np
+    from casacore.tables import makearrcoldesc, table
+    from shinobi.dataset_state import StateRepresentationV3
+    from shinobi.state_codecs import LosslessProfile
+
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "owners.json"))
+    source = make_state_ms(tmp_path / "source.ms", set_category=False)
+    empty_table = source / "ZERO_CELLS"
+    with table(str(empty_table), {"EMPTY_DEFINED": makearrcoldesc("EMPTY_DEFINED", 0.0, ndim=1, valuetype="double")["desc"]}, nrow=1, readonly=False, ack=False) as extra:
+        extra.putcell("EMPTY_DEFINED", 0, np.empty((0,), np.float64))
+    with table(str(source), readonly=False, ack=False) as main:
+        main.putkeyword("ZERO_CELLS", f"Table: {empty_table}")
+        tiled = makearrcoldesc("TILED_EXTRA", 0j, shape=[2, 3], valuetype="complex")
+        tiled["desc"]["dataManagerType"] = "TiledColumnStMan"
+        tiled["desc"]["dataManagerGroup"] = "TILED_EXTRA"
+        main.addcols(
+            tiled,
+            {
+                "TYPE": "TiledColumnStMan",
+                "NAME": "TILED_EXTRA",
+                "SPEC": {"DEFAULTTILESHAPE": [2, 2, 2]},
+                "COLUMNS": ["TILED_EXTRA"],
+            },
+        )
+        for row in range(main.nrows()):
+            main.putcell("TILED_EXTRA", row, np.full((2, 3), row + 1j, np.complex64))
+    store = DatasetStateStore(tmp_path / "store", cache_dir=tmp_path / "cache")
+    results = [
+        store.export(source, block_rows=2),
+        store.export(source, block_rows=2, lossless_profile=LosslessProfile(codec="gzip", chunk_rows=2)),
+    ]
+    assert results[0].state_id == results[1].state_id
+    for result, lossless in zip(results, (False, True), strict=True):
+        rep, logical, physical = store._load(result.state_id, result.representation_id)
+        assert isinstance(physical, StateRepresentationV3)
+        assert physical.schema_version == "shinobi-state-representation/v3"
+        assert (physical.profile, physical.native_model) == ("fixed-shape-defined-or-empty/v2", "msutils-native-model/v2")
+        assert logical.profile == physical.profile and logical.native_model == physical.native_model
+        assert (physical.lossless_profile is not None) == lossless
+        assert store.verify(result.state_id, result.representation_id).verified
+        provenance = read_state_attempt(result.attempt).provenance
+        assert provenance.profile == physical.profile and provenance.native_model == physical.native_model
+    source.rename(tmp_path / "source-hidden.ms")
+    restored = store.materialize(results[0].state_id, tmp_path / "restored.ms", representation_id=results[1].representation_id)
+    assert adapter.native_id(restored.destination) == results[0].state_id
+    with table(str(restored.destination), ack=False) as main:
+        assert main.getcolkeyword("FLAG_CATEGORY", "CATEGORY") == []
+        np.testing.assert_array_equal(main.getcell("TILED_EXTRA", 5), np.full((2, 3), 5 + 1j, np.complex64))
+        assert any(manager["TYPE"] == "TiledColumnStMan" for manager in main.getdminfo().values())
+    with table(str(restored.destination / "ZERO_CELLS"), ack=False) as extra:
+        assert extra.iscelldefined("EMPTY_DEFINED", 0)
+        assert extra.getcell("EMPTY_DEFINED", 0).shape == (0,)
+    provenance = read_state_attempt(restored.attempt).provenance
+    assert provenance.profile == "fixed-shape-defined-or-empty/v2"
+    assert provenance.native_model == "msutils-native-model/v2"
+    assert provenance.actual_fidelity == "exact-logical"
+
+    rep, _, _ = store._load(results[0].state_id, results[0].representation_id)
+    logical_path = store._state(results[0].state_id) / "logical.json"
+    original = logical_path.read_text()
+    changed = json.loads(original)
+    changed.update(profile="fixed-shape-defined-or-empty/v1", native_model="msutils-native-model/v1")
+    logical_path.write_text(json.dumps(changed))
+    with pytest.raises(StateError, match="native-contract"):
+        store._load(results[0].state_id, results[0].representation_id)
+    logical_path.write_text(original)
+
+    verified = adapter.verify(rep / "msv4.zarr", rep / "preservation")
+    original_verify = adapter.verify
+    monkeypatch.setattr(
+        adapter,
+        "verify",
+        lambda *_: type(verified)(
+            verified.msv4_logical_id,
+            verified.payload_logical_id,
+            verified.native_logical_id,
+            profile="fixed-shape-defined-or-empty/v1",
+            native_model="msutils-native-model/v1",
+        ),
+    )
+    with pytest.raises(StateError, match="native-contract"):
+        store.verify(results[0].state_id, results[0].representation_id)
+    monkeypatch.setattr(adapter, "verify", original_verify)
 
 
 def test_fixed_custom_and_undefined_columns(tmp_path, monkeypatch):
