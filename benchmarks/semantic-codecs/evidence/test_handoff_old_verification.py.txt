@@ -1,0 +1,223 @@
+"""Read-only helper tests; no test sends a real signal."""
+
+import importlib.util
+import json
+from pathlib import Path
+from types import SimpleNamespace
+import uuid
+import sys
+import signal
+from datetime import datetime, timezone
+
+import pytest
+
+spec = importlib.util.spec_from_file_location("handoff", Path(__file__).with_name("handoff-old-verification.py"))
+h = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(h)
+
+
+@pytest.fixture
+def capture(tmp_path):
+    root, checkout = tmp_path / "capture", tmp_path / "checkout"
+    (root / "og-data/source-copy.ms").mkdir(parents=True)
+    script = checkout / "examples/state_codec_qualification.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("# qualification\n")
+    state_id = "msutils-logical-hash/v1:" + "a" * 64
+    stages = [{"stage": "prepare", "original_native_id": state_id, "copied_native_id": state_id}]
+    for name, digit in (("export-baseline", "b"), ("export-combined", "c")):
+        rid = "sha256:" + digit * 64
+        operation = uuid.uuid4()
+        path = root / "store/attempts" / f"{operation}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {"state_id": state_id, "representation_id": rid, "versions": {"test": "version"}}
+        path.write_text(json.dumps({**entry, "attempt_id": str(operation), "finished": True, "phase": "committed", "operation": "export"}))
+        manifest = root / "store/states" / ("a" * 64) / "representations" / (digit * 64) / "representation.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({**entry, "capture_attempt": str(operation)}))
+        stages.append({"stage": name, "state_id": state_id, "representation_id": rid, "attempt": str(path)})
+    stages.append({"stage": "archive", "recorded_source_absent": True})
+    report = {"source": str(tmp_path / "original.ms"), "status": "running", "script_sha256": h.sha(script), "stages": stages}
+    (tmp_path / "original.ms").mkdir()
+    (root / "report.json").write_text(json.dumps(report))
+    return root, checkout, report
+
+
+def test_prerequisites_require_both_committed_exports_and_absent_source(capture):
+    root, checkout, report = capture
+    _, evidence = h.prerequisites(root, checkout, running=True)
+    assert evidence["recorded_source_absent"]
+    assert len(evidence["exports"]) == 2
+    path = Path(report["stages"][1]["attempt"])
+    attempt = json.loads(path.read_text())
+    attempt["finished"] = False
+    path.write_text(json.dumps(attempt))
+    with pytest.raises(ValueError, match="completed committed"):
+        h.prerequisites(root, checkout, running=True)
+
+
+@pytest.mark.parametrize("change", ["export-missing", "verify-completed", "source-present", "script-changed"])
+def test_unsafe_handoff_prerequisites_refuse(capture, change):
+    root, checkout, report = capture
+    if change == "export-missing":
+        report["stages"].pop(2)
+    elif change == "verify-completed":
+        report["stages"].append({"stage": "verify"})
+    elif change == "source-present":
+        (root / "source-copy.ms").mkdir()
+    else:
+        (checkout / "examples/state_codec_qualification.py").write_text("changed")
+    (root / "report.json").write_text(json.dumps(report))
+    with pytest.raises(ValueError):
+        h.prerequisites(root, checkout, running=True)
+
+
+def test_exact_process_selection_and_parent(capture, tmp_path, monkeypatch):
+    root, checkout, _ = capture
+    script = checkout / "examples/state_codec_qualification.py"
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    for pid in (11, 12, 13):
+        (proc / str(pid)).mkdir()
+    parent = {"pid": 11, "ppid": 1, "startticks": 20, "state": "S", "argv": ["python", str(script), "--source", "/original.ms", "--workdir", str(root)]}
+    worker = {"pid": 12, "ppid": 11, "startticks": 21, "state": "S", "argv": ["python", str(script), "--workdir", str(root), "--stage", "verify"]}
+    other = {**worker, "pid": 13, "argv": ["python", str(script), "--workdir", str(root), "--stage", "export-combined"]}
+    records = {11: parent, 12: worker, 13: other}
+    monkeypatch.setattr(h, "process", lambda pid, proc=proc: records[pid])
+    assert h.select_processes(root, script, proc) == [worker, parent]
+    records[13] = {**worker, "pid": 13}
+    with pytest.raises(ValueError, match="exactly one"):
+        h.select_processes(root, script, proc)
+    records.pop(13)
+    (proc / "13").rmdir()
+    records[11] = {**parent, "argv": ["unrelated"]}
+    with pytest.raises(ValueError, match="exact capture controller"):
+        h.select_processes(root, script, proc)
+
+
+def test_identity_detects_pid_reuse_and_command_change():
+    info = {"pid": 1, "ppid": 2, "startticks": 3, "argv": ["python", "verify.py"]}
+    assert h.same_identity(info, info)
+    assert not h.same_identity({**info, "startticks": 4}, info)
+    assert not h.same_identity({**info, "argv": ["export.py"]}, info)
+
+
+def test_exclusive_snapshot_and_final_receipt_without_signals(capture, tmp_path, monkeypatch):
+    root, checkout, report = capture
+    _, evidence = h.prerequisites(root, checkout, running=True)
+    processes = [{"pid": 11, "argv": ["python", "capture.py"], "startticks": 123, "script_sha256": report["script_sha256"], "exit_confirmed": False}]
+    snapshot = {"capture_evidence": evidence, "processes": processes, "pre_report_sha256": evidence["report_sha256"]}
+    pre = tmp_path / "transition.json.pre-signal.json"
+    h.exclusive(pre, snapshot)
+    with pytest.raises(FileExistsError):
+        h.exclusive(pre, {})
+    report.update(status="failed", failed_stage="verify", exit_code=-2)
+    (root / "report.json").write_text(json.dumps(report))
+    oldhash = h.sha(root / "report.json")
+    monkeypatch.setattr(h, "exited", lambda info: True)
+    args = SimpleNamespace(capture_root=root, capture_checkout=checkout, output_receipt=tmp_path / "transition.json")
+    write_marker(args, snapshot)
+    h.finalize(args, snapshot)
+    receipt = json.loads(args.output_receipt.read_text())
+    assert receipt["capture_report_sha256"] == oldhash
+    assert receipt["pre_report_sha256"] != oldhash
+    assert all(p["exit_confirmed"] for p in receipt["processes"])
+    assert h.sha(root / "report.json") == oldhash
+    assert json.loads(pre.read_text()) == snapshot
+    v2spec = importlib.util.spec_from_file_location("replay_v2", Path(__file__).with_name("qualify-published-replay-v2.py"))
+    v2 = importlib.util.module_from_spec(v2spec)
+    v2spec.loader.exec_module(v2)
+    assert v2.transition_receipt(args.output_receipt, report, oldhash, {"completed": False})["receipt"] == receipt
+
+
+def test_main_signals_only_verify_pidfd_after_durable_snapshot(capture, tmp_path, monkeypatch):
+    root, checkout, report = capture
+    script = checkout / "examples/state_codec_qualification.py"
+    worker = {"pid": 11, "ppid": 12, "startticks": 10, "state": "S", "argv": ["python", str(script), "--workdir", str(root), "--stage", "verify"]}
+    parent = {"pid": 12, "ppid": 1, "startticks": 9, "state": "S", "argv": ["python", str(script), "--workdir", str(root)]}
+    output = tmp_path / "transition.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(h.__file__),
+            "--capture-root",
+            str(root),
+            "--capture-checkout",
+            str(checkout),
+            "--output-receipt",
+            str(output),
+            "--continuation-path",
+            "/final/qualify-published-replay-v2.py",
+        ],
+    )
+    monkeypatch.setattr(h, "select_processes", lambda *args: [worker, parent])
+    monkeypatch.setattr(h, "process", lambda pid: {11: worker, 12: parent}[pid])
+    monkeypatch.setattr(h.os, "pidfd_open", lambda pid: pid + 100, raising=False)
+    monkeypatch.setattr(h.select, "select", lambda *args: ([], [], []))
+    closed, sent = [], []
+    # exclusive() also closes its genuine directory fd: preserve those closes.
+    close = h.os.close
+    monkeypatch.setattr(h.os, "close", lambda fd: closed.append(fd) if fd in (111, 112) else close(fd))
+
+    def send(fd, sig):
+        snapshot = json.loads(output.with_name(output.name + ".pre-signal.json").read_text())
+        assert snapshot["processes"][0]["pid"] == 11
+        sent.append((fd, sig))
+
+    monkeypatch.setattr(h.signal, "pidfd_send_signal", send, raising=False)
+    monkeypatch.setattr(h, "finalize", lambda *args: None)
+    h.main()
+    assert sent == [(111, signal.SIGINT)]
+    assert closed == [111, 112]
+    marker = json.loads(h.artifact_path(output, ".signal-delivered.json").read_text())
+    assert marker["snapshot_sha256"] == h.sha(h.artifact_path(output, ".pre-signal.json"))
+    assert marker["signal"] == signal.SIGINT
+    assert marker["target"]["pid"] == worker["pid"]
+    assert marker["delivery_confirmed"] is True
+
+
+def write_marker(args, snapshot, **changes):
+    marker = {
+        "schema_version": "shinobi-qualification-signal-delivery/v1",
+        "snapshot_sha256": h.sha(h.artifact_path(args.output_receipt, ".pre-signal.json")),
+        "target": snapshot["processes"][0],
+        "signal": int(signal.SIGINT),
+        "signal_name": "SIGINT",
+        "delivered_at": datetime.now(timezone.utc).isoformat(),
+        "delivery_confirmed": True,
+        **changes,
+    }
+    h.exclusive(h.artifact_path(args.output_receipt, ".signal-delivered.json"), marker)
+
+
+@pytest.mark.parametrize("change", [None, {"snapshot_sha256": "0" * 64}, {"signal": int(signal.SIGTERM)}, {"target": {"pid": 999}}, {"delivery_confirmed": False}])
+def test_finalize_without_bound_signal_delivery_refuses(capture, tmp_path, monkeypatch, change):
+    root, checkout, report = capture
+    _, evidence = h.prerequisites(root, checkout, running=True)
+    args = SimpleNamespace(capture_root=root, capture_checkout=checkout, output_receipt=tmp_path / "transition.json")
+    snapshot = {"capture_evidence": evidence, "processes": [{"pid": 11, "startticks": 123}], "pre_report_sha256": evidence["report_sha256"]}
+    h.exclusive(h.artifact_path(args.output_receipt, ".pre-signal.json"), snapshot)
+    if change is not None:
+        write_marker(args, snapshot, **change)
+    report.update(status="failed", failed_stage="verify", exit_code=-2)
+    (root / "report.json").write_text(json.dumps(report))
+    monkeypatch.setattr(h, "exited", lambda info: True)
+    with pytest.raises(ValueError, match="signal delivery marker"):
+        h.finalize(args, snapshot)
+    assert not args.output_receipt.exists()
+
+
+def test_finalize_unrelated_verify_failure_cannot_claim_sigint(capture, tmp_path, monkeypatch):
+    root, checkout, report = capture
+    _, evidence = h.prerequisites(root, checkout, running=True)
+    args = SimpleNamespace(capture_root=root, capture_checkout=checkout, output_receipt=tmp_path / "transition.json")
+    snapshot = {"capture_evidence": evidence, "processes": [{"pid": 11, "startticks": 123}], "pre_report_sha256": evidence["report_sha256"]}
+    h.exclusive(h.artifact_path(args.output_receipt, ".pre-signal.json"), snapshot)
+    write_marker(args, snapshot)
+    report.update(status="failed", failed_stage="verify", exit_code=1)
+    (root / "report.json").write_text(json.dumps(report))
+    monkeypatch.setattr(h, "exited", lambda info: True)
+    with pytest.raises(ValueError, match="expected SIGINT"):
+        h.finalize(args, snapshot)
+    assert not args.output_receipt.exists()

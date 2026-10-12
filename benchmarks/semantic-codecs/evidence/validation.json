@@ -222,5 +222,13 @@
     "script_sha256": "3efec54603fc9f56333be429c8dbb9ba36ea029373df57a973dd83992ca86c51",
     "independent_reviews": "Sol medium, Astra low, Luna high: no actionable findings after UUID-path and running-capture exit-receipt corrections",
     "scope": "Committed exports and archive required; previous verification disposition recorded; full final-code verification still required."
+  },
+  "operator_handoff_helper": {
+    "script": "handoff-old-verification.py.txt",
+    "script_sha256": "64fd572da125f9ac0dcf251b41d5a09904ba58dba40091be591d3a7fffdf4ce3",
+    "passed_regressions": 15,
+    "junit": "handoff-helper.xml",
+    "independent_reviews": "Sol medium, Astra low, Luna high: no actionable findings after durable signal-delivery evidence correction",
+    "scope": "Only obsolete verify stage after committed exports and archive; exact pidfd identities, exclusive pre-signal and delivery receipts, confirmed worker/controller exits; tests use mocked signalling."
   }
 }
