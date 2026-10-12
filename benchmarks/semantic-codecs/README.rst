@@ -119,13 +119,19 @@ and retaining the existing default, rather than choosing one codec globally.
 Full-volume qualification
 -------------------------
 
-J0408, J0410 and Chi Oph cross-calibrators have completed final-code
-qualification for both profiles:
+All five datasets completed final-code qualification for both profiles:
 source-absent verification, restoration, independent all-cell comparison and
-final source audits all passed. Their receipts passed a separate audit of
-code revisions, runtime pins, codec metadata and native IDs. The remaining
-two final-code replays are running; all five baseline/combined export pairs
-have completed. Final results will be added before this PR is marked ready. This is separate from the completed sampled-column matrix. Saved flag-version
+final source audits all passed. This covers 2,595,942 MAIN rows, ten restored
+MSs and fourteen tables per restoration. The independent acceptance checker
+verified all five complete receipts against the recorded code revisions,
+exact runtime, codec metadata, native identities and cancellation evidence.
+``evidence/qualification-summary.json`` records representation sizes, inventory
+counts, stage times and peak RSS; ``evidence/replay-v5-*.json`` retain the full
+receipts. Final remote checks found all ten v3 materializations committed,
+empty ownership registries, clean frozen checkouts, and every recorded source
+path absent with its archived working copy retained in ``og-data``.
+
+This is separate from the completed sampled-column matrix. Saved flag-version
 files are covered by that sample matrix; the full native round trips cover the
 MS table trees, not their adjacent flag-version directories.
 
@@ -188,8 +194,8 @@ selected chunk sizes. The correction uses compact JSON and a separate finite
 256 MiB physical-manifest budget; ordinary node metadata retains 64 MiB.
 A 400,000-entry regression loads both 69.6 MB compact and 86.4 MB pretty
 manifests without dropping entries or changing their canonical digest. The
-serialized limit does not bound decoded JSON/Pydantic memory. A fresh complete
-Chi Oph capture exercises this correction; its result is still pending.
+serialized limit does not bound decoded JSON/Pydantic memory. The fresh Chi Oph capture and final replay passed with 523,724 inventory
+entries per representation; its baseline manifest is 71,611,966 bytes.
 
 Both July datasets passed full baseline/combined exports and source-absent
 verification but failed Shinobi's final materialization postcondition. A
@@ -211,7 +217,11 @@ capture and replay code separately, and checks original/archive fingerprints
 and native IDs. Every parent/stage process checks actual loaded Shinobi module
 paths and hashes against the recorded checkout. The seven provenance regressions
 include an identical but wrongly installed checkout and mixed module paths.
-These checks passed; completed five-dataset continuation results remain pending.
+These checks and all five complete continuations passed. The v2 driver also
+checks committed capture prerequisites and explicit old-verification disposition
+(25 regressions). The exact-process handoff helper has 15 regressions and two
+recorded live handoffs; the final acceptance checker has 18 regressions. All
+three independent reviewers cleared each final helper and checker.
 
 Validation and boundaries
 -------------------------
