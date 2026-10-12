@@ -1,0 +1,437 @@
+{
+  "original": {
+    "source": "/home/sphemakh/sandbox/shinobiMSv24-16/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms",
+    "columns": [
+      "UVW",
+      "FLAG",
+      "FLAG_CATEGORY",
+      "WEIGHT",
+      "SIGMA",
+      "ANTENNA1",
+      "ANTENNA2",
+      "ARRAY_ID",
+      "DATA_DESC_ID",
+      "EXPOSURE",
+      "FEED1",
+      "FEED2",
+      "FIELD_ID",
+      "FLAG_ROW",
+      "INTERVAL",
+      "OBSERVATION_ID",
+      "PROCESSOR_ID",
+      "SCAN_NUMBER",
+      "STATE_ID",
+      "TIME",
+      "TIME_CENTROID",
+      "DATA",
+      "WEIGHT_SPECTRUM",
+      "MODEL_DATA",
+      "CORRECTED_DATA"
+    ],
+    "hypercolumns": {
+      "TiledDATA": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "DATA"
+        ]
+      },
+      "TiledWgtSpectrum": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "WEIGHT_SPECTRUM"
+        ]
+      },
+      "TiledSigmaSpectrum": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "SIGMA_SPECTRUM"
+        ]
+      },
+      "TiledFlagCategory": {
+        "HCndim": 4,
+        "HCdatanames": [
+          "FLAG_CATEGORY"
+        ]
+      },
+      "TiledUVW": {
+        "HCndim": 2,
+        "HCdatanames": [
+          "UVW"
+        ]
+      },
+      "TiledFlag": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "FLAG"
+        ]
+      },
+      "TiledWgt": {
+        "HCndim": 2,
+        "HCdatanames": [
+          "WEIGHT"
+        ]
+      },
+      "TiledSigma": {
+        "HCndim": 2,
+        "HCdatanames": [
+          "SIGMA"
+        ]
+      }
+    },
+    "stale_hypercolumns": {
+      "TiledSigmaSpectrum": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "SIGMA_SPECTRUM"
+        ]
+      }
+    }
+  },
+  "j0408": {
+    "source": "/data/projects/katplus/katplus-jul20/msdir/1783252863_2026-07-20T14-53-01_Jdz-J0408-6545.ms",
+    "columns": [
+      "UVW",
+      "FLAG",
+      "FLAG_CATEGORY",
+      "WEIGHT",
+      "SIGMA",
+      "ANTENNA1",
+      "ANTENNA2",
+      "ARRAY_ID",
+      "DATA_DESC_ID",
+      "EXPOSURE",
+      "FEED1",
+      "FEED2",
+      "FIELD_ID",
+      "FLAG_ROW",
+      "INTERVAL",
+      "OBSERVATION_ID",
+      "PROCESSOR_ID",
+      "SCAN_NUMBER",
+      "STATE_ID",
+      "TIME",
+      "TIME_CENTROID",
+      "DATA",
+      "WEIGHT_SPECTRUM",
+      "MODEL_DATA",
+      "CORRECTED_DATA"
+    ],
+    "hypercolumns": {
+      "TiledDATA": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "DATA"
+        ]
+      },
+      "TiledWgtSpectrum": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "WEIGHT_SPECTRUM"
+        ]
+      },
+      "TiledSigmaSpectrum": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "SIGMA_SPECTRUM"
+        ]
+      },
+      "TiledFlagCategory": {
+        "HCndim": 4,
+        "HCdatanames": [
+          "FLAG_CATEGORY"
+        ]
+      },
+      "TiledUVW": {
+        "HCndim": 2,
+        "HCdatanames": [
+          "UVW"
+        ]
+      },
+      "TiledFlag": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "FLAG"
+        ]
+      },
+      "TiledWgt": {
+        "HCndim": 2,
+        "HCdatanames": [
+          "WEIGHT"
+        ]
+      },
+      "TiledSigma": {
+        "HCndim": 2,
+        "HCdatanames": [
+          "SIGMA"
+        ]
+      }
+    },
+    "stale_hypercolumns": {
+      "TiledSigmaSpectrum": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "SIGMA_SPECTRUM"
+        ]
+      }
+    }
+  },
+  "j0410": {
+    "source": "/data/projects/katplus/katplus-jul20/msdir/1783252863_2026-07-20T14-53-01_Jdz-J0410-65off.ms",
+    "columns": [
+      "UVW",
+      "FLAG",
+      "FLAG_CATEGORY",
+      "WEIGHT",
+      "SIGMA",
+      "ANTENNA1",
+      "ANTENNA2",
+      "ARRAY_ID",
+      "DATA_DESC_ID",
+      "EXPOSURE",
+      "FEED1",
+      "FEED2",
+      "FIELD_ID",
+      "FLAG_ROW",
+      "INTERVAL",
+      "OBSERVATION_ID",
+      "PROCESSOR_ID",
+      "SCAN_NUMBER",
+      "STATE_ID",
+      "TIME",
+      "TIME_CENTROID",
+      "DATA",
+      "WEIGHT_SPECTRUM",
+      "MODEL_DATA",
+      "CORRECTED_DATA"
+    ],
+    "hypercolumns": {
+      "TiledDATA": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "DATA"
+        ]
+      },
+      "TiledWgtSpectrum": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "WEIGHT_SPECTRUM"
+        ]
+      },
+      "TiledSigmaSpectrum": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "SIGMA_SPECTRUM"
+        ]
+      },
+      "TiledFlagCategory": {
+        "HCndim": 4,
+        "HCdatanames": [
+          "FLAG_CATEGORY"
+        ]
+      },
+      "TiledUVW": {
+        "HCndim": 2,
+        "HCdatanames": [
+          "UVW"
+        ]
+      },
+      "TiledFlag": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "FLAG"
+        ]
+      },
+      "TiledWgt": {
+        "HCndim": 2,
+        "HCdatanames": [
+          "WEIGHT"
+        ]
+      },
+      "TiledSigma": {
+        "HCndim": 2,
+        "HCdatanames": [
+          "SIGMA"
+        ]
+      }
+    },
+    "stale_hypercolumns": {
+      "TiledSigmaSpectrum": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "SIGMA_SPECTRUM"
+        ]
+      }
+    }
+  },
+  "chioph_avg": {
+    "source": "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-applied-CHI-OPH-avg.ms",
+    "columns": [
+      "UVW",
+      "FLAG",
+      "FLAG_CATEGORY",
+      "WEIGHT",
+      "SIGMA",
+      "ANTENNA1",
+      "ANTENNA2",
+      "ARRAY_ID",
+      "DATA_DESC_ID",
+      "EXPOSURE",
+      "FEED1",
+      "FEED2",
+      "FIELD_ID",
+      "FLAG_ROW",
+      "INTERVAL",
+      "OBSERVATION_ID",
+      "PROCESSOR_ID",
+      "SCAN_NUMBER",
+      "STATE_ID",
+      "TIME",
+      "TIME_CENTROID",
+      "DATA",
+      "WEIGHT_SPECTRUM",
+      "SIGMA_SPECTRUM",
+      "MODEL_DATA",
+      "CORRECTED_DATA",
+      "CORRECTED_RESIDUAL"
+    ],
+    "hypercolumns": {
+      "TiledDATA": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "DATA"
+        ]
+      },
+      "TiledWgtSpectrum": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "WEIGHT_SPECTRUM"
+        ]
+      },
+      "TiledSigmaSpectrum": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "SIGMA_SPECTRUM"
+        ]
+      },
+      "TiledFlagCategory": {
+        "HCndim": 4,
+        "HCdatanames": [
+          "FLAG_CATEGORY"
+        ]
+      },
+      "TiledUVW": {
+        "HCndim": 2,
+        "HCdatanames": [
+          "UVW"
+        ]
+      },
+      "TiledFlag": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "FLAG"
+        ]
+      },
+      "TiledWgt": {
+        "HCndim": 2,
+        "HCdatanames": [
+          "WEIGHT"
+        ]
+      },
+      "TiledSigma": {
+        "HCndim": 2,
+        "HCdatanames": [
+          "SIGMA"
+        ]
+      }
+    },
+    "stale_hypercolumns": {}
+  },
+  "xc_calibrators": {
+    "source": "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-xc-calibrators.ms",
+    "columns": [
+      "UVW",
+      "FLAG",
+      "FLAG_CATEGORY",
+      "WEIGHT",
+      "SIGMA",
+      "ANTENNA1",
+      "ANTENNA2",
+      "ARRAY_ID",
+      "DATA_DESC_ID",
+      "EXPOSURE",
+      "FEED1",
+      "FEED2",
+      "FIELD_ID",
+      "FLAG_ROW",
+      "INTERVAL",
+      "OBSERVATION_ID",
+      "PROCESSOR_ID",
+      "SCAN_NUMBER",
+      "STATE_ID",
+      "TIME",
+      "TIME_CENTROID",
+      "DATA",
+      "WEIGHT_SPECTRUM",
+      "MODEL_DATA",
+      "CORRECTED_DATA"
+    ],
+    "hypercolumns": {
+      "TiledDATA": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "DATA"
+        ]
+      },
+      "TiledWgtSpectrum": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "WEIGHT_SPECTRUM"
+        ]
+      },
+      "TiledSigmaSpectrum": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "SIGMA_SPECTRUM"
+        ]
+      },
+      "TiledFlagCategory": {
+        "HCndim": 4,
+        "HCdatanames": [
+          "FLAG_CATEGORY"
+        ]
+      },
+      "TiledUVW": {
+        "HCndim": 2,
+        "HCdatanames": [
+          "UVW"
+        ]
+      },
+      "TiledFlag": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "FLAG"
+        ]
+      },
+      "TiledWgt": {
+        "HCndim": 2,
+        "HCdatanames": [
+          "WEIGHT"
+        ]
+      },
+      "TiledSigma": {
+        "HCndim": 2,
+        "HCdatanames": [
+          "SIGMA"
+        ]
+      }
+    },
+    "stale_hypercolumns": {
+      "TiledSigmaSpectrum": {
+        "HCndim": 3,
+        "HCdatanames": [
+          "SIGMA_SPECTRUM"
+        ]
+      }
+    }
+  }
+}

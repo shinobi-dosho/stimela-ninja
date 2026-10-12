@@ -5,10 +5,13 @@ This evidence accompanies `Shinobi PR #206
 <https://github.com/shinobi-dosho/stimela-ninja/pull/206>`_ and `msutils PR #64
 <https://github.com/shinobi-dosho/msutils/pull/64>`_ for `Paper I #16
 <https://github.com/shinobi-dosho/paper_shinobi_I/issues/16>`_. The sampled benchmarks ran Shinobi
-``ca5780914a3560d502f10d1105070857c8ced2f9``; corrected full-volume qualification
-uses ``eb5cec47bdfa7c5361f4afae8f8a3cf6711a0676``. Both use public msutils
-``2856d3ae357c4c2ec70060df641fe48e32ff8288``. Later evidence-only commits do not
-change those executed implementations.
+``ca5780914a3560d502f10d1105070857c8ced2f9`` with msutils
+``2856d3ae357c4c2ec70060df641fe48e32ff8288``. Final full-volume qualification
+uses Shinobi ``d15bab8ad4b5598dd8c52f5c00fabec16dd72d51`` and public msutils
+``25c280a8ab412b5015a80bf4ff6f83b7a6820675``. The intermediate chunk-correction
+run used ``eb5cec47bdfa7c5361f4afae8f8a3cf6711a0676`` with the earlier pin;
+its failures remain diagnostic evidence. Each receipt records its actual
+executed implementation.
 
 The opt-in profiles are ``packbits-zstd``, ``delta-zstd`` and
 ``packbits-delta-zstd``. PackBits applies to booleans and Delta to unchanged
@@ -128,7 +131,8 @@ using independently read native metadata, definedness and every defined value.
 Numeric values compare as exact bytes, including signed zeros and NaN payloads.
 The native profile's declared physical-manager exclusions remain exclusions.
 
-Up to three datasets run concurrently. Stage times and process peak RSS are
+All five final-run datasets run concurrently (the earlier diagnostic runs used
+up to three). Stage times and process peak RSS are
 functional qualification measurements, with shared I/O and uncontrolled caches;
 they are not controlled codec-throughput comparisons. A 16 MiB bound applies
 to individual numeric reads and rewrite tiles, not aggregate process memory.
@@ -143,16 +147,34 @@ The corrected metadata preflight passed for every numeric array in all five MSs.
 The initial failure reports and execution receipt are retained as
 ``evidence/qualification-initial-*.json``; they are not successful qualifications.
 
+The next run completed both full exports and source-absent verification for
+J0408 and J0410, then failed native restoration: their raw descriptors retain a
+``TiledSigmaSpectrum`` hypercolumn naming the removed ``SIGMA_SPECTRUM`` column.
+This affects four of the five source MSs. The writer correction reconstructs
+that exact observable schema using a temporary column in a private zero-row
+table, removes it, and requires unchanged typed descriptor and canonical
+manager identity before adding rows. No hash, profile or capture contract is
+changed. Other orphan roles or dimensions remain explicitly unqualified.
+
+All five real MAIN schema probes passed under the corrected public pin. These
+are zero-row schema checks, not native-content replay. The earlier diagnostic
+run's other three workers were interrupted after the defect was established;
+``evidence/qualification-v2-interruption.json`` distinguishes those cancellations
+from the two actual restore failures. Their ownership registry was empty after
+interruption. Complete fresh runs use the fixed public stack because stored
+states retain the exact-stack requirement; no compatibility exception was added.
+
 Validation and boundaries
 -------------------------
 
-Upstream passed 552 tests with two existing expected capability failures.
+The final upstream tree passed 567 tests with two existing expected capability
+failures. Its 15 final orphan-hypercolumn cases passed on Python 3.11 and 3.12.
 Its public CI passed Python 3.11, 3.12 and 3.13, bare-install and docs jobs.
-The final downstream suite passed 2,765 tests with 18 skips, including the
-qualification comparator and lazy-backend chunk-bound regressions. The final
-focused runs passed 50 tests on Python 3.12 and 33 on Python 3.11. Both ordinary
+The final corrected-pin downstream suite passed 2,765 tests with 18 skips, including the
+qualification comparator and lazy-backend chunk-bound regressions. The secondary-column
+correction passed 50 focused tests on Python 3.12 and 33 on Python 3.11. Both ordinary
 and Measurement Set CI jobs passed on both versions, along with the dependency
-audit. Focused state tests, optional-dependency skips, strict
+audit. The corrected public-pin installation also passed all 50 focused tests. Focused state tests, optional-dependency skips, strict
 Sphinx builds, whole-tree lint/format and fresh public-pin runtime qualification
 also passed. ``evidence/validation.json`` distinguishes these runs and links
 their JUnit receipts.

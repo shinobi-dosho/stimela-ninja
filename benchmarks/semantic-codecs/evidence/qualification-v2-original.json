@@ -1,0 +1,46 @@
+{
+  "exit_code": -2,
+  "failed_stage": "export-baseline",
+  "schema_version": "shinobi-state-codec-qualification/v1",
+  "script_sha256": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+  "source": "/home/sphemakh/sandbox/shinobiMSv24-16/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms",
+  "stages": [
+    {
+      "copied_native_id": "msutils-logical-hash/v1:7a6cc377629f7b69ebc848f3bedd6397dabc1337611050487afeeaee480c71ba",
+      "original_native_id": "msutils-logical-hash/v1:7a6cc377629f7b69ebc848f3bedd6397dabc1337611050487afeeaee480c71ba",
+      "peak_rss_kib": 1025136,
+      "seconds": 1246.931002104655,
+      "source_observation_after": {
+        "entries": 108,
+        "stat_sha256": "3ba91704ebf2aae4c853c69c2c575d3644265d009d744b5004b66be751fa9dfa"
+      },
+      "source_observation_before": {
+        "entries": 108,
+        "stat_sha256": "3ba91704ebf2aae4c853c69c2c575d3644265d009d744b5004b66be751fa9dfa"
+      },
+      "stage": "prepare",
+      "versions": {
+        "arcae": "0.5.4",
+        "msutils": "3.0.0",
+        "msutils_origin": {
+          "url": "https://github.com/shinobi-dosho/msutils.git",
+          "vcs_info": {
+            "commit_id": "2856d3ae357c4c2ec70060df641fe48e32ff8288",
+            "requested_revision": "2856d3ae357c4c2ec70060df641fe48e32ff8288",
+            "vcs": "git"
+          }
+        },
+        "numcodecs": "0.16.5",
+        "numpy": "2.5.3",
+        "python": "3.12.14",
+        "python-casacore": "3.8.1",
+        "stimela-ninja": "0.1.0b7",
+        "xarray": "2026.7.0",
+        "xarray-ms": "0.5.8",
+        "zarr": "3.3.0"
+      }
+    }
+  ],
+  "status": "failed",
+  "workdir": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v2-original"
+}

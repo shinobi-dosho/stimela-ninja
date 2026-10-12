@@ -1,15 +1,29 @@
 {
   "schema": "shinobi-semantic-codecs-validation/v1",
-  "msutils_commit": "2856d3ae357c4c2ec70060df641fe48e32ff8288",
+  "msutils_commit": "25c280a8ab412b5015a80bf4ff6f83b7a6820675",
   "upstream": {
     "full_suite": {
+      "passed": 567,
+      "xfailed": 2,
+      "warnings": 49,
+      "seconds": 308.2,
+      "code_commit": "25c280a8ab412b5015a80bf4ff6f83b7a6820675",
+      "junit": "upstream-orphan-full-final.xml"
+    },
+    "ci": "https://github.com/shinobi-dosho/msutils/actions/runs/38241763347",
+    "ci_checks": "Python3.11/3.12/3.13, bare install and docs all passed",
+    "initial_full_suite": {
       "passed": 552,
       "xfailed": 2,
       "environment": "Python3.12/Zarr3.3",
       "command": "PYTHONPATH=src /tmp/shinobi-codecs-upstream-venv/bin/pytest -q"
     },
-    "ci": "https://github.com/shinobi-dosho/msutils/actions/runs/38228641914",
-    "ci_checks": "Python3.11/3.12/3.13, bare install and docs all passed"
+    "initial_ci": "https://github.com/shinobi-dosho/msutils/actions/runs/38228641914",
+    "final_orphan_focused": {
+      "py312_passed": 15,
+      "py311_passed": 15,
+      "broader_py311_passed": 27
+    }
   },
   "downstream": {
     "focused_state": {
@@ -31,7 +45,7 @@
       "ordinary_passed": 6,
       "ordinary_skipped": 2
     },
-    "ci": "https://github.com/shinobi-dosho/stimela-ninja/actions/runs/38232225746",
+    "ci": "https://github.com/shinobi-dosho/stimela-ninja/actions/runs/38273638708",
     "ci_checks": "Python3.11/3.12 ordinary tests, Python3.11/3.12 Measurement Set integration and dependency audit all passed",
     "initial_full_suite": {
       "passed": 2756,
@@ -49,7 +63,7 @@
       ]
     },
     "initial_ci": "https://github.com/shinobi-dosho/stimela-ninja/actions/runs/38229441155",
-    "full_suite": {
+    "secondary_column_full_suite": {
       "passed": 2765,
       "skipped": 18,
       "warnings": 67,
@@ -57,6 +71,21 @@
       "code_commit": "eb5cec47bdfa7c5361f4afae8f8a3cf6711a0676",
       "environment": "Python3.12/Zarr3.3; fresh public locked msutils install",
       "junit": "downstream-full-final.xml"
+    },
+    "final_pin_focused": {
+      "passed": 50,
+      "junit": "downstream-final-focused.xml",
+      "runtime": "downstream-final-runtime.json"
+    },
+    "secondary_column_ci": "https://github.com/shinobi-dosho/stimela-ninja/actions/runs/38232225746",
+    "full_suite": {
+      "passed": 2765,
+      "skipped": 18,
+      "warnings": 67,
+      "seconds": 620.89,
+      "code_commit": "d15bab8ad4b5598dd8c52f5c00fabec16dd72d51",
+      "environment": "Python3.12/Zarr3.3; fresh public locked msutils25c280a install",
+      "junit": "downstream-final-pin-full.xml"
     }
   },
   "quality": {
@@ -74,7 +103,8 @@
     "confirmed_findings_fixed": [
       "Inspect numeric cell metadata and refuse oversized qualification reads before allocating values",
       "Account for python-casacore uchar reads widening to uint16",
-      "Pass explicit Xarray chunks for secondary MS columns lacking preferred-chunk encoding; real lazy-backend regression covers reads before allocation"
+      "Pass explicit Xarray chunks for secondary MS columns lacking preferred-chunk encoding; real lazy-backend regression covers reads before allocation",
+      "Reconstruct qualified removed-column hypercolumns through zero-row temporary schema, preserving descriptor and native identity; refuse cleanup drift"
     ],
     "final_result": "No actionable findings in all three final reviews"
   },
@@ -88,7 +118,7 @@
     "shinobi": "https://github.com/shinobi-dosho/stimela-ninja/pull/206"
   },
   "benchmark_code_commit": "ca5780914a3560d502f10d1105070857c8ced2f9",
-  "qualification_code_commit": "eb5cec47bdfa7c5361f4afae8f8a3cf6711a0676",
+  "qualification_code_commit": "d15bab8ad4b5598dd8c52f5c00fabec16dd72d51",
   "benchmark_source_sha256": {
     "examples/state_codec_benchmark.py": "de296700bee85b67fbf3342f33498556f2d3e1ab32e11eae62aec8e188ef27fc",
     "examples/state_codec_qualification.py": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
@@ -102,9 +132,27 @@
     "examples/state_codec_benchmark.py": "de296700bee85b67fbf3342f33498556f2d3e1ab32e11eae62aec8e188ef27fc",
     "examples/state_codec_qualification.py": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
     "src/shinobi/state_codecs.py": "91a34742aeddec9feaf58f4604fc4c95238262f569df630552ce38e1cb61b44d",
+    "src/shinobi/_state_adapter.py": "face2e0de9fc76045d5190f09ded688f6a33fc4ee8704f28c7054206885c773c",
+    "src/shinobi/dataset_state.py": "51001eade921faea50baa197be84556e415fd32aadf3f4717b86f88435946e15",
+    "pyproject.toml": "c8c042052db51d9134468c49e5757423e4c386fe7711d38b5cef64b7ed56ee8d",
+    "uv.lock": "a1b9a77660a1e17f37ff3a574923c9fa7f7040d14b6eed92347d0c113ecc9bbc"
+  },
+  "benchmark_msutils_commit": "2856d3ae357c4c2ec70060df641fe48e32ff8288",
+  "secondary_column_qualification_code_commit": "eb5cec47bdfa7c5361f4afae8f8a3cf6711a0676",
+  "secondary_column_qualification_source_sha256": {
+    "examples/state_codec_benchmark.py": "de296700bee85b67fbf3342f33498556f2d3e1ab32e11eae62aec8e188ef27fc",
+    "examples/state_codec_qualification.py": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+    "src/shinobi/state_codecs.py": "91a34742aeddec9feaf58f4604fc4c95238262f569df630552ce38e1cb61b44d",
     "src/shinobi/_state_adapter.py": "344051f44e824d5e798ce8fd4a53aad1212772eda313c10947340d7ce2dfcebb",
     "src/shinobi/dataset_state.py": "51001eade921faea50baa197be84556e415fd32aadf3f4717b86f88435946e15",
     "pyproject.toml": "ca52aaa2f13482e4d2c2dc856f65479ba9985e648ab2bbdfc2faa795593e1be3",
     "uv.lock": "a92260a4c8d575dc57dc05074eec5027b9e271d9f2d0b0c0452612b3f73254b7"
-  }
+  },
+  "real_schema_probe": {
+    "passed": 5,
+    "orphan_sources": 4,
+    "receipt": "real-schema-v3.json",
+    "scope": "zero-row descriptor and canonical manager checks; not full-volume replay"
+  },
+  "qualification_status": "Fresh full five-MS run under corrected public pin is running; earlier v2 restore failures and intentional interruptions are retained separately."
 }
