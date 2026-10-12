@@ -119,8 +119,11 @@ and retaining the existing default, rather than choosing one codec globally.
 Full-volume qualification
 -------------------------
 
-Full-volume qualification is running; final results will be added before this
-PR is marked ready. This is separate from the completed sampled-column matrix. Saved flag-version
+J0408 and J0410 have completed final-code qualification for both profiles:
+source-absent verification, restoration, independent all-cell comparison and
+final source audits all passed. Their receipts passed a separate audit of
+code revisions, runtime pins, codec metadata and native IDs. The remaining
+three datasets are running; final results will be added before this PR is marked ready. This is separate from the completed sampled-column matrix. Saved flag-version
 files are covered by that sample matrix; the full native round trips cover the
 MS table trees, not their adjacent flag-version directories.
 

@@ -188,7 +188,7 @@
     "receipt": "real-schema-v3.json",
     "scope": "zero-row descriptor and canonical manager checks; not full-volume replay"
   },
-  "qualification_status": "Final source-absent replay continuations are running for the July datasets; remaining full exports and fresh large-ledger Chi Oph capture continue. No complete five-dataset acceptance claim yet.",
+  "qualification_status": "J0408 and J0410 passed final-code source-absent verification, both materializations, all-cell comparisons and final audits; three datasets remain running.",
   "continuation_driver": {
     "passed_regressions": 7,
     "junit": "replay-driver-provenance.xml",
@@ -214,5 +214,13 @@
     "native_id_equal": true,
     "only_structural_difference": "MAIN physical table_files names",
     "scope": "full upstream native restoration and structural observation; independent all-cell continuation still pending"
+  },
+  "continuation_driver_v2": {
+    "passed_regressions": 25,
+    "junit": "replay-driver-v2.xml",
+    "script": "qualify-published-replay-v2.py.txt",
+    "script_sha256": "3efec54603fc9f56333be429c8dbb9ba36ea029373df57a973dd83992ca86c51",
+    "independent_reviews": "Sol medium, Astra low, Luna high: no actionable findings after UUID-path and running-capture exit-receipt corrections",
+    "scope": "Committed exports and archive required; previous verification disposition recorded; full final-code verification still required."
   }
 }
