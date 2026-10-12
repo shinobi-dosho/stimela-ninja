@@ -24,7 +24,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationErr
 
 from shinobi import _state_adapter as adapter
 from shinobi.state_codecs import LosslessProfile, rewrite_lossless
-from shinobi.dataset_lifecycle import DatasetObservation, member_fingerprint, observe_dataset, structural_signature
+from shinobi.dataset_lifecycle import DatasetObservation, _structural_signature_document, member_fingerprint, observe_dataset, structural_signature
 from shinobi.exceptions import ShinobiError
 from shinobi.ownership import acquire_workspace, inspect_ownership, ownership_registry, release_workspace
 from shinobi.storage import JsonFileStore, SharedFileLock, publish_directory, sync_directory, sync_directory_chain
@@ -303,7 +303,7 @@ class StateProvenance(_Record):
 
 
 class StateAttempt(_Record):
-    schema_version: Literal["shinobi-state-attempt/v1", "shinobi-state-attempt/v2"] = "shinobi-state-attempt/v2"
+    schema_version: Literal["shinobi-state-attempt/v1", "shinobi-state-attempt/v2", "shinobi-state-attempt/v3"] = "shinobi-state-attempt/v2"
     attempt_id: uuid.UUID
     operation: Literal["export", "materialize"]
     store: Path
@@ -328,17 +328,28 @@ class StateAttempt(_Record):
     events: tuple[str, ...] = ()
     error: str | None = None
     structural_signature: str | None = None
+    restored_structural_signature: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", exclude_if=lambda value: value is None)
     provenance: StateProvenance | None = None
 
     @model_validator(mode="after")
     def consistent_provenance(self):
+        if self.schema_version == "shinobi-state-attempt/v3":
+            if self.operation != "materialize":
+                raise ValueError("state attempt schema v3 is only for materialization")
+            if self.phase in {"ready", "published", "committed"} and self.restored_structural_signature is None:
+                raise ValueError("ready materialization schema v3 requires a restored structural signature")
+        elif self.restored_structural_signature is not None:
+            raise ValueError("legacy state attempts cannot carry a restored structural signature")
         if self.schema_version == "shinobi-state-attempt/v1":
             if self.provenance is not None:
                 raise ValueError("state attempt schema v1 cannot carry reusable-state provenance")
             return self
         if self.versions is not None:
             _complete_state_stack(self.versions)
-        if self.phase == "committed":
+        validated_phase = self.phase == "committed" or (self.schema_version == "shinobi-state-attempt/v3" and self.phase in {"ready", "published"})
+        if validated_phase:
+            if self.schema_version == "shinobi-state-attempt/v3" and (self.candidate_identity is None or self.state_id is None or self.representation_id is None):
+                raise ValueError("validated materialization schema v3 requires candidate and state identities")
             if self.provenance is None or self.versions is None:
                 raise ValueError("a committed state attempt requires reusable-state provenance and a complete runtime stack")
             if self.structural_signature is None or self.structural_signature != self.provenance.structural_signature:
@@ -384,6 +395,20 @@ def _error(exc: Exception) -> StateError:
 
 def _digest(value: dict) -> str:
     return "sha256:" + hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def _state_replay_structure_matches(source: DatasetObservation, restored: DatasetObservation) -> bool:
+    """Match frozen structure inputs except regenerated per-resource table files.
+
+    Only reusable-state exact native replay uses this comparison; observed-state
+    signatures, snapshots and mutation recovery retain their frozen v1 identity.
+    """
+    source_document = _structural_signature_document(source)
+    restored_document = _structural_signature_document(restored)
+    for document in (source_document, restored_document):
+        for resource in document["resources"]:
+            resource.pop("files")
+    return source_document == restored_document
 
 
 def _directory_identity(path: Path, *, missing_ok: bool = False) -> tuple[int, int] | None:
@@ -814,6 +839,7 @@ class DatasetStateStore:
                 operation = uuid.uuid4()
                 stage = target.parent / f".shinobi-state-{operation}"
                 attempt = StateAttempt(
+                    schema_version="shinobi-state-attempt/v3",
                     attempt_id=operation,
                     operation="materialize",
                     store=self.root,
@@ -853,15 +879,16 @@ class DatasetStateStore:
                     attempt = self._save(attempt, phase="validating")
                     observed = observe_dataset(product, stage)
                     signature = structural_signature(observed)
-                    if signature != physical.structural_signature or adapter.native_id(product) != state_id:
-                        raise StateError("postcondition", "independent Shinobi structural signature/native logical ID differs from stored state")
+                    if not _state_replay_structure_matches(physical.observation, observed) or adapter.native_id(product) != state_id:
+                        raise StateError("postcondition", "independent Shinobi replay structure/native logical ID differs from stored state")
                     self._verify_rep(rep, physical)
                     _sync_tree(product)
                     attempt = self._save(
                         attempt,
                         phase="ready",
                         candidate_identity=_identity(product),
-                        structural_signature=signature,
+                        structural_signature=physical.structural_signature,
+                        restored_structural_signature=signature,
                         provenance=provenance.validated_replay(),
                     )
                     if self._destination(destination, physical) != target or _identity(target.parent) != attempt.parent_identity:
@@ -975,7 +1002,17 @@ class DatasetStateStore:
                     adapter.runtime()
                     self.verify(attempt.state_id, attempt.representation_id)
                     observed = observe_dataset(attempt.destination, attempt.destination.parent)
-                    if structural_signature(observed) != attempt.structural_signature or adapter.native_id(attempt.destination) != attempt.state_id:
+                    signature = structural_signature(observed)
+                    if attempt.schema_version == "shinobi-state-attempt/v3":
+                        _, _, physical = self._load(attempt.state_id, attempt.representation_id)
+                        structure_matches = (
+                            attempt.structural_signature == physical.structural_signature
+                            and signature == attempt.restored_structural_signature
+                            and _state_replay_structure_matches(physical.observation, observed)
+                        )
+                    else:
+                        structure_matches = signature == attempt.structural_signature
+                    if not structure_matches or adapter.native_id(attempt.destination) != attempt.state_id:
                         raise StateError("recovery-postcondition", "published destination no longer matches the recorded state; preserving it")
                     committed = True
                 elif attempt.operation == "export" and attempt.state_id and attempt.representation_id:

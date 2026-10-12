@@ -89,8 +89,13 @@ qualified runtime for replay. Native profile v2 accepts typed empty column
 keywords, uniformly defined zero-length cells and TiledColumn/TiledShape
 managers. Casacore can regenerate physical manager fields, which the v2
 native model excludes from its logical identity. After msutils succeeds Shinobi checks
-its existing structural signature and independently recomputes the native
-logical root before publication. Consumers needing identical files refuse.
+the frozen structural document and independently recomputes the native
+logical root before publication. Only this reusable-state replay comparison
+omits per-resource table filenames, which casacore may regenerate when it
+renumbers storage managers. Resource paths, members, manager types, profiles,
+status, rows, columns, keywords and subtables remain exact. The frozen observed
+structural signature, mutation snapshots and their recovery rules are unchanged.
+Consumers needing identical files refuse.
 
 Transactions and recovery
 -------------------------
@@ -112,8 +117,17 @@ There is no overwrite. msutils runs inside a recorded outer stage;
 independent validation and content sync precede Linux
 ``renameat2(RENAME_NOREPLACE)`` publication. A racing empty directory survives.
 
-New operations write ``shinobi-state-attempt/v2``.  In addition to IDs,
-versions, phase events, staging/parent/candidate identities and outcome, each
+Exports continue to write ``shinobi-state-attempt/v2``. New materializations
+write ``shinobi-state-attempt/v3`` and keep the source structural signature in
+both the attempt and its ``shinobi-state-provenance/v1`` record. A separate
+``restored_structural_signature`` records the observed candidate's frozen
+signature before publication. It may equal the source signature. The field is
+omitted while absent; historical v1/v2 attempts reject a non-null restored
+signature and retain their serialized shape and exact-signature recovery.
+Ready, published and committed v3 attempts require both signatures, validated
+exact replay provenance, complete versions and candidate/state identities.
+In addition to IDs, versions, phase events, staging/parent/candidate identities
+and outcome, each
 committed attempt embeds closed ``shinobi-state-provenance/v1`` evidence.  It
 keeps the native logical, MSv4, preservation-payload and representation IDs
 separate; names the MSv2/closure/mapping/MSv4 profiles and complete software
@@ -135,7 +149,7 @@ strictly reopens the selected representation and rejects different MSv2,
 closure, mapping, MSv4 or preservation profiles, any software-stack mismatch,
 and any fidelity other than exact-logical.  Recipes and detached workers still
 cannot consume state IDs; run-manifest replay therefore cannot silently select
-or downgrade a reusable state. The exact package-key set is part of the v2
+or downgrade a reusable state. The exact package-key set is part of the v2/v3
 attempt and representation reader contract: changing ``adapter.PACKAGES``
 requires a compatible reader or migration first, otherwise existing v2 records
 and representations are intentionally refused and unfinished attempts cannot
@@ -149,7 +163,10 @@ recorded, and unexpected operational exceptions remain distinct ``failed``
 attempts. Recovery uses persistent
 operation locks and ownership liveness, never PID age or broad globs. It
 removes only recorded private staging. After a crash following publication,
-it recognizes the candidate inode, revalidates and records success rather
+it recognizes the candidate inode and revalidates the selected representation.
+For v3, recovery also repeats the replay structural comparison and native ID
+check and requires the observed destination signature to equal the recorded
+restored signature. It records success rather
 than deleting the destination. An unrelated file or symlink that won the
 publication race is preserved while only recorded private staging is cleaned.
 Live/uncertain owners or mismatched directory identities refuse. A crash
