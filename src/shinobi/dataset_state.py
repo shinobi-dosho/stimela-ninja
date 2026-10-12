@@ -33,6 +33,7 @@ from shinobi.steps.schema import paths_overlap
 LogicalID = Annotated[str, Field(pattern=r"^msutils-logical-hash/v1:[0-9a-f]{64}$")]
 RepresentationID = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
 MAX_METADATA = 64 * 1024 * 1024
+MAX_REPRESENTATION_METADATA = 256 * 1024 * 1024
 _MSV4_SCHEMA = adapter.MSV4_SCHEMA
 NativeModel = Literal["msutils-native-model/v1", "msutils-native-model/v2"]
 LogicalHash = Literal["msutils-logical-hash/v1"]
@@ -403,25 +404,41 @@ def _identity(path: Path) -> tuple[int, int]:
     return identity
 
 
+def _metadata_limit(path: Path) -> int:
+    """Only physical representation ledgers receive the larger finite budget."""
+    return MAX_REPRESENTATION_METADATA if path.name == "representation.json" else MAX_METADATA
+
+
 def _read(path: Path) -> bytes:
+    limit = _metadata_limit(path)
     info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_METADATA:
-        raise StateError("metadata", f"expected a regular metadata file of at most {MAX_METADATA} bytes: {path}")
-    return path.read_bytes()
+    if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+        raise StateError("metadata", f"expected a regular metadata file of at most {limit} bytes: {path}")
+    with path.open("rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size > limit:
+            raise StateError("metadata", f"expected a regular metadata file of at most {limit} bytes: {path}")
+        payload = stream.read(limit + 1)
+    if len(payload) > limit:
+        raise StateError("metadata", f"metadata exceeds {limit} bytes: {path}")
+    return payload
 
 
 def _write(path: Path, model: BaseModel) -> None:
     # This is inside private staging; publication is one no-replace directory move.
-    payload = model.model_dump_json(indent=2).encode()
-    if len(payload) > MAX_METADATA:
-        raise StateError("metadata-size", f"manifest exceeds {MAX_METADATA} bytes: {path}")
+    limit = _metadata_limit(path)
+    payload = model.model_dump_json(indent=None if path.name == "representation.json" else 2).encode()
+    if len(payload) > limit:
+        raise StateError("metadata-size", f"manifest exceeds {limit} bytes: {path}")
     with path.open("xb") as stream:
         stream.write(payload)
         stream.flush()
         os.fsync(stream.fileno())
 
 
-def _manifest(path: Path, model):
+def _manifest_data(path: Path) -> dict:
+    """Read one bounded JSON object, refusing duplicates at every nesting level."""
+
     def unique(pairs):
         result = {}
         for key, value in pairs:
@@ -433,7 +450,11 @@ def _manifest(path: Path, model):
     data = json.loads(_read(path), object_pairs_hook=unique)
     if not isinstance(data, dict) or "schema_version" not in data:
         raise StateError("schema-version", f"missing explicit manifest version: {path}")
-    return model.model_validate(data)
+    return data
+
+
+def _manifest(path: Path, model):
+    return model.model_validate(_manifest_data(path))
 
 
 def _inventory(root: Path) -> tuple[tuple[FileEntry, ...], dict[str, str]]:
@@ -526,13 +547,16 @@ class DatasetStateStore:
         state = self._state(state_id)
         rep = self._representation(state_id, representation_id)
         logical = _manifest(state / "logical.json", LogicalState)
-        raw = json.loads(_read(rep / "representation.json"))
-        model = {
+        raw = _manifest_data(rep / "representation.json")
+        models = {
             "shinobi-state-representation/v1": StateRepresentation,
             "shinobi-state-representation/v2": StateRepresentationV2,
             "shinobi-state-representation/v3": StateRepresentationV3,
-        }.get(raw.get("schema_version"), StateRepresentation)
-        physical = _manifest(rep / "representation.json", model)
+        }
+        version = raw["schema_version"]
+        if not isinstance(version, str) or version not in models:
+            raise StateError("schema-version", f"unsupported representation manifest version: {version!r}")
+        physical = models[version].model_validate(raw)
         if logical.state_id != state_id or physical.state_id != state_id or physical.representation_id != "sha256:" + rep.name:
             raise StateError("identity", "directory and manifest identities disagree")
         if _digest(physical.model_dump(mode="json", exclude={"representation_id"})) != physical.representation_id:

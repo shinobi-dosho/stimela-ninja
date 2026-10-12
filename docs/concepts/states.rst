@@ -51,6 +51,17 @@ every file/directory, sizes/checksums and actual Zarr node metadata: chunks,
 shards, codecs, dtype, shape, dimensions and schema attributes. Node documents
 are JSON text, preserving non-finite fill values without normalization.
 
+Ordinary metadata files retain a 64 MiB serialized limit. Only the physical
+``representation.json`` ledger has a separate finite 256 MiB limit, allowing
+full datasets with many independently hashed chunks. New physical manifests
+use compact JSON; historical pretty JSON remains readable within the physical
+limit. Formatting does not change the canonical model digest or omit ledger
+entries. Reads are bounded to the selected limit plus one byte and reject
+nonregular files and duplicate JSON keys before strict model validation.
+An oversized physical manifest refuses while export is still private staging.
+Decoded JSON and Pydantic ledger objects can consume substantially more memory
+than the serialized file; this byte budget is not a peak-memory guarantee.
+
 Fresh source observations include supplemental ``table_columns`` evidence
 for supported MSv2 subtables. Historical observations omit this optional field;
 an empty default stays omitted even in nested representation serialization,
