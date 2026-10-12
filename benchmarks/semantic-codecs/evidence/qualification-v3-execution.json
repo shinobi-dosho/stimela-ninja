@@ -1,0 +1,134 @@
+{
+  "schema": "shinobi-semantic-qualification-execution/v1",
+  "started_utc": "2026-10-12T15:56:00.976502+00:00",
+  "hostname": "kudu",
+  "shinobi_commit": "d15bab8ad4b5598dd8c52f5c00fabec16dd72d51",
+  "source_status": "",
+  "runtime": {
+    "stimela-ninja": "0.1.0b7",
+    "msutils": "3.0.0",
+    "xarray-ms": "0.5.8",
+    "xarray": "2026.7.0",
+    "zarr": "3.3.0",
+    "numcodecs": "0.16.5",
+    "arcae": "0.5.4",
+    "numpy": "2.5.3",
+    "python-casacore": "3.8.1",
+    "dask": "2026.8.0",
+    "pyarrow": "23.0.1",
+    "pandas": "3.0.6",
+    "dask-ms": "not-installed",
+    "msutils_commit": "25c280a8ab412b5015a80bf4ff6f83b7a6820675"
+  },
+  "source_sha256": {
+    "examples/state_codec_qualification.py": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+    "src/shinobi/state_codecs.py": "91a34742aeddec9feaf58f4604fc4c95238262f569df630552ce38e1cb61b44d",
+    "src/shinobi/_state_adapter.py": "face2e0de9fc76045d5190f09ded688f6a33fc4ee8704f28c7054206885c773c",
+    "src/shinobi/dataset_state.py": "51001eade921faea50baa197be84556e415fd32aadf3f4717b86f88435946e15",
+    "uv.lock": "a1b9a77660a1e17f37ff3a574923c9fa7f7040d14b6eed92347d0c113ecc9bbc"
+  },
+  "driver_sha256": "287ec53133c17533551a9226e4e937a61e5ef551bffc81e6aeb46be1ad9807d0",
+  "environment": {
+    "TMPDIR": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/scratch",
+    "SHINOBI_OWNERSHIP_REGISTRY": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/owners-v3.json"
+  },
+  "max_concurrent_datasets": 5,
+  "timing_scope": "Functional qualification; five datasets run concurrently, not controlled throughput measurements.",
+  "runs": [
+    {
+      "label": "chioph_avg",
+      "source": "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-applied-CHI-OPH-avg.ms",
+      "command": [
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/venv-v3/bin/python",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v3/examples/state_codec_qualification.py",
+        "--source",
+        "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-applied-CHI-OPH-avg.ms",
+        "--workdir",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-chioph_avg",
+        "--block-rows",
+        "128"
+      ],
+      "exit_code": 1,
+      "seconds": 3808.916177779436,
+      "report": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-chioph_avg/report.json"
+    },
+    {
+      "label": "j0408",
+      "source": "/data/projects/katplus/katplus-jul20/msdir/1783252863_2026-07-20T14-53-01_Jdz-J0408-6545.ms",
+      "command": [
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/venv-v3/bin/python",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v3/examples/state_codec_qualification.py",
+        "--source",
+        "/data/projects/katplus/katplus-jul20/msdir/1783252863_2026-07-20T14-53-01_Jdz-J0408-6545.ms",
+        "--workdir",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408",
+        "--block-rows",
+        "128"
+      ],
+      "exit_code": 1,
+      "seconds": 4376.001076368615,
+      "report": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/report.json"
+    },
+    {
+      "label": "j0410",
+      "source": "/data/projects/katplus/katplus-jul20/msdir/1783252863_2026-07-20T14-53-01_Jdz-J0410-65off.ms",
+      "command": [
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/venv-v3/bin/python",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v3/examples/state_codec_qualification.py",
+        "--source",
+        "/data/projects/katplus/katplus-jul20/msdir/1783252863_2026-07-20T14-53-01_Jdz-J0410-65off.ms",
+        "--workdir",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0410",
+        "--block-rows",
+        "128"
+      ],
+      "exit_code": 1,
+      "seconds": 4669.944896232337,
+      "report": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0410/report.json"
+    },
+    {
+      "label": "xc_calibrators",
+      "source": "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-xc-calibrators.ms",
+      "command": [
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/venv-v3/bin/python",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v3/examples/state_codec_qualification.py",
+        "--source",
+        "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-xc-calibrators.ms",
+        "--workdir",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-xc_calibrators",
+        "--block-rows",
+        "128"
+      ],
+      "exit_code": 1,
+      "seconds": 11898.187061868608,
+      "report": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-xc_calibrators/report.json"
+    },
+    {
+      "label": "original",
+      "source": "/home/sphemakh/sandbox/shinobiMSv24-16/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms",
+      "command": [
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/venv-v3/bin/python",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v3/examples/state_codec_qualification.py",
+        "--source",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms",
+        "--workdir",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-original",
+        "--block-rows",
+        "128"
+      ],
+      "exit_code": 1,
+      "seconds": 13424.404858237132,
+      "report": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-original/report.json"
+    }
+  ],
+  "finished_utc": "2026-10-12T19:39:45.385777+00:00",
+  "source_status_after": "",
+  "source_sha256_after": {
+    "examples/state_codec_qualification.py": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+    "src/shinobi/state_codecs.py": "91a34742aeddec9feaf58f4604fc4c95238262f569df630552ce38e1cb61b44d",
+    "src/shinobi/_state_adapter.py": "face2e0de9fc76045d5190f09ded688f6a33fc4ee8704f28c7054206885c773c",
+    "src/shinobi/dataset_state.py": "51001eade921faea50baa197be84556e415fd32aadf3f4717b86f88435946e15",
+    "uv.lock": "a1b9a77660a1e17f37ff3a574923c9fa7f7040d14b6eed92347d0c113ecc9bbc"
+  },
+  "passed": false
+}

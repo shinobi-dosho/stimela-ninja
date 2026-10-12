@@ -188,7 +188,7 @@
     "receipt": "real-schema-v3.json",
     "scope": "zero-row descriptor and canonical manager checks; not full-volume replay"
   },
-  "qualification_status": "J0408 and J0410 passed final-code source-absent verification, both materializations, all-cell comparisons and final audits; three datasets remain running.",
+  "qualification_status": "All five baseline/combined export pairs complete. J0408 and J0410 passed all final-code qualification stages. Original, Chi Oph averaged and cross-calibrators final replays running; original/Chi obsolete verify stages explicitly superseded with exact-process handoff receipts.",
   "continuation_driver": {
     "passed_regressions": 7,
     "junit": "replay-driver-provenance.xml",
@@ -229,6 +229,22 @@
     "passed_regressions": 15,
     "junit": "handoff-helper.xml",
     "independent_reviews": "Sol medium, Astra low, Luna high: no actionable findings after durable signal-delivery evidence correction",
-    "scope": "Only obsolete verify stage after committed exports and archive; exact pidfd identities, exclusive pre-signal and delivery receipts, confirmed worker/controller exits; tests use mocked signalling."
+    "scope": "Only obsolete verify stage after committed exports and archive; exact pidfd identities, exclusive pre-signal and delivery receipts, confirmed worker/controller exits; tests use mocked signalling.",
+    "live_handoffs": [
+      {
+        "dataset": "chioph_avg",
+        "receipt": "handoff-chioph_avg.json",
+        "signal_delivery": "handoff-chioph_avg.json.signal-delivered.json",
+        "snapshot": "handoff-chioph_avg.json.pre-signal.json",
+        "result": "SIGINT delivered; exact verify worker and controller exited; unchanged completed exports and prerequisite evidence; final-code continuation launched."
+      },
+      {
+        "dataset": "original",
+        "receipt": "handoff-original.json",
+        "signal_delivery": "handoff-original.json.signal-delivered.json",
+        "snapshot": "handoff-original.json.pre-signal.json",
+        "result": "SIGINT delivered; exact verify worker and controller exited; completed exports and prerequisites unchanged; final-code continuation launched."
+      }
+    ]
   }
 }

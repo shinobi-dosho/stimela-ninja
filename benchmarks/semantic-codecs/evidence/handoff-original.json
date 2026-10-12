@@ -1,0 +1,115 @@
+{
+  "capture_checkout": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v3",
+  "capture_evidence": {
+    "exports": {
+      "export-baseline": {
+        "attempt_sha256": "b4806764d691e0965e3ab20558a4e81ae38e5705bac6560f873498f67165eeac",
+        "manifest_sha256": "0edcce8d0c215f689ebcfa86edf78eb5cb7572ad8db4043ca81cae63ed6cfdf9"
+      },
+      "export-combined": {
+        "attempt_sha256": "4c8a2b11ccc9feb8235b923965c8e7a841ce6e0fa3b391d21c6202d66b3ffda4",
+        "manifest_sha256": "7e4a9feb4abb4c789fe7ee33ce270491387b1b7f44f3b30e944f20c4026b9f5a"
+      }
+    },
+    "recorded_source_absent": true,
+    "report_sha256": "7ca97641477576361f4de962809a5668fb2715f20e9fc87ab5fc672d0dcb8b73",
+    "script_sha256": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+    "stages_sha256": {
+      "archive": "100fa8c4990056450c15d1a25c9bb637ee1f494cc4d569ff33575cfe83d389dc",
+      "export-baseline": "7eedc887d738e4f37b8ef696855212864f8e59397864b8898b3683f4ab7add44",
+      "export-combined": "5b220416009940696fe4bea7d843f7e0fc9aac8fc42ca2cd5b95a6883cd70644",
+      "prepare": "a43f20d1c2488c0b3d26a3501ec2e29b2640d855ab5d5f2608d6478c87ffaa87"
+    }
+  },
+  "capture_report_sha256": "14c5d0f7ad124ab758aeba22b3c407e8459baf8fbce4f2a0c042556c76bc267b",
+  "capture_root": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-original",
+  "capture_script_sha256": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+  "captured_at": "2026-10-12T19:39:45.141991+00:00",
+  "completed_at": "2026-10-12T19:39:45.957425+00:00",
+  "continuation_path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/replay-v5-original",
+  "disposition": "cancelled-obsolete-verification",
+  "operator_argv": [
+    "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/handoff-old-verification.py",
+    "--capture-root",
+    "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-original",
+    "--capture-checkout",
+    "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v3",
+    "--output-receipt",
+    "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/handoff-original.json",
+    "--continuation-path",
+    "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/replay-v5-original"
+  ],
+  "operator_script_sha256": "64fd572da125f9ac0dcf251b41d5a09904ba58dba40091be591d3a7fffdf4ce3",
+  "post_report_sha256": "14c5d0f7ad124ab758aeba22b3c407e8459baf8fbce4f2a0c042556c76bc267b",
+  "pre_report_sha256": "7ca97641477576361f4de962809a5668fb2715f20e9fc87ab5fc672d0dcb8b73",
+  "processes": [
+    {
+      "argv": [
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/venv-v3/bin/python",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v3/examples/state_codec_qualification.py",
+        "--workdir",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-original",
+        "--block-rows",
+        "128",
+        "--stage",
+        "verify"
+      ],
+      "exit_confirmed": true,
+      "pid": 1149893,
+      "ppid": 836256,
+      "script_sha256": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+      "startticks": 916559035,
+      "state": "R"
+    },
+    {
+      "argv": [
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/venv-v3/bin/python",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v3/examples/state_codec_qualification.py",
+        "--source",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms",
+        "--workdir",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-original",
+        "--block-rows",
+        "128"
+      ],
+      "exit_confirmed": true,
+      "pid": 836256,
+      "ppid": 836166,
+      "script_sha256": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+      "startticks": 915218112,
+      "state": "S"
+    }
+  ],
+  "reason": "supersede obsolete capture-code verification with final-code complete source-absent verification",
+  "schema_version": "shinobi-qualification-transition/v1",
+  "signal_delivery": {
+    "marker": {
+      "delivered_at": "2026-10-12T19:39:45.143282+00:00",
+      "delivery_confirmed": true,
+      "schema_version": "shinobi-qualification-signal-delivery/v1",
+      "signal": 2,
+      "signal_name": "SIGINT",
+      "snapshot_sha256": "2f265c0e27bef39e2a479e94af65d1912ba2276758a1da45f503a31339319903",
+      "target": {
+        "argv": [
+          "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/venv-v3/bin/python",
+          "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v3/examples/state_codec_qualification.py",
+          "--workdir",
+          "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-original",
+          "--block-rows",
+          "128",
+          "--stage",
+          "verify"
+        ],
+        "exit_confirmed": false,
+        "pid": 1149893,
+        "ppid": 836256,
+        "script_sha256": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+        "startticks": 916559035,
+        "state": "R"
+      }
+    },
+    "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/handoff-original.json.signal-delivered.json",
+    "sha256": "4acb31a76b2f43930fe0adf1de8e13a3d935715dcc69de92a2b82b028fd09ce3"
+  }
+}

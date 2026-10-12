@@ -1,0 +1,26 @@
+{
+  "delivered_at": "2026-10-12T19:30:10.473283+00:00",
+  "delivery_confirmed": true,
+  "schema_version": "shinobi-qualification-signal-delivery/v1",
+  "signal": 2,
+  "signal_name": "SIGINT",
+  "snapshot_sha256": "0b8d6e199c395cb36f138a2df8daea669a695dc6108fad3fa0998377024fa873",
+  "target": {
+    "argv": [
+      "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/venv-v4/bin/python",
+      "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v4/examples/state_codec_qualification.py",
+      "--workdir",
+      "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v4-chioph_avg",
+      "--block-rows",
+      "128",
+      "--stage",
+      "verify"
+    ],
+    "exit_confirmed": false,
+    "pid": 1139047,
+    "ppid": 977237,
+    "script_sha256": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+    "startticks": 916499269,
+    "state": "R"
+  }
+}

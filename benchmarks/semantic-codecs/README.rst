@@ -123,7 +123,8 @@ J0408 and J0410 have completed final-code qualification for both profiles:
 source-absent verification, restoration, independent all-cell comparison and
 final source audits all passed. Their receipts passed a separate audit of
 code revisions, runtime pins, codec metadata and native IDs. The remaining
-three datasets are running; final results will be added before this PR is marked ready. This is separate from the completed sampled-column matrix. Saved flag-version
+three final-code replays are running; all five baseline/combined export pairs
+have completed. Final results will be added before this PR is marked ready. This is separate from the completed sampled-column matrix. Saved flag-version
 files are covered by that sample matrix; the full native round trips cover the
 MS table trees, not their adjacent flag-version directories.
 
@@ -136,6 +137,15 @@ recorded path to be absent. Both restored MSs are compared against the original
 using independently read native metadata, definedness and every defined value.
 Numeric values compare as exact bytes, including signed zeros and NaN payloads.
 The native profile's declared physical-manager exclusions remain exclusions.
+
+The final continuation runs audit, source-absent verification, separate baseline
+and combined restoration, separate full comparisons, and a final source audit.
+For Chi Oph averaged and the original sandbox MS, both exports committed and the generated copy was archived
+before the obsolete capture-code verify worker was stopped. The operator receipt
+records the exact worker/controller identities, successful pidfd SIGINT delivery,
+and confirmed exits. Each original report retains the interrupted verify result;
+that stage is explicitly superseded, not counted as passed. The continuation
+performs the complete verification again under the final replay revision.
 
 The v3 captures began with all five datasets running concurrently (the earlier
 diagnostic runs used up to three). The fresh Chi Oph capture and final replay

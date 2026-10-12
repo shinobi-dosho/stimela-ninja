@@ -1,0 +1,66 @@
+{
+  "schema": "shinobi-semantic-qualification-execution/v1",
+  "started_utc": "2026-10-12T17:29:42.330882+00:00",
+  "hostname": "kudu",
+  "shinobi_commit": "0b2164db12a1865a90c2a17cbe2c6971de79e82a",
+  "source_status": "",
+  "runtime": {
+    "stimela-ninja": "0.1.0b7",
+    "msutils": "3.0.0",
+    "xarray-ms": "0.5.8",
+    "xarray": "2026.7.0",
+    "zarr": "3.3.0",
+    "numcodecs": "0.16.5",
+    "arcae": "0.5.4",
+    "numpy": "2.5.3",
+    "python-casacore": "3.8.1",
+    "dask": "2026.8.0",
+    "pyarrow": "23.0.1",
+    "pandas": "3.0.6",
+    "dask-ms": "not-installed",
+    "msutils_commit": "25c280a8ab412b5015a80bf4ff6f83b7a6820675"
+  },
+  "source_sha256": {
+    "examples/state_codec_qualification.py": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+    "src/shinobi/state_codecs.py": "91a34742aeddec9feaf58f4604fc4c95238262f569df630552ce38e1cb61b44d",
+    "src/shinobi/_state_adapter.py": "face2e0de9fc76045d5190f09ded688f6a33fc4ee8704f28c7054206885c773c",
+    "src/shinobi/dataset_state.py": "6d934b7f969be9c4cb217562d45545e432e3619adb8b717c0ca98ed3aa7ef618",
+    "uv.lock": "a1b9a77660a1e17f37ff3a574923c9fa7f7040d14b6eed92347d0c113ecc9bbc"
+  },
+  "driver_sha256": "3a49167c77a34daad17d07aa0c491330567ee90d861cc4a3bae0ac8da9038b9e",
+  "environment": {
+    "TMPDIR": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/scratch",
+    "SHINOBI_OWNERSHIP_REGISTRY": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/owners-v4.json"
+  },
+  "max_concurrent_datasets": 1,
+  "timing_scope": "Functional qualification; one dataset; concurrent with earlier full-volume workers, not controlled throughput measurements.",
+  "runs": [
+    {
+      "label": "chioph_avg",
+      "source": "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-applied-CHI-OPH-avg.ms",
+      "command": [
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/venv-v4/bin/python",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v4/examples/state_codec_qualification.py",
+        "--source",
+        "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-applied-CHI-OPH-avg.ms",
+        "--workdir",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v4-chioph_avg",
+        "--block-rows",
+        "128"
+      ],
+      "exit_code": 1,
+      "seconds": 7228.779660310596,
+      "report": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v4-chioph_avg/report.json"
+    }
+  ],
+  "finished_utc": "2026-10-12T19:30:11.129882+00:00",
+  "source_status_after": "",
+  "source_sha256_after": {
+    "examples/state_codec_qualification.py": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+    "src/shinobi/state_codecs.py": "91a34742aeddec9feaf58f4604fc4c95238262f569df630552ce38e1cb61b44d",
+    "src/shinobi/_state_adapter.py": "face2e0de9fc76045d5190f09ded688f6a33fc4ee8704f28c7054206885c773c",
+    "src/shinobi/dataset_state.py": "6d934b7f969be9c4cb217562d45545e432e3619adb8b717c0ca98ed3aa7ef618",
+    "uv.lock": "a1b9a77660a1e17f37ff3a574923c9fa7f7040d14b6eed92347d0c113ecc9bbc"
+  },
+  "passed": false
+}
