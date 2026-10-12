@@ -15,7 +15,6 @@ from shinobi.steps.schema import Scope
 from shinobi.steps.dispatch import _dispatch
 from shinobi.exceptions import DatasetLifecycleViolationError
 from shinobi.loaders._modelgen import dtype_to_type
-from tests.test_fits import image
 
 
 class Images(BaseModel):
@@ -32,6 +31,9 @@ class Empty(BaseModel):
 
 fits = pytest.importorskip("astropy.io.fits")
 np = pytest.importorskip("numpy")
+
+# Gate the helper module before importing it: it also skips without Astropy.
+from tests.test_fits import image  # noqa: E402
 
 
 def test_exact_canonical_family_types():
@@ -186,6 +188,7 @@ def test_read_bytes_only_hash_unwired_list_elements(tmp_path, monkeypatch):
 
 
 def test_ms_writer_direct_fits_create_refuses_before_launch(tmp_path, monkeypatch):
+    pytest.importorskip("casacore.tables")
     from shinobi import MSv2, Cab, DatasetAccess, DatasetColumns
     from shinobi.steps.schema import ParamMeta
     from tests._dataset_fixtures import make_ms, scans

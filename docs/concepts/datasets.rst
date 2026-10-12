@@ -743,7 +743,11 @@ FITS image and table contracts
 ``fits-image/v1`` and ``fits-table/v1`` declarations. Model construction,
 serialization and JSON Schema generation perform no filesystem inspection and
 import no Astropy. Install ``stimela-ninja[fits]`` in the controller environment,
-or use ``uv sync --group dev --group fits`` for acceptance tests.
+or use ``uv sync --group dev --group fits`` for FITS acceptance tests.
+The ordinary CI matrix keeps these dependencies optional and skips the FITS
+modules when Astropy is absent. The measurement-set CI matrix installs both
+``measurement-set`` and ``fits`` groups and runs the FITS modules, including
+real MS/FITS product-gate integration tests, on Python 3.11 and 3.12.
 
 ``FITSImage`` selects a primary image or ordinary IMAGE extension of any
 physical rank: there is no cube subtype or minimum-rank taxonomy. Zero-length

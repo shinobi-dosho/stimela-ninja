@@ -15,7 +15,6 @@ from shinobi.exceptions import DatasetLifecycleUnavailableError, DatasetLifecycl
 from shinobi.cache import get_cache_manifest
 from shinobi.fits_lifecycle import FITSLifecycleStore
 from shinobi.snapshots import faults, reconcile, get_journal, chain_id
-from tests.test_fits import image
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +26,9 @@ def workspace(tmp_path, monkeypatch):
 
 fits = pytest.importorskip("astropy.io.fits")
 np = pytest.importorskip("numpy")
+
+# Gate the helper module before importing it: it also skips without Astropy.
+from tests.test_fits import image  # noqa: E402
 
 
 def run(step, tmp_path, **kwargs):
