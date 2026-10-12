@@ -1,0 +1,107 @@
+........................................................................ [  2%]
+........................................................................ [  5%]
+........................................................................ [  7%]
+........................................................................ [ 10%]
+........................................................................ [ 12%]
+..........sss...sss...sss............................................... [ 15%]
+........................................................................ [ 18%]
+........................................................................ [ 20%]
+........................................................................ [ 23%]
+........................................................................ [ 25%]
+........................................................................ [ 28%]
+........................................................................ [ 30%]
+........................................................................ [ 33%]
+........................................................................ [ 36%]
+.................................F
+=================================== FAILURES ===================================
+_________________ test_exact_round_trip_without_source_and_cli _________________
+
+tmp_path = PosixPath('/tmp/pytest-of-sphemakh/pytest-91/test_exact_round_trip_without_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x70cf993f0860>
+
+    def test_exact_round_trip_without_source_and_cli(tmp_path, monkeypatch):
+        import numpy as np
+        from casacore.tables import table
+        from click.testing import CliRunner
+        from shinobi.cli import main
+    
+        monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "owners.json"))
+        monkeypatch.setenv("SHINOBI_CACHE__DIR", str(tmp_path / "cache"))
+        source = make_state_ms(tmp_path / "source.ms")
+        store = DatasetStateStore(tmp_path / "store", cache_dir=tmp_path / "cache")
+        runner = CliRunner()
+        response = runner.invoke(main, ["state", "--store", str(store.root), "export", str(source), "--block-rows", "1", "--json"])
+>       assert response.exit_code == 0, response.output
+E       AssertionError: 
+E         Aborted!
+E         
+E       assert 1 == 0
+E        +  where 1 = <Result SystemExit(1)>.exit_code
+
+tests/test_dataset_state_live.py:64: AssertionError
+=============================== warnings summary ===============================
+tests/test_cli_download.py::TestDownloadCLI::test_cli_download_cult_cargo
+  /home/sphemakh/work/softdev/stimela-ninja/tests/test_cli_download.py:426: DeprecationWarning: 'isolated_filesystem' is deprecated and will be removed in Click 9.0. Use 'tempfile.TemporaryDirectory' or pytest's 'tmp_path' fixture with absolute paths instead.
+    with runner.isolated_filesystem():
+
+tests/test_cli_download.py::TestDownloadCLI::test_cli_download_custom_dest_dir
+  /home/sphemakh/work/softdev/stimela-ninja/tests/test_cli_download.py:453: DeprecationWarning: 'isolated_filesystem' is deprecated and will be removed in Click 9.0. Use 'tempfile.TemporaryDirectory' or pytest's 'tmp_path' fixture with absolute paths instead.
+    with runner.isolated_filesystem():
+
+tests/test_cli_download.py::TestDownloadCLI::test_cli_download_error_handling
+  /home/sphemakh/work/softdev/stimela-ninja/tests/test_cli_download.py:481: DeprecationWarning: 'isolated_filesystem' is deprecated and will be removed in Click 9.0. Use 'tempfile.TemporaryDirectory' or pytest's 'tmp_path' fixture with absolute paths instead.
+    with runner.isolated_filesystem():
+
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[False-False-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[False-True-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[False-True-True]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-False-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-True-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-True-True]
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:602: UserWarning: 'produce': parameter(s) ['prefix'] matched a dynamic parameter pattern and are passed through to the tool as-is -- shinobi has no declared field for them, so it cannot type/range-check them the way it does for the cab's declared parameters.
+    return _prepare_inputs(self.scope, self._raw, validated=self.inputs)
+
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[False-False-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[False-True-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[False-True-True]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-False-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-True-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-True-True]
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:759: UserWarning: 'produce': parameter(s) ['prefix'] matched a dynamic parameter pattern and are passed through to the tool as-is -- shinobi has no declared field for them, so it cannot type/range-check them the way it does for the cab's declared parameters.
+    prepared = _prepare_inputs(self.scope, raw, validated=validated)
+
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-False-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-True-False]
+tests/test_contained_products.py::test_dynamic_product_input_extra_keeps_frozen_reservation[True-True-True]
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/offload/worker.py:944: UserWarning: 'produce': parameter(s) ['prefix'] matched a dynamic parameter pattern and are passed through to the tool as-is -- shinobi has no declared field for them, so it cannot type/range-check them the way it does for the cab's declared parameters.
+    prepared = _prepare_inputs(scope, kwargs)
+
+tests/test_dataset_list_writes.py::test_detached_group_failed_tool_and_failed_immutable_publication[True]
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:764: UserWarning: step 'first' failed (returncode 7); its sandbox is kept for post-mortem at /tmp/pytest-of-sphemakh/pytest-91/test_detached_group_failed_too1/runs/ad991097-5a0a-476b-9c63-0e55765e7f2b/sandboxes/08905228-c409-4128-a861-d1d4569307c8/first-l8bs2z4x
+    result = _run_cab(
+
+tests/test_dataset_list_writes.py::test_yaml_binary_joint_writer_passthrough_and_nonzero[7]
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:764: UserWarning: step 'joint' failed (returncode 7); its sandbox is kept for post-mortem at /tmp/pytest-of-sphemakh/pytest-91/work851/joint-lz___btt
+    result = _run_cab(
+
+tests/test_dataset_mutation.py::test_binary_cab_writer_runs_sandboxed_and_rolls_back_on_nonzero_exit
+  /home/sphemakh/work/softdev/stimela-ninja/src/shinobi/steps/dispatch.py:764: UserWarning: step 'renumber_tool' failed (returncode 3); its sandbox is kept for post-mortem at /tmp/pytest-of-sphemakh/pytest-91/work959/renumber_tool-8oindo9c
+    result = _run_cab(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_dataset_state_live.py::test_exact_round_trip_without_source_and_cli
+!!!!!!!!!!!!!!!!!!!!! KeyboardInterrupt: SIGTERM received !!!!!!!!!!!!!!!!!!!!!!
+/home/sphemakh/work/softdev/stimela-ninja/src/shinobi/backends/_stream.py:397: KeyboardInterrupt: SIGTERM received
+(to show a full traceback on KeyboardInterrupt use --full-trace)
+1 failed, 1032 passed, 10 skipped, 21 warnings in 595.84s (0:09:55)
+Thread did not finish cleanly; forcefully closing the event loop.
+Exception ignored in atexit callback: <function cleanup_resources at 0x70cfa208d120>
+Traceback (most recent call last):
+  File "/tmp/shinobi-semantic-final-venv/lib/python3.12/site-packages/zarr/core/sync.py", line 78, in cleanup_resources
+    loop[0].close()
+  File "/home/sphemakh/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 68, in close
+    super().close()
+  File "/home/sphemakh/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/selector_events.py", line 101, in close
+    raise RuntimeError("Cannot close a running event loop")
+RuntimeError: Cannot close a running event loop

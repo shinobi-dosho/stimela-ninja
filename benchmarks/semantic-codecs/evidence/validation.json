@@ -115,7 +115,7 @@
       "passed_before_interrupt": 1032,
       "skipped": 10,
       "operator_induced_cli_failure": 1,
-      "log": "interrupted-sandbox-full-suite.log",
+      "log": "interrupted-sandbox-full-suite.log.txt",
       "superseded_by": "downstream-replay-full.xml"
     }
   },
