@@ -275,3 +275,29 @@ Relative readonly directory dependencies and their descendants are excluded
 from sandbox harvesting and product inventories. A harvest target that would
 carry a readonly dependency inside an ancestor tree is refused rather than
 moving that tree over the original input.
+
+FITS members
+------------
+
+Canonical ``ProductFamily[FITSImage]`` and ``ProductMember[FITSTable]`` retain
+strict FITS declarations while behaving like path members. Every newly emitted,
+explicitly reused or cached member passes the same structural validation before
+success publication. A table family can set its output field's selector using
+``FITSAccess(field="tables", mode="read", hdu=FITSHDU(index=1))``; this is a
+validation selection and grants no file mutation authority. Selectors and FITS
+profiles participate in product contracts and cache identity. Missing declared
+WCS and image/WCS dimension mismatch invalidate strict image products.
+
+Typed FITS outputs in an existing local MS lifecycle are validation-only
+products: an invalid member prevents the MS writer's commit and restores its
+exact predecessor. Families have no mutation-recovery guarantee. Select members
+into direct scalar/list FITS inputs to request file authority; whole-family FITS
+inputs and detached typed FITS products are deferred. The dosho WSClean image,
+dirty, residual, model and PSF families use this validation boundary.
+
+A FITS validation selector applies only to an actual canonical FITS-typed
+family/member field (including supported optional and homogeneous sequence
+shapes). Mappings, mixed non-product unions and unsupported wrappers refuse
+construction and output validation; every declared branch is checked. Generic ``Path`` and ``DirectoryBundle`` products cannot accept a
+``FITSAccess`` selector. Validation-only products permit READ selection only;
+WRITE/CREATE authority remains limited to the strict scalar/list lifecycle.

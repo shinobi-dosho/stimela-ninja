@@ -153,6 +153,7 @@ from pydantic import ValidationError
 
 from shinobi.datasets import DatasetDeclarationError
 from shinobi.dataset_access import DatasetAccess
+from shinobi.fits_access import FITSAccess
 from shinobi.exceptions import CabLoadError
 from shinobi.loaders._modelgen import (
     COMMON_LEAF_KEYS,
@@ -345,6 +346,23 @@ def _build_cabdef(name: str, spec: dict[str, Any], package_roots: dict[str, Path
         raise
 
 
+def _fits_accesses(raw: Any, *, cab: str) -> list[FITSAccess]:
+    """Validate static FITS access data with cab and index diagnostics."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise CabLoadError(f"cab '{cab}': fits_accesses must be a list of mappings")
+    accesses = []
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise CabLoadError(f"cab '{cab}': fits_accesses[{index}] must be a mapping")
+        try:
+            accesses.append(FITSAccess.model_validate(entry))
+        except ValidationError as exc:
+            raise CabLoadError(f"cab '{cab}': fits_accesses[{index}]: {exc}") from exc
+    return accesses
+
+
 def _dataset_accesses(raw: Any, *, cab: str) -> list[DatasetAccess]:
     """Validate static access data with cab and entry-index diagnostics."""
     if raw is None:
@@ -455,6 +473,7 @@ def _build_cab(name: str, spec: dict[str, Any], package_roots: dict[str, Path], 
         inputs_model=inputs_model,
         outputs_model=outputs_model,
         dataset_accesses=_dataset_accesses(spec.get("dataset_accesses"), cab=name),
+        fits_accesses=_fits_accesses(spec.get("fits_accesses"), cab=name),
         derived_reads=spec.get("derived_reads", {}),
         # Output metas merged over input ones, the same way
         # `dosho._builder.define_cab` composes them, so a cab built from a

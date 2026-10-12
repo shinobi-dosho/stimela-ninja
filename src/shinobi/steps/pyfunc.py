@@ -81,6 +81,7 @@ from pydantic.fields import FieldInfo
 from shinobi.backends._stream import TeardownIncomplete, display_label, run_streaming
 from shinobi.config import AppConfig
 from shinobi.dataset_access import DatasetAccess
+from shinobi.fits_access import FITSAccess
 from shinobi.exceptions import BackendError, CabRunError, ParameterError
 from shinobi.loaders._modelgen import narrow_choices
 from shinobi.results import StepResult, explain_returncode
@@ -896,6 +897,7 @@ def pystep(
     harvest: list[str] | None = None,
     write_paths: Sequence[str] | None = None,
     dataset_accesses: Sequence[DatasetAccess] | None = None,
+    fits_accesses: Sequence[FITSAccess] | None = None,
     **params: Any,
 ) -> Callable[[Callable], StepRef]:
     """Decorate (or directly call on an existing function, matching
@@ -995,6 +997,7 @@ def pystep(
             harvest=harvest or [],
             field_meta=dict(input_meta),
             dataset_accesses=list(dataset_accesses or ()),
+            fits_accesses=list(fits_accesses or ()),
         )
         return StepRef(name=step_name, step=scope, func=adapter, params=params)
 

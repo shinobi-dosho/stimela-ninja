@@ -735,3 +735,95 @@ dataset-bearing workflows.  The legacy compiler retains its planning-only
 marker; worker preparation replaces its bundle marker only after constructing
 the complete compute-side lifecycle plan.  Use ``Path`` or the legacy loader
 dtype ``MS`` when one of the unsupported routes is required.
+
+FITS image and table contracts
+-----------------------------
+
+``FITSImage`` and ``FITSTable`` are ordinary ``Path`` values with versioned
+``fits-image/v1`` and ``fits-table/v1`` declarations. Model construction,
+serialization and JSON Schema generation perform no filesystem inspection and
+import no Astropy. Install ``stimela-ninja[fits]`` in the controller environment,
+or use ``uv sync --group dev --group fits`` for FITS acceptance tests.
+The ordinary CI matrix keeps these dependencies optional and skips the FITS
+modules when Astropy is absent. The measurement-set CI matrix installs both
+``measurement-set`` and ``fits`` groups and runs the FITS modules, including
+real MS/FITS product-gate integration tests, on Python 3.11 and 3.12.
+
+``FITSImage`` selects a primary image or ordinary IMAGE extension of any
+physical rank: there is no cube subtype or minimum-rank taxonomy. Zero-length
+axes are legal. The selected image must explicitly declare WCS that Astropy
+can parse without repairs, and its pixel dimensions and reported pixel/array
+shape must agree with NAXIS and NAXISn. A header-only image without declared
+WCS remains legal as an ancillary HDU, for example before a selected table;
+it does not qualify as the selected strict image. Astropy currently synthesizes
+two WCS coordinates for NAXIS=0 even with WCSAXES=0, so that selected
+zero-rank image refuses the consistency contract rather than hiding the mismatch. Generic explicitly declared
+linear coordinates qualify; celestial or spectral coordinates are not required.
+
+The header-only WCS check uses ``WCS(header, fix=False, preserve_units=True)``.
+It never subsets coordinates to hide a dimension mismatch or repairs the
+header. Missing, invalid, inconsistent or unsupported selected-image WCS
+refuses the contract. Serializable observations retain coordinate dimensions,
+shape, units, physical types, diagnostics and the Astropy parser version.
+This checks declared configuration, not scientific accuracy of a transform.
+Astropy's `WCS constructor <https://docs.astropy.org/en/stable/api/astropy.wcs.WCS.html>`_
+and `WCS validation/wcslint guidance <https://docs.astropy.org/en/stable/wcs/validation.html>`_
+explain its dimensionality and repair behavior.
+
+``FITSTable`` selects ASCII TABLE or BINTABLE extensions, including zero rows
+and columns. Indexed physical column metadata retains formats, offsets,
+optional names and units, dimensions, scaling and null declarations; duplicate
+column names are legal. ASCII A/I/F/E/D layouts require valid widths, precision
+and nonoverlapping TBCOL placement. Binary L/X/B/I/J/K/A/E/D/C/M formats,
+zero repeats and P/Q variable-array descriptors are supported. THEAP and PCOUNT
+are checked against physical row/heap extents. Variable row descriptor offsets
+and heap contents are not read or validated.
+
+.. code-block:: python
+
+   from shinobi import FITSTable, FITSAccess, FITSHDU, pystep
+
+   @pystep(fits_accesses=[FITSAccess(
+       field="catalog", mode="read", hdu=FITSHDU(extname="CATALOG", extver=1),
+   )])
+   def summarize(catalog: FITSTable) -> None:
+       read_catalog(catalog)
+
+``FITSHDU()`` selects physical index zero. A selector names exactly a
+nonnegative integer index, or a nonempty EXTNAME and positive EXTVER pair.
+Booleans, ambiguous selector forms and multiple matching named HDUs refuse.
+Tables normally need an explicit extension selector because HDU zero is the
+primary image. ``fits_accesses`` works on Scope, Cab, ``@pystep`` and YAML
+cab documents; named FITS dtypes and ``List[FITSImage]``/``List[FITSTable]``
+retain the same metadata.
+
+``inspect_fits_image`` and ``inspect_fits_table`` read 2880-byte header blocks
+incrementally and seek past payloads. They never open HDU arrays, sections,
+checksums, table rows or external WCS arrays. Bounds apply before allocating
+headers or WCS: at most 128 HDUs, 16 axes, 4096 cards per HDU, 16 MiB total
+header bytes and 4096 table columns. SIP polynomial orders/indices are limited
+to nine. Whole-file compression, compressed image/table HDUs, random groups,
+UVFITS, unknown extension layouts and external/lookup WCS are unsupported.
+All physical header/data/padding extents must fit the file; payload and padding
+contents are not interpreted. Optional ``include_wcs=True`` also inventories
+WCS diagnostics on ancillary images without making them selected products.
+
+The initial execution boundary is native or pre-provisioned venv atomic cabs
+and pysteps, and flat recipes in the same controller filesystem namespace.
+Optional direct scalars and concrete nonempty direct input lists are supported.
+Lists require explicit READ or WRITE; list CREATE and inferred list writes
+refuse. Same-name list WRITE outputs must return the exact ordered canonical
+input roots. All-None invocations, aliases, hardlinks, symlinks, overlapping
+roots, nested containers, element None, scatter, nested recipes, dynamic paths,
+opaque orchestration, container/detached/offloaded routes and mixed strict FITS
+and MS access workflows refuse before launch. FITS reusable states are deferred.
+
+Access mode grants authority over the whole physical file, regardless of HDU
+selection. READ protects every byte even when a tool fails. WRITE and CREATE
+use shared ownership, re-observation under the claim and the existing exact
+snapshot journal. WRITE may change dimensions, headers, columns and rows so
+long as its successor satisfies the selected contract; there are no per-HDU,
+header-card or column mutation promises. CREATE restores absence on failure
+and refuses unrelated existing targets. The byte identity ``fits-file-bytes/v1``
+is a full streaming SHA256 over the entire physical file, distinct from the
+structural descriptor, skip-cache key, journal state name and attempt ID.

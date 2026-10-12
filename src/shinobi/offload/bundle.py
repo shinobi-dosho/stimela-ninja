@@ -84,6 +84,9 @@ class ScopeSpec(WireModel):
         # so restore can validate them as DatasetAccess rather than transport
         # their Enum values as arbitrary Python objects.
         settings["dataset_accesses"] = scope.dataset_accesses
+        settings.pop("fits_accesses", None)
+        if scope.fits_accesses:
+            settings["fits_accesses"] = scope.fits_accesses
         return cls(
             kind=kinds[type(scope)],
             inputs=ModelSpec.capture(scope.inputs_model),

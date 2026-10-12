@@ -231,6 +231,10 @@ def regular_file_identity(path: Path):
 
 
 def profile_identity(path: Path, profile: str | None = None):
+    if profile == "fits-file-bytes/v1":
+        from shinobi.fits_lifecycle import fits_file_identity
+
+        return fits_file_identity(path)
     if profile == "regular-file/v1":
         return regular_file_identity(path)
     if profile not in (None, "msv2"):

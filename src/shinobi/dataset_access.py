@@ -283,7 +283,7 @@ def scope_has_dataset_contract(scope: Any) -> bool:
     """Whether a leaf scope carries an MSv2 annotation or access metadata."""
 
     declarations = dataset_declarations(scope.inputs_model) | dataset_declarations(scope.outputs_model)
-    return bool(declarations or scope.dataset_accesses)
+    return bool(any(one.kind not in (DatasetKind.FITS_IMAGE, DatasetKind.FITS_TABLE) for one in declarations.values()) or scope.dataset_accesses)
 
 
 def scope_tree_has_dataset_contract(scope: Any) -> bool:
@@ -322,6 +322,7 @@ def validate_scope_dataset_accesses(scope: Any) -> None:
     input_shapes = executable_dataset_fields(scope.inputs_model, reject_unsupported=False)
     output_shapes = executable_dataset_fields(scope.outputs_model, reject_unsupported=False)
     list_fields = executable_dataset_list_fields(scope.inputs_model) | executable_dataset_list_fields(scope.outputs_model)
+    list_fields = {name for name in list_fields if (input_shapes | output_shapes)[name].declaration.kind is DatasetKind.MEASUREMENT_SET_V2}
     if list_fields and not hasattr(scope, "steps"):
         from shinobi.steps.schema import write_path_fields
 

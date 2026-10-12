@@ -83,6 +83,14 @@ jobs:
       - name: Run strict MSv2 lifecycle tests against real tables
         run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set pytest -q tests/test_dataset_mutation.py tests/test_dataset_lifecycle.py::test_real_casacore_contained_read_when_available tests/test_dataset_lists.py tests/test_dataset_list_writes.py tests/test_offload_dataset_lifecycle.py tests/test_contained_products.py tests/test_yaml_datasets.py tests/test_derived_mutations_live.py tests/test_derived_restart_live.py
 
+      # FITS is optional in the ordinary matrix. Qualify its real scanner,
+      # lifecycle and MS product gates here with both optional stacks present.
+      - name: Verify optional FITS installation
+        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set --group fits python -c "import astropy.io.fits, astropy.wcs, numpy; print(astropy.__version__)"
+
+      - name: Run FITS structure, lifecycle, and product tests
+        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set --group fits pytest -q tests/test_fits.py tests/test_fits_lifecycle.py tests/test_fits_products.py
+
       - name: Run real state export, materialization and process-death recovery
         run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set pytest -q tests/test_dataset_state.py tests/test_dataset_state_live.py
 

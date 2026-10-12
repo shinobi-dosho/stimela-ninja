@@ -307,13 +307,16 @@ def contained_access_issues(
         created_dataset_roots: set[Path] = set()
         # Only creators need the absent-root alias exception. Resolving a
         # reader here would inspect a wired product before its creator runs.
-        if (dataset_outputs - dataset_inputs) or any(access.mode.value == "create" for access in leaf.dataset_accesses):
+        if (dataset_outputs - dataset_inputs) or any(access.mode.value == "create" for access in (*leaf.dataset_accesses, *leaf.fits_accesses)):
             from shinobi.dataset_access import DatasetAccessError, DatasetMode, resolve_scope_dataset_accesses
 
             try:
+                from shinobi.fits_access import scope_has_fits_contract, resolve_scope_fits_accesses
+
+                resolver = resolve_scope_fits_accesses if scope_has_fits_contract(leaf) else resolve_scope_dataset_accesses
                 created_dataset_roots = {
                     access.root.resolve()
-                    for access in resolve_scope_dataset_accesses(
+                    for access in resolver(
                         leaf,
                         known,
                         workspace=root,
@@ -325,6 +328,11 @@ def contained_access_issues(
                 # The authoritative planner reports the original resolution
                 # error. This helper only decides generic-path containment.
                 pass
+        # A plain destination input may name its own declared strict CREATE
+        # output. The exact creator root supplies the authority.
+        dataset_inputs |= {
+            name for name in dataset_outputs if name in known and concrete_paths(known[name]) and all(path in created_dataset_roots for path in concrete_paths(known[name]))
+        }
         generic_inputs = (path_fields(leaf.inputs_model) | write_path_fields(leaf)) - dataset_inputs
         unknown_inputs = sorted(generic_inputs & unresolved)
         if unknown_inputs:

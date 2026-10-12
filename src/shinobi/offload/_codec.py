@@ -20,7 +20,8 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, Strict, StringCons
 from pydantic_core import PydanticUndefined
 
 from shinobi.dataset_access import DatasetAccess
-from shinobi.datasets import DatasetType
+from shinobi.datasets import DatasetType, FITSImage, FITSTable
+from shinobi.fits_access import FITSAccess
 from shinobi.steps.schema import Mutability, ParamMeta
 
 
@@ -46,6 +47,8 @@ def pack(value: Any) -> JsonValue:
         return ["param_meta", pack(value.model_dump(mode="python"))]
     if type(value) is Mutability:
         return ["mutability", value.value]
+    if type(value) is FITSAccess:
+        return ["fits_access", value.model_dump(mode="json")]
     if type(value) is DatasetAccess:
         return ["dataset_access", value.model_dump(mode="json")]
     from shinobi.products import framework_type
@@ -53,7 +56,14 @@ def pack(value: Any) -> JsonValue:
     recognized = framework_type(type(value))
     if recognized:
         kind, member = recognized
-        return ["product", [kind, "bundle" if member is not None and member is not Path else "file", value.model_dump(mode="json")]]
+        return [
+            "product",
+            [
+                kind,
+                "fits-image" if member == FITSImage else "fits-table" if member == FITSTable else "bundle" if member is not None and member is not Path else "file",
+                value.model_dump(mode="json"),
+            ],
+        ]
     if isinstance(value, BaseModel):
         return ["dict", pack_model(value)]
     if type(value) in (list, tuple):
@@ -76,14 +86,20 @@ def unpack(value: JsonValue) -> Any:
         from shinobi.products import DirectoryBundle, ProductFamily, ProductMember
 
         name, member, payload = data
-        if member not in ("file", "bundle") or name not in ("family", "member", "bundle"):
+        if member not in ("file", "bundle", "fits-image", "fits-table") or name not in ("family", "member", "bundle"):
             raise BundleError("invalid framework product tag")
-        annotation = DirectoryBundle if name == "bundle" else (ProductFamily if name == "family" else ProductMember)[Path if member == "file" else DirectoryBundle]
+        annotation = (
+            DirectoryBundle
+            if name == "bundle"
+            else (ProductFamily if name == "family" else ProductMember)[{"file": Path, "bundle": DirectoryBundle, "fits-image": FITSImage, "fits-table": FITSTable}[member]]
+        )
         return annotation.model_validate(payload)
     if kind == "param_meta":
         return ParamMeta.model_validate(unpack(data))
     if kind == "mutability" and isinstance(data, str):
         return Mutability(data)
+    if kind == "fits_access" and isinstance(data, dict):
+        return FITSAccess.model_validate(data)
     if kind == "dataset_access" and isinstance(data, dict):
         return DatasetAccess.model_validate(data)
     if kind in ("list", "tuple") and isinstance(data, list):
@@ -285,7 +301,7 @@ class TypeSpec(WireModel):
 
             if self.kind == "directory_bundle" and not args:
                 return DirectoryBundle
-            if len(args) == 1 and args[0] in (Path, DirectoryBundle):
+            if len(args) == 1 and args[0] in (Path, DirectoryBundle, FITSImage, FITSTable):
                 return (ProductFamily if self.kind == "product_family" else ProductMember)[args[0]]
             raise BundleError("invalid framework product type")
         if self.kind == "model" and self.model_spec is not None:

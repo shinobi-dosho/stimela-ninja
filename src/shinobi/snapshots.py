@@ -243,6 +243,16 @@ class Generation:
     # `strict_reuse_issue`). The generation list is commit order, not lineage.
     parent: str | None = None
     identity_profile: str | None = None
+    fits_commit: dict[str, Any] | None = None
+
+    def __post_init__(self):
+        if self.fits_commit is not None:
+            from shinobi.fits_commit import FITSCommitReference
+
+            try:
+                self.fits_commit = FITSCommitReference.model_validate(self.fits_commit).model_dump(mode="json")
+            except ValueError as exc:
+                raise DatasetLifecycleUnavailableError("FITS generation commit reference is malformed") from exc
 
     def as_json(self) -> dict[str, Any]:
         data: dict[str, Any] = {"name": self.name, "size": self.size, "snapshot_present": self.snapshot_present}
@@ -255,6 +265,8 @@ class Generation:
             data["parent"] = self.parent
         if self.identity_profile is not None:
             data["identity_profile"] = self.identity_profile
+        if self.fits_commit is not None:
+            data["fits_commit"] = self.fits_commit
         return data
 
 
@@ -362,7 +374,7 @@ class Chain:
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "Chain":
         marker = data.get("marker")
-        return cls(
+        result = cls(
             dev=data["dev"],
             ino=data["ino"],
             ctime_ns=data.get("ctime_ns", 0),
@@ -374,6 +386,21 @@ class Chain:
             consumed=dict(data.get("consumed", {})),
             tainted_through=data.get("tainted_through"),
         )
+
+        for generation in result.generations:
+            if generation.fits_commit is not None:
+                from shinobi.fits_commit import FITSCommitReference
+
+                own = FITSCommitReference.model_validate(generation.fits_commit).participant
+                if (
+                    generation.identity_profile != "fits-file-bytes/v1"
+                    or str(own.root) != result.path
+                    or own.successor != generation.name
+                    or own.signature != generation.structural_signature
+                    or own.fingerprint != generation.content_fingerprint
+                ):
+                    raise DatasetLifecycleUnavailableError("FITS generation reference contradicts its journal binding")
+        return result
 
     def generation(self, name: str) -> Generation | None:
         return next((g for g in self.generations if g.name == name), None)
@@ -725,6 +752,7 @@ class _FieldPlan:
     rollback_state: str | None = None
     rollback_source: Path | None = None
     rollback_identity: StateIdentity | None = None
+    rollback_fits_commit: dict[str, Any] | None = None
     outcome: str = "pending"
 
 
@@ -921,6 +949,9 @@ class SnapshotGuard:
         for plan in self.plans:
             if plan.path_was_absent:
                 continue
+            frozen_chain = self.journal.get(plan.cid)
+            frozen_generation = frozen_chain.generation(plan.rollback_state) if frozen_chain else None
+            plan.rollback_fits_commit = frozen_generation.fits_commit if frozen_generation else None
             plan.rollback_source = self.journal.snapshot_dir(plan.rollback_state)
             plan.rollback_identity = self._identity(plan, plan.rollback_source)
             if plan.rollback_state == state_name(self.cache_key, plan.address.field, plan.address.element_index):
@@ -944,23 +975,32 @@ class SnapshotGuard:
                     "rollback_source": str(plan.rollback_source) if plan.rollback_source is not None else None,
                     "rollback_signature": plan.rollback_identity.signature if plan.rollback_identity is not None else None,
                     "rollback_fingerprint": plan.rollback_identity.fingerprint if plan.rollback_identity is not None else None,
+                    **({"rollback_fits_commit": plan.rollback_fits_commit} if self.strict.profiles.get(plan.field) == "fits-file-bytes/v1" else {}),
                     "absent": plan.path_was_absent,
                     "successor": state_name(self.cache_key, plan.address.field, plan.address.element_index),
                     **(
-                        {"identity_profile": self.strict.profiles[plan.field], "derived_address": plan.address.model_dump(mode="json")}
+                        {
+                            "identity_profile": self.strict.profiles[plan.field],
+                            **(
+                                {"dataset_address": {"field": plan.address.field, "element_index": plan.address.element_index}}
+                                if self.strict.profiles[plan.field] == "fits-file-bytes/v1"
+                                else {"derived_address": plan.address.model_dump(mode="json")}
+                            ),
+                        }
                         if plan.field in self.strict.profiles
                         else {}
                     ),
                 }
                 for plan in self.plans
             ]
-            if len(self.plans) > 1
+            if len(self.plans) > 1 or any(self.strict.profiles.get(plan.field) == "fits-file-bytes/v1" for plan in self.plans)
             else None
         )
 
     def _refuse(self, plan: _FieldPlan, reason: str) -> None:
         """A strict guard's replacement for "warn and run against live disk"."""
-        raise DatasetLifecycleUnavailableError(f"strict MSv2 mutation of '{plan.field}' at {plan.path} refused before launch: {reason}")
+        format_name = "FITS" if self.strict and self.strict.profiles.get(plan.field) == "fits-file-bytes/v1" else "MSv2"
+        raise DatasetLifecycleUnavailableError(f"strict {format_name} mutation of '{plan.field}' at {plan.path} refused before launch: {reason}")
 
     def _verify_predecessor(self, plan: _FieldPlan) -> None:
         """Strict: the disk must structurally be the state this step consumes."""
@@ -1553,6 +1593,11 @@ class SnapshotGuard:
         consumed_key = f"{self.step_path}::{plan.address.field}"
         consumed_name = plan.required
         successor = self.successor_identities.get(plan.field)
+        reference = None
+        if self.success_kind == "fits-lifecycle" and self.strict.profiles.get(plan.field) == "fits-file-bytes/v1":
+            from shinobi.fits_commit import make_commit_reference
+
+            reference = make_commit_reference(self, plan)
 
         def mutate(chain: Chain | None) -> Chain:
             if chain is None:
@@ -1578,12 +1623,14 @@ class SnapshotGuard:
                         content_fingerprint=successor.fingerprint if successor is not None else None,
                         parent=parent,
                         identity_profile=self.strict.profiles.get(plan.field) if self.strict else None,
+                        fits_commit=reference,
                     )
                 )
             elif self.strict is not None:
                 generation.structural_signature = successor.signature if successor is not None else None
                 generation.content_fingerprint = successor.fingerprint if successor is not None else None
                 generation.parent = parent
+                generation.fits_commit = reference
             chain.head = produced
             chain.status = HeadStatus.TRUSTED
             if consumed_name is not None:
@@ -1717,6 +1764,7 @@ class SnapshotGuard:
                     generation = chain.generation(plan.rollback_state)
                     generation.structural_signature = plan.rollback_identity.signature
                     generation.content_fingerprint = plan.rollback_identity.fingerprint
+                    generation.fits_commit = plan.rollback_fits_commit
                     generation.snapshot_present = True
                     return chain
 
@@ -2038,14 +2086,34 @@ def _validate_group_evidence(leaf, participants):
     from shinobi.dataset_lifecycle import DatasetMutationOutcome
 
     mutations = leaf.mutations
-    auxiliary = leaf.auxiliary_mutations
+    auxiliary = getattr(leaf, "auxiliary_mutations", ())
     if len(mutations) + len(auxiliary) != len(participants):
         return False
     expected = {
-        (item["label"], item["element_index"], item["path"], item["successor"], item.get("identity_profile"), json.dumps(item.get("derived_address"), sort_keys=True))
+        (
+            item["label"],
+            item["element_index"],
+            item["path"],
+            item["successor"],
+            item.get("identity_profile"),
+            json.dumps(item.get("dataset_address", item.get("derived_address")), sort_keys=True),
+        )
         for item in participants
     }
-    actual = {(item.field, item.element_index, str(item.root), item.successor_state, None, "null") for item in mutations if item.outcome is DatasetMutationOutcome.COMMITTED}
+    actual = {
+        (
+            item.field,
+            item.element_index,
+            str(item.root),
+            item.successor_state,
+            getattr(item, "profile", None),
+            json.dumps({"field": item.field.removesuffix(f"[{item.element_index}]"), "element_index": item.element_index}, sort_keys=True)
+            if getattr(item, "profile", None) == "fits-file-bytes/v1"
+            else "null",
+        )
+        for item in mutations
+        if item.outcome is DatasetMutationOutcome.COMMITTED
+    }
     actual.update(
         (item.address.field, None, str(item.path), item.successor_state, item.profile, json.dumps(item.address.model_dump(mode="json"), sort_keys=True))
         for item in auxiliary
@@ -2063,7 +2131,7 @@ def _marker_completed(marker: Marker, manifest, *, strict: bool = False) -> bool
     oracle; the mutable cache manifest is only an index and cannot turn a
     missing attempt result into success.
     """
-    if strict and marker.success_kind not in (None, "dataset-lifecycle"):
+    if strict and marker.success_kind not in (None, "dataset-lifecycle", "fits-lifecycle"):
         raise DatasetLifecycleUnavailableError("strict success oracle kind is unknown")
     if marker.success_record is None:
         if strict and marker.strict_group is not None:
@@ -2071,8 +2139,11 @@ def _marker_completed(marker: Marker, manifest, *, strict: bool = False) -> bool
         entry = manifest.entry(marker.step_path)
         return entry is not None and entry.get("cache_key") == marker.cache_key and marker.cache_key is not None and entry.get("run_id") == marker.run_id
 
-    if marker.success_kind == "dataset-lifecycle":
-        from shinobi.dataset_lifecycle import mutation_committed
+    if marker.success_kind in ("dataset-lifecycle", "fits-lifecycle"):
+        if marker.success_kind == "fits-lifecycle":
+            from shinobi.fits_lifecycle import mutation_committed
+        else:
+            from shinobi.dataset_lifecycle import mutation_committed
 
         return mutation_committed(
             Path(marker.success_record),
@@ -2149,17 +2220,46 @@ def _reconcile_group(journal, manifest, chains, group, selected, exact):
     required = {"path", "field", "element_index", "label", "rollback", "rollback_source", "rollback_signature", "rollback_fingerprint", "absent", "successor"}
     if (
         not isinstance(group, list)
-        or len(group) < 2
-        or any(not isinstance(item, dict) or not required <= set(item) or set(item) - required - {"predecessor", "identity_profile", "derived_address"} for item in group)
+        or not group
+        or (len(group) == 1 and group[0].get("identity_profile") != "fits-file-bytes/v1")
+        or any(
+            not isinstance(item, dict)
+            or not required <= set(item)
+            or set(item) - required - {"predecessor", "identity_profile", "derived_address", "dataset_address", "rollback_fits_commit"}
+            for item in group
+        )
     ):
         raise DatasetLifecycleUnavailableError("strict mutation group participant payload is malformed")
     from shinobi.dataset_access import DatasetAddress
 
     for item in group:
+        if "rollback_fits_commit" in item and item.get("identity_profile") != "fits-file-bytes/v1":
+            raise DatasetLifecycleUnavailableError("FITS rollback reference on an incompatible participant")
         if "identity_profile" in item:
             from shinobi.derived import DerivedAddress
 
-            if item["identity_profile"] != "regular-file/v1" or DerivedAddress.model_validate(item.get("derived_address")).field != item["field"]:
+            if item["identity_profile"] == "fits-file-bytes/v1":
+                if item.get("rollback_fits_commit") is not None:
+                    from shinobi.fits_commit import FITSCommitReference
+
+                    frozen_reference = FITSCommitReference.model_validate(item["rollback_fits_commit"])
+                    own = frozen_reference.participant
+                    if (
+                        str(own.root) != item["path"]
+                        or own.successor != item["rollback"]
+                        or own.fingerprint != item["rollback_fingerprint"]
+                        or own.signature != item["rollback_signature"]
+                    ):
+                        raise DatasetLifecycleUnavailableError("FITS frozen reference contradicts rollback identity")
+                address = item.get("dataset_address")
+                if (
+                    not isinstance(address, dict)
+                    or set(address) != {"field", "element_index"}
+                    or address != {"field": item["field"], "element_index": item["element_index"]}
+                    or "derived_address" in item
+                ):
+                    raise DatasetLifecycleUnavailableError("invalid FITS mutation profile/address")
+            elif item["identity_profile"] != "regular-file/v1" or "dataset_address" in item or DerivedAddress.model_validate(item.get("derived_address")).field != item["field"]:
                 raise DatasetLifecycleUnavailableError("invalid auxiliary mutation profile/address")
         if (
             not isinstance(item["path"], str)
@@ -2209,6 +2309,25 @@ def _reconcile_group(journal, manifest, chains, group, selected, exact):
     completed = _marker_completed(marker, manifest, strict=True)
     for cid, chain, _, item in members:
         if completed:
+            generation = chain.generation(item["successor"])
+            if item.get("identity_profile") == "fits-file-bytes/v1":
+                from shinobi.fits_lifecycle import committed_generation, committed_oracle_requires_reference
+
+                requires_reference = "rollback_fits_commit" in item or committed_oracle_requires_reference(marker)
+                if (generation is None or generation.fits_commit is None) and requires_reference:
+                    raise DatasetLifecycleUnavailableError("committed FITS successor is missing its required exact generation reference")
+            if item.get("identity_profile") == "fits-file-bytes/v1" and generation is not None and generation.fits_commit is not None:
+                reference, _ = committed_generation(generation, Path(chain.path), workspace=Path(marker.success_record).parents[2])
+                expected = {(one["path"], one["label"], one["element_index"], one["successor"]) for one in group}
+                actual = {(str(one.root), one.label, one.element_index, one.successor) for one in reference.participants}
+                if (
+                    expected != actual
+                    or reference.attempt_id != marker.run_id
+                    or reference.oracle != Path(marker.success_record)
+                    or reference.step_path != (marker.success_step_path or marker.step_path)
+                    or reference.cache_key != marker.cache_key
+                ):
+                    raise DatasetLifecycleUnavailableError("FITS successor reference contradicts exact recovery invocation")
             _verify_strict_snapshot_identity(journal, chain, item["successor"], journal.snapshot_dir(item["successor"]))
             _verify_strict_snapshot_identity(journal, chain, item["successor"], Path(chain.path))
     if not completed:
@@ -2264,6 +2383,8 @@ def _settle_group(journal, manifest, members, completed):
                     generation = chain.generation(item["rollback"])
                     generation.structural_signature = item["rollback_signature"]
                     generation.content_fingerprint = item["rollback_fingerprint"]
+                    if item.get("identity_profile") == "fits-file-bytes/v1":
+                        generation.fits_commit = item.get("rollback_fits_commit")
                     generation.snapshot_present = True
                 return chain
 

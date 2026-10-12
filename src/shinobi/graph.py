@@ -300,6 +300,14 @@ def check_offloadable(recipe: "Recipe", *, worker: bool = False, allow_dataset_p
     # pysteps. The legacy argv compiler keeps its stricter default contract.
     from shinobi.steps.pyfunc import PystepCallable
 
+    from shinobi.fits_access import scope_tree_has_fits_contract
+    from shinobi.fits_products import fits_product_contract
+
+    def has_fits_products(current):
+        return bool(fits_product_contract(current)) or any(has_fits_products(ref.step) for ref in getattr(current, "steps", ()))
+
+    if scope_tree_has_fits_contract(recipe) or has_fits_products(recipe):
+        raise RecipeNotOffloadableError("strict FITS access and typed FITS products support local native/venv execution only; detached/offloaded routes are unsupported")
     graph = build_graph(recipe)  # valid graph is a precondition
     reasons: list[str] = []
     by_name = {ref.name: ref for ref in recipe.steps}

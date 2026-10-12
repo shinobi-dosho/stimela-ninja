@@ -140,3 +140,9 @@ __all__ = [
     "step",
     "__version__",
 ]
+
+from shinobi.datasets import FITSImage, FITSTable  # noqa: E402
+from shinobi.fits import FITSHDU, FITSDescriptor, FITSStatus, FITSInspectionLimits, inspect_fits, inspect_fits_image, inspect_fits_table  # noqa: E402
+from shinobi.fits_access import FITSAccess  # noqa: E402
+
+__all__ += ["FITSImage", "FITSTable", "FITSHDU", "FITSAccess", "FITSDescriptor", "FITSStatus", "FITSInspectionLimits", "inspect_fits", "inspect_fits_image", "inspect_fits_table"]
