@@ -6,9 +6,12 @@ This evidence accompanies `Shinobi PR #206
 <https://github.com/shinobi-dosho/msutils/pull/64>`_ for `Paper I #16
 <https://github.com/shinobi-dosho/paper_shinobi_I/issues/16>`_. The sampled benchmarks ran Shinobi
 ``ca5780914a3560d502f10d1105070857c8ced2f9`` with msutils
-``2856d3ae357c4c2ec70060df641fe48e32ff8288``. Final full-volume qualification
-uses Shinobi ``d15bab8ad4b5598dd8c52f5c00fabec16dd72d51`` and public msutils
-``25c280a8ab412b5015a80bf4ff6f83b7a6820675``. The intermediate chunk-correction
+``2856d3ae357c4c2ec70060df641fe48e32ff8288``. Full-volume captures use Shinobi
+``d15bab8ad4b5598dd8c52f5c00fabec16dd72d51``; the fresh large-ledger Chi Oph
+capture uses ``0b2164db12a1865a90c2a17cbe2c6971de79e82a``. Final replay
+qualification uses ``6576e5cc5af5453227e7c711a466a42f22d96791``. These runs all
+use public msutils ``25c280a8ab412b5015a80bf4ff6f83b7a6820675`` with identical
+recorded runtime versions. Capture and replay revisions are recorded separately. The intermediate chunk-correction
 run used ``eb5cec47bdfa7c5361f4afae8f8a3cf6711a0676`` with the earlier pin;
 its failures remain diagnostic evidence. Each receipt records its actual
 executed implementation.
@@ -131,8 +134,9 @@ using independently read native metadata, definedness and every defined value.
 Numeric values compare as exact bytes, including signed zeros and NaN payloads.
 The native profile's declared physical-manager exclusions remain exclusions.
 
-All five final-run datasets run concurrently (the earlier diagnostic runs used
-up to three). Stage times and process peak RSS are
+The v3 captures began with all five datasets running concurrently (the earlier
+diagnostic runs used up to three). The fresh Chi Oph capture and final replay
+continuations overlap remaining capture work. Stage times and process peak RSS are
 functional qualification measurements, with shared I/O and uncontrolled caches;
 they are not controlled codec-throughput comparisons. A 16 MiB bound applies
 to individual numeric reads and rewrite tiles, not aggregate process memory.
@@ -164,19 +168,55 @@ from the two actual restore failures. Their ownership registry was empty after
 interruption. Complete fresh runs use the fixed public stack because stored
 states retain the exact-stack requirement; no compatibility exception was added.
 
+The v3 Chi Oph averaged export then exceeded Shinobi's 64 MiB physical
+manifest budget. Its complete per-chunk ledger grows with the row count and
+selected chunk sizes. The correction uses compact JSON and a separate finite
+256 MiB physical-manifest budget; ordinary node metadata retains 64 MiB.
+A 400,000-entry regression loads both 69.6 MB compact and 86.4 MB pretty
+manifests without dropping entries or changing their canonical digest. The
+serialized limit does not bound decoded JSON/Pydantic memory. A fresh complete
+Chi Oph capture exercises this correction; its result is still pending.
+
+Both July datasets passed full baseline/combined exports and source-absent
+verification but failed Shinobi's final materialization postcondition. A
+preserved full J0408 diagnostic restoration has the exact original native ID.
+Only MAIN's physical ``table.f*`` filenames differ: casacore renumbers storage
+files. All other frozen structural-signature inputs match. The correction
+leaves the frozen signature unchanged and compares reusable-state replay
+structure while omitting only those filenames. It still requires every other
+structural input and the independently recomputed native ID to match. New
+materialization attempts use v3 and preserve the source signature alongside
+a separate restored signature. Recovery checks the restored signature;
+historical attempts retain their original serialization and checks.
+
+The final continuation driver reads existing committed representations under
+their exact recorded runtime, verifies them with the recorded source path
+absent, restores to new destinations and compares every native cell against
+the archived working source. It preserves old receipts and manifests, records
+capture and replay code separately, and checks original/archive fingerprints
+and native IDs. Every parent/stage process checks actual loaded Shinobi module
+paths and hashes against the recorded checkout. The seven provenance regressions
+include an identical but wrongly installed checkout and mixed module paths.
+These checks passed; completed five-dataset continuation results remain pending.
+
 Validation and boundaries
 -------------------------
 
 The final upstream tree passed 567 tests with two existing expected capability
 failures. Its 15 final orphan-hypercolumn cases passed on Python 3.11 and 3.12.
 Its public CI passed Python 3.11, 3.12 and 3.13, bare-install and docs jobs.
-The final corrected-pin downstream suite passed 2,765 tests with 18 skips, including the
+The final downstream replay implementation passed 2,807 tests with 18 skips, including the
 qualification comparator and lazy-backend chunk-bound regressions. The secondary-column
 correction passed 50 focused tests on Python 3.12 and 33 on Python 3.11. Both ordinary
 and Measurement Set CI jobs passed on both versions, along with the dependency
 audit. The corrected public-pin installation also passed all 50 focused tests. Focused state tests, optional-dependency skips, strict
 Sphinx builds, whole-tree lint/format and fresh public-pin runtime qualification
-also passed. ``evidence/validation.json`` distinguishes these runs and links
+also passed. The final replay core run passed 147 tests, including all 26
+new replay regressions; the manifest-limit suite passed 16 tests. One sandboxed
+full-suite attempt stalled in live Zarr I/O and was interrupted; its log is
+retained as diagnostic evidence, not a passing result. The final full suite
+used the required network-enabled execution environment.
+``evidence/validation.json`` distinguishes these runs and links
 their JUnit receipts.
 
 Three final independent reviews (Luna high, Astra low, Sol medium) found no
@@ -184,7 +224,10 @@ actionable findings after fixing qualification comparison allocation: numeric
 cell shape/type is inspected before reading, oversized cells refuse, and
 casacore uchar widening to uint16 is included in the allocation bound. This
 qualification-only 16 MiB numeric-cell limit does not narrow native preservation.
-Variable-length strings retain their allocation-expansion risk. Big-endian
+Variable-length strings retain their allocation-expansion risk. Final reviews
+also covered the large-ledger and versioned replay corrections. A confirmed
+continuation-driver import-provenance gap was fixed and all three reviewers
+reported no actionable findings on repeat review. Big-endian
 execution was not exercised; unsafe Delta serializer combinations have direct
 refusal coverage.
 

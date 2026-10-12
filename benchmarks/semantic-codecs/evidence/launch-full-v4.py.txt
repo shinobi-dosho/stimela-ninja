@@ -1,0 +1,79 @@
+"""Launch the fresh large-ledger qualification from a frozen public checkout."""
+import argparse
+import concurrent.futures
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--shinobi-commit', required=True)
+parser.add_argument('--msutils-commit', required=True)
+args = parser.parse_args()
+root = Path('/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012')
+source = root / 'source-v4'
+results = root / 'qualification-v4-results'
+results.mkdir(exist_ok=False)
+script = source / 'examples/state_codec_qualification.py'
+actual_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=source, text=True).strip()
+status = subprocess.check_output(['git', 'status', '--porcelain'], cwd=source, text=True).strip()
+assert actual_commit == args.shinobi_commit and not status
+sys.path.insert(0, str(source / 'src'))
+from shinobi import _state_adapter
+runtime = _state_adapter.runtime()
+assert runtime['msutils_commit'] == args.msutils_commit
+files = ['examples/state_codec_qualification.py', 'src/shinobi/state_codecs.py', 'src/shinobi/_state_adapter.py', 'src/shinobi/dataset_state.py', 'uv.lock']
+hashes = {name: hashlib.sha256((source / name).read_bytes()).hexdigest() for name in files}
+old = json.loads((root / 'qualification-v2-results/execution.json').read_text())
+sources = {item['label']: item['source'] for item in old['runs']}
+labels = ['chioph_avg']
+assert set(labels) <= set(sources)
+env = os.environ.copy()
+env['TMPDIR'] = str(root.parent / 'scratch')
+env['SHINOBI_OWNERSHIP_REGISTRY'] = str(root / 'owners-v4.json')
+receipt = {
+    'schema': 'shinobi-semantic-qualification-execution/v1',
+    'started_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    'hostname': os.uname().nodename,
+    'shinobi_commit': actual_commit,
+    'source_status': status,
+    'runtime': runtime,
+    'source_sha256': hashes,
+    'driver_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    'environment': {key: env[key] for key in ('TMPDIR', 'SHINOBI_OWNERSHIP_REGISTRY')},
+    'max_concurrent_datasets': 1,
+    'timing_scope': 'Functional qualification; one dataset; concurrent with earlier full-volume workers, not controlled throughput measurements.',
+    'runs': [],
+}
+
+def write_receipt():
+    pending = results / 'execution.pending'
+    pending.write_text(json.dumps(receipt, indent=2) + '\n')
+    pending.replace(results / 'execution.json')
+
+def run(label):
+    command = [sys.executable, str(script), '--source', sources[label], '--workdir', str(root / f'qualification-v4-{label}'), '--block-rows', '128']
+    print(f'qualification v4 starting: {label}', flush=True)
+    started = time.perf_counter()
+    with (results / f'{label}.log').open('w') as log:
+        outcome = subprocess.run(command, cwd=source, env=env, stdout=log, stderr=subprocess.STDOUT)
+    return {'label': label, 'source': sources[label], 'command': command, 'exit_code': outcome.returncode, 'seconds': time.perf_counter() - started, 'report': str(root / f'qualification-v4-{label}/report.json')}
+
+write_receipt()
+with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+    futures = [pool.submit(run, label) for label in labels]
+    for future in concurrent.futures.as_completed(futures):
+        result = future.result()
+        receipt['runs'].append(result)
+        write_receipt()
+        print(f"qualification v4 finished: {result['label']}, exit={result['exit_code']}, seconds={result['seconds']:.1f}", flush=True)
+receipt['finished_utc'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+receipt['source_status_after'] = subprocess.check_output(['git', 'status', '--porcelain'], cwd=source, text=True).strip()
+receipt['source_sha256_after'] = {name: hashlib.sha256((source / name).read_bytes()).hexdigest() for name in files}
+receipt['passed'] = all(item['exit_code'] == 0 for item in receipt['runs']) and not receipt['source_status_after'] and receipt['source_sha256_after'] == hashes
+write_receipt()
+raise SystemExit(0 if receipt['passed'] else 1)

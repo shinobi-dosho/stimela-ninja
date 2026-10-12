@@ -45,7 +45,7 @@
       "ordinary_passed": 6,
       "ordinary_skipped": 2
     },
-    "ci": "https://github.com/shinobi-dosho/stimela-ninja/actions/runs/38273638708",
+    "ci": "https://github.com/shinobi-dosho/stimela-ninja/actions/runs/38286362909",
     "ci_checks": "Python3.11/3.12 ordinary tests, Python3.11/3.12 Measurement Set integration and dependency audit all passed",
     "initial_full_suite": {
       "passed": 2756,
@@ -79,6 +79,15 @@
     },
     "secondary_column_ci": "https://github.com/shinobi-dosho/stimela-ninja/actions/runs/38232225746",
     "full_suite": {
+      "passed": 2807,
+      "skipped": 18,
+      "warnings": 67,
+      "seconds": 720.8,
+      "code_commit": "6576e5cc5af5453227e7c711a466a42f22d96791",
+      "environment": "Python3.12/Zarr3.3; public locked msutils25c280a; network-enabled execution required for live Zarr",
+      "junit": "downstream-replay-full.xml"
+    },
+    "orphan_pin_full_suite": {
       "passed": 2765,
       "skipped": 18,
       "warnings": 67,
@@ -86,6 +95,28 @@
       "code_commit": "d15bab8ad4b5598dd8c52f5c00fabec16dd72d51",
       "environment": "Python3.12/Zarr3.3; fresh public locked msutils25c280a install",
       "junit": "downstream-final-pin-full.xml"
+    },
+    "orphan_pin_ci": "https://github.com/shinobi-dosho/stimela-ninja/actions/runs/38273638708",
+    "large_ledger": {
+      "passed": 16,
+      "junit": "downstream-large-ledger.xml",
+      "ledger_entries": 400000,
+      "compact_bytes": 69602993,
+      "pretty_bytes": 86403839,
+      "code_commit": "0b2164db12a1865a90c2a17cbe2c6971de79e82a"
+    },
+    "replay_core": {
+      "passed": 147,
+      "new_replay_cases": 26,
+      "junit": "downstream-replay-core.xml"
+    },
+    "interrupted_sandbox_run": {
+      "status": "operator-interrupted after live Zarr async I/O stalled",
+      "passed_before_interrupt": 1032,
+      "skipped": 10,
+      "operator_induced_cli_failure": 1,
+      "log": "interrupted-sandbox-full-suite.log",
+      "superseded_by": "downstream-replay-full.xml"
     }
   },
   "quality": {
@@ -104,7 +135,10 @@
       "Inspect numeric cell metadata and refuse oversized qualification reads before allocating values",
       "Account for python-casacore uchar reads widening to uint16",
       "Pass explicit Xarray chunks for secondary MS columns lacking preferred-chunk encoding; real lazy-backend regression covers reads before allocation",
-      "Reconstruct qualified removed-column hypercolumns through zero-row temporary schema, preserving descriptor and native identity; refuse cleanup drift"
+      "Reconstruct qualified removed-column hypercolumns through zero-row temporary schema, preserving descriptor and native identity; refuse cleanup drift",
+      "Support complete large physical ledgers with separate finite limits, bounded duplicate-safe parsing and unchanged canonical digests",
+      "Preserve distinct source/restored structural signatures for native-exact replay with regenerated physical filenames; keep legacy recovery semantics",
+      "Require actual loaded Shinobi module paths and hashes to match the recorded checkout in every continuation process"
     ],
     "final_result": "No actionable findings in all three final reviews"
   },
@@ -154,5 +188,31 @@
     "receipt": "real-schema-v3.json",
     "scope": "zero-row descriptor and canonical manager checks; not full-volume replay"
   },
-  "qualification_status": "Fresh full five-MS run under corrected public pin is running; earlier v2 restore failures and intentional interruptions are retained separately."
+  "qualification_status": "Final source-absent replay continuations are running for the July datasets; remaining full exports and fresh large-ledger Chi Oph capture continue. No complete five-dataset acceptance claim yet.",
+  "continuation_driver": {
+    "passed_regressions": 7,
+    "junit": "replay-driver-provenance.xml",
+    "script": "qualify-published-replay.py.txt",
+    "script_sha256": "4ddf0acc75fd36214681a07b2ac094ca5cacc8bfcb43563df980a5d086921018"
+  },
+  "qualification_code_commit_scope": "v3 capture revision; final replay and fresh large-ledger capture revisions are separate",
+  "qualification_replay_code_commit": "6576e5cc5af5453227e7c711a466a42f22d96791",
+  "large_ledger_capture_commit": "0b2164db12a1865a90c2a17cbe2c6971de79e82a",
+  "qualification_replay_source_sha256": {
+    "examples/state_codec_benchmark.py": "de296700bee85b67fbf3342f33498556f2d3e1ab32e11eae62aec8e188ef27fc",
+    "examples/state_codec_qualification.py": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+    "src/shinobi/state_codecs.py": "91a34742aeddec9feaf58f4604fc4c95238262f569df630552ce38e1cb61b44d",
+    "src/shinobi/_state_adapter.py": "face2e0de9fc76045d5190f09ded688f6a33fc4ee8704f28c7054206885c773c",
+    "src/shinobi/dataset_state.py": "c455699f7e26bffbad3f69cb05eb1427198165e0d0e88fefb073156e381c3414",
+    "pyproject.toml": "c8c042052db51d9134468c49e5757423e4c386fe7711d38b5cef64b7ed56ee8d",
+    "uv.lock": "a1b9a77660a1e17f37ff3a574923c9fa7f7040d14b6eed92347d0c113ecc9bbc",
+    "src/shinobi/__init__.py": "82586e3c8a514fd665c7b50aa768e1cd721bf02d52835299e75c1c25364df230",
+    "src/shinobi/dataset_lifecycle.py": "c4273f53973d74c9a9ec61b345328a43b86f3bab57aa50b4690bb50d12216554"
+  },
+  "native_replay_diagnostic": {
+    "receipt": "diagnostic-j0408-structure.json",
+    "native_id_equal": true,
+    "only_structural_difference": "MAIN physical table_files names",
+    "scope": "full upstream native restoration and structural observation; independent all-cell continuation still pending"
+  }
 }
