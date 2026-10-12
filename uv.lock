@@ -628,7 +628,7 @@ wheels = [
 [[package]]
 name = "msutils"
 version = "3.0.0"
-source = { git = "https://github.com/shinobi-dosho/msutils.git?rev=2856d3ae357c4c2ec70060df641fe48e32ff8288#2856d3ae357c4c2ec70060df641fe48e32ff8288" }
+source = { git = "https://github.com/shinobi-dosho/msutils.git?rev=25c280a8ab412b5015a80bf4ff6f83b7a6820675#25c280a8ab412b5015a80bf4ff6f83b7a6820675" }
 dependencies = [
     { name = "click" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -1686,7 +1686,7 @@ examples = [{ name = "dosho" }]
 measurement-set = [
     { name = "arcae", specifier = "==0.5.4" },
     { name = "dask", extras = ["array"], specifier = "==2026.8.0" },
-    { name = "msutils", extras = ["exact-native"], git = "https://github.com/shinobi-dosho/msutils.git?rev=2856d3ae357c4c2ec70060df641fe48e32ff8288" },
+    { name = "msutils", extras = ["exact-native"], git = "https://github.com/shinobi-dosho/msutils.git?rev=25c280a8ab412b5015a80bf4ff6f83b7a6820675" },
     { name = "numcodecs", specifier = "==0.16.5" },
     { name = "python-casacore", specifier = ">=3.7,<4" },
     { name = "xarray", specifier = "==2026.7.0" },

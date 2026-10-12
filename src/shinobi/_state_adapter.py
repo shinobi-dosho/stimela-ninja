@@ -15,7 +15,7 @@ from pathlib import Path
 
 from shinobi.state_codecs import MAX_TILE_BYTES, bounded_chunks
 
-MSUTILS_COMMIT = "2856d3ae357c4c2ec70060df641fe48e32ff8288"
+MSUTILS_COMMIT = "25c280a8ab412b5015a80bf4ff6f83b7a6820675"
 ADAPTER = "shinobi-xarray-ms-native/v1"
 MSV4_SCHEMA = "xarray-ms-0.5.8-msv4/v1"
 PACKAGES = ("stimela-ninja", "msutils", "xarray-ms", "xarray", "zarr", "numcodecs", "dask-ms", "arcae", "numpy", "python-casacore", "dask", "pyarrow", "pandas")
