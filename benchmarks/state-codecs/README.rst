@@ -1,6 +1,10 @@
 Issue 16 codec and precision evidence
 ====================================
 
+Later semantic-profile integration and five-MS qualification are recorded in
+`../semantic-codecs/README.rst <../semantic-codecs/README.rst>`_. This record
+retains its historical source pins, measurements and narrower test scope.
+
 These measurements accompany the implementation of Paper I #16.
 The two initial review defects in derived-state ownership-release ordering and
 symlinked publication paths have been fixed and covered by regression tests.

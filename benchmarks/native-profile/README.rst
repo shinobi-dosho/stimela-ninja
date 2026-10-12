@@ -1,6 +1,10 @@
 Real-MS native profile qualification
 ====================================
 
+Later semantic-profile integration and five-MS qualification are recorded in
+`../semantic-codecs/README.rst <../semantic-codecs/README.rst>`_. This record
+retains its historical source pins, measurements and narrower test scope.
+
 This acceptance record accompanies `msutils PR #63
 <https://github.com/shinobi-dosho/msutils/pull/63>`_ at commit
 ``0e9b136c52e7798b2662228293a60a978d007aa4`` and its Shinobi integration.

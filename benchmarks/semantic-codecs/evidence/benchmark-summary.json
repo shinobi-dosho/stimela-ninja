@@ -1,0 +1,651 @@
+{
+  "schema": "shinobi-semantic-benchmark-summary/v1",
+  "total_trials": 90,
+  "datasets": {
+    "synthetic": {
+      "selection": {
+        "kind": "synthetic",
+        "seed": 16,
+        "rows": 1024
+      },
+      "profiles": {
+        "zstd/32": {
+          "encoded_bytes": 1534992,
+          "copy_encode_mib_s_median": 1.460207913449896,
+          "decode_mib_s_median": 7.688605455235525,
+          "peak_worker_rss_mib_max": 113.8359375
+        },
+        "zstd/128": {
+          "encoded_bytes": 1522615,
+          "copy_encode_mib_s_median": 3.238158012574073,
+          "decode_mib_s_median": 21.978129849688358,
+          "peak_worker_rss_mib_max": 113.8359375
+        },
+        "packbits-zstd/32": {
+          "encoded_bytes": 1517209,
+          "copy_encode_mib_s_median": 1.484603684508702,
+          "decode_mib_s_median": 7.205305117396613,
+          "peak_worker_rss_mib_max": 113.8359375
+        },
+        "delta-zstd/32": {
+          "encoded_bytes": 1533330,
+          "copy_encode_mib_s_median": 1.403708309302349,
+          "decode_mib_s_median": 7.4482373752632896,
+          "peak_worker_rss_mib_max": 113.8359375
+        },
+        "packbits-delta-zstd/32": {
+          "encoded_bytes": 1515547,
+          "copy_encode_mib_s_median": 1.4085772479224936,
+          "decode_mib_s_median": 6.885000912680747,
+          "peak_worker_rss_mib_max": 113.8359375
+        }
+      },
+      "column_class_bytes": {
+        "boolean_columns": [
+          "FLAG",
+          "FLAG_SPARSE",
+          "FLAG_DENSE",
+          "FLAG_BURST"
+        ],
+        "integer_columns": [
+          "ANTENNA1",
+          "ROW_ID_RAMP"
+        ],
+        "boolean_baseline_bytes": 48777,
+        "boolean_packbits_bytes": 30994,
+        "integer_baseline_bytes": 6829,
+        "integer_delta_bytes": 5167
+      },
+      "all_ids_equal": true,
+      "source_observations_unchanged": true
+    },
+    "original": {
+      "selection": {
+        "kind": "real-msv2-sample",
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms",
+        "total_rows": 247752,
+        "windows": [
+          [
+            0,
+            128
+          ],
+          [
+            123812,
+            128
+          ],
+          [
+            247624,
+            128
+          ]
+        ],
+        "columns": [
+          "ANTENNA1",
+          "ANTENNA2",
+          "ANTENNA_NAME",
+          "ARRAY_ID",
+          "CORRECTED_DATA",
+          "DATA",
+          "DATA_DESC_ID",
+          "EXPOSURE",
+          "FEED1",
+          "FEED2",
+          "FIELD_ID",
+          "FIELD_NAME",
+          "FLAG",
+          "FLAGVERSION_0_FLAG",
+          "FLAGVERSION_0_FLAG_ROW",
+          "FLAGVERSION_1_FLAG",
+          "FLAGVERSION_1_FLAG_ROW",
+          "FLAGVERSION_2_FLAG",
+          "FLAGVERSION_2_FLAG_ROW",
+          "FLAGVERSION_3_FLAG",
+          "FLAGVERSION_3_FLAG_ROW",
+          "FLAGVERSION_4_FLAG",
+          "FLAGVERSION_4_FLAG_ROW",
+          "FLAG_ROW",
+          "INTERVAL",
+          "MODEL_DATA",
+          "OBSERVATION_ID",
+          "PROCESSOR_ID",
+          "SCAN_NUMBER",
+          "SIGMA",
+          "SPECTRAL_WINDOW_NAME",
+          "STATE_ID",
+          "TIME",
+          "TIME_CENTROID",
+          "UVW",
+          "WEIGHT",
+          "WEIGHT_SPECTRUM"
+        ],
+        "flag_versions": [
+          {
+            "index": 0,
+            "name": "flags.applycal_1"
+          },
+          {
+            "index": 1,
+            "name": "flags.caracal_legacy"
+          },
+          {
+            "index": 2,
+            "name": "flags.mktp-caracal2-J0408_crosscal_before"
+          },
+          {
+            "index": 3,
+            "name": "flags.mktp-caracal2-J0408_flag_after"
+          },
+          {
+            "index": 4,
+            "name": "flags.mktp-caracal2-J0408_flag_before"
+          }
+        ],
+        "flag_versions_path": "/home/sphemakh/sandbox/shinobiMSv24-16/1783252863_2026-07-20T14-53-01_Jdz-cal-calibrators.ms.flagversions"
+      },
+      "profiles": {
+        "zstd/32": {
+          "encoded_bytes": 60097176,
+          "copy_encode_mib_s_median": 34.11272155117557,
+          "decode_mib_s_median": 171.09505056785014,
+          "peak_worker_rss_mib_max": 592.53515625
+        },
+        "zstd/128": {
+          "encoded_bytes": 60067085,
+          "copy_encode_mib_s_median": 69.68400638073174,
+          "decode_mib_s_median": 261.4541961830872,
+          "peak_worker_rss_mib_max": 592.60546875
+        },
+        "packbits-zstd/32": {
+          "encoded_bytes": 60028868,
+          "copy_encode_mib_s_median": 34.42281319327895,
+          "decode_mib_s_median": 176.01927281342103,
+          "peak_worker_rss_mib_max": 592.81640625
+        },
+        "delta-zstd/32": {
+          "encoded_bytes": 60098041,
+          "copy_encode_mib_s_median": 34.06663909949144,
+          "decode_mib_s_median": 179.577096856245,
+          "peak_worker_rss_mib_max": 593.03125
+        },
+        "packbits-delta-zstd/32": {
+          "encoded_bytes": 60029733,
+          "copy_encode_mib_s_median": 33.53455167034745,
+          "decode_mib_s_median": 170.5901641007941,
+          "peak_worker_rss_mib_max": 593.26953125
+        }
+      },
+      "column_class_bytes": {
+        "boolean_columns": [
+          "FLAG",
+          "FLAG_ROW",
+          "FLAGVERSION_0_FLAG",
+          "FLAGVERSION_0_FLAG_ROW",
+          "FLAGVERSION_1_FLAG",
+          "FLAGVERSION_1_FLAG_ROW",
+          "FLAGVERSION_2_FLAG",
+          "FLAGVERSION_2_FLAG_ROW",
+          "FLAGVERSION_3_FLAG",
+          "FLAGVERSION_3_FLAG_ROW",
+          "FLAGVERSION_4_FLAG",
+          "FLAGVERSION_4_FLAG_ROW"
+        ],
+        "integer_columns": [
+          "ANTENNA1",
+          "ANTENNA2",
+          "FEED1",
+          "FEED2",
+          "DATA_DESC_ID",
+          "FIELD_ID",
+          "SCAN_NUMBER",
+          "OBSERVATION_ID",
+          "ARRAY_ID",
+          "PROCESSOR_ID",
+          "STATE_ID"
+        ],
+        "boolean_baseline_bytes": 197962,
+        "boolean_packbits_bytes": 129654,
+        "integer_baseline_bytes": 10162,
+        "integer_delta_bytes": 11027
+      },
+      "all_ids_equal": true,
+      "source_observations_unchanged": true
+    },
+    "j0408": {
+      "selection": {
+        "kind": "real-msv2-sample",
+        "path": "/data/projects/katplus/katplus-jul20/msdir/1783252863_2026-07-20T14-53-01_Jdz-J0408-6545.ms",
+        "total_rows": 247752,
+        "windows": [
+          [
+            0,
+            128
+          ],
+          [
+            123812,
+            128
+          ],
+          [
+            247624,
+            128
+          ]
+        ],
+        "columns": [
+          "ANTENNA1",
+          "ANTENNA2",
+          "ANTENNA_NAME",
+          "ARRAY_ID",
+          "CORRECTED_DATA",
+          "DATA",
+          "DATA_DESC_ID",
+          "EXPOSURE",
+          "FEED1",
+          "FEED2",
+          "FIELD_ID",
+          "FIELD_NAME",
+          "FLAG",
+          "FLAG_ROW",
+          "INTERVAL",
+          "MODEL_DATA",
+          "OBSERVATION_ID",
+          "PROCESSOR_ID",
+          "SCAN_NUMBER",
+          "SIGMA",
+          "SPECTRAL_WINDOW_NAME",
+          "STATE_ID",
+          "TIME",
+          "TIME_CENTROID",
+          "UVW",
+          "WEIGHT",
+          "WEIGHT_SPECTRUM"
+        ],
+        "flag_versions": [],
+        "flag_versions_path": null
+      },
+      "profiles": {
+        "zstd/32": {
+          "encoded_bytes": 11770560,
+          "copy_encode_mib_s_median": 13.22719133793302,
+          "decode_mib_s_median": 69.32978883782272,
+          "peak_worker_rss_mib_max": 239.20703125
+        },
+        "zstd/128": {
+          "encoded_bytes": 11772518,
+          "copy_encode_mib_s_median": 24.5844051240725,
+          "decode_mib_s_median": 123.88772262491821,
+          "peak_worker_rss_mib_max": 239.20703125
+        },
+        "packbits-zstd/32": {
+          "encoded_bytes": 11763254,
+          "copy_encode_mib_s_median": 13.25319936700532,
+          "decode_mib_s_median": 62.58794317620457,
+          "peak_worker_rss_mib_max": 239.3125
+        },
+        "delta-zstd/32": {
+          "encoded_bytes": 11771425,
+          "copy_encode_mib_s_median": 12.421432010461016,
+          "decode_mib_s_median": 66.28841547923433,
+          "peak_worker_rss_mib_max": 239.4765625
+        },
+        "packbits-delta-zstd/32": {
+          "encoded_bytes": 11764119,
+          "copy_encode_mib_s_median": 12.305127206415815,
+          "decode_mib_s_median": 64.57553148243622,
+          "peak_worker_rss_mib_max": 239.65625
+        }
+      },
+      "column_class_bytes": {
+        "boolean_columns": [
+          "FLAG",
+          "FLAG_ROW"
+        ],
+        "integer_columns": [
+          "ANTENNA1",
+          "ANTENNA2",
+          "FEED1",
+          "FEED2",
+          "DATA_DESC_ID",
+          "FIELD_ID",
+          "SCAN_NUMBER",
+          "OBSERVATION_ID",
+          "ARRAY_ID",
+          "PROCESSOR_ID",
+          "STATE_ID"
+        ],
+        "boolean_baseline_bytes": 21440,
+        "boolean_packbits_bytes": 14134,
+        "integer_baseline_bytes": 10162,
+        "integer_delta_bytes": 11027
+      },
+      "all_ids_equal": true,
+      "source_observations_unchanged": true
+    },
+    "j0410": {
+      "selection": {
+        "kind": "real-msv2-sample",
+        "path": "/data/projects/katplus/katplus-jul20/msdir/1783252863_2026-07-20T14-53-01_Jdz-J0410-65off.ms",
+        "total_rows": 98568,
+        "windows": [
+          [
+            0,
+            128
+          ],
+          [
+            49220,
+            128
+          ],
+          [
+            98440,
+            128
+          ]
+        ],
+        "columns": [
+          "ANTENNA1",
+          "ANTENNA2",
+          "ANTENNA_NAME",
+          "ARRAY_ID",
+          "CORRECTED_DATA",
+          "DATA",
+          "DATA_DESC_ID",
+          "EXPOSURE",
+          "FEED1",
+          "FEED2",
+          "FIELD_ID",
+          "FIELD_NAME",
+          "FLAG",
+          "FLAG_ROW",
+          "INTERVAL",
+          "MODEL_DATA",
+          "OBSERVATION_ID",
+          "PROCESSOR_ID",
+          "SCAN_NUMBER",
+          "SIGMA",
+          "SPECTRAL_WINDOW_NAME",
+          "STATE_ID",
+          "TIME",
+          "TIME_CENTROID",
+          "UVW",
+          "WEIGHT",
+          "WEIGHT_SPECTRUM"
+        ],
+        "flag_versions": [],
+        "flag_versions_path": null
+      },
+      "profiles": {
+        "zstd/32": {
+          "encoded_bytes": 35781594,
+          "copy_encode_mib_s_median": 31.842205593473494,
+          "decode_mib_s_median": 194.9080944884366,
+          "peak_worker_rss_mib_max": 444.046875
+        },
+        "zstd/128": {
+          "encoded_bytes": 35799561,
+          "copy_encode_mib_s_median": 60.02167019976792,
+          "decode_mib_s_median": 323.2068377839177,
+          "peak_worker_rss_mib_max": 444.05859375
+        },
+        "packbits-zstd/32": {
+          "encoded_bytes": 35767937,
+          "copy_encode_mib_s_median": 30.58215294411552,
+          "decode_mib_s_median": 189.4220256436206,
+          "peak_worker_rss_mib_max": 444.21484375
+        },
+        "delta-zstd/32": {
+          "encoded_bytes": 35782459,
+          "copy_encode_mib_s_median": 30.29873904322084,
+          "decode_mib_s_median": 173.30912432766434,
+          "peak_worker_rss_mib_max": 444.37890625
+        },
+        "packbits-delta-zstd/32": {
+          "encoded_bytes": 35768802,
+          "copy_encode_mib_s_median": 29.926977374502616,
+          "decode_mib_s_median": 177.60028720954872,
+          "peak_worker_rss_mib_max": 444.55859375
+        }
+      },
+      "column_class_bytes": {
+        "boolean_columns": [
+          "FLAG",
+          "FLAG_ROW"
+        ],
+        "integer_columns": [
+          "ANTENNA1",
+          "ANTENNA2",
+          "FEED1",
+          "FEED2",
+          "DATA_DESC_ID",
+          "FIELD_ID",
+          "SCAN_NUMBER",
+          "OBSERVATION_ID",
+          "ARRAY_ID",
+          "PROCESSOR_ID",
+          "STATE_ID"
+        ],
+        "boolean_baseline_bytes": 39562,
+        "boolean_packbits_bytes": 25905,
+        "integer_baseline_bytes": 10162,
+        "integer_delta_bytes": 11027
+      },
+      "all_ids_equal": true,
+      "source_observations_unchanged": true
+    },
+    "chioph_avg": {
+      "selection": {
+        "kind": "real-msv2-sample",
+        "path": "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-applied-CHI-OPH-avg.ms",
+        "total_rows": 1507391,
+        "windows": [
+          [
+            0,
+            128
+          ],
+          [
+            753631,
+            128
+          ],
+          [
+            1507263,
+            128
+          ]
+        ],
+        "columns": [
+          "ANTENNA1",
+          "ANTENNA2",
+          "ANTENNA_NAME",
+          "ARRAY_ID",
+          "CORRECTED_DATA",
+          "CORRECTED_RESIDUAL",
+          "DATA",
+          "DATA_DESC_ID",
+          "EXPOSURE",
+          "FEED1",
+          "FEED2",
+          "FIELD_ID",
+          "FIELD_NAME",
+          "FLAG",
+          "FLAG_ROW",
+          "INTERVAL",
+          "MODEL_DATA",
+          "OBSERVATION_ID",
+          "PROCESSOR_ID",
+          "SCAN_NUMBER",
+          "SIGMA",
+          "SIGMA_SPECTRUM",
+          "SPECTRAL_WINDOW_NAME",
+          "STATE_ID",
+          "TIME",
+          "TIME_CENTROID",
+          "UVW",
+          "WEIGHT",
+          "WEIGHT_SPECTRUM"
+        ],
+        "flag_versions": [],
+        "flag_versions_path": null
+      },
+      "profiles": {
+        "zstd/32": {
+          "encoded_bytes": 2481623,
+          "copy_encode_mib_s_median": 2.9502202453843878,
+          "decode_mib_s_median": 13.718941994785215,
+          "peak_worker_rss_mib_max": 118.28515625
+        },
+        "zstd/128": {
+          "encoded_bytes": 2478356,
+          "copy_encode_mib_s_median": 5.809183595390262,
+          "decode_mib_s_median": 33.067992115801715,
+          "peak_worker_rss_mib_max": 118.34765625
+        },
+        "packbits-zstd/32": {
+          "encoded_bytes": 2481276,
+          "copy_encode_mib_s_median": 2.9115578097200236,
+          "decode_mib_s_median": 13.166413352844788,
+          "peak_worker_rss_mib_max": 118.53125
+        },
+        "delta-zstd/32": {
+          "encoded_bytes": 2482393,
+          "copy_encode_mib_s_median": 2.7661239260364776,
+          "decode_mib_s_median": 12.566617191926051,
+          "peak_worker_rss_mib_max": 118.703125
+        },
+        "packbits-delta-zstd/32": {
+          "encoded_bytes": 2482046,
+          "copy_encode_mib_s_median": 2.8029444493073785,
+          "decode_mib_s_median": 12.536661691321713,
+          "peak_worker_rss_mib_max": 118.890625
+        }
+      },
+      "column_class_bytes": {
+        "boolean_columns": [
+          "FLAG",
+          "FLAG_ROW"
+        ],
+        "integer_columns": [
+          "ANTENNA1",
+          "ANTENNA2",
+          "FEED1",
+          "FEED2",
+          "DATA_DESC_ID",
+          "FIELD_ID",
+          "SCAN_NUMBER",
+          "OBSERVATION_ID",
+          "ARRAY_ID",
+          "PROCESSOR_ID",
+          "STATE_ID"
+        ],
+        "boolean_baseline_bytes": 2885,
+        "boolean_packbits_bytes": 2538,
+        "integer_baseline_bytes": 10222,
+        "integer_delta_bytes": 10992
+      },
+      "all_ids_equal": true,
+      "source_observations_unchanged": true
+    },
+    "xc_calibrators": {
+      "selection": {
+        "kind": "real-msv2-sample",
+        "path": "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-xc-calibrators.ms",
+        "total_rows": 494479,
+        "windows": [
+          [
+            0,
+            128
+          ],
+          [
+            247175,
+            128
+          ],
+          [
+            494351,
+            128
+          ]
+        ],
+        "columns": [
+          "ANTENNA1",
+          "ANTENNA2",
+          "ANTENNA_NAME",
+          "ARRAY_ID",
+          "CORRECTED_DATA",
+          "DATA",
+          "DATA_DESC_ID",
+          "EXPOSURE",
+          "FEED1",
+          "FEED2",
+          "FIELD_ID",
+          "FIELD_NAME",
+          "FLAG",
+          "FLAG_ROW",
+          "INTERVAL",
+          "MODEL_DATA",
+          "OBSERVATION_ID",
+          "PROCESSOR_ID",
+          "SCAN_NUMBER",
+          "SIGMA",
+          "SPECTRAL_WINDOW_NAME",
+          "STATE_ID",
+          "TIME",
+          "TIME_CENTROID",
+          "UVW",
+          "WEIGHT",
+          "WEIGHT_SPECTRUM"
+        ],
+        "flag_versions": [],
+        "flag_versions_path": null
+      },
+      "profiles": {
+        "zstd/32": {
+          "encoded_bytes": 16781167,
+          "copy_encode_mib_s_median": 15.159068421672874,
+          "decode_mib_s_median": 82.68340905740665,
+          "peak_worker_rss_mib_max": 299.9609375
+        },
+        "zstd/128": {
+          "encoded_bytes": 16772201,
+          "copy_encode_mib_s_median": 29.296956066193882,
+          "decode_mib_s_median": 149.3824844445883,
+          "peak_worker_rss_mib_max": 300.109375
+        },
+        "packbits-zstd/32": {
+          "encoded_bytes": 16778868,
+          "copy_encode_mib_s_median": 15.034723307911914,
+          "decode_mib_s_median": 78.01613494463722,
+          "peak_worker_rss_mib_max": 300.265625
+        },
+        "delta-zstd/32": {
+          "encoded_bytes": 16781937,
+          "copy_encode_mib_s_median": 14.80583141685791,
+          "decode_mib_s_median": 73.53516658400373,
+          "peak_worker_rss_mib_max": 300.4296875
+        },
+        "packbits-delta-zstd/32": {
+          "encoded_bytes": 16779638,
+          "copy_encode_mib_s_median": 14.729897023732242,
+          "decode_mib_s_median": 73.49496640032194,
+          "peak_worker_rss_mib_max": 300.609375
+        }
+      },
+      "column_class_bytes": {
+        "boolean_columns": [
+          "FLAG",
+          "FLAG_ROW"
+        ],
+        "integer_columns": [
+          "ANTENNA1",
+          "ANTENNA2",
+          "FEED1",
+          "FEED2",
+          "DATA_DESC_ID",
+          "FIELD_ID",
+          "SCAN_NUMBER",
+          "OBSERVATION_ID",
+          "ARRAY_ID",
+          "PROCESSOR_ID",
+          "STATE_ID"
+        ],
+        "boolean_baseline_bytes": 9056,
+        "boolean_packbits_bytes": 6757,
+        "integer_baseline_bytes": 10222,
+        "integer_delta_bytes": 10992
+      },
+      "all_ids_equal": true,
+      "source_observations_unchanged": true
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "runtime": {
+    "stimela-ninja": "0.1.0b7",
+    "msutils": "3.0.0",
+    "xarray-ms": "0.5.8",
+    "xarray": "2026.7.0",
+    "zarr": "3.3.0",
+    "numcodecs": "0.16.5",
+    "arcae": "0.5.4",
+    "numpy": "2.5.3",
+    "python-casacore": "3.8.1",
+    "dask": "2026.8.0",
+    "pyarrow": "23.0.1",
+    "pandas": "3.0.6",
+    "dask-ms": "not-installed",
+    "msutils_commit": "2856d3ae357c4c2ec70060df641fe48e32ff8288"
+  },
+  "msutils_origin": {
+    "url": "https://github.com/shinobi-dosho/msutils.git",
+    "vcs_info": {
+      "vcs": "git",
+      "commit_id": "2856d3ae357c4c2ec70060df641fe48e32ff8288",
+      "requested_revision": "2856d3ae357c4c2ec70060df641fe48e32ff8288"
+    }
+  }
+}

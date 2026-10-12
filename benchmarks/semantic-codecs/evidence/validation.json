@@ -1,0 +1,110 @@
+{
+  "schema": "shinobi-semantic-codecs-validation/v1",
+  "msutils_commit": "2856d3ae357c4c2ec70060df641fe48e32ff8288",
+  "upstream": {
+    "full_suite": {
+      "passed": 552,
+      "xfailed": 2,
+      "environment": "Python3.12/Zarr3.3",
+      "command": "PYTHONPATH=src /tmp/shinobi-codecs-upstream-venv/bin/pytest -q"
+    },
+    "ci": "https://github.com/shinobi-dosho/msutils/actions/runs/38228641914",
+    "ci_checks": "Python3.11/3.12/3.13, bare install and docs all passed"
+  },
+  "downstream": {
+    "focused_state": {
+      "passed": 41
+    },
+    "py311_precision": {
+      "passed": 24
+    },
+    "py311_native_semantic": {
+      "passed": 9
+    },
+    "ordinary_install_plus_numpy": {
+      "passed": 21,
+      "skipped": 20
+    },
+    "qualification_comparator": {
+      "py312_passed": 8,
+      "py311_passed": 8,
+      "ordinary_passed": 6,
+      "ordinary_skipped": 2
+    },
+    "ci": "https://github.com/shinobi-dosho/stimela-ninja/actions/runs/38232225746",
+    "ci_checks": "Python3.11/3.12 ordinary tests, Python3.11/3.12 Measurement Set integration and dependency audit all passed",
+    "initial_full_suite": {
+      "passed": 2756,
+      "skipped": 18,
+      "seconds": 757.49,
+      "environment": "Python3.12/Zarr3.3; real git+file upstream install",
+      "note": "Suite collected before the new qualification test module was added; its eight final tests were run separately on Python3.12 and3.11."
+    },
+    "secondary_column_fix": {
+      "py312_passed": 50,
+      "py311_passed": 33,
+      "junit": [
+        "downstream-secondary-focused.xml",
+        "downstream-secondary-py311.xml"
+      ]
+    },
+    "initial_ci": "https://github.com/shinobi-dosho/stimela-ninja/actions/runs/38229441155",
+    "full_suite": {
+      "passed": 2765,
+      "skipped": 18,
+      "warnings": 67,
+      "seconds": 847.47,
+      "code_commit": "eb5cec47bdfa7c5361f4afae8f8a3cf6711a0676",
+      "environment": "Python3.12/Zarr3.3; fresh public locked msutils install",
+      "junit": "downstream-full-final.xml"
+    }
+  },
+  "quality": {
+    "ruff_check": "passed both whole trees",
+    "ruff_format_check": "passed both whole trees",
+    "sphinx_warnings_as_errors": "passed both repositories with networking for intersphinx",
+    "dependency_commit_hook": "passed"
+  },
+  "independent_reviews": {
+    "models": [
+      "Luna high",
+      "Astra low",
+      "Sol medium"
+    ],
+    "confirmed_findings_fixed": [
+      "Inspect numeric cell metadata and refuse oversized qualification reads before allocating values",
+      "Account for python-casacore uchar reads widening to uint16",
+      "Pass explicit Xarray chunks for secondary MS columns lacking preferred-chunk encoding; real lazy-backend regression covers reads before allocation"
+    ],
+    "final_result": "No actionable findings in all three final reviews"
+  },
+  "limits": [
+    "Variable-length string allocation retains upstream expansion risk",
+    "Big-endian execution was not exercised; unsafe Delta serializer combinations are explicitly refused",
+    "Independent xarray-ms exports include fresh creation timestamps; MSv4 identity invariance is checked against each rewrite input, native and payload IDs are compared across exports"
+  ],
+  "public_pull_requests": {
+    "msutils": "https://github.com/shinobi-dosho/msutils/pull/64",
+    "shinobi": "https://github.com/shinobi-dosho/stimela-ninja/pull/206"
+  },
+  "benchmark_code_commit": "ca5780914a3560d502f10d1105070857c8ced2f9",
+  "qualification_code_commit": "eb5cec47bdfa7c5361f4afae8f8a3cf6711a0676",
+  "benchmark_source_sha256": {
+    "examples/state_codec_benchmark.py": "de296700bee85b67fbf3342f33498556f2d3e1ab32e11eae62aec8e188ef27fc",
+    "examples/state_codec_qualification.py": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+    "src/shinobi/state_codecs.py": "91a34742aeddec9feaf58f4604fc4c95238262f569df630552ce38e1cb61b44d",
+    "src/shinobi/_state_adapter.py": "94672afc49603e9107e43115ad4c44f792b307ce08c6ed3dec83543dc0abf573",
+    "src/shinobi/dataset_state.py": "51001eade921faea50baa197be84556e415fd32aadf3f4717b86f88435946e15",
+    "pyproject.toml": "ca52aaa2f13482e4d2c2dc856f65479ba9985e648ab2bbdfc2faa795593e1be3",
+    "uv.lock": "a92260a4c8d575dc57dc05074eec5027b9e271d9f2d0b0c0452612b3f73254b7"
+  },
+  "qualification_source_sha256": {
+    "examples/state_codec_benchmark.py": "de296700bee85b67fbf3342f33498556f2d3e1ab32e11eae62aec8e188ef27fc",
+    "examples/state_codec_qualification.py": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+    "src/shinobi/state_codecs.py": "91a34742aeddec9feaf58f4604fc4c95238262f569df630552ce38e1cb61b44d",
+    "src/shinobi/_state_adapter.py": "344051f44e824d5e798ce8fd4a53aad1212772eda313c10947340d7ce2dfcebb",
+    "src/shinobi/dataset_state.py": "51001eade921faea50baa197be84556e415fd32aadf3f4717b86f88435946e15",
+    "pyproject.toml": "ca52aaa2f13482e4d2c2dc856f65479ba9985e648ab2bbdfc2faa795593e1be3",
+    "uv.lock": "a92260a4c8d575dc57dc05074eec5027b9e271d9f2d0b0c0452612b3f73254b7"
+  }
+}
