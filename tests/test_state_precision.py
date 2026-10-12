@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 from shinobi.dataset_state import DatasetStateStore, StateError, StateRepresentationV2
-from shinobi.state_codecs import LosslessProfile, bounded_chunks, tile_slices
+from shinobi.state_codecs import LosslessProfile, bounded_chunks, tile_slices, rewrite_lossless
 from shinobi.state_precision import DerivedLogical, PrecisionPolicy, _compare, _round
 
 np = pytest.importorskip("numpy", reason="precision operations need the measurement-set group")
@@ -42,7 +42,41 @@ def test_derived_identity_ignores_physical_source_representation():
     assert "source_representation_id" not in DerivedLogical.model_fields
 
 
-@pytest.mark.parametrize("codec,shuffle", [("gzip", "none"), ("zstd", "none"), ("blosc-zstd", "bit")])
+@pytest.mark.parametrize("codec", ["packbits-zstd", "delta-zstd", "packbits-delta-zstd"])
+def test_semantic_rewrite_filters_are_dtype_specific(tmp_path, codec):
+    import json
+
+    msutils = pytest.importorskip("msutils")
+    zarr = pytest.importorskip("zarr")
+
+    source = tmp_path / "source.zarr"
+    group = zarr.open_group(source, mode="w", zarr_format=3)
+    values = {
+        "flags": np.arange(33).reshape(3, 11) % 3 == 0,
+        "indices": np.array([[2**31 - 1, -(2**31), 0], [-(2**31), 2**31 - 1, 1]], dtype="int32"),
+        "weights": np.array([[1.5, -0.0], [2.5, 3.5]], dtype="float32"),
+        "fortran_indices": np.asfortranarray(np.arange(15, dtype="uint32").reshape(3, 5)),
+        "scalar_flag": np.array(True),
+        "empty_indices": np.empty((0, 3), dtype="int16"),
+    }
+    values["weights"].view("uint32")[1, 1] = 0x7FC12345
+    for name, value in values.items():
+        group.create_array(name, data=value, chunks=tuple(max(1, min(2, size)) for size in value.shape), config={"write_empty_chunks": True})
+    original_id = msutils.logical_id(source)
+    target = tmp_path / "rewritten.zarr"
+    assert rewrite_lossless(source, target, LosslessProfile(codec=codec, chunk_rows=2)) == original_id
+    reopened = zarr.open_group(target, mode="r", use_consolidated=False)
+    for name, value in values.items():
+        assert np.asarray(reopened[name][...]).tobytes(order="C") == value.tobytes(order="C")
+        names = [entry["name"] for entry in json.loads((target / name / "zarr.json").read_text())["codecs"]]
+        expected = "numcodecs.packbits" if value.dtype.kind == "b" and "packbits" in codec else "numcodecs.delta" if value.dtype.kind in "iu" and "delta" in codec else None
+        assert (expected in names) if expected else not any(item.startswith("numcodecs.") for item in names)
+        assert names[-1] == "zstd"
+
+
+@pytest.mark.parametrize(
+    "codec,shuffle", [("gzip", "none"), ("zstd", "none"), ("blosc-zstd", "bit"), ("packbits-zstd", "none"), ("delta-zstd", "none"), ("packbits-delta-zstd", "none")]
+)
 def test_live_lossless_export_and_derived(tmp_path, monkeypatch, codec, shuffle):
     pytest.importorskip("msutils")
     pytest.importorskip("xarray_ms")
@@ -62,6 +96,40 @@ def test_live_lossless_export_and_derived(tmp_path, monkeypatch, codec, shuffle)
     import zarr
 
     arrays = zarr.open_group(rep_path / "msv4.zarr", mode="r").members(max_depth=None)
+    if codec in ("packbits-zstd", "delta-zstd", "packbits-delta-zstd"):
+        import json
+
+        metadata = [json.loads(path.read_text()) for path in (rep_path / "msv4.zarr").rglob("zarr.json")]
+        for item in metadata:
+            if item.get("node_type") != "array":
+                continue
+            dtype = item["data_type"]
+            names = [entry["name"] for entry in item["codecs"]]
+            expected = (
+                "numcodecs.packbits"
+                if dtype == "bool" and "packbits" in codec
+                else "numcodecs.delta"
+                if dtype in ("int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64") and "delta" in codec
+                else None
+            )
+            assert (expected in names) if expected else not any(name.startswith("numcodecs.") for name in names)
+            assert names[-1] == "zstd"
+    if LosslessProfile(codec=codec).semantic_filters is not None:
+        native_flags = zarr.open_group(rep_path / "preservation/native.zarr", mode="r")["MAIN/FLAG"]
+        assert native_flags.dtype.kind == "b"
+        native_metadata = json.loads((rep_path / "preservation/native.zarr/MAIN/FLAG/zarr.json").read_text())
+        assert ("numcodecs.packbits" in [entry["name"] for entry in native_metadata["codecs"]]) == ("packbits" in codec)
+        companion_flags = next(array for name, array in arrays if name.endswith("/FLAG"))
+        assert companion_flags.dtype == np.dtype("uint8")
+        baseline = store.export(source, block_rows=2, lossless_profile=LosslessProfile(codec="zstd", chunk_rows=2))
+        _, _, baseline_rep = store._load(baseline.state_id, baseline.representation_id)
+        # Independent exports carry different xarray-ms creation timestamps.
+        # rewrite_lossless checks MSv4 identity against its own source tree.
+        assert (exact.state_id, representation.payload_id) == (baseline.state_id, baseline_rep.payload_id)
+        source.rename(tmp_path / "hidden-source.ms")
+        destination = tmp_path / "fresh.ms"
+        restored = store.materialize(exact.state_id, destination, representation_id=exact.representation_id)
+        assert restored.state_id == exact.state_id
     visibility_path = next(name for name, _ in arrays if name.endswith("/VISIBILITY"))
     policy = PrecisionPolicy(arrays=(visibility_path,), keep_bits=10, atol=0.1, rtol=0.1)
     derived = store.derive_precision(exact.state_id, policy, representation_id=exact.representation_id)
@@ -178,7 +246,9 @@ def test_precision_rejects_overflow_and_preserves_partial_nonfinite_complex():
 
 def test_independent_wrong_policy_and_untouched_array_detection(tmp_path):
     import shutil
-    import zarr
+
+    zarr = pytest.importorskip("zarr", reason="whole-tree precision verification needs Zarr")
+    pytest.importorskip("msutils", reason="whole-tree precision verification needs msutils")
     from shinobi.state_precision import _transform, _verify_whole_tree
 
     source = tmp_path / "source.zarr"
@@ -356,3 +426,50 @@ def test_derived_symlink_parents_refuse_reads_publish_and_recovery(tmp_path, mon
     backup.rename(attacked)
     assert store.verify_derived(attempt.derived_id, attempt.representation_id).verified
     assert store.recover_derived()[0].finished
+
+
+def test_export_read_chunks_are_bounded_before_backend_reads(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from shinobi import _state_adapter as adapter
+
+    xr = pytest.importorskip("xarray", reason="backend chunk planning needs xarray")
+
+    shape = (10, 2048, 2048)
+    encoding = {"chunks": shape, "units": "Jy", "scale_factor": 2}
+    variable = SimpleNamespace(dtype=np.dtype("complex64"), shape=shape, dims=("time", "frequency", "polarization"), chunks=None, encoding=encoding)
+    node = SimpleNamespace(path="/partition", ds=SimpleNamespace(variables={"VISIBILITY": variable}))
+    calls = []
+
+    class Tree:
+        subtree = [node]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def to_zarr(self, *args, **kwargs):
+            assert np.prod([max(axis) for axis in variable.chunks]) * 8 <= adapter.MAX_TILE_BYTES
+            assert variable.encoding == {"units": "Jy", "scale_factor": 2}
+
+    def open_tree(source, **options):
+        calls.append(options)
+        if "preferred_chunks" in options:
+            preferred = options["preferred_chunks"]
+            variable.chunks = tuple((preferred[dim],) for dim in variable.dims)
+        return Tree()
+
+    monkeypatch.setattr(xr, "open_datatree", open_tree)
+    adapter.export(tmp_path / "source.ms", tmp_path / "target.zarr")
+    assert len(calls) == 2
+    assert "preferred_chunks" not in calls[0]
+    assert calls[1]["chunks"] == {}
+    assert set(calls[1]["preferred_chunks"]) == set(variable.dims)
+    eager = SimpleNamespace(dtype=np.dtype("int64"), shape=(3,), chunks=None, encoding={"chunks": (adapter.MAX_TILE_BYTES,), "units": "s"})
+    node.ds.variables = {"index": eager}
+    adapter._check_export_chunks(Tree())
+    assert eager.encoding == {"units": "s"}
+    eager.shape = (adapter.MAX_TILE_BYTES,)
+    with pytest.raises(ValueError, match="not chunked"):
+        adapter._check_export_chunks(Tree())

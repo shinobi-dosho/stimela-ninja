@@ -664,7 +664,8 @@ class DatasetStateStore:
                     (rep / "msv4.zarr").rename(original)
                     rewrite_lossless(original, rep / "msv4.zarr", lossless_profile)
                     shutil.rmtree(original)
-                adapter.capture(source, rep / "msv4.zarr", rep / "preservation", block_rows)
+                capture_options = {"semantic_filters": lossless_profile.semantic_filters} if lossless_profile is not None and lossless_profile.semantic_filters is not None else {}
+                adapter.capture(source, rep / "msv4.zarr", rep / "preservation", block_rows, **capture_options)
                 attempt = self._save(attempt, phase="validating")
                 ids = adapter.verify(rep / "msv4.zarr", rep / "preservation")
                 _profile_model_pair(ids.profile, ids.native_model)

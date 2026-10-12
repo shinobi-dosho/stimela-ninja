@@ -3,7 +3,7 @@
 Use --ms for a read-only, bounded beginning/middle/end row sample from a real
 MSv2. Without --ms, generate deterministic synthetic column classes. Results
 are JSON with exact input selection, sample hashes, versions, logical IDs,
-encoded byte counts, throughput, peak process RSS and offline candidates.
+encoded byte counts, throughput, peak process RSS and actual codec metadata.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ProcessPoolExecutor
 import hashlib
+from importlib import metadata
 import json
 import multiprocessing
 import platform
@@ -22,6 +23,17 @@ from pathlib import Path
 import numpy as np
 
 from shinobi.state_codecs import LosslessProfile, rewrite_lossless
+
+
+def _versions() -> dict:
+    result = {"python": platform.python_version()}
+    for name in ("stimela-ninja", "msutils", "xarray-ms", "xarray", "zarr", "numcodecs", "arcae", "numpy", "python-casacore", "dask", "pyarrow", "pandas"):
+        try:
+            result[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            result[name] = "not-installed"
+    result["msutils_origin"] = json.loads(metadata.distribution("msutils").read_text("direct_url.json") or "{}")
+    return result
 
 
 def _tree_bytes(path: Path) -> int:
@@ -76,7 +88,36 @@ def _synthetic(seed: int, rows: int):
 def _real(path: Path, rows_per_region: int, flag_versions: Path | None):
     from casacore.tables import table
 
-    columns = ("DATA", "MODEL_DATA", "CORRECTED_DATA", "WEIGHT_SPECTRUM", "WEIGHT", "SIGMA", "FLAG", "UVW", "TIME", "ANTENNA1", "ANTENNA2")
+    columns = (
+        "DATA",
+        "MODEL_DATA",
+        "CORRECTED_DATA",
+        "CORRECTED_RESIDUAL",
+        "FLOAT_DATA",
+        "LAG_DATA",
+        "WEIGHT_SPECTRUM",
+        "SIGMA_SPECTRUM",
+        "WEIGHT",
+        "SIGMA",
+        "FLAG",
+        "FLAG_ROW",
+        "UVW",
+        "TIME",
+        "TIME_CENTROID",
+        "INTERVAL",
+        "EXPOSURE",
+        "ANTENNA1",
+        "ANTENNA2",
+        "FEED1",
+        "FEED2",
+        "DATA_DESC_ID",
+        "FIELD_ID",
+        "SCAN_NUMBER",
+        "OBSERVATION_ID",
+        "ARRAY_ID",
+        "PROCESSOR_ID",
+        "STATE_ID",
+    )
     with table(str(path), readonly=True, ack=False, lockoptions="usernoread") as main:
         count = main.nrows()
         starts = sorted({0, max(0, count // 2 - rows_per_region // 2), max(0, count - rows_per_region)})
@@ -122,7 +163,7 @@ def _real(path: Path, rows_per_region: int, flag_versions: Path | None):
     }
 
 
-def _codec_result(source: Path, root: Path, arrays, profile: LosslessProfile, label: str):
+def _codec_result(source: Path, root: Path, arrays, profile: LosslessProfile, label: str, repetition: int):
 
     target = root / label
     started = time.perf_counter()
@@ -150,6 +191,7 @@ def _codec_result(source: Path, root: Path, arrays, profile: LosslessProfile, la
             raise ValueError(f"lossless round trip changed {name}")
     total = sum(array.nbytes for array in arrays.values())
     return {
+        "repetition": repetition,
         "profile": profile.model_dump(mode="json"),
         "msv4_logical_id": logical_id,
         "encoded_bytes": _tree_bytes(target),
@@ -164,6 +206,7 @@ def _codec_result(source: Path, root: Path, arrays, profile: LosslessProfile, la
                 "raw_bytes": value.nbytes,
                 "sample_sha256": _sample_hash(value),
                 "encoded_bytes": _tree_bytes(target / name),
+                "actual_codecs": json.loads((target / name / "zarr.json").read_text())["codecs"],
                 "copy_encode_seconds": timings["per_array_copy_encode_seconds"][name],
                 "decode_seconds": per_column_decode[name],
                 "copy_encode_mib_s": value.nbytes / 1048576 / timings["per_array_copy_encode_seconds"][name],
@@ -175,45 +218,6 @@ def _codec_result(source: Path, root: Path, arrays, profile: LosslessProfile, la
     }
 
 
-def _offline_candidates(arrays):
-    """Prove reversible codecs directly; never make them publishable Zarr codecs."""
-    from numcodecs import Delta, PackBits, Zstd
-
-    result = {}
-    for name, value in arrays.items():
-        trials = []
-        if value.dtype.kind not in "biu":
-            continue
-        compressor = Zstd(level=3)
-        raw_zstd = compressor.encode(value.tobytes())
-        candidates = [("delta", Delta(dtype=value.dtype))] if value.dtype.kind in "iu" else []
-        if value.dtype.kind == "b":
-            candidates.append(("packbits", PackBits()))
-        for label, codec in candidates:
-            try:
-                packed = codec.encode(value)
-                restored = codec.decode(packed)
-                restored = np.asarray(restored).reshape(value.shape).astype(value.dtype, copy=False)
-                reversible = bool(np.array_equal(restored.view(np.uint8), value.view(np.uint8)))
-                candidate_zstd = compressor.encode(memoryview(packed).tobytes())
-                trials.append(
-                    {
-                        "candidate": label,
-                        "encoded_bytes": memoryview(packed).nbytes,
-                        "candidate_plus_zstd_bytes": memoryview(candidate_zstd).nbytes,
-                        "raw_plus_zstd_bytes": memoryview(raw_zstd).nbytes,
-                        "raw_bytes": value.nbytes,
-                        "reversible": reversible,
-                        "publishable": False,
-                    }
-                )
-            except Exception as exc:
-                trials.append({"candidate": label, "refusal": str(exc), "publishable": False})
-        if trials:
-            result[name] = trials
-    return result
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ms", type=Path, help="Optional real MSv2 to sample read-only")
@@ -221,10 +225,12 @@ def main():
     parser.add_argument("--rows-per-region", type=int, default=128)
     parser.add_argument("--synthetic-rows", type=int, default=1024)
     parser.add_argument("--seed", type=int, default=16)
+    parser.add_argument("--repetitions", type=int, default=3, help="Independent fresh-worker repetitions per profile (default: 3)")
+    parser.add_argument("--include-legacy-comparators", action="store_true", help="Also measure gzip and Blosc from the historical matrix")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--workdir", type=Path, help="Scratch parent; defaults to the output directory")
     args = parser.parse_args()
-    if args.rows_per_region < 1 or args.synthetic_rows < 1:
+    if args.rows_per_region < 1 or args.synthetic_rows < 1 or args.repetitions < 1:
         parser.error("row counts must be positive")
     if args.flag_versions is not None and args.ms is None:
         parser.error("--flag-versions requires --ms")
@@ -233,7 +239,6 @@ def main():
     arrays, selection = _real(args.ms, args.rows_per_region, args.flag_versions) if args.ms else _synthetic(args.seed, args.synthetic_rows)
     import msutils
     import zarr
-    import numcodecs
 
     workdir = args.workdir or args.output.parent
     workdir.mkdir(parents=True, exist_ok=True)
@@ -247,22 +252,33 @@ def main():
         original_id = msutils.logical_id(baseline)
         profiles = [
             LosslessProfile(codec="zstd", level=3, chunk_rows=32),
-            LosslessProfile(codec="zstd", level=6, chunk_rows=128),
-            LosslessProfile(codec="gzip", level=3, chunk_rows=32),
-            LosslessProfile(codec="blosc-zstd", level=3, shuffle="byte", chunk_rows=32),
-            LosslessProfile(codec="blosc-zstd", level=3, shuffle="bit", chunk_rows=128),
+            LosslessProfile(codec="zstd", level=3, chunk_rows=128),
+            LosslessProfile(codec="packbits-zstd", level=3, chunk_rows=32),
+            LosslessProfile(codec="delta-zstd", level=3, chunk_rows=32),
+            LosslessProfile(codec="packbits-delta-zstd", level=3, chunk_rows=32),
         ]
+        if args.include_legacy_comparators:
+            profiles.extend(
+                (
+                    LosslessProfile(codec="gzip", level=3, chunk_rows=32),
+                    LosslessProfile(codec="blosc-zstd", level=3, shuffle="byte", chunk_rows=32),
+                    LosslessProfile(codec="blosc-zstd", level=3, shuffle="bit", chunk_rows=128),
+                )
+            )
         results = []
         for i, profile in enumerate(profiles):
-            # A fresh process gives each profile its own peak RSS measurement.
-            with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn")) as executor:
-                results.append(executor.submit(_codec_result, baseline, root, arrays, profile, f"candidate-{i}").result())
+            for repetition in range(1, args.repetitions + 1):
+                # A fresh process gives each repetition its own peak RSS.
+                with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn")) as executor:
+                    results.append(executor.submit(_codec_result, baseline, root, arrays, profile, f"candidate-{i}-rep-{repetition}", repetition).result())
     after = _root_observation(args.ms) if args.ms else None
     flags_after = _root_observation(args.flag_versions) if args.flag_versions else None
     if before != after or flags_before != flags_after:
         raise RuntimeError("source MS or flagversions metadata changed during benchmark")
+    if any(result["msv4_logical_id"] != original_id for result in results):
+        raise RuntimeError("a benchmark candidate changed the logical ID")
     report = {
-        "schema_version": "shinobi-codec-benchmark/v1",
+        "schema_version": "shinobi-codec-benchmark/v2",
         "selection": selection,
         "source_observation_before": before,
         "source_observation_after": after,
@@ -270,9 +286,11 @@ def main():
         "flag_versions_observation_after": flags_after,
         "sample_hashes": {name: _sample_hash(value) for name, value in arrays.items()},
         "baseline_msv4_logical_id": original_id,
-        "versions": {"python": platform.python_version(), "numpy": np.__version__, "zarr": zarr.__version__, "numcodecs": numcodecs.__version__},
+        "versions": _versions(),
+        "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "state_codecs_sha256": hashlib.sha256(Path(__import__("shinobi.state_codecs", fromlist=["__file__"]).__file__).read_bytes()).hexdigest(),
+        "repetitions": args.repetitions,
         "results": results,
-        "offline_candidates": _offline_candidates(arrays),
         "scope": "sampled MSv2 columns encoded as independent Zarr v3 arrays; no native preservation sidecar or full export measured",
         "rss_scope": "Each codec runs in a fresh worker; per-column RSS is that worker’s cumulative high-water when copying the column ends.",
     }

@@ -168,8 +168,13 @@ are recorded; native reconstruction does not use the padded MSv4 view.
 Explicit MSv4 codec and precision artifacts
 -------------------------------------------
 
-``export`` accepts an optional named lossless profile: ``--codec zstd|gzip|blosc-zstd``,
+``export`` accepts an optional named lossless profile: ``--codec zstd|gzip|blosc-zstd|packbits-zstd|delta-zstd|packbits-delta-zstd``,
 ``--level``, ``--chunk-rows`` and, for Blosc only, ``--shuffle none|byte|bit``.
+PackBits applies only to boolean arrays; Delta applies only to signed and
+unsigned integer arrays. The combined choice applies each where eligible.
+Other array types use Zstd alone. These are explicit selections; the default
+export still uses its historical layout. Semantic selections write C-order
+chunks explicitly and preserve the array's native dtype.
 For native profile v1, the historical export keeps its v1 representation
 manifest; an explicit lossless selection uses ``shinobi-state-representation/v2``.
 Native profile v2 uses ``shinobi-state-representation/v3`` with explicit
@@ -180,8 +185,10 @@ the MSv4 tree inside private export staging. It checks the public
 ``msutils.logical_id`` before and after rewriting, then captures the usual
 native preservation sidecar against the final MSv4 tree. Numeric copies use
 bounded N-dimensional tiles. Variable-length strings retain the upstream
-decode expansion risk. The native payload retains msutils' existing codec;
-the profile describes the companion MSv4 tree only.
+decode expansion risk. The original ``zstd``, ``gzip`` and ``blosc-zstd``
+profiles retain msutils' existing native payload layout and describe the
+companion MSv4 tree only. The semantic profiles select filters for both trees
+as described below.
 
 ``derive-precision`` creates a separate approximate MSv4 artifact under
 ``derived/``. Its closed ``mantissa-round-nearest-even/v1`` policy names exact
@@ -206,3 +213,19 @@ consume only exact states.
 Provision for full data reads during verification and duplicate native/MSv4
 storage. Existing exact states can carry multiple lossless representations;
 derived artifacts add separate storage and are opt-in.
+
+The semantic lossless profiles also apply to the exact native preservation
+payload: ``packbits-zstd`` packs native boolean columns, ``delta-zstd`` filters
+native integers, and ``packbits-delta-zstd`` selects both. Every other dtype
+retains Zstd. The mapped MSv4 ``FLAG`` column is uint8 in the qualified exporter;
+it retains that type and is eligible for Delta, while the native boolean FLAG
+payload is eligible for PackBits. Neither path casts flags or changes logical
+identity. Export reads are bounded through backend ``preferred_chunks`` before
+any array is computed; numeric chunks are limited to 16 MiB.
+
+``examples/state_codec_qualification.py`` runs full export, independent fresh
+verification and replay, and casacore comparisons in separate processes. It
+makes its own deep working copy and archives only that generated copy before
+replay, proving that its recorded source path is absent. The original source
+is retained for independent comparison. Reports retain timings, RSS, actual
+codec metadata, runtime origins, source observations, and failure tracebacks.
