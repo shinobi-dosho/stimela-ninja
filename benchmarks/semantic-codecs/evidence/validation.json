@@ -246,5 +246,13 @@
         "result": "SIGINT delivered; exact verify worker and controller exited; completed exports and prerequisites unchanged; final-code continuation launched."
       }
     ]
+  },
+  "final_qualification_checker": {
+    "script": "verify-final-qualification.py.txt",
+    "script_sha256": "90f0bb18402d2e1d74d41aea16616e78f5f1c69e240d51edfc887403872c4c22",
+    "passed_regressions": 18,
+    "junit": "final-checker.xml",
+    "independent_reviews": "Sol medium, Astra low, Luna high: no actionable findings after requiring exact schemas and known cancellation handoffs",
+    "status": "Both complete July receipts and collected original/Chi handoff evidence checked; full five-corpus acceptance awaits three live replay reports."
   }
 }

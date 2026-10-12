@@ -1,0 +1,255 @@
+"""Audit complete, separately attributed full-volume capture and replay receipts."""
+
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+
+ROOT = Path("/home/sphemakh/work/softdev/stimela-ninja")
+EVIDENCE = ROOT / "benchmarks/semantic-codecs/evidence"
+ROWS = {"original": 247752, "j0408": 247752, "j0410": 98568, "chioph_avg": 1507391, "xc_calibrators": 494479}
+REPLAY = "6576e5cc5af5453227e7c711a466a42f22d96791"
+PIN = "25c280a8ab412b5015a80bf4ff6f83b7a6820675"
+CAPTURES = {label: ("v4", "0b2164db12a1865a90c2a17cbe2c6971de79e82a") if label == "chioph_avg" else ("v3", "d15bab8ad4b5598dd8c52f5c00fabec16dd72d51") for label in ROWS}
+STAGES = ["audit", "verify", "materialize-baseline", "materialize-combined", "compare-baseline", "compare-combined", "final-audit"]
+PROFILES = ["export-baseline", "export-combined"]
+REMOTE = Path("/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012")
+HELPER_SHA = "64fd572da125f9ac0dcf251b41d5a09904ba58dba40091be591d3a7fffdf4ce3"
+EXPECTED_SCHEMA = {label: "shinobi-published-state-qualification/" + ("v1" if label in {"j0408", "j0410"} else "v2") for label in ROWS}
+
+
+def option(argv, name):
+    assert argv.count(name) == 1, (name, argv)
+    return argv[argv.index(name) + 1]
+
+
+def validate_capture_handoff(label, capture, replay):
+    """Require exact report versions and cancellation proof for known handoffs."""
+    assert replay["schema_version"] == EXPECTED_SCHEMA[label], label
+    if label in {"j0408", "j0410"}:
+        return
+    captured = {s["stage"]: s for s in capture["stages"]}
+    assert replay["capture_report_status"] == capture["status"]
+    assert replay["capture_failed_stage"] == capture.get("failed_stage")
+    old_verified = "verify" in captured and all(captured["verify"].get(p, {}).get("verified") is True for p in PROFILES)
+    assert replay["prior_verify"]["completed"] is old_verified
+    assert replay["prior_verify"]["disposition"] == ("passed" if old_verified else "superseded/not-used")
+    transition = replay["operator_transition"]
+    if label == "xc_calibrators":
+        assert transition is None and old_verified
+        assert capture["status"] == "failed" and capture["failed_stage"] == "materialize"
+        return
+    assert label in {"original", "chioph_avg"} and transition is not None
+    assert old_verified is False and replay["prior_verify"]["completed"] is False
+    assert capture["status"] == "failed" and capture["failed_stage"] == "verify" and capture["exit_code"] in [-2, 130]
+    version, _ = CAPTURES[label]
+    capture_root = REMOTE / f"qualification-{version}-{label}"
+    checkout = REMOTE / f"source-{version}"
+    workdir = REMOTE / f"replay-v5-{label}"
+    receipt_name = f"handoff-{label}.json"
+    assert transition["path"] == str(REMOTE / receipt_name)
+    transition_path = EVIDENCE / receipt_name
+    assert sha(transition_path.read_bytes()) == transition["sha256"]
+    receipt = json.loads(transition_path.read_text())
+    assert receipt == transition["receipt"]
+    assert receipt["schema_version"] == "shinobi-qualification-transition/v1"
+    assert receipt["disposition"] == "cancelled-obsolete-verification"
+    assert receipt["capture_report_sha256"] == receipt["post_report_sha256"] == replay["capture_report_sha256"]
+    assert receipt["capture_script_sha256"] == capture["script_sha256"]
+    assert receipt["capture_root"] == replay["capture_root"] == capture["workdir"] == str(capture_root)
+    assert receipt["capture_checkout"] == option(replay["command"], "--capture-checkout") == str(checkout)
+    assert receipt["continuation_path"] == option(replay["command"], "--workdir") == str(workdir)
+    assert receipt["operator_script_sha256"] == HELPER_SHA == sha((EVIDENCE / "handoff-old-verification.py.txt").read_bytes())
+    assert receipt["operator_argv"][0] == str(REMOTE / "handoff-old-verification.py")
+    for name, expected in [("--capture-root", capture_root), ("--capture-checkout", checkout), ("--output-receipt", REMOTE / receipt_name), ("--continuation-path", workdir)]:
+        assert option(receipt["operator_argv"], name) == str(expected)
+    assert len(receipt["processes"]) == 2 and all(p["exit_confirmed"] is True for p in receipt["processes"])
+    delivery = receipt["signal_delivery"]
+    marker_name = receipt_name + ".signal-delivered.json"
+    assert delivery["path"] == str(REMOTE / marker_name)
+    marker_path = EVIDENCE / marker_name
+    assert sha(marker_path.read_bytes()) == delivery["sha256"]
+    marker = json.loads(marker_path.read_text())
+    assert marker == delivery["marker"]
+    assert marker["schema_version"] == "shinobi-qualification-signal-delivery/v1"
+    snapshot_path = EVIDENCE / (receipt_name + ".pre-signal.json")
+    assert sha(snapshot_path.read_bytes()) == marker["snapshot_sha256"]
+    snapshot = json.loads(snapshot_path.read_text())
+    assert snapshot["schema_version"] == "shinobi-qualification-handoff-snapshot/v1"
+    for key, value in snapshot.items():
+        if key not in {"schema_version", "processes"}:
+            assert receipt[key] == value
+    assert receipt["processes"] == [{**info, "exit_confirmed": True} for info in snapshot["processes"]]
+    assert marker["target"] == snapshot["processes"][0]
+    assert marker["signal_name"] == "SIGINT" and marker["signal"] == 2
+    assert marker["delivery_confirmed"] is True
+    evidence = snapshot["capture_evidence"]
+    assert evidence["report_sha256"] == receipt["pre_report_sha256"]
+    assert evidence["script_sha256"] == capture["script_sha256"]
+    assert evidence["recorded_source_absent"] is True and captured["archive"]["recorded_source_absent"] is True
+    for name, digest in evidence["stages_sha256"].items():
+        assert digest == sha(json.dumps(captured[name], sort_keys=True, separators=(",", ":")).encode())
+    assert set(evidence["stages_sha256"]) == {"prepare", *PROFILES, "archive"}
+    for index, process in enumerate(receipt["processes"]):
+        assert type(process["pid"]) is int and process["pid"] > 0
+        assert type(process["startticks"]) is int and process["startticks"] > 0
+        assert process["script_sha256"] == capture["script_sha256"]
+        assert process["argv"][1] == str(checkout / "examples/state_codec_qualification.py")
+        assert option(process["argv"], "--workdir") == str(capture_root)
+        if index == 0:
+            assert option(process["argv"], "--stage") == "verify"
+            assert process["ppid"] == receipt["processes"][1]["pid"]
+        else:
+            assert "--stage" not in process["argv"] and option(process["argv"], "--source") == capture["source"]
+
+
+def read(name):
+    return json.loads((EVIDENCE / name).read_text())
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def code_hash(commit, name):
+    return sha(subprocess.check_output(["git", "show", f"{commit}:{name}"], cwd=ROOT))
+
+
+def check_label(label, rows):
+    version, capture_commit = CAPTURES[label]
+    capture_name = f"qualification-{version}-{label}.json"
+    capture = read(capture_name)
+    replay = read(f"replay-v5-{label}.json")
+    assert replay["status"] == "passed", label
+    validate_capture_handoff(label, capture, replay)
+    assert replay["capture_commit"] == capture_commit and replay["replay_commit"] == REPLAY
+    assert replay["runtime"]["msutils_commit"] == PIN
+    assert replay["capture_report_sha256"] == sha((EVIDENCE / capture_name).read_bytes())
+    assert replay["capture_stages"] == capture["stages"]
+    assert replay["source"] == capture["source"]
+    assert replay["capture_script_sha256"] == capture["script_sha256"] == code_hash(capture_commit, "examples/state_codec_qualification.py")
+    assert replay["source_sha256"] == replay["source_sha256_after"]
+    for name, digest in replay["source_sha256"].items():
+        assert digest == code_hash(REPLAY, name)
+    for name, digest in replay["capture_source_sha256"].items():
+        assert digest == code_hash(capture_commit, name)
+    for name, digest in replay["package_source_sha256"].items():
+        assert digest == code_hash(REPLAY, name)
+    for sources in (replay["loaded_sources_parent"], replay["loaded_sources_parent_after"]):
+        assert "shinobi.dataset_state" in sources
+        for module in sources.values():
+            relative = "src/shinobi/" + module["path"].split("/src/shinobi/", 1)[1]
+            assert module["sha256"] == replay["package_source_sha256"][relative]
+    assert [s["stage"] for s in replay["stages"]] == STAGES
+    captured = {s["stage"]: s for s in capture["stages"]}
+    replayed = {s["stage"]: s for s in replay["stages"]}
+    assert all(name in captured for name in ["prepare", *PROFILES, "archive"])
+    native = captured["prepare"]["original_native_id"]
+    assert native == captured["prepare"]["copied_native_id"]
+    assert native == json.loads((ROOT / f"benchmarks/native-profile/evidence/final-scan-{label}.json").read_text())["native_id"]
+    assert captured["archive"]["recorded_source_absent"]
+    driver_name = "qualify-published-replay-v2.py.txt" if replay["schema_version"] == "shinobi-published-state-qualification/v2" else "qualify-published-replay.py.txt"
+    assert replay["driver_sha256"] == sha((EVIDENCE / driver_name).read_bytes())
+    if replay["schema_version"] == "shinobi-published-state-qualification/v2":
+        transition = replay["operator_transition"]
+        for profile in PROFILES:
+            export_attempt = replay["capture_export_attempts"][profile]
+            assert export_attempt["finished"] and export_attempt["phase"] == "committed" and export_attempt["operation"] == "export"
+            assert export_attempt["state_id"] == native and export_attempt["representation_id"] == captured[profile]["representation_id"]
+            assert export_attempt["attempt_id"] == replayed["audit"]["representations"][profile]["capture_attempt"]
+            assert export_attempt["versions"] == replay["runtime"]
+        for stage in replayed.values():
+            assert stage["capture_export_attempts"] == replay["capture_export_attempts"]
+            assert stage["prior_verify"] == replay["prior_verify"] and stage["operator_transition"] == transition
+    original = captured["prepare"]["source_observation_before"]
+    for stage in captured.values():
+        assert stage["source_observation_before"] == stage["source_observation_after"] == original
+        assert stage["versions"]["msutils_origin"]["vcs_info"]["commit_id"] == PIN
+    initial = replayed["audit"]["observations_before"]
+    assert initial["original"] == original
+    for stage in replayed.values():
+        assert stage["recorded_source_absent"]
+        assert stage["runtime"] == replay["runtime"]
+        assert stage["versions"]["msutils_origin"]["vcs_info"]["commit_id"] == PIN
+        assert stage["observations_before"] == stage["observations_after"] == initial
+        for key in ["loaded_sources_before", "loaded_sources_after"]:
+            assert "shinobi.dataset_state" in stage[key]
+            for module in stage[key].values():
+                relative = "src/shinobi/" + module["path"].split("/src/shinobi/", 1)[1]
+                assert module["sha256"] == replay["package_source_sha256"][relative]
+    for audit in ["audit", "final-audit"]:
+        assert set(replayed[audit]["native_ids"].values()) == {native}
+    assert captured["export-baseline"]["payload_id"] == captured["export-combined"]["payload_id"]
+    result = {"main_rows": rows, "native_id": native, "capture_commit": capture_commit, "replay_commit": REPLAY, "profiles": {}}
+    for profile in PROFILES:
+        suffix = profile.removeprefix("export-")
+        exported = captured[profile]
+        restored = replayed["materialize-" + suffix][profile]
+        compared = replayed["compare-" + suffix][profile]
+        assert exported["state_id"] == restored["native_id"] == native
+        assert replayed["verify"][profile]["verified"]
+        if "verify" in captured:
+            assert captured["verify"][profile]["verified"]
+        attempt = restored["attempt_record"]
+        assert attempt["schema_version"] == "shinobi-state-attempt/v3"
+        assert attempt["finished"] and attempt["phase"] == "committed"
+        assert attempt["state_id"] == native and attempt["representation_id"] == exported["representation_id"]
+        source_signature = replayed["audit"]["representations"][profile]["source_structural_signature"]
+        assert attempt["structural_signature"] == attempt["provenance"]["structural_signature"] == source_signature
+        assert len(attempt["restored_structural_signature"]) == 64
+        assert attempt["provenance"]["actual_fidelity"] == "exact-logical"
+        main = next(t for t in compared["tables"] if t["path"] == ".")
+        assert main["rows"] == rows and "FLAG_CATEGORY" in main["undefined_columns"]
+        assert "DATA" in main["compared_columns"] and "FLAG" in main["compared_columns"]
+        metadata = exported["actual_array_metadata"]
+        codecs = json.dumps(metadata)
+        if suffix == "baseline":
+            assert "numcodecs.packbits" not in codecs and "numcodecs.delta" not in codecs
+        else:
+            flag = metadata["preservation/native.zarr/MAIN/FLAG/zarr.json"]
+            assert flag["data_type"] == "bool" and "numcodecs.packbits" in json.dumps(flag["codecs"])
+            flags = [a for p, a in metadata.items() if p.startswith("msv4.zarr/") and p.endswith("/FLAG/zarr.json")]
+            assert flags
+            for flag in flags:
+                assert flag["data_type"] == "uint8" and "numcodecs.delta" in json.dumps(flag["codecs"])
+            for array in metadata.values():
+                if str(array["data_type"]).startswith(("float", "complex")):
+                    assert "numcodecs.packbits" not in json.dumps(array["codecs"]) and "numcodecs.delta" not in json.dumps(array["codecs"])
+        result["profiles"][profile] = {
+            "representation_bytes": exported["representation_bytes"],
+            "export_seconds": exported["seconds"],
+            "export_peak_rss_kib": exported["peak_rss_kib"],
+            "array_count": len(metadata),
+            "manifest_bytes": replayed["audit"]["representations"][profile]["manifest_bytes"],
+            "ledger_entries": replayed["audit"]["representations"][profile]["ledger_entries"],
+            "compared_tables": len(compared["tables"]),
+            "compared_blocks": compared["bounded_blocks"],
+            "source_structural_signature": source_signature,
+            "restored_structural_signature": attempt["restored_structural_signature"],
+            "export_warnings": exported["export_warnings"],
+        }
+    result["capture_stage_seconds"] = {s["stage"]: s["seconds"] for s in capture["stages"]}
+    result["replay_stage_seconds"] = {s["stage"]: s["seconds"] for s in replay["stages"]}
+    result["replay_stage_peak_rss_kib"] = {s["stage"]: s["peak_rss_kib"] for s in replay["stages"]}
+    return result
+
+
+def main():
+    summary = {label: check_label(label, rows) for label, rows in ROWS.items()}
+    (EVIDENCE / "qualification-summary.json").write_text(
+        json.dumps(
+            {
+                "verified": True,
+                "total_main_rows": sum(ROWS.values()),
+                "scope": "Full captures plus final-code source-absent verification, materialization and independent all-cell comparison; revisions recorded separately",
+                "corpora": summary,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    print("Verified five complete full-volume captures and final-code replay comparisons for both profiles.")  # noqa: T201
+
+
+if __name__ == "__main__":
+    main()
