@@ -50,11 +50,46 @@ class ResolvedFITSAccess(BaseModel):
         return self.mode is not DatasetMode.READ
 
 
+def _fits_product_shape(annotation):
+    """Check every annotation branch, never merely filtered product nodes."""
+    from typing import Annotated, Union, get_args, get_origin
+    from types import UnionType
+
+    origin, args = get_origin(annotation), get_args(annotation)
+    if origin is Annotated:
+        return _fits_product_shape(args[0])
+    product = framework_type(annotation)
+    if product:
+        return any(getattr(item, "kind", None) in FITS_KINDS for node in walk_annotation(product[1]) for item in node.metadata)
+    if origin in (Union, UnionType):
+        branches = [one for one in args if one is not type(None)]
+        return len(branches) == 1 and _fits_product_shape(branches[0])
+    if origin in (list, tuple, set, frozenset):
+        members = [one for one in args if one is not Ellipsis]
+        return bool(members) and all(one == members[0] for one in members) and _fits_product_shape(members[0])
+    return False
+
+
+def fits_product_fields(model):
+    """Discover canonical FITS products and refuse unsupported full shapes."""
+    declarations = dataset_declarations(model)
+    declared = {name.split(".")[0].removesuffix("[]") for name, one in declarations.items() if one.kind in FITS_KINDS}
+    result = set()
+    for name, field in model.model_fields.items():
+        if name not in declared:
+            continue
+        if any(framework_type(node.annotation) for node in walk_annotation(field.annotation)):
+            if not _fits_product_shape(field.annotation):
+                raise ValueError(f"FITS product field {name!r} requires a canonical FITS family/member, optional None, or homogeneous direct sequence")
+            result.add(name)
+    return result
+
+
 def fits_fields(model, *, reject_unsupported=True):
     result = {}
-    products = {name for name, field in model.model_fields.items() if any(framework_type(node.annotation) for node in walk_annotation(field.annotation, descend_models=False))}
+    products = fits_product_fields(model)
     for qualified, declaration in dataset_declarations(model).items():
-        if declaration.kind not in FITS_KINDS or qualified.split(".")[0] in products:
+        if declaration.kind not in FITS_KINDS or qualified.split(".")[0].removesuffix("[]") in products:
             continue
         name = qualified.removesuffix("[]")
         try:
@@ -113,9 +148,7 @@ def validate_scope_fits_accesses(scope):
     for name, access in declarations.items():
         if name not in inputs and name not in outputs:
             # Explicit selector for validation-only typed product output.
-            if name in scope.outputs_model.model_fields and any(
-                framework_type(node.annotation) for node in walk_annotation(scope.outputs_model.model_fields[name].annotation, descend_models=False)
-            ):
+            if name in fits_product_fields(scope.outputs_model):
                 if access.mode is not DatasetMode.READ:
                     raise ValueError("FITS family outputs support validation selection only (read), not lifecycle authority")
                 continue

@@ -1687,12 +1687,16 @@ def _dispatch(
         prepared_for_key = ctx.prepare_inputs()
         derived_identity = strict_leaf.select_derived_states(get_journal(cache_dir_value)) if strict_leaf is not None else None
         cache_key = compute_cache_key(scope, func, prepared_for_key, _input_keys, execution_identity, derived_identity)
+        if strict_leaf is not None and getattr(strict_leaf.lifecycle, "kind", None) == "fits":
+            strict_leaf.repair_cache(manifest, cache_key, scope, prepared_for_key, defer_fits_fields=strict_leaf.deferred_output_fields() if _cache_path is not None else ())
         hit = manifest.check(
             cache_path,
             cache_key,
             scope,
             prepared_for_key,
-            defer_fits_fields=strict_leaf.deferred_output_fields() if strict_leaf is not None and getattr(strict_leaf.lifecycle, "kind", None) == "fits" else (),
+            defer_fits_fields=strict_leaf.deferred_output_fields()
+            if _cache_path is not None and strict_leaf is not None and getattr(strict_leaf.lifecycle, "kind", None) == "fits"
+            else (),
         )
         if hit is not None and strict_leaf is not None and not strict_leaf.decide_reuse(cache_key, _input_keys, get_journal(cache_dir_value)):
             # The key and outputs match, but the dataset has moved on to a
@@ -1894,6 +1898,8 @@ def _dispatch(
                     manifest.record(cache_path, cache_key, result, run_id=run_id, product_contract=contract, products=products)
 
             def _commit() -> None:
+                if strict_leaf is not None and getattr(strict_leaf.lifecycle, "kind", None) == "fits" and cacheable:
+                    strict_leaf.freeze_publication(result, run_id, contract, products)
                 if _result_commit is None:
                     if strict_leaf is not None:
                         # Local strict dispatch retains the lifecycle leaf as

@@ -328,3 +328,25 @@ before successor publication. Missing or malformed historical evidence refuses.
 The transaction log is authoritative for success evidence. An existing empty or
 malformed attempt store retains recovery fences even when its materialized JSON
 view is absent. A genuinely absent pre-success oracle permits exact rollback.
+
+FITS producer generations also retain closed ``fits-commit-reference/v1``
+evidence independently of the mutable cache index. Each reference binds the
+intended durable attempt path and ID, step and key, canonical participant
+addresses, exact successor names and whole-file identities, and the complete
+invocation participant set. S2 attaches these references atomically; the exact
+committed S3 leaf and its matching observations must still prove success.
+Missing or contradictory reference/oracle evidence refuses. Generation-zero
+boundary snapshots remain distinct from committed producers. Exact rollback
+freezes and restores preceding references together with file identities,
+including a same-key successor whose metadata was overwritten at S2.
+
+The committed FITS leaf freezes the complete cache publication payload, including
+scalar outputs, provenance and product inventories. A committed generation can
+therefore recover a lost index entry after the S3/index gap without recreating a
+CREATE target. Recovery verifies the exact reference and normal current
+key/contract/product checks under the claim. The exact named producer generation can
+repair its stale older-attempt same-key entry even when a trustworthy live
+head legitimately descends from that producer; incompatible entries are not blindly
+replaced. Internal mutation passthroughs retain legitimate ancestor reuse, while
+exposed atomic outputs and recipe reexports satisfy their actual live FITS
+contracts before publication.

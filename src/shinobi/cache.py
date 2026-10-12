@@ -768,18 +768,39 @@ def product_contract(scope: Scope, prepared: dict[str, Any], workspace: Path | N
     }
 
 
+def cache_entry(cache_key, result, run_id, *, product_contract=None, products=None):
+    """Construct the single publication payload used by indexes and oracles."""
+    entry = {
+        "bundle_inventories": result.bundle_inventories or [],
+        "cache_key": cache_key,
+        "run_id": run_id,
+        "outputs": json.loads(result.outputs.model_dump_json()),
+        "kind": result.kind,
+        "backend": result.backend,
+        "image": result.image,
+        "image_digest": result.image_digest,
+        "containerized": result.containerized,
+        "venv": result.venv,
+        "venv_digest": result.venv_digest,
+        "sandboxed": result.sandboxed,
+    }
+    if product_contract is not None:
+        entry.update(product_contract=product_contract, products=products)
+    return entry
+
+
 class CacheManifest(JsonFileStore):
     """A JSON-backed step result and versioned concrete-product inventory store -- see
     :class:`shinobi.storage.JsonFileStore` for its transaction contract.
     """
 
-    def check(self, step_path: str, cache_key: str, scope: Scope, prepared: dict[str, Any], *, defer_fits_fields=()) -> StepResult | None:
+    def check(self, step_path: str, cache_key: str, scope: Scope, prepared: dict[str, Any], *, defer_fits_fields=(), candidate=None) -> StepResult | None:
         """`None` on any kind of miss (no entry, key mismatch, or a
         required output or recorded concrete product that no longer exists) -- otherwise
         a synthesized `StepResult(cached=True)` restored from the
         manifest's persisted outputs.
         """
-        entry = self.read().get(step_path)
+        entry = candidate if candidate is not None else self.read().get(step_path)
         if not isinstance(entry, dict) or entry.get("cache_key") != cache_key:
             return None
         contract = product_contract(scope, prepared)
@@ -914,22 +935,7 @@ class CacheManifest(JsonFileStore):
         """
 
         def mutate(data: dict[str, Any]) -> None:
-            data[step_path] = {
-                "bundle_inventories": result.bundle_inventories or [],
-                "cache_key": cache_key,
-                "run_id": run_id,
-                "outputs": json.loads(result.outputs.model_dump_json()),
-                "kind": result.kind,
-                "backend": result.backend,
-                "image": result.image,
-                "image_digest": result.image_digest,
-                "containerized": result.containerized,
-                "venv": result.venv,
-                "venv_digest": result.venv_digest,
-                "sandboxed": result.sandboxed,
-            }
-            if product_contract is not None:
-                data[step_path].update(product_contract=product_contract, products=products)
+            data[step_path] = cache_entry(cache_key, result, run_id, product_contract=product_contract, products=products)
 
         self.update(mutate)
 

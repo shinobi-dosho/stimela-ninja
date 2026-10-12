@@ -926,3 +926,376 @@ def test_read_visit_cleanup_exception_does_not_publish(tmp_path, monkeypatch):
     for attempt_path in set((tmp_path / ".shinobi" / "fits-attempts").glob("*.json")) - before_attempts:
         attempt = FITSLifecycleStore(attempt_path).attempt()
         assert all(leaf.outcome != "committed" for leaf in attempt.leaves if leaf.step_path == "visit.read")
+
+
+def test_atomic_passthrough_validates_live_selected_hdu(tmp_path):
+    class Outputs(BaseModel):
+        file: FITSImage
+
+    calls = []
+
+    @pystep(fits_accesses=[FITSAccess(field="file", mode="write", hdu=FITSHDU(index=1))])
+    def first(file: FITSImage) -> Outputs:
+        calls.append("first")
+        return Outputs(file=file)
+
+    @pystep(fits_accesses=[FITSAccess(field="file", mode="write")])
+    def last(file: FITSImage) -> None:
+        with fits.open(file, mode="update") as hdus:
+            del hdus[1]
+
+    path = image(tmp_path / "x.fits")
+    extension = fits.ImageHDU(np.zeros((2, 2)))
+    extension.header["CTYPE1"] = extension.header["CTYPE2"] = "LINEAR"
+    with fits.open(path, mode="append") as hdus:
+        hdus.append(extension)
+    assert run(first, tmp_path, file=path).success
+    assert run(last, tmp_path, file=path).success
+    assert run(first, tmp_path, file=path).success
+    assert calls == ["first", "first"]
+    with fits.open(path) as hdus:
+        assert len(hdus) == 2
+
+
+@pytest.mark.parametrize("create", [False, True])
+def test_committed_index_gap_reuses_complete_payload(tmp_path, monkeypatch, create):
+    from shinobi.cache import CacheManifest
+
+    class Outputs(BaseModel):
+        file: FITSImage
+        count: int
+
+    calls = []
+
+    @pystep(fits_accesses=[FITSAccess(field="file", mode="create" if create else "write")])
+    def emit(file: Path if create else FITSImage) -> Outputs:
+        calls.append(1)
+        if create:
+            image(file)
+        else:
+            with fits.open(file, mode="update") as hdus:
+                hdus[0].data[:] = 4
+        return Outputs(file=file, count=37)
+
+    # CREATE accepts the ordinary output-path parameter without inspecting absence.
+    path = tmp_path / "x.fits"
+    if not create:
+        image(path)
+    record = CacheManifest.record
+
+    def fail_index(*args, **kwargs):
+        raise OSError("cache index failed")
+
+    monkeypatch.setattr(CacheManifest, "record", fail_index)
+    with pytest.raises(OSError):
+        run(emit, tmp_path, file=path)
+    journal = get_journal(str(tmp_path / "cache"))
+    generation = journal.get(chain_id(path)).generation(journal.get(chain_id(path)).head)
+    assert generation.fits_commit
+    committed = path.read_bytes()
+    monkeypatch.setattr(CacheManifest, "record", record)
+    assert get_cache_manifest(str(tmp_path / "cache")).entry("emit") is None
+    result = run(emit, tmp_path, file=path)
+    assert result.cached and result.outputs.count == 37
+    assert calls == [1] and path.read_bytes() == committed
+
+
+def test_same_key_index_gap_repairs_new_scalar_outputs(tmp_path, monkeypatch):
+    from shinobi.cache import CacheManifest
+
+    class Outputs(BaseModel):
+        file: FITSImage
+        count: int
+
+    calls = []
+
+    @pystep(fits_accesses=[FITSAccess(field="file", mode="write")])
+    def emit(file: FITSImage) -> Outputs:
+        calls.append(1)
+        with fits.open(file, mode="update") as hdus:
+            hdus[0].data[:] = len(calls)
+        return Outputs(file=file, count=len(calls))
+
+    path = image(tmp_path / "x.fits")
+    assert run(emit, tmp_path, file=path).outputs.count == 1
+    check, record = CacheManifest.check, CacheManifest.record
+    force_miss = True
+
+    def miss_once(self, *args, **kwargs):
+        nonlocal force_miss
+        if force_miss and kwargs.get("candidate") is None:
+            force_miss = False
+            return None
+        return check(self, *args, **kwargs)
+
+    monkeypatch.setattr(CacheManifest, "check", miss_once)
+    monkeypatch.setattr(CacheManifest, "record", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("index failed")))
+    with pytest.raises(OSError):
+        run(emit, tmp_path, file=path)
+    monkeypatch.setattr(CacheManifest, "record", record)
+
+    @pystep(fits_accesses=[FITSAccess(field="file", mode="write")])
+    def tail(file: FITSImage) -> None:
+        with fits.open(file, mode="update") as hdus:
+            hdus[0].data[:] = 9
+
+    assert run(tail, tmp_path, file=path).success
+    result = run(emit, tmp_path, file=path)
+    assert result.cached and result.outputs.count == 2 and len(calls) == 2
+    assert fits.getdata(path)[0, 0] == 9
+
+
+@pytest.mark.parametrize("group", [False, True])
+def test_same_key_s2_rollback_restores_frozen_commit_reference(tmp_path, monkeypatch, group):
+    from shinobi.cache import CacheManifest
+
+    paths = [image(tmp_path / f"{index}.fits") for index in range(2 if group else 1)]
+    step = joint if group else write
+    kwargs = {"files": paths} if group else {"file": paths[0]}
+    run(step, tmp_path, **kwargs)
+    journal = get_journal(str(tmp_path / "cache"))
+    before = [journal.get(chain_id(path)).generation(journal.get(chain_id(path)).head).fits_commit for path in paths]
+    check = CacheManifest.check
+
+    def miss(self, *args, **kwargs):
+        return None if kwargs.get("candidate") is None else check(self, *args, **kwargs)
+
+    monkeypatch.setattr(CacheManifest, "check", miss)
+    faults.hooks["S2"] = lambda: (_ for _ in ()).throw(RuntimeError("failed after refs"))
+    with pytest.raises(RuntimeError):
+        run(step, tmp_path, **kwargs)
+    faults.hooks.clear()
+    after = [journal.get(chain_id(path)).generation(journal.get(chain_id(path)).head).fits_commit for path in paths]
+    assert after == before
+    assert all(not journal.get(chain_id(path)).marker for path in paths)
+
+
+@pytest.mark.parametrize("create", [False, True])
+def test_fresh_process_committed_index_gap_exact_repair(tmp_path, create):
+    path = tmp_path / "x.fits"
+    if not create:
+        image(path)
+    script = tmp_path / "index_gap.py"
+    script.write_text("""from pathlib import Path
+import os,sys
+from pydantic import BaseModel
+from shinobi import FITSImage,FITSAccess,pystep
+from shinobi.steps.dispatch import _dispatch
+from shinobi.cache import CacheManifest
+from astropy.io import fits
+import numpy as np
+create=sys.argv[1]=='create'
+class Outputs(BaseModel):
+ file:FITSImage
+ count:int
+@pystep(fits_accesses=[FITSAccess(field='file',mode='create' if create else 'write')])
+def emit(file:Path if create else FITSImage)->Outputs:
+ if create:
+  h=fits.PrimaryHDU(np.zeros((2,3),dtype=np.int16));h.header['CTYPE1']='LINEAR';h.header['CTYPE2']='LINEAR';h.writeto(file)
+ else:
+  with fits.open(file,mode='update') as h:h[0].data[:]=4
+ return Outputs(file=file,count=81)
+if sys.argv[2]=='crash':CacheManifest.record=lambda *a,**k:os._exit(73)
+else:
+ from shinobi.ownership import reconcile_ownership
+ reconcile_ownership(Path.cwd())
+result=_dispatch(emit.step,emit.func,file=Path('x.fits'),cache_dir='cache')
+assert result.cached and result.outputs.count==81
+""")
+    mode = "create" if create else "write"
+    process = subprocess.run([sys.executable, str(script), mode, "crash"], cwd=tmp_path, capture_output=True, text=True)
+    assert process.returncode == 73, process.stderr
+    committed = path.read_bytes()
+    process = subprocess.run([sys.executable, str(script), mode, "resume"], cwd=tmp_path, capture_output=True, text=True)
+    assert process.returncode == 0, process.stderr
+    assert path.read_bytes() == committed
+
+
+@pytest.mark.parametrize("group", [False, True])
+def test_committed_reference_participant_mismatch_retains_fences(tmp_path, group):
+    paths = [image(tmp_path / f"{index}.fits") for index in range(2 if group else 1)]
+    faults.hooks["S3"] = lambda: (_ for _ in ()).throw(RuntimeError("leave fence"))
+    with pytest.raises(RuntimeError):
+        run(joint if group else write, tmp_path, **({"files": paths} if group else {"file": paths[0]}))
+    faults.hooks.clear()
+    journal = get_journal(str(tmp_path / "cache"))
+    chain = journal.get(chain_id(paths[0]))
+    old_reference = chain.generation(chain.head).fits_commit
+    bad = dict(old_reference)
+    bad["participants"] = list(old_reference["participants"])
+    from shinobi.snapshots import state_name
+
+    extra = dict(bad["participants"][0], root=str(tmp_path / "other.fits"), field="other", label="other", element_index=None, successor=state_name(bad["cache_key"], "other"))
+    bad["participants"].append(extra)
+    journal.update_chain(chain_id(paths[0]), lambda one: setattr(one.generation(one.head), "fits_commit", bad) or one)
+    before = [path.read_bytes() for path in paths]
+    with pytest.raises(DatasetLifecycleUnavailableError):
+        reconcile(str(tmp_path / "cache"), get_cache_manifest(str(tmp_path / "cache")), paths=set(paths), exact=True)
+    assert [path.read_bytes() for path in paths] == before
+    assert all(journal.get(chain_id(path)).marker for path in paths)
+
+
+@pytest.mark.parametrize("compatible", [False, True])
+def test_recipe_reexport_validates_current_declared_hdu(tmp_path, compatible):
+    from shinobi import OutputRef
+
+    class Paths(BaseModel):
+        file: FITSImage
+
+    @pystep(fits_accesses=[FITSAccess(field="file", mode="write", hdu=FITSHDU(index=1))])
+    def first(file: FITSImage) -> Paths:
+        return Paths(file=file)
+
+    @pystep(fits_accesses=[FITSAccess(field="file", mode="write", hdu=FITSHDU(index=1))])
+    def last(file: FITSImage) -> None:
+        if not compatible:
+            with fits.open(file, mode="update") as hdus:
+                del hdus[0].header["CTYPE1"]
+                del hdus[0].header["CTYPE2"]
+
+    path = image(tmp_path / "x.fits")
+    extension = fits.ImageHDU(np.zeros((2, 2)))
+    extension.header["CTYPE1"] = extension.header["CTYPE2"] = "LINEAR"
+    with fits.open(path, mode="append") as hdus:
+        hdus.append(extension)
+    recipe = Recipe(name="exports", inputs_model=Paths, outputs_model=Paths)
+    recipe.add_step("first", first, file=InputRef(field="file"))
+    recipe.add_step("last", last, file=OutputRef(step="first", field="file"))
+    recipe.set_output("file", OutputRef(step="first", field="file"))
+    if compatible:
+        result = _dispatch(recipe, None, file=path, cache=True, cache_dir=str(tmp_path / "cache"))
+        assert result.success and result.outputs.file == path
+    else:
+        with pytest.raises(DatasetLifecycleViolationError, match="FITS output"):
+            _dispatch(recipe, None, file=path, cache=True, cache_dir=str(tmp_path / "cache"))
+
+
+@pytest.mark.parametrize("group", [False, True])
+def test_fresh_same_key_s2_recovers_previous_references(tmp_path, group):
+    paths = [image(tmp_path / f"{index}.fits") for index in range(2 if group else 1)]
+    step = joint if group else write
+    run(step, tmp_path, **({"files": paths} if group else {"file": paths[0]}))
+    journal = get_journal(str(tmp_path / "cache"))
+    before = [journal.get(chain_id(path)).generation(journal.get(chain_id(path)).head).fits_commit for path in paths]
+    source = tmp_path / "same_key.py"
+    source.write_text(
+        """import os,sys
+from pathlib import Path
+sys.path.insert(0,REPOSITORY_ROOT)
+from tests.test_fits_lifecycle import write,joint
+from shinobi.cache import CacheManifest
+from shinobi.snapshots import faults
+CacheManifest.check=lambda *a,**k:None
+faults.hooks['S2']=lambda:os._exit(73)
+if sys.argv[1]=='group':joint(files=[Path('0.fits').resolve(),Path('1.fits').resolve()],cache_dir=str(Path('cache').resolve()))
+else:write(file=Path('0.fits').resolve(),cache_dir=str(Path('cache').resolve()))
+""".replace("REPOSITORY_ROOT", repr(str(Path(__file__).resolve().parents[1])))
+    )
+    process = subprocess.run([sys.executable, str(source), "group" if group else "scalar"], cwd=tmp_path, capture_output=True, text=True)
+    assert process.returncode == 73, process.stderr
+    assert [journal.get(chain_id(path)).head for path in paths] == [reference["participant"]["successor"] for reference in before]
+    reconcile(str(tmp_path / "cache"), get_cache_manifest(str(tmp_path / "cache")), paths=set(paths), exact=True)
+    assert [journal.get(chain_id(path)).generation(journal.get(chain_id(path)).head).fits_commit for path in paths] == before
+
+
+def test_first_failed_writer_boundary_can_retry(tmp_path):
+    path = image(tmp_path / "x.fits")
+    faults.hooks["S2"] = lambda: (_ for _ in ()).throw(RuntimeError("before oracle"))
+    with pytest.raises(RuntimeError):
+        run(write, tmp_path, file=path)
+    faults.hooks.clear()
+    assert run(write, tmp_path, file=path).success
+
+
+@pytest.mark.parametrize("damage", ["extra-field", "wrong-oracle", "wrong-key"])
+def test_damaged_exact_reference_retains_fences(tmp_path, damage):
+    path = image(tmp_path / "x.fits")
+    faults.hooks["S3"] = lambda: (_ for _ in ()).throw(RuntimeError("leave committed fence"))
+    with pytest.raises(RuntimeError):
+        run(write, tmp_path, file=path)
+    faults.hooks.clear()
+    journal = get_journal(str(tmp_path / "cache"))
+    chain = journal.get(chain_id(path))
+    bad = dict(chain.generation(chain.head).fits_commit)
+    if damage == "extra-field":
+        bad["unexpected"] = True
+    elif damage == "wrong-oracle":
+        bad["oracle"] = str(tmp_path / "other.json")
+    else:
+        bad["cache_key"] = "0" * 64
+    journal.update_chain(chain_id(path), lambda one: setattr(one.generation(one.head), "fits_commit", bad) or one)
+    before = path.read_bytes()
+    with pytest.raises(DatasetLifecycleUnavailableError):
+        reconcile(str(tmp_path / "cache"), get_cache_manifest(str(tmp_path / "cache")), paths={path}, exact=True)
+    raw = journal.read()[chain_id(path)]
+    assert raw["marker"] and path.read_bytes() == before
+    assert all(Path(one["rollback_source"]).exists() for one in raw["marker"]["strict_group"])
+
+
+def test_head_observation_never_discovers_oracle_through_cache(tmp_path, monkeypatch):
+    from shinobi.cache import CacheManifest
+    from shinobi.fits_lifecycle import observe_journal_head
+
+    path = image(tmp_path / "x.fits")
+    run(write, tmp_path, file=path)
+    journal = get_journal(str(tmp_path / "cache"))
+    chain = journal.get(chain_id(path))
+    monkeypatch.setattr(CacheManifest, "read", lambda *args: (_ for _ in ()).throw(AssertionError("cache discovery forbidden")))
+    assert observe_journal_head(path, chain, workspace=tmp_path, cache_dir=str(tmp_path / "cache")).root == path
+
+
+@pytest.mark.parametrize("group", [False, True])
+@pytest.mark.parametrize("remove_marker_discriminator", [False, True])
+def test_new_committed_missing_reference_retains_all_fences(tmp_path, group, remove_marker_discriminator):
+    paths = [image(tmp_path / f"{index}.fits") for index in range(2 if group else 1)]
+    faults.hooks["S3"] = lambda: (_ for _ in ()).throw(RuntimeError("committed before cleanup"))
+    with pytest.raises(RuntimeError):
+        run(joint if group else write, tmp_path, **({"files": paths} if group else {"file": paths[0]}))
+    faults.hooks.clear()
+    journal = get_journal(str(tmp_path / "cache"))
+
+    def remove(one):
+        if one.path == str(paths[0]):
+            one.generation(one.head).fits_commit = None
+        if remove_marker_discriminator:
+            one.marker.strict_group = [{key: value for key, value in item.items() if key != "rollback_fits_commit"} for item in one.marker.strict_group]
+        return one
+
+    journal.update_chains([(chain_id(path), remove) for path in paths])
+    before = [path.read_bytes() for path in paths]
+    with pytest.raises(DatasetLifecycleUnavailableError, match="missing.*reference"):
+        reconcile(str(tmp_path / "cache"), get_cache_manifest(str(tmp_path / "cache")), paths=set(paths), exact=True)
+    assert [path.read_bytes() for path in paths] == before
+    markers = [journal.get(chain_id(path)).marker for path in paths]
+    assert all(markers)
+    assert all(Path(item["rollback_source"]).exists() for item in markers[0].strict_group)
+
+
+@pytest.mark.parametrize("group", [False, True])
+def test_genuine_legacy_completed_marker_recovery_remains_supported(tmp_path, group):
+    paths = [image(tmp_path / f"{index}.fits") for index in range(2 if group else 1)]
+    faults.hooks["S3"] = lambda: (_ for _ in ()).throw(RuntimeError("legacy completed before cleanup"))
+    with pytest.raises(RuntimeError):
+        run(joint if group else write, tmp_path, **({"files": paths} if group else {"file": paths[0]}))
+    faults.hooks.clear()
+    journal = get_journal(str(tmp_path / "cache"))
+    marker = journal.get(chain_id(paths[0])).marker
+    # Model the actual pre-reference schema: no leaf publication, no frozen\n    # reference discriminator and no generation references.
+    store = FITSLifecycleStore(Path(marker.success_record))
+
+    def legacy_oracle(data):
+        for leaf in data["record"]["leaves"]:
+            leaf.pop("publication", None)
+
+    store.update(legacy_oracle)
+
+    def legacy_chain(one):
+        one.generation(one.head).fits_commit = None
+        one.marker.strict_group = [{key: value for key, value in item.items() if key != "rollback_fits_commit"} for item in one.marker.strict_group]
+        return one
+
+    journal.update_chains([(chain_id(path), legacy_chain) for path in paths])
+    before = [path.read_bytes() for path in paths]
+    notes = reconcile(str(tmp_path / "cache"), get_cache_manifest(str(tmp_path / "cache")), paths=set(paths), exact=True)
+    assert notes and [path.read_bytes() for path in paths] == before
+    assert all(not journal.get(chain_id(path)).marker for path in paths)

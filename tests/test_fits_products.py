@@ -220,3 +220,83 @@ def test_ms_writer_direct_fits_create_refuses_before_launch(tmp_path, monkeypatc
         _dispatch(cab, None, ms=ms, script="from pathlib import Path; Path('bad.fits').write_bytes(b'partial')", cache_dir=str(tmp_path / "cache"))
     assert not Path("bad.fits").exists()
     assert scans(ms) == before
+
+
+@pytest.mark.parametrize("annotation", [ProductFamily[Path], ProductMember[Path]])
+def test_selector_on_non_fits_product_refuses(annotation):
+    from pydantic import create_model, ValidationError
+
+    model = create_model("PlainProducts", items=(annotation, ...))
+    with pytest.raises(ValidationError):
+        Scope(name="plain", inputs_model=Empty, outputs_model=model, fits_accesses=[FITSAccess(field="items", mode="read", hdu=FITSHDU(index=1))])
+
+
+@pytest.mark.parametrize("annotation", [ProductFamily[FITSImage] | None, list[ProductMember[FITSTable]]])
+def test_selector_on_actual_optional_or_list_fits_product(annotation):
+    from pydantic import create_model
+
+    model = create_model("FitsProducts", items=(annotation, ...))
+    Scope(name="fits", inputs_model=Empty, outputs_model=model, fits_accesses=[FITSAccess(field="items", mode="read", hdu=FITSHDU(index=1))])
+
+
+def test_yaml_selector_on_plain_product_refuses():
+    from shinobi.loaders.yaml_cab import loads
+
+    with pytest.raises(ValueError):
+        loads("""cabs:
+  plain:
+    command: cat
+    outputs:
+      items: {dtype: "ProductFamily[Path]"}
+    fits_accesses:
+      - {field: items, mode: read, hdu: {index: 1}}
+""")
+
+
+@pytest.mark.parametrize("annotation", [dict[str, ProductMember[FITSImage]], ProductMember[FITSImage] | int, list[ProductMember[FITSImage] | int]])
+@pytest.mark.parametrize("selector", [False, True])
+def test_unsupported_fits_product_shapes_refuse_declaration(annotation, selector):
+    from pydantic import create_model, ValidationError
+
+    model = create_model("UnsupportedProducts", out=(annotation, ...))
+    with pytest.raises(ValidationError):
+        Scope(name="unsupported", inputs_model=Empty, outputs_model=model, fits_accesses=[FITSAccess(field="out", mode="read", hdu=FITSHDU(index=1))] if selector else [])
+
+
+@pytest.mark.parametrize("dtype", ["Dict[str, ProductMember[FITSImage]]", "Union[ProductMember[FITSImage], int]"])
+def test_yaml_unsupported_fits_product_shapes_refuse(dtype):
+    from shinobi.loaders.yaml_cab import loads
+
+    with pytest.raises(ValueError):
+        loads(f"""cabs:
+  unsupported:
+    command: cat
+    outputs:
+      out: {{dtype: "{dtype}"}}
+    fits_accesses:
+      - {{field: out, mode: read, hdu: {{index: 1}}}}
+""")
+
+
+@pytest.mark.parametrize("annotation,value", [(dict[str, ProductMember[FITSImage]], {}), (ProductMember[FITSImage] | int, 42)])
+def test_output_validation_rejects_unsupported_product_branches(annotation, value):
+    from pydantic import create_model
+    from types import SimpleNamespace
+
+    model = create_model("UnsupportedProducts", out=(annotation, ...))
+    scope = SimpleNamespace(outputs_model=model, fits_accesses=[])
+    with pytest.raises(DatasetLifecycleViolationError, match="product shape"):
+        validate_fits_outputs(scope, model(out=value))
+
+
+def test_nested_model_product_wrapper_refuses():
+    from pydantic import ValidationError
+
+    class Wrapper(BaseModel):
+        member: ProductMember[FITSImage]
+
+    class Outputs(BaseModel):
+        out: Wrapper
+
+    with pytest.raises(ValidationError):
+        Scope(name="wrapped", inputs_model=Empty, outputs_model=Outputs)

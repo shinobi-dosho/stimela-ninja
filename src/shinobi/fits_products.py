@@ -1,13 +1,14 @@
 """One validation walker for fresh and cached strict FITS output products."""
 
 from shinobi.datasets import dataset_declarations
-from shinobi.fits_access import FITS_KINDS
+from shinobi.fits_access import FITS_KINDS, fits_product_fields
 from shinobi.fits import FITSHDU, inspect_fits
 from shinobi.products import iter_product_paths
 from shinobi.exceptions import DatasetLifecycleViolationError
 
 
 def fits_product_contract(scope):
+    fits_product_fields(scope.outputs_model)
     declarations = dataset_declarations(scope.outputs_model)
     selectors = {one.field: one.hdu for one in scope.fits_accesses}
     return [
@@ -18,6 +19,10 @@ def fits_product_contract(scope):
 
 
 def validate_fits_outputs(scope, outputs, *, workspace=None, skip_fields=()):
+    try:
+        fits_product_fields(scope.outputs_model)
+    except ValueError as exc:
+        raise DatasetLifecycleViolationError(f"FITS output product shape is unsupported: {exc}") from exc
     if outputs is None:
         return
     from pathlib import Path
