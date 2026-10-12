@@ -464,7 +464,7 @@ def test_export_read_chunks_are_bounded_before_backend_reads(tmp_path, monkeypat
     adapter.export(tmp_path / "source.ms", tmp_path / "target.zarr")
     assert len(calls) == 2
     assert "preferred_chunks" not in calls[0]
-    assert calls[1]["chunks"] == {}
+    assert calls[1]["chunks"] == calls[1]["preferred_chunks"]
     assert set(calls[1]["preferred_chunks"]) == set(variable.dims)
     eager = SimpleNamespace(dtype=np.dtype("int64"), shape=(3,), chunks=None, encoding={"chunks": (adapter.MAX_TILE_BYTES,), "units": "s"})
     node.ds.variables = {"index": eager}
@@ -473,3 +473,78 @@ def test_export_read_chunks_are_bounded_before_backend_reads(tmp_path, monkeypat
     eager.shape = (adapter.MAX_TILE_BYTES,)
     with pytest.raises(ValueError, match="not chunked"):
         adapter._check_export_chunks(Tree())
+
+
+def test_export_chunks_secondary_lazy_backend_reads_without_encoding_hints(tmp_path, monkeypatch):
+    xr = pytest.importorskip("xarray", reason="backend chunk planning needs xarray")
+    pytest.importorskip("dask", reason="backend read chunk verification needs Dask")
+    from xarray.backends import BackendArray
+    from xarray.core import indexing
+    from shinobi import _state_adapter as adapter
+
+    shape = (8, 1024, 1024)
+    dims = ("time", "frequency", "polarization")
+    calls = []
+
+    class LazyColumn(BackendArray):
+        dtype = np.dtype("complex64")
+
+        def __init__(self, name):
+            self.name = name
+            self.shape = shape
+
+        def __getitem__(self, key):
+            return indexing.explicit_indexing_adapter(key, self.shape, indexing.IndexingSupport.BASIC, self._read)
+
+        def _read(self, key):
+            selected = tuple(len(range(*index.indices(size))) for index, size in zip(key, self.shape, strict=True))
+            size = int(np.prod(selected)) * self.dtype.itemsize
+            assert size <= adapter.MAX_TILE_BYTES, f"oversized backend read for {self.name}: {size}"
+            # Dask may serialize backend objects; persist the actual read receipt.
+            (tmp_path / f"{self.name}.read").write_text(str(size))
+            return np.zeros(selected, dtype=self.dtype)
+
+    class Tree:
+        def __init__(self, dataset):
+            self.tree = xr.DataTree.from_dict({"partition": dataset})
+            self.subtree = self.tree.subtree
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.tree.close()
+
+        def to_zarr(self, *args, **kwargs):
+            dataset = self.tree["partition"].ds
+            for name in ("VISIBILITY", "MODEL_DATA", "CORRECTED_DATA"):
+                variable = dataset[name]
+                assert int(np.prod([max(axis) for axis in variable.chunks])) * variable.dtype.itemsize <= adapter.MAX_TILE_BYTES
+                assert "chunks" not in variable.encoding
+                assert variable.encoding["scale_factor"] == 2
+                assert variable.attrs == {"units": "Jy"}
+                # Exercise real Dask -> Xarray -> BackendArray slicing without
+                # computing or allocating the whole simulated partition.
+                variable.data.blocks[0, 0, 0].compute(scheduler="synchronous")
+
+    def open_tree(source, **options):
+        calls.append(options)
+        variables = {}
+        for name in ("VISIBILITY", "MODEL_DATA", "CORRECTED_DATA"):
+            variable = xr.Variable(dims, indexing.LazilyIndexedArray(LazyColumn(name)), attrs={"units": "Jy"})
+            variable.encoding = {"chunks": shape, "scale_factor": 2}
+            # Match the qualified backend: only primary variables supply hints.
+            if name == "VISIBILITY" and "preferred_chunks" in options:
+                variable.encoding["preferred_chunks"] = options["preferred_chunks"]
+            variables[name] = variable
+        dataset = xr.Dataset(variables).chunk(options["chunks"])
+        assert list(tmp_path.glob("*.read")) == []  # Both opens are metadata-only.
+        return Tree(dataset)
+
+    monkeypatch.setattr(xr, "open_datatree", open_tree)
+    adapter.export(tmp_path / "source.ms", tmp_path / "target.zarr")
+    assert calls[0]["chunks"] == {}
+    assert calls[1]["chunks"] == calls[1]["preferred_chunks"]
+    receipts = list(tmp_path.glob("*.read"))
+    assert {path.stem for path in receipts} == {"VISIBILITY", "MODEL_DATA", "CORRECTED_DATA"}
+    assert all(int(path.read_text()) <= adapter.MAX_TILE_BYTES for path in receipts)

@@ -115,7 +115,9 @@ def export(source: Path, destination: Path) -> list[str]:
         }
         with xr.open_datatree(source, **options) as metadata_tree:
             preferred = _preferred_chunks(metadata_tree)
-        with xr.open_datatree(source, preferred_chunks=preferred, **options) as tree:
+        # Secondary columns in the qualified backend lack preferred-chunk
+        # encoding hints. Explicit Xarray chunks bound their backend reads too.
+        with xr.open_datatree(source, preferred_chunks=preferred, **{**options, "chunks": preferred}) as tree:
             _check_export_chunks(tree)
             tree.to_zarr(destination, mode="w", compute=True, consolidated=True, zarr_format=3)
     return sorted({f"{item.category.__name__}: {item.message}" for item in emitted})

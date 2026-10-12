@@ -220,8 +220,10 @@ native integers, and ``packbits-delta-zstd`` selects both. Every other dtype
 retains Zstd. The mapped MSv4 ``FLAG`` column is uint8 in the qualified exporter;
 it retains that type and is eligible for Delta, while the native boolean FLAG
 payload is eligible for PackBits. Neither path casts flags or changes logical
-identity. Export reads are bounded through backend ``preferred_chunks`` before
-any array is computed; numeric chunks are limited to 16 MiB.
+identity. Export reads use an explicit Xarray chunk map together with backend
+``preferred_chunks`` before any array is computed. The explicit map also bounds
+secondary columns, which lack backend preferred-chunk hints. Numeric chunks
+are limited to 16 MiB.
 
 ``examples/state_codec_qualification.py`` runs full export, independent fresh
 verification and replay, and casacore comparisons in separate processes. It
