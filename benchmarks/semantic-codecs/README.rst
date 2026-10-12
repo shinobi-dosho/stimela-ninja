@@ -119,11 +119,12 @@ and retaining the existing default, rather than choosing one codec globally.
 Full-volume qualification
 -------------------------
 
-J0408 and J0410 have completed final-code qualification for both profiles:
+J0408, J0410 and Chi Oph cross-calibrators have completed final-code
+qualification for both profiles:
 source-absent verification, restoration, independent all-cell comparison and
 final source audits all passed. Their receipts passed a separate audit of
 code revisions, runtime pins, codec metadata and native IDs. The remaining
-three final-code replays are running; all five baseline/combined export pairs
+two final-code replays are running; all five baseline/combined export pairs
 have completed. Final results will be added before this PR is marked ready. This is separate from the completed sampled-column matrix. Saved flag-version
 files are covered by that sample matrix; the full native round trips cover the
 MS table trees, not their adjacent flag-version directories.

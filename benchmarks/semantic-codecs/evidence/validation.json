@@ -188,7 +188,7 @@
     "receipt": "real-schema-v3.json",
     "scope": "zero-row descriptor and canonical manager checks; not full-volume replay"
   },
-  "qualification_status": "All five baseline/combined export pairs complete. J0408 and J0410 passed all final-code qualification stages. Original, Chi Oph averaged and cross-calibrators final replays running; original/Chi obsolete verify stages explicitly superseded with exact-process handoff receipts.",
+  "qualification_status": "All five capture pairs and final-code source-absent verifications passed. J0408, J0410 and cross-calibrators passed all seven replay stages and the independent evidence checker. Original and Chi Oph averaged final replays remain running.",
   "continuation_driver": {
     "passed_regressions": 7,
     "junit": "replay-driver-provenance.xml",
@@ -253,6 +253,6 @@
     "passed_regressions": 18,
     "junit": "final-checker.xml",
     "independent_reviews": "Sol medium, Astra low, Luna high: no actionable findings after requiring exact schemas and known cancellation handoffs",
-    "status": "Both complete July receipts and collected original/Chi handoff evidence checked; full five-corpus acceptance awaits three live replay reports."
+    "status": "Three complete receipts passed (J0408, J0410, cross-calibrators); full five-corpus acceptance awaits original and Chi Oph averaged replays."
   }
 }
