@@ -410,8 +410,11 @@ are refused and never dispatch an unclaimed reader.
 
 The planner accepts bounded, read-only MSv2 scatter on atomic steps in a flat
 recipe. Each validated slice is planned under the same declared graph node;
-its access dependencies and reasons are combined before dispatch. Scatter
-lists and all slice inputs must resolve at the claim boundary, including
+its access dependencies and reasons are combined before dispatch. Exactly equal
+resolved accesses are retained once in the node's plan, while each executing
+leaf keeps its own attempt attribution. Closure discovery is memoized by
+canonical root within one planning pass; revalidation uses a fresh planner.
+Scatter lists and all slice inputs must resolve at the claim boundary, including
 non-path inputs. Concrete MS paths may themselves be scattered. Shared dataset
 and generic reads are allowed. Before any slice is queued, the actual batch must
 retain its frozen cardinality and each slice's own canonical filesystem accesses;
@@ -419,9 +422,11 @@ another slice's reservation cannot cover redirected I/O. Scalar refinements
 that preserve these accesses are allowed. Any cross-slice overlap involving a write
 is refused before any task launches. This includes duplicate outputs, parent
 and descendant paths, canonical symlink aliases, and external closure members.
-Explicit or inferred dataset WRITE/CREATE scatter, authoritative FITS scatter,
-and nested dataset recipes remain refused. Flatten those steps (including
-bounded loop expansions) so every access has one declared graph node.
+Explicit or inferred dataset WRITE/CREATE scatter and nested MS dataset
+recipes remain refused by access planning. Execution also refuses authoritative
+FITS scatter and nested FITS recipes; their existing planning and dry-run
+routes remain available. Flatten unsupported steps (including bounded loop
+expansions) so every access has one declared graph node.
 
 Contained read execution
 ------------------------
