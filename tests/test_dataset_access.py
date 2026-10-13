@@ -412,7 +412,7 @@ def test_create_refuses_an_existing_target(tmp_path):
         resolve_scope_dataset_accesses(_scope("create", DatasetMode.CREATE), {"ms": existing}, workspace=tmp_path)
 
 
-def test_dataset_scatter_and_nested_recipe_are_bounded_refusals(tmp_path):
+def test_mutating_dataset_scatter_and_nested_recipe_are_bounded_refusals(tmp_path):
     class ManyMS(BaseModel):
         ms: list[MeasurementSetV2]
 
@@ -423,7 +423,7 @@ def test_dataset_scatter_and_nested_recipe_are_bounded_refusals(tmp_path):
         steps=[
             StepRef(
                 name="read",
-                step=_scope("read", DatasetMode.READ),
+                step=_scope("read", DatasetMode.WRITE),
                 wiring={"ms": InputRef(field="ms")},
                 scatter=ScatterSpec(fields=["ms"]),
             )

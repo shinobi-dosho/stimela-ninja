@@ -286,6 +286,38 @@ def scope_has_dataset_contract(scope: Any) -> bool:
     return bool(any(one.kind not in (DatasetKind.FITS_IMAGE, DatasetKind.FITS_TABLE) for one in declarations.values()) or scope.dataset_accesses)
 
 
+def ms_dataset_writes(scope: Any) -> set[str]:
+    """MS fields written or created according to declarations alone."""
+
+    from shinobi.steps.schema import mutated_path_fields, write_path_fields
+
+    inputs = {name for name, shape in executable_dataset_fields(scope.inputs_model, reject_unsupported=False).items() if shape.declaration.kind is DatasetKind.MEASUREMENT_SET_V2}
+    outputs = {name for name, shape in executable_dataset_fields(scope.outputs_model, reject_unsupported=False).items() if shape.declaration.kind is DatasetKind.MEASUREMENT_SET_V2}
+    declared = {access.field for access in scope.dataset_accesses if access.mode is not DatasetMode.READ}
+    inferred = (outputs - inputs) | ((mutated_path_fields(scope) | write_path_fields(scope)) & (inputs | outputs))
+    explicit_reads = {access.field for access in scope.dataset_accesses if access.mode is DatasetMode.READ}
+    return declared | (inferred - explicit_reads)
+
+
+def validate_dataset_scatter(scope: Any, *, error_type: type[Exception] = DatasetAccessError) -> None:
+    """Admit only atomic, read-only MS scatter, without inspecting paths.
+
+    Validation-only FITS product selectors have no lifecycle authority and
+    may accompany MS readers. Authoritative FITS annotations remain bounded.
+    Concrete slice paths and filesystem collisions are checked by planning.
+    """
+
+    from shinobi.fits_access import scope_tree_has_fits_contract
+    from shinobi.steps.schema import Recipe
+
+    if isinstance(scope, Recipe) and (scope_tree_has_dataset_contract(scope) or scope_tree_has_fits_contract(scope)):
+        raise error_type(f"scope {scope.name!r} scatters a nested dataset recipe; flatten it")
+    if scope_tree_has_fits_contract(scope):
+        raise error_type(f"scope {scope.name!r} scatters an authoritative FITS dataset contract")
+    if ms_dataset_writes(scope):
+        raise error_type(f"scope {scope.name!r} scatters a dataset contract with WRITE or CREATE access; only read-only MSv2 scatter is supported")
+
+
 def scope_tree_has_dataset_contract(scope: Any) -> bool:
     """Whether a scope or any nested recipe step carries a dataset contract."""
 
@@ -566,9 +598,7 @@ def resolve_scope_dataset_accesses(
         if field in outputs and field not in inputs:
             mode = DatasetMode.CREATE
         else:
-            from shinobi.steps.schema import mutated_path_fields, write_path_fields
-
-            mode = DatasetMode.WRITE if field in mutated_path_fields(scope) | write_path_fields(scope) else DatasetMode.READ
+            mode = DatasetMode.WRITE if field in ms_dataset_writes(scope) else DatasetMode.READ
         declarations.append((DatasetAccess(field=field, mode=mode), DatasetFallback.UNDECLARED))
 
     resolved: list[ResolvedDatasetAccess] = []
@@ -779,8 +809,8 @@ def plan_recipe_accesses(
     Explicit wiring/``after`` edges determine the stable topological order.
     Otherwise-unordered access conflicts are then oriented backwards in that
     order, so the result is deterministic and cannot invent data lineage.
-    Nested recipes and dataset-bearing scatter are refused explicitly in this
-    first bounded planner rather than partially planned.
+    Nested dataset recipes and mutating dataset scatter are refused. Bounded
+    atomic MS readers are planned per slice under their declared graph node.
     """
 
     from pydantic_core import PydanticUndefined
@@ -815,8 +845,9 @@ def plan_recipe_accesses(
         if isinstance(ref.step, Recipe):
             if scope_tree_has_dataset_contract(ref.step):
                 raise DatasetAccessError(f"step {ref.name!r} is a nested recipe with dataset contracts; flatten it before access planning")
-        if ref.scatter is not None and scope_has_dataset_contract(ref.step):
-            raise DatasetAccessError(f"step {ref.name!r} scatters a dataset contract; declare bounded non-scattered steps instead")
+        strict_scatter = ref.scatter is not None and scope_has_dataset_contract(ref.step)
+        if ref.scatter is not None:
+            validate_dataset_scatter(ref.step)
 
         known, unresolved_fields = static_wiring_values(ref, recipe_inputs, outputs)
         from shinobi.steps.schema import validate_family_scatter_inputs
@@ -859,29 +890,59 @@ def plan_recipe_accesses(
             ]
 
         resolved_generic = generic_paths(known, validated_steps) if isinstance(ref.step, Recipe) and ref.scatter is None else None
+        slice_plans = []
+        if strict_scatter and (unresolved_fields or any(field not in known for field in ref.scatter.fields)):
+            raise DatasetAccessError(f"step {ref.name!r} read-only dataset scatter requires concrete slice inputs before dispatch")
         if ref.scatter is not None and all(field in known for field in ref.scatter.fields):
             from shinobi.steps.dispatch import _build_scatter_slices
-            from shinobi.steps.schema import _slice_descendants
+            from shinobi.steps.schema import _slice_descendants, paths_overlap
 
             resolved_generic = []
+            resources_by_slice = []
             for slice_index, inputs in enumerate(_build_scatter_slices(ref, known)):
                 prior = (validated_steps or {}).get((id(ref), slice_index))
                 try:
                     inputs = _model_values(prior[0] if prior is not None else ref.step.inputs_model(**inputs))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    if strict_scatter:
+                        raise DatasetAccessError(f"step {ref.name!r} scatter slice {slice_index} cannot be validated before dispatch") from exc
                 for name in unresolved_fields:
                     inputs.pop(name, None)
-                resolved_generic.extend(generic_paths(inputs, _slice_descendants(validated_steps, id(ref), slice_index)))
+                generic = generic_paths(inputs, _slice_descendants(validated_steps, id(ref), slice_index))
+                resolved_generic.extend(generic)
+                if strict_scatter:
+                    decision = planner.order_after(
+                        ref.name,
+                        ref.step,
+                        inputs,
+                        unresolved_inputs=unresolved_fields,
+                        resolved_path_accesses=generic,
+                    )
+                    resources = [*generic, *dataset_workspace_accesses(decision.datasets)]
+                    for previous_index, previous in enumerate(resources_by_slice):
+                        if any((left_writes or right_writes) and paths_overlap(left, right) for left, left_writes in previous for right, right_writes in resources):
+                            raise DatasetAccessError(
+                                f"step {ref.name!r} scatter slices {previous_index} and {slice_index} have overlapping filesystem resources where at least one writes"
+                            )
+                    resources_by_slice.append(resources)
+                    slice_plans.append(decision)
         outputs_for_step = {} if ref.scatter is not None else static_output_values(ref.step, known, unresolved_inputs=unresolved_fields)
-        decision = planner.order_after(
-            ref.name,
-            ref.step,
-            {**known, **outputs_for_step},
-            unresolved_inputs=unresolved_fields,
-            allow_existing_create=ref.name in overwrite_steps,
-            resolved_path_accesses=resolved_generic,
-        )
+        if strict_scatter:
+            parents = {parent for one in slice_plans for parent in one.dependencies}
+            decision = AccessDecision(
+                dependencies=frozenset(parents),
+                reasons={parent: tuple(sorted({reason for one in slice_plans for reason in one.reasons.get(parent, ())})) for parent in parents},
+                datasets=tuple(access for one in slice_plans for access in one.datasets),
+            )
+        else:
+            decision = planner.order_after(
+                ref.name,
+                ref.step,
+                {**known, **outputs_for_step},
+                unresolved_inputs=unresolved_fields,
+                allow_existing_create=ref.name in overwrite_steps,
+                resolved_path_accesses=resolved_generic,
+            )
         accesses[ref.name] = decision.datasets
         for parent in decision.dependencies:
             parent_index = by_name[parent]

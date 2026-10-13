@@ -144,7 +144,11 @@ leaf. Canonical candidates are frozen at planning time, so retargeting a
 symlink cannot transfer a reservation. Local scatter freezes each slice
 separately. Finite-family scatter requires its slice inputs and candidate
 paths to resolve before dispatch; an unresolved upstream reference cannot
-supply an execution-time slice envelope. Local execution and detached workers
+supply an execution-time slice envelope. Atomic MSv2 read scatter may emit finite
+``ProductFamily[FITSImage]`` outputs with validation-only FITS selectors. Each
+slice reserves and validates its own candidates; gathered outputs remain a
+list of observed families. Planning does not synthesize family values, and
+coordinate selection through a gathered list is unsupported. Local execution and detached workers
 enforce the same per-leaf
 boundary before clearing outputs or launching tools. Sandbox preparation retains
 workspace destinations derived from anchored Path inputs; declarations that

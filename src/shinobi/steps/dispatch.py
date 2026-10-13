@@ -22,6 +22,7 @@ import threading
 import warnings
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Sequence
@@ -130,20 +131,10 @@ def _leaf_dataset_writes(scope: Scope) -> set[str]:
     mutated/write-path sets.
     """
 
-    from shinobi.dataset_access import DatasetMode
-    from shinobi.datasets import executable_dataset_fields
-    from shinobi.steps.schema import mutated_path_fields, write_path_fields
+    from shinobi.dataset_access import ms_dataset_writes
+    from shinobi.fits_access import fits_writes, scope_has_fits_contract
 
-    from shinobi.fits_access import FITS_KINDS, fits_writes, scope_has_fits_contract
-
-    if scope_has_fits_contract(scope):
-        return fits_writes(scope)
-    inputs = {name: shape for name, shape in executable_dataset_fields(scope.inputs_model, reject_unsupported=False).items() if shape.declaration.kind not in FITS_KINDS}
-    outputs = {name: shape for name, shape in executable_dataset_fields(scope.outputs_model, reject_unsupported=False).items() if shape.declaration.kind not in FITS_KINDS}
-    declared = {access.field for access in scope.dataset_accesses if access.mode is not DatasetMode.READ}
-    inferred = (set(outputs) - set(inputs)) | ((mutated_path_fields(scope) | write_path_fields(scope)) & (set(inputs) | set(outputs)))
-    explicit_reads = {access.field for access in scope.dataset_accesses if access.mode is DatasetMode.READ}
-    return declared | (inferred - explicit_reads)
+    return fits_writes(scope) if scope_has_fits_contract(scope) else ms_dataset_writes(scope)
 
 
 def _scope_tree_writes_datasets(scope: Scope) -> bool:
@@ -221,7 +212,7 @@ def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: 
     format_name = "FITS" if fits_route else "MSv2"
     backends: set[str] = set()
 
-    def visit(current: Scope, current_func: Callable | None, backend_name: str, *, nested: bool = False, scattered: bool = False) -> None:
+    def visit(current: Scope, current_func: Callable | None, backend_name: str, *, nested: bool = False) -> None:
         has_contract = scope_has_dataset_contract(current) or scope_has_fits_contract(current)
         if isinstance(current, Recipe):
             # Recipe boundary annotations describe values crossing the
@@ -234,8 +225,10 @@ def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: 
                 if isinstance(ref.step, Recipe) and child_has_contract:
                     raise DatasetLifecycleUnavailableError(f"contained {format_name} execution refused: step {ref.name!r} is a nested dataset recipe; flatten it")
                 if ref.scatter is not None and child_has_contract:
-                    raise DatasetLifecycleUnavailableError(f"contained {format_name} execution refused: step {ref.name!r} scatters a dataset contract")
-                visit(ref.step, ref.func, ref.step.backend or backend_name, nested=True, scattered=ref.scatter is not None)
+                    from shinobi.dataset_access import validate_dataset_scatter
+
+                    validate_dataset_scatter(ref.step, error_type=DatasetLifecycleUnavailableError)
+                visit(ref.step, ref.func, ref.step.backend or backend_name, nested=True)
             return
         # One outer lifecycle claim covers the whole flat recipe, not merely
         # the annotated leaves. Record every route so the capability adapter
@@ -245,8 +238,6 @@ def _dataset_execution_backends(scope: Scope, func: Callable | None, inherited: 
             return
         if nested and isinstance(current, Recipe):
             raise DatasetLifecycleUnavailableError(f"contained {format_name} execution refused: nested dataset recipes are not supported")
-        if scattered:
-            raise DatasetLifecycleUnavailableError(f"contained {format_name} execution refused: scattered dataset access is not supported")
         if isinstance(current, Cab):
             if current_func is not None:
                 raise DatasetLifecycleUnavailableError(f"contained {format_name} execution refused: cab orchestration functions are not an ordinary dataset route")
@@ -483,6 +474,16 @@ def _snapshot_product_leaf_inputs(
                 for key, prior in leaf_inputs.items():
                     if isinstance(key, tuple) and len(key) == 2 and key[0] == id(ref):
                         frozen = _snapshot_product_inputs(ref.step, prior[0] if isinstance(prior, tuple) else prior)
+                        from shinobi.dataset_access import scope_has_dataset_contract
+
+                        if not isinstance(ref.step, Recipe) and scope_has_dataset_contract(ref.step):
+                            from shinobi.ownership import _model_values
+                            from shinobi.steps.schema import path_accesses
+
+                            values = _model_values(prior[0]) if isinstance(prior, tuple) else prior
+                            if frozen is None:
+                                frozen = _ProductReservations((), (), copy.deepcopy(values))
+                            frozen = replace(frozen, scatter_path_accesses=frozenset(path_accesses(ref.step, values, workspace=Path.cwd())))
                         if frozen is not None:
                             _require_finite_scatter_reservations(ref.step, frozen)
                             snapshots[key] = frozen
@@ -2640,6 +2641,31 @@ def _run_recipe(
                 return
             if ref.scatter is not None:
                 slices = _build_scatter_slices(ref, sub_kwargs)
+                from shinobi.dataset_access import scope_has_dataset_contract
+
+                strict_scatter = dataset_lifecycle is not None and scope_has_dataset_contract(ref.step)
+                validated_slices = {}
+                if strict_scatter:
+                    from shinobi.ownership import _model_values
+                    from shinobi.steps.schema import path_accesses
+
+                    frozen_slices = {key[1]: value for key, value in (planned_leaf_inputs or {}).items() if isinstance(key, tuple) and len(key) == 2 and key[0] == id(ref)}
+                    if set(frozen_slices) != set(range(len(slices))):
+                        raise DatasetLifecycleUnavailableError(f"step {ref.name!r} changed its frozen scatter cardinality before dispatch")
+                    # Validate the entire batch before enqueueing any unit. Each
+                    # slice must retain its own canonical claim-time accesses;
+                    # another slice's reservation cannot cover redirected I/O.
+                    for slice_idx, slice_kwargs in enumerate(slices):
+                        prior = (leaf_inputs or {}).get((id(ref), slice_idx))
+                        if prior is None:
+                            raise DatasetLifecycleUnavailableError(f"step {ref.name!r} has no frozen model for scatter slice {slice_idx}")
+                        for name in type(prior[0]).model_fields:
+                            slice_kwargs.setdefault(name, getattr(prior[0], name))
+                        model = prior[0] if prior[1] else _validate_inputs(ref.step, slice_kwargs)
+                        actual = frozenset(path_accesses(ref.step, _model_values(model), workspace=Path.cwd()))
+                        if actual != frozen_slices[slice_idx].scatter_path_accesses:
+                            raise DatasetLifecycleUnavailableError(f"step {ref.name!r} slice {slice_idx} changed its frozen scatter filesystem accesses before dispatch")
+                        validated_slices[slice_idx] = model
                 if not slices:
                     # Zero-length scatter: produce an empty aggregated result
                     # and immediately release dependents.
@@ -2655,7 +2681,11 @@ def _run_recipe(
                     if prior is not None:
                         for name in type(prior[0]).model_fields:
                             slice_kwargs.setdefault(name, getattr(prior[0], name))
-                    unit_payload[(i, slice_idx)] = (slice_kwargs, sub_input_keys, prior[0] if prior is not None and prior[1] else None)
+                    unit_payload[(i, slice_idx)] = (
+                        slice_kwargs,
+                        sub_input_keys,
+                        validated_slices[slice_idx] if strict_scatter else prior[0] if prior is not None and prior[1] else None,
+                    )
                     heapq.heappush(pending, (i, slice_idx))
                 return
             unit_payload[(i, None)] = (sub_kwargs, sub_input_keys, validated_leaf if reusable_leaf else None)
