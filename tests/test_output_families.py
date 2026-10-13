@@ -21,6 +21,7 @@ from shinobi.results import StepResult
 from shinobi.sandbox import ProductCapture
 from shinobi.steps.dispatch import _dispatch
 from shinobi.steps.schema import Cab, OutputRef, ParamMeta, Recipe, StepRef
+from tests._family_pystep_funcs import write_root_family
 
 
 class Empty(BaseModel):
@@ -453,7 +454,7 @@ def test_readonly_discovery_collision_and_frozen_refinement(tmp_path):
     with pytest.raises(ParameterError, match="writable"):
         validate_declared_writes(cab, values, tmp_path)
     safe = cab.model_copy(update={"field_meta": {"image": ParamMeta(family=discovered_spec())}})
-    frozen = _snapshot_product_inputs(safe, {"data": tmp_path / "input", "prefix": "old"})
+    frozen = _snapshot_product_inputs(safe, {"data": tmp_path / "input", "prefix": "old"}, workspace=tmp_path)
     # Refining only the basename preserves the claimed directory reservation.
     validate_contained_execution(safe, {"data": tmp_path / "input", "prefix": "new"}, workspace=tmp_path, dataset_resources=set(), planned_inputs=frozen)
     unsafe_spec = discovered_spec().model_copy(update={"root": "other"})
@@ -860,7 +861,7 @@ def test_contained_family_growth_refuses_before_backend_or_clear(tmp_path, monke
     spec = FamilySpec(coordinates={"band": "int"}, rules=(MemberRule(path="{band}/out", axes={"band": AxisSpec(count_input="bands", suffix="dir{index}")}),))
     cab = make_cab(tmp_path, spec)
     values = {"script": "pass", "prefix": "image", "bands": actual, "times": 1, "pol": "I"}
-    with pytest.raises(DatasetLifecycleUnavailableError, match="family 'image' pattern changed its planned product directory"):
+    with pytest.raises(DatasetLifecycleUnavailableError, match="family 'image' changed its planned candidate reservation"):
         _run_cab(cab, values, "family-growth-guard", dataset_resources={protected}, planned_inputs={**values, "bands": initial})
     assert calls == []
     assert (tmp_path / "dir0/out").read_text() == "existing product"
@@ -882,8 +883,8 @@ def test_contained_family_activation_cannot_borrow_other_source_parent(tmp_path)
             "harvest": ["new/harvest-*"],
         }
     )
-    frozen = _snapshot_product_inputs(cab, {"pol": "I"})
-    with pytest.raises(DatasetLifecycleUnavailableError, match="family 'image' pattern changed its planned product directory"):
+    frozen = _snapshot_product_inputs(cab, {"pol": "I"}, workspace=tmp_path)
+    with pytest.raises(DatasetLifecycleUnavailableError, match="family 'image' changed its planned candidate reservation"):
         validate_contained_execution(cab, {"pol": "Q"}, workspace=tmp_path, dataset_resources=set(), planned_inputs=frozen)
 
 
@@ -894,11 +895,11 @@ def test_contained_family_when_switch_cannot_change_parent(tmp_path):
 
     spec = FamilySpec(coordinates={}, rules=(MemberRule(path="old/out", when={"pol": ("I",)}), MemberRule(path="new/out", when={"pol": ("Q",)})))
     cab = make_cab(tmp_path, spec)
-    with pytest.raises(DatasetLifecycleUnavailableError, match="directory reservation"):
-        validate_contained_execution(cab, {"pol": "Q"}, workspace=tmp_path, dataset_resources=set(), planned_inputs=_snapshot_product_inputs(cab, {"pol": "I"}))
+    with pytest.raises(DatasetLifecycleUnavailableError, match="candidate reservation"):
+        validate_contained_execution(cab, {"pol": "Q"}, workspace=tmp_path, dataset_resources=set(), planned_inputs=_snapshot_product_inputs(cab, {"pol": "I"}, workspace=tmp_path))
 
 
-@pytest.mark.parametrize("initial,actual,path", [(1, 3, "out-{band}"), (3, 1, "{band}/out"), (3, 0, "{band}/out")])
+@pytest.mark.parametrize("initial,actual,path", [(3, 1, "out-{band}"), (3, 1, "{band}/out"), (3, 0, "{band}/out")])
 def test_contained_family_safe_count_refinement_preserves_other_sources(tmp_path, initial, actual, path):
     from shinobi.ownership import validate_contained_execution
     from shinobi.steps.dispatch import _snapshot_product_inputs
@@ -913,7 +914,9 @@ def test_contained_family_safe_count_refinement_preserves_other_sources(tmp_path
             "scratch": ["scratch/result-*"],
         }
     )
-    validate_contained_execution(cab, {"bands": actual}, workspace=tmp_path, dataset_resources=set(), planned_inputs=_snapshot_product_inputs(cab, {"bands": initial}))
+    validate_contained_execution(
+        cab, {"bands": actual}, workspace=tmp_path, dataset_resources=set(), planned_inputs=_snapshot_product_inputs(cab, {"bands": initial}, workspace=tmp_path)
+    )
 
 
 def test_contained_family_reordered_parents_are_still_claimed(tmp_path):
@@ -922,7 +925,7 @@ def test_contained_family_reordered_parents_are_still_claimed(tmp_path):
 
     spec = FamilySpec(coordinates={"pol": "str"}, rules=(MemberRule(path="{pol}/out", axes={"pol": AxisSpec(values_input="pol", tokens=("I", "Q"), split="csv_or_compact")}),))
     cab = make_cab(tmp_path, spec)
-    validate_contained_execution(cab, {"pol": "QI"}, workspace=tmp_path, dataset_resources=set(), planned_inputs=_snapshot_product_inputs(cab, {"pol": "IQ"}))
+    validate_contained_execution(cab, {"pol": "QI"}, workspace=tmp_path, dataset_resources=set(), planned_inputs=_snapshot_product_inputs(cab, {"pol": "IQ"}, workspace=tmp_path))
 
 
 def test_unresolved_frozen_family_cannot_gain_runtime_parent(tmp_path):
@@ -932,5 +935,635 @@ def test_unresolved_frozen_family_cannot_gain_runtime_parent(tmp_path):
 
     spec = FamilySpec(coordinates={"band": "int"}, rules=(MemberRule(path="{band}/out", axes={"band": AxisSpec(count_input="bands", suffix="dir{index}")}),))
     cab = make_cab(tmp_path, spec)
-    with pytest.raises(DatasetLifecycleUnavailableError, match="no frozen parents"):
-        validate_contained_execution(cab, {"bands": 1}, workspace=tmp_path, dataset_resources=set(), planned_inputs=_snapshot_product_inputs(cab, {}))
+    with pytest.raises(DatasetLifecycleUnavailableError, match="no frozen paths"):
+        validate_contained_execution(cab, {"bands": 1}, workspace=tmp_path, dataset_resources=set(), planned_inputs=_snapshot_product_inputs(cab, {}, workspace=tmp_path))
+
+
+@pytest.mark.parametrize("second,expected", [("products/b.fits", [set(), set()]), ("products/a.fits", [set(), {0}]), ("products", [set(), {0}])])
+def test_finite_family_access_plans_use_exact_paths(tmp_path, second, expected):
+    from shinobi.config import AppConfig
+    from shinobi.dataset_access import plan_recipe_accesses
+    from shinobi.ownership import scope_path_accesses
+    from shinobi.steps.schema import path_accesses
+
+    spec = FamilySpec(coordinates={}, rules=(MemberRule(path="products/a.fits"),))
+    first = make_cab(tmp_path, spec)
+    other = Cab(name="writer", command="true", inputs_model=Empty, outputs_model=create_model("WriterOutput", target=(Path, Path(second))))
+    recipe = Recipe(
+        name="exact",
+        inputs_model=Empty,
+        outputs_model=Empty,
+        steps=[
+            StepRef(name="first", step=first, params={"script": "pass"}),
+            StepRef(name="second", step=other),
+        ],
+    )
+    accesses, validated = scope_path_accesses(recipe, {}, workspace=tmp_path)
+    dryrun = plan_recipe_accesses(recipe, {}, workspace=tmp_path)
+    local = plan_recipe_accesses(recipe, {}, workspace=tmp_path, validated_steps=validated)
+    bundle = freeze_recipe(recipe, {}, workspace=tmp_path, config=AppConfig())
+    worker = plan_recipe_accesses(bundle.declaration(), {}, workspace=tmp_path)
+    assert dryrun.graph.deps == local.graph.deps == worker.graph.deps == expected
+    assert (tmp_path / "products/a.fits", True) in accesses
+    assert (tmp_path / "products", True) not in path_accesses(first, {"script": "pass"}, workspace=tmp_path)
+
+
+def test_finite_family_aliases_share_exact_reservation(tmp_path):
+    from shinobi.dataset_access import plan_recipe_accesses
+    from shinobi.steps.schema import path_accesses
+
+    (tmp_path / "real").mkdir()
+    (tmp_path / "alias").symlink_to(tmp_path / "real", target_is_directory=True)
+    first = make_cab(tmp_path, FamilySpec(coordinates={}, rules=(MemberRule(path="real/out"),)))
+    second = make_cab(tmp_path, FamilySpec(coordinates={}, rules=(MemberRule(path="alias/out"),)))
+    recipe = Recipe(
+        name="aliases",
+        inputs_model=Empty,
+        outputs_model=Empty,
+        steps=[
+            StepRef(name="first", step=first, params={"script": "pass"}),
+            StepRef(name="second", step=second, params={"script": "pass"}),
+        ],
+    )
+    assert path_accesses(first, {}, workspace=tmp_path) == path_accesses(second, {}, workspace=tmp_path)
+    assert plan_recipe_accesses(recipe, {}, workspace=tmp_path).graph.deps == [set(), {0}]
+
+
+@pytest.mark.parametrize("path", ["out-{band}", "{band}/out"])
+def test_finite_family_flat_or_nested_growth_cannot_borrow_own_parent(tmp_path, path):
+    from shinobi.exceptions import DatasetLifecycleUnavailableError
+    from shinobi.ownership import validate_contained_execution
+    from shinobi.steps.dispatch import _snapshot_product_inputs
+
+    spec = FamilySpec(coordinates={"band": "int"}, rules=(MemberRule(path=path, axes={"band": AxisSpec(count_input="bands", suffix="dir{index}")}),))
+    cab = make_cab(tmp_path, spec)
+    with pytest.raises(DatasetLifecycleUnavailableError, match="candidate reservation"):
+        validate_contained_execution(cab, {"bands": 3}, workspace=tmp_path, dataset_resources=set(), planned_inputs=_snapshot_product_inputs(cab, {"bands": 1}, workspace=tmp_path))
+
+
+def test_finite_family_redirect_cannot_borrow_other_field_path(tmp_path):
+    from shinobi.exceptions import DatasetLifecycleUnavailableError
+    from shinobi.ownership import validate_contained_execution
+    from shinobi.steps.dispatch import _snapshot_product_inputs
+
+    spec = FamilySpec(coordinates={}, rules=(MemberRule(path="{prefix}.fits"),))
+    other = FamilySpec(coordinates={}, rules=(MemberRule(path="other.fits"),))
+    cab = make_cab(tmp_path, spec).model_copy(
+        update={
+            "outputs_model": create_model("OtherFamily", image=(ProductFamily[Path], ...), other=(ProductFamily[Path], ...)),
+            "field_meta": {"image": ParamMeta(family=spec), "other": ParamMeta(family=other)},
+        }
+    )
+    with pytest.raises(DatasetLifecycleUnavailableError, match="candidate reservation"):
+        validate_contained_execution(
+            cab, {"prefix": "other"}, workspace=tmp_path, dataset_resources=set(), planned_inputs=_snapshot_product_inputs(cab, {"prefix": "first"}, workspace=tmp_path)
+        )
+
+
+def test_disjoint_finite_family_local_steps_overlap_and_prepare_parents(tmp_path, monkeypatch):
+    import threading
+    from shinobi.backends.native import NativeBackend
+    from shinobi.config import AppConfig
+    from shinobi.steps.dispatch import register_step_backend
+    from shinobi.steps.schema import declared_output_dirs
+
+    monkeypatch.chdir(tmp_path)
+    rendezvous = threading.Barrier(2)
+    entered = []
+
+    class OverlapBackend(NativeBackend):
+        def run(self, cab, argv, inputs, **kwargs):
+            entered.append(cab.name)
+            rendezvous.wait(timeout=5)
+            return super().run(cab, argv, inputs, **kwargs)
+
+    register_step_backend("finite-overlap", OverlapBackend())
+    refs = []
+    for name in ("a", "b"):
+        spec = FamilySpec(coordinates={}, rules=(MemberRule(path=f"products/{name}.fits", required=True),))
+        cab = make_cab(tmp_path, spec).model_copy(update={"name": name})
+        assert (Path("products"), "output 'image'") in declared_output_dirs(cab, {}, workspace=tmp_path)
+        refs.append(StepRef(name=name, step=cab, params={"script": f"from pathlib import Path;Path('products/{name}.fits').write_text('{name}')"}))
+    recipe = Recipe(name="overlap", inputs_model=Empty, outputs_model=Empty, steps=refs)
+    config = AppConfig()
+    config.execution.max_workers = 2
+    assert _dispatch(recipe, None, backend="finite-overlap", cache=False, stream=False, _config=config).success
+    assert set(entered) == {"a", "b"}
+    assert (tmp_path / "products/a.fits").read_text() == "a"
+    assert (tmp_path / "products/b.fits").read_text() == "b"
+
+
+@pytest.mark.parametrize("worker", [False, True])
+def test_generic_runtime_family_growth_refuses_before_launch(tmp_path, monkeypatch, worker):
+    from shinobi.config import AppConfig
+    from shinobi.exceptions import DatasetLifecycleUnavailableError
+    from shinobi.offload.slurm import prepare_worker_slurm
+    from shinobi.offload.worker import ExecutionPlan
+    from tests.test_offload_worker import execute_step
+
+    monkeypatch.chdir(tmp_path)
+    selector = Cab(
+        name="select",
+        command=f"{sys.executable} -c",
+        inputs_model=create_model("SelectorInputs", script=(str, ...)),
+        outputs_model=create_model("SelectorOutputs", bands=(int, 1)),
+        field_meta={"script": ParamMeta(positional_head=True)},
+        wranglers={r"^COUNT=(?P<bands>\d+)$": ["PARSE_OUTPUT:bands:int"]},
+    )
+    spec = FamilySpec(coordinates={"band": "int"}, rules=(MemberRule(path="out-{band}", axes={"band": AxisSpec(count_input="bands", suffix="{index}")}),))
+    cab = make_cab(tmp_path, spec)
+    marker = tmp_path / "launched"
+    recipe = Recipe(
+        name="genericgrowth",
+        inputs_model=Empty,
+        outputs_model=Empty,
+        steps=[
+            StepRef(name="select", step=selector, params={"script": "print('COUNT=2')"}),
+            StepRef(name="make", step=cab, params={"script": f"from pathlib import Path;Path({str(marker)!r}).touch()"}, wiring={"bands": OutputRef(step="select", field="bands")}),
+        ],
+    )
+    if worker:
+        bundle = freeze_recipe(recipe, {}, config=AppConfig(), workspace=tmp_path)
+        workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+        plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+        select = plan.attempt("select")
+        assert execute_step(workflow.submission_dir, "select", select.attempt_id) == 0
+        make = plan.attempt("make")
+        assert execute_step(workflow.submission_dir, "make", make.attempt_id) == 1
+        assert "candidate reservation" in (workflow.submission_dir / "attempts" / str(make.attempt_id) / "final.json").read_text()
+    else:
+        with pytest.raises(DatasetLifecycleUnavailableError, match="candidate reservation"):
+            _dispatch(recipe, None, backend="native", cache=False)
+    assert not marker.exists()
+
+
+def test_finite_family_absolute_candidate_parents_remain_container_mounts(tmp_path, monkeypatch):
+    from shinobi.backends.container import bind_dir_modes
+    from shinobi.steps.schema import path_accesses
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    monkeypatch.chdir(workspace)
+    spec = FamilySpec(root=str(destination), coordinates={}, rules=(MemberRule(path="out.fits"),))
+    cab = make_cab(tmp_path, spec)
+    assert path_accesses(cab, {}, workspace=workspace) == [(destination / "out.fits", True)]
+    assert dict(bind_dir_modes(cab, {}, str(workspace)))[str(destination)] is True
+
+
+def test_finite_family_ownership_records_exact_candidates(tmp_path):
+    from shinobi.ownership import acquire_workspace
+    from shinobi.steps.schema import path_accesses
+
+    cab = make_cab(tmp_path, FamilySpec(coordinates={}, rules=(MemberRule(path="products/a.fits"),)))
+    lease = acquire_workspace(tmp_path, "finite-first", kind="local", accesses=path_accesses(cab, {}, workspace=tmp_path))
+    try:
+        assert [(Path(access.path), access.writes) for access in lease.owner.accesses] == [(tmp_path / "products/a.fits", True)]
+    finally:
+        lease.release()
+
+
+@pytest.mark.parametrize("worker", [False, True])
+def test_frozen_finite_candidate_cannot_follow_retargeted_parent(tmp_path, monkeypatch, worker):
+    from shinobi.config import AppConfig
+    from shinobi.exceptions import DatasetLifecycleUnavailableError
+    from shinobi.offload.slurm import prepare_worker_slurm
+    from shinobi.offload.worker import ExecutionPlan
+    from tests.test_offload_worker import execute_step
+
+    monkeypatch.chdir(tmp_path)
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()
+    link = tmp_path / "products"
+    link.symlink_to(tmp_path / "a", target_is_directory=True)
+    (tmp_path / "a/out.fits").write_text("old product")
+    marker = tmp_path / "launched"
+    retarget = Cab(
+        name="retarget",
+        command=f"{sys.executable} -c",
+        inputs_model=create_model("RetargetInput", script=(str, ...)),
+        outputs_model=Empty,
+        field_meta={"script": ParamMeta(positional_head=True)},
+    )
+    cab = make_cab(tmp_path, FamilySpec(coordinates={}, rules=(MemberRule(path="products/out.fits"),)))
+    recipe = Recipe(
+        name="retargeted",
+        inputs_model=Empty,
+        outputs_model=Empty,
+        steps=[
+            StepRef(
+                name="retarget",
+                step=retarget,
+                params={"script": f"from pathlib import Path;p=Path({str(link)!r});p.unlink();p.symlink_to({str(tmp_path / 'b')!r},target_is_directory=True)"},
+            ),
+            StepRef(name="make", step=cab, after=["retarget"], params={"script": f"from pathlib import Path;Path({str(marker)!r}).touch()"}),
+        ],
+    )
+    if worker:
+        bundle = freeze_recipe(recipe, {}, config=AppConfig(), workspace=tmp_path)
+        workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
+        plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+        assert plan.product_candidates["make"]["image"] == (str(tmp_path / "a/out.fits"),)
+        change = plan.attempt("retarget")
+        assert execute_step(workflow.submission_dir, "retarget", change.attempt_id) == 0
+        make = plan.attempt("make")
+        assert execute_step(workflow.submission_dir, "make", make.attempt_id) == 1
+        assert "candidate reservation" in (workflow.submission_dir / "attempts" / str(make.attempt_id) / "final.json").read_text()
+    else:
+        with pytest.raises(DatasetLifecycleUnavailableError, match="candidate reservation"):
+            _dispatch(recipe, None, backend="native", cache=False)
+    assert not marker.exists()
+    assert (tmp_path / "a/out.fits").read_text() == "old product"
+    assert not (tmp_path / "b/out.fits").exists()
+
+
+@pytest.mark.parametrize("prefixes", [[], ["a", "b"]])
+@pytest.mark.parametrize("nested", [False, True])
+def test_finite_family_scatter_claims_and_runs_each_slice(tmp_path, monkeypatch, prefixes, nested):
+    from shinobi.dataset_access import plan_recipe_accesses
+    from shinobi.ownership import scope_path_accesses
+    from shinobi.steps.schema import InputRef, ScatterSpec
+
+    monkeypatch.chdir(tmp_path)
+    inputs = create_model("FamilyScatterInputs", script=(str, ...), prefix=(str, ...))
+    cab = make_cab(tmp_path, FamilySpec(coordinates={}, rules=(MemberRule(path="{prefix}.fits", required=True),))).model_copy(
+        update={
+            "inputs_model": inputs,
+            "field_meta": {
+                "script": ParamMeta(positional_head=True),
+                "prefix": ParamMeta(positional=True),
+                "image": ParamMeta(family=FamilySpec(coordinates={}, rules=(MemberRule(path="{prefix}.fits", required=True),))),
+            },
+        }
+    )
+    family_step = cab
+    if nested:
+        family_step = Recipe(
+            name="inner",
+            inputs_model=inputs,
+            outputs_model=Empty,
+            steps=[StepRef(name="make", step=cab, wiring={"prefix": InputRef(field="prefix"), "script": InputRef(field="script")})],
+        )
+    writer = Cab(name="reader", command="true", inputs_model=create_model("ScatterSiblingInput", target=(Path, Path("b.fits"))), outputs_model=Empty)
+    recipe = Recipe(
+        name="scatterfamily",
+        inputs_model=Empty,
+        outputs_model=Empty,
+        steps=[
+            StepRef(
+                name="images",
+                step=family_step,
+                scatter=ScatterSpec(fields=["prefix"]),
+                params={"prefix": prefixes, "script": "import sys;from pathlib import Path;Path(sys.argv[1]+'.fits').write_text(sys.argv[1])"},
+            ),
+            StepRef(name="writer", step=writer),
+        ],
+    )
+    claims, validated = scope_path_accesses(recipe, {}, workspace=tmp_path)
+    assert {path for path, writes in claims if writes} == {tmp_path / (prefix + ".fits") for prefix in prefixes}
+    expected = [set(), {0} if prefixes else set()]
+    assert plan_recipe_accesses(recipe, {}, workspace=tmp_path).graph.deps == expected
+    assert plan_recipe_accesses(recipe, {}, workspace=tmp_path, validated_steps=validated).graph.deps == expected
+    result = _dispatch(recipe, None, backend="native", cache=False)
+    assert result.success
+    for prefix in prefixes:
+        assert (tmp_path / (prefix + ".fits")).read_text() == prefix
+
+
+@pytest.mark.parametrize("python_step", [False, True])
+def test_sandbox_family_path_root_retains_anchored_workspace_destination(tmp_path, monkeypatch, make_venv, python_step):
+    from shinobi import pystep
+
+    monkeypatch.chdir(tmp_path)
+    spec = FamilySpec(root="{root}", coordinates={}, rules=(MemberRule(path="out.fits", required=True),))
+    if python_step:
+        ref = pystep(venv=str(make_venv()), backend="venv", sandbox=True, cache=False, write_paths=["root"])(write_root_family)
+        ref.step.field_meta["image"] = ParamMeta(family=spec)
+        result = ref(root=Path("products"))
+    else:
+        cab = make_cab(tmp_path, spec, sandbox=True).model_copy(
+            update={
+                "inputs_model": create_model("RootFamilyInputs", script=(str, ...), root=(Path, ...)),
+                "field_meta": {"script": ParamMeta(positional_head=True), "root": ParamMeta(positional=True, write_path=True), "image": ParamMeta(family=spec)},
+            }
+        )
+        result = _dispatch(
+            cab, None, backend="native", cache=False, root=Path("products"), script="import sys;from pathlib import Path;Path(sys.argv[1],'out.fits').write_text('cab product')"
+        )
+    assert result.success
+    assert (tmp_path / "products/out.fits").read_text() == ("python product" if python_step else "cab product")
+    assert result.outputs.image.select().resolve() == tmp_path / "products/out.fits"
+
+
+@pytest.mark.parametrize("second,expected", [("products/b.fits", [set(), set()]), ("products/a.fits", [set(), {0}]), ("products", [set(), {0}])])
+def test_nested_family_reserves_exact_paths_in_parent_ordering(tmp_path, second, expected):
+    from shinobi.dataset_access import plan_recipe_accesses
+    from shinobi.ownership import scope_path_accesses
+
+    cab = make_cab(tmp_path, FamilySpec(coordinates={}, rules=(MemberRule(path="products/a.fits"),)))
+    inner = Recipe(name="inner", inputs_model=Empty, outputs_model=Empty, steps=[StepRef(name="make", step=cab, params={"script": "pass"})])
+    other = Cab(name="writer", command="true", inputs_model=Empty, outputs_model=create_model("NestedWriterOutput", target=(Path, Path(second))))
+    recipe = Recipe(name="nestedordering", inputs_model=Empty, outputs_model=Empty, steps=[StepRef(name="inner", step=inner), StepRef(name="other", step=other)])
+    _, validated = scope_path_accesses(recipe, {}, workspace=tmp_path)
+    assert plan_recipe_accesses(recipe, {}, workspace=tmp_path).graph.deps == expected
+    assert plan_recipe_accesses(recipe, {}, workspace=tmp_path, validated_steps=validated).graph.deps == expected
+
+
+def test_nested_family_local_writer_finishes_before_colliding_sibling(tmp_path, monkeypatch):
+    import threading
+    from shinobi.backends.native import NativeBackend
+    from shinobi.config import AppConfig
+    from shinobi.steps.dispatch import register_step_backend
+
+    monkeypatch.chdir(tmp_path)
+    second_entered = threading.Event()
+    first_finished = threading.Event()
+
+    class OrderedBackend(NativeBackend):
+        def run(self, cab, argv, inputs, **kwargs):
+            if cab.name == "nested-a":
+                assert not second_entered.wait(timeout=0.2), "sibling writer overlapped nested family writer"
+                result = super().run(cab, argv, inputs, **kwargs)
+                first_finished.set()
+                return result
+            second_entered.set()
+            assert first_finished.is_set(), "sibling writer launched before nested family writer completed"
+            return super().run(cab, argv, inputs, **kwargs)
+
+    register_step_backend("nested-family-order", OrderedBackend())
+    spec = FamilySpec(coordinates={}, rules=(MemberRule(path="products/a.fits", required=True),))
+    first = make_cab(tmp_path, spec).model_copy(update={"name": "nested-a"})
+    script = "from pathlib import Path;Path('products/a.fits').write_text('product')"
+    inner = Recipe(name="inner", inputs_model=Empty, outputs_model=Empty, steps=[StepRef(name="make", step=first, params={"script": script})])
+    second = Cab(
+        name="other",
+        command=f"{sys.executable} -c",
+        inputs_model=create_model("SiblingScript", script=(str, ...)),
+        outputs_model=create_model("SiblingFile", target=(Path, Path("products/a.fits"))),
+        field_meta={"script": ParamMeta(positional_head=True)},
+    )
+    recipe = Recipe(
+        name="nestedorder", inputs_model=Empty, outputs_model=Empty, steps=[StepRef(name="inner", step=inner), StepRef(name="other", step=second, params={"script": script})]
+    )
+    config = AppConfig()
+    config.execution.max_workers = 2
+    assert _dispatch(recipe, None, backend="nested-family-order", cache=False, stream=False, _config=config).success
+    assert first_finished.is_set() and second_entered.is_set()
+
+
+def test_nested_scatter_parent_plan_reuses_claimed_family_default_factory(tmp_path, monkeypatch):
+    from pydantic import Field
+    from shinobi.config import AppConfig
+    from shinobi.dataset_access import plan_recipe_accesses
+    from shinobi.ownership import acquire_workspace, scope_path_accesses
+    from shinobi.steps.dispatch import _snapshot_product_leaf_inputs
+    from shinobi.steps.schema import ScatterSpec
+
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    def prefix_factory():
+        calls.append(1)
+        return "a" if len(calls) == 1 else "b"
+
+    inputs = create_model("FactoryFamilyInputs", script=(str, ...), prefix=(str, Field(default_factory=prefix_factory)))
+    spec = FamilySpec(coordinates={}, rules=(MemberRule(path="{prefix}.fits", required=True),))
+    cab = make_cab(tmp_path, spec).model_copy(
+        update={
+            "inputs_model": inputs,
+            "field_meta": {"script": ParamMeta(positional_head=True), "prefix": ParamMeta(positional=True), "image": ParamMeta(family=spec)},
+        }
+    )
+    inner = Recipe(
+        name="inner",
+        inputs_model=create_model("InnerSliceInputs", index=(int, ...)),
+        outputs_model=Empty,
+        steps=[StepRef(name="make", step=cab, params={"script": "import sys;from pathlib import Path;Path(sys.argv[1]+'.fits').write_text('product')"})],
+    )
+    outer = Recipe(name="outer", inputs_model=Empty, outputs_model=Empty, steps=[StepRef(name="slices", step=inner, scatter=ScatterSpec(fields=["index"]), params={"index": [0]})])
+    reader = Cab(
+        name="reader",
+        command=f"{sys.executable} -c",
+        inputs_model=create_model("FactorySiblingReader", script=(str, ...), path=(Path, Path("a.fits"))),
+        outputs_model=Empty,
+        field_meta={"script": ParamMeta(positional_head=True), "path": ParamMeta(positional=True)},
+    )
+    recipe = Recipe(
+        name="factorynested",
+        inputs_model=Empty,
+        outputs_model=Empty,
+        steps=[
+            StepRef(name="outer", step=outer),
+            StepRef(name="reader", step=reader, params={"script": "import sys;from pathlib import Path;assert Path(sys.argv[1]).read_text()=='product'"}),
+        ],
+    )
+    known = {}
+    claims, validated = scope_path_accesses(recipe, {}, workspace=tmp_path, known_steps=known)
+    assert calls == [1]
+    assert (tmp_path / "a.fits", True) in claims
+    assert not any(path == tmp_path / "b.fits" for path, _writes in claims)
+    plan = plan_recipe_accesses(recipe, {}, workspace=tmp_path, validated_steps=validated)
+    assert calls == [1]
+    assert plan.graph.deps == [set(), {0}]
+    frozen = _snapshot_product_leaf_inputs(recipe, known)
+    lease = acquire_workspace(tmp_path, "factory-nested", kind="local", accesses=claims)
+    try:
+        config = AppConfig()
+        config.execution.max_workers = 2
+        result = _dispatch(recipe, None, backend="native", cache=False, stream=False, _workspace_claimed=True, _leaf_inputs=validated, _planned_leaf_inputs=frozen, _config=config)
+    finally:
+        lease.release()
+    assert result.success
+    assert calls == [1]
+    assert (tmp_path / "a.fits").read_text() == "product"
+    assert not (tmp_path / "b.fits").exists()
+
+
+def test_direct_scatter_planning_runs_default_factory_once_per_slice(tmp_path, monkeypatch):
+    from pydantic import Field
+    from shinobi.config import AppConfig
+    from shinobi.dataset_access import plan_recipe_accesses
+    from shinobi.ownership import acquire_workspace, scope_path_accesses
+    from shinobi.steps.dispatch import _snapshot_product_leaf_inputs
+    from shinobi.steps.schema import ScatterSpec
+
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    def prefix_factory():
+        prefix = f"product{len(calls)}"
+        calls.append(prefix)
+        return prefix
+
+    inputs = create_model("DirectFactoryInputs", script=(str, ...), index=(int, ...), prefix=(str, Field(default_factory=prefix_factory)))
+    spec = FamilySpec(coordinates={}, rules=(MemberRule(path="{prefix}.fits", required=True),))
+    cab = make_cab(tmp_path, spec).model_copy(
+        update={
+            "inputs_model": inputs,
+            "field_meta": {"script": ParamMeta(positional_head=True), "index": ParamMeta(positional=True), "prefix": ParamMeta(positional=True), "image": ParamMeta(family=spec)},
+        }
+    )
+    reader = Cab(
+        name="reader",
+        command=f"{sys.executable} -c",
+        inputs_model=create_model("DirectFactoryReader", script=(str, ...), path=(Path, Path("product0.fits"))),
+        outputs_model=Empty,
+        field_meta={"script": ParamMeta(positional_head=True), "path": ParamMeta(positional=True)},
+    )
+    recipe = Recipe(
+        name="directfactory",
+        inputs_model=Empty,
+        outputs_model=Empty,
+        steps=[
+            StepRef(
+                name="images",
+                step=cab,
+                scatter=ScatterSpec(fields=["index"]),
+                params={"index": [0, 1], "script": "import sys;from pathlib import Path;Path(sys.argv[-1]+'.fits').write_text(sys.argv[-1])"},
+            ),
+            StepRef(name="reader", step=reader, params={"script": "import sys;from pathlib import Path;assert Path(sys.argv[1]).read_text()=='product0'"}),
+        ],
+    )
+    known = {}
+    claims, validated = scope_path_accesses(recipe, {}, workspace=tmp_path, known_steps=known)
+    assert calls == ["product0", "product1"]
+    assert {path for path, writes in claims if writes} == {tmp_path / "product0.fits", tmp_path / "product1.fits"}
+    plan = plan_recipe_accesses(recipe, {}, workspace=tmp_path, validated_steps=validated)
+    assert calls == ["product0", "product1"]
+    assert plan.graph.deps == [set(), {0}]
+    frozen = _snapshot_product_leaf_inputs(recipe, known)
+    lease = acquire_workspace(tmp_path, "direct-factory", kind="local", accesses=claims)
+    try:
+        config = AppConfig()
+        config.execution.max_workers = 2
+        result = _dispatch(recipe, None, backend="native", cache=False, stream=False, _workspace_claimed=True, _leaf_inputs=validated, _planned_leaf_inputs=frozen, _config=config)
+    finally:
+        lease.release()
+    assert result.success
+    assert calls == ["product0", "product1"]
+    assert (tmp_path / "product0.fits").read_text() == "product0"
+    assert (tmp_path / "product1.fits").read_text() == "product1"
+    assert not (tmp_path / "product2.fits").exists()
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_runtime_resolved_family_scatter_refuses_before_any_leaf_launch(tmp_path, monkeypatch, nested):
+    from shinobi.config import AppConfig
+    from shinobi.dataset_access import DatasetAccessError, plan_recipe_accesses
+    from shinobi.ownership import WorkspaceOwnershipError, scope_path_accesses
+    from shinobi.steps.schema import InputRef, ScatterSpec, Scope
+
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    prefixes = create_model("RuntimePrefixes", prefixes=(list[str], ...))
+    selector = Scope(name="selector", inputs_model=Empty, outputs_model=prefixes)
+
+    def select(ctx):
+        calls.append("selector")
+        return StepResult(name="selector", returncode=0, outputs=prefixes(prefixes=["sibling"]), inputs=ctx.inputs)
+
+    spec = FamilySpec(coordinates={}, rules=(MemberRule(path="{prefix}.fits", required=True),))
+    inputs = create_model("RuntimeSliceInputs", prefix=(str, ...), script=(str, ...))
+    cab = make_cab(tmp_path, spec).model_copy(
+        update={
+            "inputs_model": inputs,
+            "field_meta": {"script": ParamMeta(positional_head=True), "prefix": ParamMeta(positional=True), "image": ParamMeta(family=spec)},
+        }
+    )
+    script = "import sys;from pathlib import Path;Path('family-launched').touch();Path(sys.argv[1]+'.fits').write_text('family')"
+    step = cab
+    params = {"script": script}
+    if nested:
+        step = Recipe(
+            name="inner",
+            inputs_model=create_model("RuntimeInnerInputs", prefix=(str, ...)),
+            outputs_model=Empty,
+            steps=[StepRef(name="make", step=cab, params={"script": script}, wiring={"prefix": InputRef(field="prefix")})],
+        )
+        params = {}
+    writer = Cab(
+        name="writer",
+        command=f"{sys.executable} -c",
+        inputs_model=create_model("RuntimeSiblingInput", script=(str, ...)),
+        outputs_model=create_model("RuntimeSiblingOutput", target=(Path, Path("sibling.fits"))),
+        field_meta={"script": ParamMeta(positional_head=True)},
+    )
+    recipe = Recipe(
+        name="runtimefamily",
+        inputs_model=Empty,
+        outputs_model=Empty,
+        steps=[
+            StepRef(name="selector", step=selector, func=select),
+            StepRef(name="images", step=step, scatter=ScatterSpec(fields=["prefix"]), params=params, wiring={"prefix": OutputRef(step="selector", field="prefixes")}),
+            StepRef(name="writer", step=writer, params={"script": "from pathlib import Path;Path('writer-launched').touch();Path('sibling.fits').write_text('writer')"}),
+        ],
+    )
+    (tmp_path / "sibling.fits").write_text("original")
+    with pytest.raises(WorkspaceOwnershipError, match="finite-family scatter requires statically resolved"):
+        scope_path_accesses(recipe, {}, workspace=tmp_path)
+    with pytest.raises(DatasetAccessError, match="finite-family scatter requires statically resolved"):
+        plan_recipe_accesses(recipe, {}, workspace=tmp_path)
+    with pytest.raises(WorkspaceOwnershipError, match="finite-family scatter requires statically resolved"):
+        _dispatch(recipe, None, backend="native", cache=False)
+    with pytest.raises(RecipeNotOffloadableError, match="scatter"):
+        freeze_recipe(recipe, {}, workspace=tmp_path, config=AppConfig())
+    assert calls == []
+    assert not (tmp_path / "family-launched").exists()
+    assert not (tmp_path / "writer-launched").exists()
+    assert (tmp_path / "sibling.fits").read_text() == "original"
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_scatter_with_unresolved_finite_candidates_refuses_before_dispatch(tmp_path, monkeypatch, nested):
+    from shinobi.exceptions import DatasetLifecycleUnavailableError
+    from shinobi.steps.schema import InputRef, ScatterSpec, Scope
+
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    counts = create_model("RuntimeBandCount", bands=(int, ...))
+    selector = Scope(name="selector", inputs_model=Empty, outputs_model=counts)
+
+    def select(ctx):
+        calls.append("selector")
+        return StepResult(name="selector", returncode=0, outputs=counts(bands=2), inputs=ctx.inputs)
+
+    spec = FamilySpec(coordinates={"band": "int"}, rules=(MemberRule(path="{prefix}-{band}.fits", axes={"band": AxisSpec(count_input="bands", suffix="{index}")}),))
+    cab = make_cab(tmp_path, spec).model_copy(update={"inputs_model": create_model("StaticSliceRuntimeCount", script=(str, ...), prefix=(str, ...), bands=(int, ...))})
+    scope = cab
+    params = {"script": "raise AssertionError('must not launch')", "prefix": ["sibling"]}
+    if nested:
+        scope = Recipe(
+            name="inner",
+            inputs_model=create_model("NestedStaticSliceRuntimeCount", prefix=(str, ...), bands=(int, ...)),
+            outputs_model=Empty,
+            steps=[StepRef(name="make", step=cab, params={"script": params["script"]}, wiring={"prefix": InputRef(field="prefix"), "bands": InputRef(field="bands")})],
+        )
+        params.pop("script")
+    recipe = Recipe(
+        name="runtimecandidates",
+        inputs_model=Empty,
+        outputs_model=Empty,
+        steps=[
+            StepRef(name="selector", step=selector, func=select),
+            StepRef(name="images", step=scope, scatter=ScatterSpec(fields=["prefix"]), params=params, wiring={"bands": OutputRef(step="selector", field="bands")}),
+        ],
+    )
+    with pytest.raises(DatasetLifecycleUnavailableError, match="finite-family scatter has unresolved candidate paths before dispatch"):
+        _dispatch(recipe, None, backend="native", cache=False)
+    assert calls == []
+    assert not list(tmp_path.glob("sibling-*.fits"))
+
+
+def test_sandbox_directory_axis_candidate_stays_relative_and_prepares_parent(tmp_path, monkeypatch):
+    from shinobi.steps.schema import declared_output_dirs
+
+    monkeypatch.chdir(tmp_path)
+    spec = FamilySpec(coordinates={"band": "int"}, rules=(MemberRule(path="{band}/out", axes={"band": AxisSpec(count_input="bands", suffix="dir{index}")}, required=True),))
+    cab = make_cab(tmp_path, spec, sandbox=True)
+    assert declared_output_dirs(cab, {"bands": 1}, workspace=tmp_path) == [(Path("dir0"), "output 'image'")]
+    # The command relies on pre-creation and does not make its own directory.
+    result = _dispatch(cab, None, backend="native", cache=False, script="from pathlib import Path;Path('dir0/out').write_text('product')")
+    assert result.success
+    assert (tmp_path / "dir0/out").read_text() == "product"
+    assert result.outputs.image.select(band=0) == Path("dir0/out")

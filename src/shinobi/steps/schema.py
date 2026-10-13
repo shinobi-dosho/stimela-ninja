@@ -32,7 +32,7 @@ from shinobi.fits_access import FITSAccess, validate_scope_fits_accesses
 from shinobi.exceptions import ParameterError
 from shinobi.derived import DerivedRead, derived_reads, validate_derived_read_scope
 from shinobi.resources import Resources
-from shinobi.products import Coordinate, FamilySpec, family_annotation, family_plans, framework_type, iter_product_paths, resolve_reference
+from shinobi.products import _family_declaration_is_relative, Coordinate, FamilySpec, family_annotation, family_plans, framework_type, iter_product_paths, resolve_reference
 
 
 class Mutability(str, Enum):
@@ -670,11 +670,8 @@ def declared_output_paths(scope: Scope, prepared: dict[str, Any], *, workspace: 
     for name, plan in family_plans(scope, prepared, cwd, best_effort=True).items():
         for candidate in plan.candidates:
             path = candidate.path
-            if (
-                not Path(plan.spec.root.format(**prepared)).is_absolute()
-                and not Path(candidate.rule.path.format(**{**prepared, **dict.fromkeys(candidate.rule.axes, "")})).is_absolute()
-            ):
-                path = path.relative_to(cwd)
+            if candidate.is_relative(plan.spec, prepared):
+                path = Path(plan.spec.root.format(**prepared)) / candidate.declaration_path(prepared)
             paths.append((path, f"output {name!r}"))
     return paths
 
@@ -688,14 +685,53 @@ class _ProductReservations:
     inputs: dict[str, Any]
     families: dict[str, FamilySpec] | None = None
     derived: dict[str, DerivedRead] | None = None
+    candidate_paths: dict[str, frozenset[Path]] | None = None
+    relative_candidates: dict[str, tuple[tuple[Path, Path, str, tuple[tuple[str, str], ...]], ...]] | None = None
 
     @property
     def declarations(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
         return (("harvest", self.harvest), ("scratch", self.scratch))
 
-    def with_inputs(self, inputs: dict[str, Any]) -> _ProductReservations:
+    def with_inputs(self, inputs: dict[str, Any], *, workspace: Path | None = None) -> _ProductReservations:
         """Retain original declarations when anchoring execution input paths."""
-        return _ProductReservations(self.harvest, self.scratch, inputs, self.families, self.derived)
+        candidates = self.candidate_paths
+        if workspace is not None and candidates is not None:
+            candidates = dict(candidates)
+            for name, entries in (self.relative_candidates or {}).items():
+                paths = set(candidates[name])
+                for path, relative, template, axis_suffixes in entries:
+                    # Path-typed inputs become absolute workspace destinations
+                    # during anchoring. Only declarations still relative to
+                    # the execution cwd move into the sandbox.
+                    if not _family_declaration_is_relative(self.families[name].root, template, inputs, dict(axis_suffixes)):
+                        continue
+                    paths.remove(path)
+                    paths.add((workspace / relative).resolve())
+                candidates[name] = frozenset(paths)
+        return _ProductReservations(self.harvest, self.scratch, inputs, self.families, self.derived, candidates, self.relative_candidates)
+
+
+def _slice_descendants(mapping: dict | None, step_id: int, slice_index: int) -> dict:
+    """Trim the owning scatter slice from nested leaf snapshot identities."""
+    prefix = (step_id, slice_index)
+    return {key[2] if len(key) == 3 else key[2:]: value for key, value in (mapping or {}).items() if isinstance(key, tuple) and len(key) > 2 and key[:2] == prefix}
+
+
+def _finite_family_fields(scope: Scope) -> set[str]:
+    """Output fields with exact bounded rules, including mixed families."""
+    return {name for name, meta in scope.field_meta.items() if meta.family and any(not rule.captures for rule in meta.family.rules)}
+
+
+def _scope_has_finite_families(scope: Scope) -> bool:
+    return bool(_finite_family_fields(scope)) or isinstance(scope, Recipe) and any(_scope_has_finite_families(ref.step) for ref in scope.steps)
+
+
+def validate_family_scatter_inputs(ref: StepRef, known: dict[str, Any], unresolved_inputs: set[str], *, error_type: type[Exception] = ParameterError) -> None:
+    """Require a finite-family scatter's slice envelope before dispatch."""
+    if ref.scatter is not None and _scope_has_finite_families(ref.step):
+        unknown = set(ref.scatter.fields) & (unresolved_inputs | (set(ref.scatter.fields) - known.keys()))
+        if unknown:
+            raise error_type(f"step {ref.name!r}: finite-family scatter requires statically resolved slice inputs before dispatch: {', '.join(sorted(unknown))}")
 
 
 def _resolved_product_patterns(
@@ -704,8 +740,13 @@ def _resolved_product_patterns(
     *,
     declarations: tuple[tuple[str, tuple[str, ...]], ...] | None = None,
     workspace: Path | None = None,
+    include_candidates: bool = True,
 ) -> Iterator[tuple[str, str | None]]:
-    """Format product declarations once; absent inputs remain unresolved."""
+    """Format products, optionally excluding exact finite candidates.
+
+    Access reservations use only discovery/harvest/scratch parents; preparation
+    and containment checks also consume the finite candidates.
+    """
     present = {name: value for name, value in prepared.items() if value is not None}
     formatter = Formatter()
 
@@ -721,7 +762,8 @@ def _resolved_product_patterns(
 
     cwd = workspace or Path.cwd()
     for name, plan in family_plans(scope, prepared, cwd, best_effort=True).items():
-        for pattern in [*(str(candidate.path) for candidate in plan.candidates), *plan.patterns()]:
+        candidates = (str(candidate.path) for candidate in plan.candidates) if include_candidates else ()
+        for pattern in [*candidates, *plan.patterns()]:
             if not Path(plan.spec.root.format(**prepared)).is_absolute():
                 pattern = str(Path(pattern).relative_to(cwd))
             yield f"family {name!r} pattern", pattern
@@ -915,9 +957,9 @@ def _path_access_contributors(
             yield candidate.path.resolve(), True, f"output {name!r}", name
     for read in derived_reads(scope, prepared, root, best_effort=True):
         yield read.path, read.mutable, f"derived read {read.address.name!r}", read.address.field
-    # Preserve conservative literal-prefix reservations for ordinary glob
-    # declarations, including the workspace parent of a flat family.
-    for source, pattern in _resolved_product_patterns(scope, prepared, workspace=workspace):
+    # Exact family candidates above reserve their own paths. Discovery,
+    # harvest and scratch still reserve their conservative directory prefixes.
+    for source, pattern in _resolved_product_patterns(scope, prepared, workspace=workspace, include_candidates=False):
         if pattern is None:
             continue
         directory = _product_pattern_directory(pattern)

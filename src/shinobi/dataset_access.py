@@ -770,7 +770,7 @@ def plan_recipe_accesses(
     inputs: dict[str, Any] | BaseModel,
     *,
     workspace: Path | None = None,
-    validated_steps: dict[int, tuple[BaseModel, bool]] | None = None,
+    validated_steps: dict[int | tuple[int, ...], tuple[BaseModel, bool]] | None = None,
     validated_inputs: BaseModel | None = None,
     overwrite_steps: frozenset[str] = frozenset(),
 ) -> RecipeAccessPlan:
@@ -815,19 +815,28 @@ def plan_recipe_accesses(
         if isinstance(ref.step, Recipe):
             if scope_tree_has_dataset_contract(ref.step):
                 raise DatasetAccessError(f"step {ref.name!r} is a nested recipe with dataset contracts; flatten it before access planning")
-            continue
         if ref.scatter is not None and scope_has_dataset_contract(ref.step):
             raise DatasetAccessError(f"step {ref.name!r} scatters a dataset contract; declare bounded non-scattered steps instead")
 
         known, unresolved_fields = static_wiring_values(ref, recipe_inputs, outputs)
+        from shinobi.steps.schema import validate_family_scatter_inputs
+
+        validate_family_scatter_inputs(ref, known, unresolved_fields, error_type=DatasetAccessError)
         for field_name, model_field in ref.step.inputs_model.model_fields.items():
             if field_name not in known and field_name not in unresolved_fields and model_field.default is not PydanticUndefined:
                 known[field_name] = model_field.default
         snapshot = (validated_steps or {}).get(id(ref))
-        if snapshot is not None and snapshot[1]:
+        if ref.scatter is None and snapshot is not None and snapshot[1]:
             model = snapshot[0]
             known = _model_values(model)
-        else:
+        elif ref.scatter is None:
+            # Execution reuses claim-time defaults even when runtime wiring
+            # requires validation again. Planning must use those same values,
+            # including defaults captured under nested scatter slices.
+            if snapshot is not None:
+                for name in type(snapshot[0]).model_fields:
+                    if name not in known and name not in unresolved_fields:
+                        known[name] = getattr(snapshot[0], name)
             try:
                 model = ref.step.inputs_model(**known)
                 known = _model_values(model)
@@ -836,13 +845,42 @@ def plan_recipe_accesses(
             except Exception:
                 pass
 
-        outputs_for_step = static_output_values(ref.step, known, unresolved_inputs=unresolved_fields)
+        from shinobi.steps.schema import path_accesses
+
+        def generic_paths(inputs, snapshots):
+            if not isinstance(ref.step, Recipe):
+                return path_accesses(ref.step, inputs, workspace=root)
+            from shinobi.ownership import _resolved_leaf_inputs
+
+            return [
+                access
+                for leaf, leaf_inputs, _unresolved in _resolved_leaf_inputs(ref.step, inputs, step_inputs={}, validated_steps=snapshots, unresolved_inputs=unresolved_fields)
+                for access in path_accesses(leaf, leaf_inputs, workspace=root)
+            ]
+
+        resolved_generic = generic_paths(known, validated_steps) if isinstance(ref.step, Recipe) and ref.scatter is None else None
+        if ref.scatter is not None and all(field in known for field in ref.scatter.fields):
+            from shinobi.steps.dispatch import _build_scatter_slices
+            from shinobi.steps.schema import _slice_descendants
+
+            resolved_generic = []
+            for slice_index, inputs in enumerate(_build_scatter_slices(ref, known)):
+                prior = (validated_steps or {}).get((id(ref), slice_index))
+                try:
+                    inputs = _model_values(prior[0] if prior is not None else ref.step.inputs_model(**inputs))
+                except Exception:
+                    pass
+                for name in unresolved_fields:
+                    inputs.pop(name, None)
+                resolved_generic.extend(generic_paths(inputs, _slice_descendants(validated_steps, id(ref), slice_index)))
+        outputs_for_step = {} if ref.scatter is not None else static_output_values(ref.step, known, unresolved_inputs=unresolved_fields)
         decision = planner.order_after(
             ref.name,
             ref.step,
             {**known, **outputs_for_step},
             unresolved_inputs=unresolved_fields,
             allow_existing_create=ref.name in overwrite_steps,
+            resolved_path_accesses=resolved_generic,
         )
         accesses[ref.name] = decision.datasets
         for parent in decision.dependencies:

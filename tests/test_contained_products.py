@@ -1112,24 +1112,21 @@ def test_runtime_family_count_refinement_respects_original_parents(tmp_path, mon
                 attempt = plan.attempt(name)
                 assert execute_step(workflow.submission_dir, name, attempt.attempt_id) == 0
             attempt = plan.attempt("produce")
-            assert execute_step(workflow.submission_dir, "produce", attempt.attempt_id) == int(nested)
-            if nested:
-                final = workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "final.json"
-                assert "family 'image' pattern changed its planned product directory reservation" in final.read_text()
+            assert execute_step(workflow.submission_dir, "produce", attempt.attempt_id) == 1
+            final = workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "final.json"
+            assert "family 'image' changed its planned candidate reservation" in final.read_text()
         finally:
             lease.release()
-    elif nested:
-        with pytest.raises(DatasetLifecycleUnavailableError, match="family 'image' pattern changed its planned product directory reservation"):
-            recipe(ms=root, backend="native", cache=False)
     else:
-        assert recipe(ms=root, backend="native", cache=False).success
+        with pytest.raises(DatasetLifecycleUnavailableError, match="family 'image' changed its planned candidate reservation"):
+            recipe(ms=root, backend="native", cache=False)
+    assert not Path("launched").exists()
     if nested:
-        assert not Path("launched").exists()
         assert Path("dir0/out").read_text() == "old product"
         assert not Path("dir1").exists()
     else:
-        assert Path("launched").exists()
-        assert Path("out-dir0").read_text() == Path("out-dir1").read_text() == "new"
+        assert not Path("out-dir0").exists()
+        assert not Path("out-dir1").exists()
     assert (root / "table.dat").read_text() == "raw"
 
 

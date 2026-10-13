@@ -322,6 +322,19 @@ class Candidate(ProductModel):
     path: Path
     coordinates: dict[str, Coordinate]
     rule: MemberRule
+    axis_suffixes: dict[str, str] = Field(default_factory=dict)
+
+    def declaration_path(self, inputs: dict[str, Any]) -> Path:
+        """Render the member spelling using its actual expanded axis suffixes."""
+        return local_path(self.rule.path.format(**{**inputs, **self.axis_suffixes}))
+
+    def is_relative(self, spec: FamilySpec, inputs: dict[str, Any]) -> bool:
+        return _family_declaration_is_relative(spec.root, self.rule.path, inputs, self.axis_suffixes)
+
+
+def _family_declaration_is_relative(root: str, member: str, inputs: dict[str, Any], axis_suffixes: dict[str, str]) -> bool:
+    """Classify the rendered declaration, including concrete axis suffixes."""
+    return not local_path(root.format(**inputs)).is_absolute() and not local_path(member.format(**{**inputs, **axis_suffixes})).is_absolute()
 
 
 class FamilyPlan:
@@ -375,7 +388,7 @@ class FamilyPlan:
                 for key, value in coordinates.items():
                     spec.validate_coordinate(key, value)
                 path = self._contain(local_path(rule.path.format(**substitutions)))
-                self.candidates.append(Candidate(path=path, coordinates=coordinates, rule=rule))
+                self.candidates.append(Candidate(path=path, coordinates=coordinates, rule=rule, axis_suffixes={name: substitutions[name] for name in rule.axes}))
         addresses, paths = set(), set()
         for candidate in self.candidates:
             key = address(candidate.coordinates)

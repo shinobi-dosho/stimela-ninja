@@ -446,7 +446,8 @@ symlink aliases to existing or planned dataset roots are refused. Inspection
 failures refuse execution; hostile concurrent symlink replacement is outside
 the cooperative filesystem contract.
 
-Pattern parents retain broad write reservations for ownership and ordering,
+Discovery, harvest and scratch pattern parents retain broad write reservations
+for ownership and ordering,
 including the workspace for a flat ``out-*`` family. This can serialize sibling
 writers even when their particular basenames differ. The proof exempts only
 the pattern contributor: an ordinary output or write destination sharing its
@@ -460,7 +461,10 @@ Runtime inputs and ``ctx.run`` overrides may change a basename within that direc
 provided the new pattern still excludes every closure resource; they may not
 select a different directory, even if another leaf has claimed it. All leaf
 launchers, including native Python and manual ``Scope`` functions, validate
-these reservations before execution. Detached workers reconstruct the same
+these reservations before execution. Finite ProductFamily candidates instead
+reserve exact canonical paths; runtime refinement must remain a subset of that
+leaf's frozen candidates. Shared parents do not serialize disjoint finite
+products. Detached workers reconstruct the same
 planned inputs from the immutable bundle and original workflow inputs.
 An unannotated generic path may not alias the strict closure.  Mixed
 read/output claims retain the conservative exclusive workspace authority. Any

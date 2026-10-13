@@ -17,11 +17,12 @@ import os
 import platform
 import sys
 import traceback
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid5
 
-from pydantic import model_validator
+from pydantic import Field, model_serializer, model_validator
 
 from shinobi import __version__
 from shinobi.cache import ExecutionIdentity, get_cache_manifest, resolve_input_keys
@@ -161,6 +162,14 @@ class ExecutionPlan(WireModel):
     accesses: tuple[WorkspaceAccess, ...] = ()
     execution_blocked_reason: str | None = None
     dataset_lifecycle: DatasetWorkerPlan | None = None
+    product_candidates: dict[str, dict[str, tuple[str, ...]]] = Field(default_factory=dict)
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_product_candidates(self, serializer):
+        data = serializer(self)
+        if not self.product_candidates:
+            data.pop("product_candidates", None)
+        return data
 
     @model_validator(mode="after")
     def _dataset_contract(self) -> "ExecutionPlan":
@@ -943,12 +952,19 @@ def _execute_step_invocation(
             ref = frozen.declaration()
             prepared = _prepare_inputs(scope, kwargs)
             planned_inputs = None
-            if plan.dataset_lifecycle is not None:
+            if plan.dataset_lifecycle is not None or any(meta.family for meta in scope.field_meta.values()):
                 from shinobi.ownership import planned_leaf_inputs
 
                 declaration = bundle.declaration()
                 snapshots = planned_leaf_inputs(declaration, unpack(bundle.inputs))
                 planned_inputs = snapshots.get(id(declaration.steps[index]))
+                if planned_inputs is not None and any(meta.family for meta in scope.field_meta.values()):
+                    from shinobi.steps.dispatch import _snapshot_product_inputs
+
+                    planned_inputs = _snapshot_product_inputs(scope, planned_inputs, workspace=Path(bundle.workspace))
+                    planned_inputs = replace(
+                        planned_inputs, candidate_paths={name: frozenset(Path(path) for path in paths) for name, paths in plan.product_candidates.get(step_path, {}).items()}
+                    )
             config = AppConfig.model_validate({name: unpack(value) for name, value in bundle.config.items()})
             recipe = bundle.recipe.restore()
             cache_enabled = (

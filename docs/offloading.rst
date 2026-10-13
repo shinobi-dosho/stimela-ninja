@@ -237,7 +237,13 @@ products is ordered, but is not a filesystem transaction across all products.
 Strict dataset workers admit bounded ``harvest``/``scratch`` basename families
 under the same containment proof as local execution (see
 :doc:`concepts/datasets`). Their literal parents remain broad write claims for
-ordering and ownership, including the workspace for a flat family. Workspace
+ordering and ownership, including the workspace for a flat family. Finite
+ProductFamily candidates reserve exact canonical paths, allowing disjoint
+siblings to run concurrently. Each worker checks runtime candidates against
+its own paths frozen in the execution plan before output preparation or
+launch; another leaf's reservation or a retargeted symlink cannot grant a new
+candidate. Candidate parents remain available
+for directory creation and container mounts. Workspace
 harvest destinations and actual execution sources after path anchoring are
 checked against the complete workflow closure before tool launch. Relative
 scratch stays in the sandbox and disappears on success; absolute scratch and
