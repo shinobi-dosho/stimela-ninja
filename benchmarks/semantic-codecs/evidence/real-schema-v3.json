@@ -1,0 +1,85 @@
+{
+  "scope": "Fresh zero-row MAIN schema construction and exact descriptor/canonical-manager checks only; no cell replay.",
+  "runtime": {
+    "stimela-ninja": "0.1.0b7",
+    "msutils": "3.0.0",
+    "xarray-ms": "0.5.8",
+    "xarray": "2026.7.0",
+    "zarr": "3.3.0",
+    "numcodecs": "0.16.5",
+    "arcae": "0.5.4",
+    "numpy": "2.5.3",
+    "python-casacore": "3.8.1",
+    "dask": "2026.8.0",
+    "pyarrow": "23.0.1",
+    "pandas": "3.0.6",
+    "dask-ms": "not-installed",
+    "msutils_commit": "25c280a8ab412b5015a80bf4ff6f83b7a6820675"
+  },
+  "msutils_origin": {
+    "url": "https://github.com/shinobi-dosho/msutils.git",
+    "vcs_info": {
+      "vcs": "git",
+      "commit_id": "25c280a8ab412b5015a80bf4ff6f83b7a6820675",
+      "requested_revision": "25c280a8ab412b5015a80bf4ff6f83b7a6820675"
+    }
+  },
+  "native_module_sha256": "2fab29cfae228cb5d2d981b4ba2fbbb67468f20de5d3ecdfd0b1d147def242b6",
+  "script_sha256": "1905ca524cbc77efa3108cf4026f2a0676f081d1a90ff00cd01c4121a6dd3dac",
+  "results": {
+    "original": {
+      "passed": true,
+      "temporary_columns_removed": [
+        "SIGMA_SPECTRUM"
+      ],
+      "source_observation": {
+        "entries": 108,
+        "stat_sha256": "3ba91704ebf2aae4c853c69c2c575d3644265d009d744b5004b66be751fa9dfa"
+      },
+      "seconds": 0.34845681115984917
+    },
+    "j0408": {
+      "passed": true,
+      "temporary_columns_removed": [
+        "SIGMA_SPECTRUM"
+      ],
+      "source_observation": {
+        "entries": 108,
+        "stat_sha256": "5cf84092d632cb141ff54d44b3dd513e9ac37f8257d8feed25626bebb575f748"
+      },
+      "seconds": 0.605798514559865
+    },
+    "j0410": {
+      "passed": true,
+      "temporary_columns_removed": [
+        "SIGMA_SPECTRUM"
+      ],
+      "source_observation": {
+        "entries": 108,
+        "stat_sha256": "6f7f63e86abd07948cfb10fa3a5f9e4ede3f024cd48c93fb8b97b9ddcb1e95ed"
+      },
+      "seconds": 0.38690838776528835
+    },
+    "chioph_avg": {
+      "passed": true,
+      "temporary_columns_removed": [],
+      "source_observation": {
+        "entries": 112,
+        "stat_sha256": "675614681218d9733cf107909089589c738c21cc08b94d1756eb76b36aa62c75"
+      },
+      "seconds": 2.0261927638202906
+    },
+    "xc_calibrators": {
+      "passed": true,
+      "temporary_columns_removed": [
+        "SIGMA_SPECTRUM"
+      ],
+      "source_observation": {
+        "entries": 108,
+        "stat_sha256": "71bfc22e67f90c9bd3ac595c8bffe990fc8308269be9938b852f25a80b027457"
+      },
+      "seconds": 0.726513959467411
+    }
+  },
+  "passed": true
+}

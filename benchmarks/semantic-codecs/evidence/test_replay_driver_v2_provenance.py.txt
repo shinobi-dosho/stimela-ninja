@@ -1,0 +1,116 @@
+"""Evidence-driver import provenance refuses a different identical checkout."""
+
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import sys
+from types import ModuleType, SimpleNamespace
+
+import pytest
+
+spec = importlib.util.spec_from_file_location("published_replay", Path(__file__).with_name("qualify-published-replay-v2.py"))
+driver = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(driver)
+ROOT = Path("/home/sphemakh/work/softdev/stimela-ninja").resolve()
+
+
+@pytest.fixture(scope="module")
+def expected():
+    return {name: driver.sha(ROOT / name) for name in driver.FILES}, driver.package_hashes(ROOT)
+
+
+@pytest.fixture(scope="module")
+def identical_checkout(tmp_path_factory):
+    root = tmp_path_factory.mktemp("identical-replay") / "checkout"
+    subprocess.run(["git", "clone", "--quiet", "--shared", str(ROOT), str(root)], check=True)
+    return root
+
+
+def test_right_checkout_records_exact_loaded_paths_and_hashes(expected, tmp_path):
+    files, package = expected
+    receipt = driver.loaded_source_guard(ROOT, files, package)
+    assert set(driver.REQUIRED_MODULES) <= receipt.keys()
+    assert "src/shinobi/__init__.py" in driver.FILES
+    for name, data in receipt.items():
+        path = Path(data["path"])
+        assert path.is_relative_to(ROOT / "src/shinobi")
+        assert data["sha256"] == package[path.relative_to(ROOT).as_posix()]
+    path = tmp_path / "loaded-sources.json"
+    driver.write(path, {"loaded_sources": receipt})
+    assert json.loads(path.read_text())["loaded_sources"] == receipt
+
+
+def test_wrong_editable_checkout_refuses_even_identical_source_hashes(expected, identical_checkout):
+    files, package = expected
+    assert {name: driver.sha(identical_checkout / name) for name in driver.FILES} == files
+    assert driver.package_hashes(identical_checkout) == package
+    with pytest.raises(RuntimeError, match="loaded from.*expected under"):
+        driver.loaded_source_guard(identical_checkout, files, package)
+
+
+def test_reported_source_hash_mismatch_refuses(expected):
+    files, package = expected
+    wrong = {**files, "src/shinobi/dataset_state.py": "0" * 64}
+    with pytest.raises(RuntimeError, match="recorded checkout source hash changed"):
+        driver.loaded_source_guard(ROOT, wrong, package)
+
+
+def test_mixed_loaded_namespace_refuses(expected, identical_checkout, monkeypatch):
+    files, package = expected
+    injected = ModuleType("shinobi.mixed_checkout")
+    injected.__file__ = str(identical_checkout / "src/shinobi/state_codecs.py")
+    monkeypatch.setitem(sys.modules, injected.__name__, injected)
+    with pytest.raises(RuntimeError, match="shinobi.mixed_checkout loaded from"):
+        driver.loaded_source_guard(ROOT, files, package)
+
+
+def test_mixed_package_search_path_refuses_before_lazy_import(expected, identical_checkout, monkeypatch):
+    import shinobi
+
+    files, package = expected
+    monkeypatch.setattr(shinobi, "__path__", [*shinobi.__path__, str(identical_checkout / "src/shinobi")])
+    with pytest.raises(RuntimeError, match="namespace outside declared checkout"):
+        driver.loaded_source_guard(ROOT, files, package)
+
+
+def test_each_stage_guard_runs_before_capture_reads_or_state_operations(expected, identical_checkout, tmp_path):
+    files, package = expected
+    args = SimpleNamespace(checkout=identical_checkout, capture_root=tmp_path / "missing-capture", workdir=tmp_path / "replay", stage="audit")
+    report = {"source_sha256": files, "package_source_sha256": package}
+    with pytest.raises(RuntimeError, match="loaded from.*expected under"):
+        driver.run_stage(args, report)
+    assert not args.workdir.exists()
+
+
+def test_parent_guard_runs_before_runtime_or_state_operations(expected, identical_checkout, tmp_path, monkeypatch):
+    from shinobi import _state_adapter as adapter
+
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=identical_checkout, text=True).strip()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(Path(driver.__file__)),
+            "--checkout",
+            str(identical_checkout),
+            "--capture-checkout",
+            str(ROOT),
+            "--capture-root",
+            str(tmp_path / "missing-capture"),
+            "--workdir",
+            str(tmp_path / "replay"),
+            "--capture-commit",
+            commit,
+            "--replay-commit",
+            commit,
+        ],
+    )
+
+    def runtime():
+        raise AssertionError("runtime qualification must follow import provenance guard")
+
+    monkeypatch.setattr(adapter, "runtime", runtime)
+    with pytest.raises(RuntimeError, match="loaded from.*expected under"):
+        driver.main()
+    assert not (tmp_path / "replay").exists()

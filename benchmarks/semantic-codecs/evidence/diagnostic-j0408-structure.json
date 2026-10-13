@@ -1,0 +1,3048 @@
+{
+  "runtime": {
+    "stimela-ninja": "0.1.0b7",
+    "msutils": "3.0.0",
+    "xarray-ms": "0.5.8",
+    "xarray": "2026.7.0",
+    "zarr": "3.3.0",
+    "numcodecs": "0.16.5",
+    "arcae": "0.5.4",
+    "numpy": "2.5.3",
+    "python-casacore": "3.8.1",
+    "dask": "2026.8.0",
+    "pyarrow": "23.0.1",
+    "pandas": "3.0.6",
+    "dask-ms": "not-installed",
+    "msutils_commit": "25c280a8ab412b5015a80bf4ff6f83b7a6820675"
+  },
+  "seconds": 277.40414500795305,
+  "destination": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms",
+  "source_native_id": "msutils-logical-hash/v1:b3f5c7ff91a2666b639cecb89a16a72da90b2b53e7fe12fa34b836f19e0a2e2e",
+  "restored_native_id": "msutils-logical-hash/v1:b3f5c7ff91a2666b639cecb89a16a72da90b2b53e7fe12fa34b836f19e0a2e2e",
+  "source_signature": "167b9990a272a85dfe566bc44f8233ca1621b571df2cd1f3d65d84924bd721d1",
+  "restored_signature": "a8b8689340a22e7d156a481fd6918d5e38f5a9bb705f3e399ce79d3aaf756af7",
+  "source_observation": {
+    "structural_profile": "msv2-structural/v1",
+    "closure_profile": "msv2-dataset-closure/v2",
+    "root": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms",
+    "descriptor": {
+      "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms",
+      "expected": {
+        "kind": "measurement-set-v2",
+        "profile": "msv2-structural/v1"
+      },
+      "status": "valid",
+      "message": "MeasurementSet satisfies msv2-structural/v1",
+      "nrows": 247752,
+      "columns": [
+        "ANTENNA1",
+        "ANTENNA2",
+        "ARRAY_ID",
+        "CORRECTED_DATA",
+        "DATA",
+        "DATA_DESC_ID",
+        "EXPOSURE",
+        "FEED1",
+        "FEED2",
+        "FIELD_ID",
+        "FLAG",
+        "FLAG_CATEGORY",
+        "FLAG_ROW",
+        "INTERVAL",
+        "MODEL_DATA",
+        "OBSERVATION_ID",
+        "PROCESSOR_ID",
+        "SCAN_NUMBER",
+        "SIGMA",
+        "STATE_ID",
+        "TIME",
+        "TIME_CENTROID",
+        "UVW",
+        "WEIGHT",
+        "WEIGHT_SPECTRUM"
+      ],
+      "keywords": [
+        "ANTENNA",
+        "DATA_DESCRIPTION",
+        "FEED",
+        "FIELD",
+        "FLAG_CMD",
+        "HISTORY",
+        "MS_VERSION",
+        "OBSERVATION",
+        "POINTING",
+        "POLARIZATION",
+        "PROCESSOR",
+        "SOURCE",
+        "SPECTRAL_WINDOW",
+        "STATE"
+      ],
+      "subtables": [
+        "ANTENNA",
+        "DATA_DESCRIPTION",
+        "FEED",
+        "FIELD",
+        "FLAG_CMD",
+        "HISTORY",
+        "OBSERVATION",
+        "POINTING",
+        "POLARIZATION",
+        "PROCESSOR",
+        "SPECTRAL_WINDOW",
+        "STATE"
+      ],
+      "missing_columns": [],
+      "missing_primary_data_columns": [],
+      "missing_subtables": [],
+      "unreadable_subtables": [],
+      "missing_subtable_columns": {},
+      "unsupported_features": []
+    },
+    "closure": {
+      "profile": "msv2-dataset-closure/v2",
+      "requested_root": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms",
+      "storage_namespace": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408",
+      "root": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms",
+      "status": "valid",
+      "message": "resolved 14 canonical physical resources for msv2-dataset-closure/v2",
+      "resources": [
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms",
+          "namespace_path": "source-copy.ms",
+          "members": [
+            "MAIN"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f1",
+            "table.f10",
+            "table.f11",
+            "table.f12",
+            "table.f13",
+            "table.f14",
+            "table.f15",
+            "table.f16",
+            "table.f17",
+            "table.f17_TSM1",
+            "table.f18",
+            "table.f19",
+            "table.f19_TSM1",
+            "table.f2",
+            "table.f21",
+            "table.f21_TSM0",
+            "table.f22",
+            "table.f22_TSM1",
+            "table.f23",
+            "table.f23_TSM1",
+            "table.f24",
+            "table.f24_TSM1",
+            "table.f25",
+            "table.f25i",
+            "table.f26",
+            "table.f26_TSM0",
+            "table.f3",
+            "table.f4",
+            "table.f5",
+            "table.f6",
+            "table.f7",
+            "table.f8",
+            "table.f9",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "IncrementalStMan",
+            "StandardStMan",
+            "TiledColumnStMan",
+            "TiledShapeStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/ANTENNA",
+          "namespace_path": "source-copy.ms/ANTENNA",
+          "members": [
+            "ANTENNA"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/DATA_DESCRIPTION",
+          "namespace_path": "source-copy.ms/DATA_DESCRIPTION",
+          "members": [
+            "DATA_DESCRIPTION"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FEED",
+          "namespace_path": "source-copy.ms/FEED",
+          "members": [
+            "FEED"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.f0i",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FIELD",
+          "namespace_path": "source-copy.ms/FIELD",
+          "members": [
+            "FIELD"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.f0i",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FLAG_CMD",
+          "namespace_path": "source-copy.ms/FLAG_CMD",
+          "members": [
+            "FLAG_CMD"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/HISTORY",
+          "namespace_path": "source-copy.ms/HISTORY",
+          "members": [
+            "HISTORY"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/OBSERVATION",
+          "namespace_path": "source-copy.ms/OBSERVATION",
+          "members": [
+            "OBSERVATION"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/POINTING",
+          "namespace_path": "source-copy.ms/POINTING",
+          "members": [
+            "POINTING"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.f0i",
+            "table.f1",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "IncrementalStMan",
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/POLARIZATION",
+          "namespace_path": "source-copy.ms/POLARIZATION",
+          "members": [
+            "POLARIZATION"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.f0i",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/PROCESSOR",
+          "namespace_path": "source-copy.ms/PROCESSOR",
+          "members": [
+            "PROCESSOR"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/SOURCE",
+          "namespace_path": "source-copy.ms/SOURCE",
+          "members": [
+            "SOURCE"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.f0i",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/SPECTRAL_WINDOW",
+          "namespace_path": "source-copy.ms/SPECTRAL_WINDOW",
+          "members": [
+            "SPECTRAL_WINDOW"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.f0i",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/STATE",
+          "namespace_path": "source-copy.ms/STATE",
+          "members": [
+            "STATE"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        }
+      ],
+      "capabilities": {
+        "copy_requirements": [
+          "table-members",
+          "preserve-namespace-paths"
+        ],
+        "mount_requirements": [
+          "table-members",
+          "preserve-namespace-paths"
+        ],
+        "stage_requirements": [
+          "table-members",
+          "preserve-namespace-paths"
+        ],
+        "materialize_requirements": [
+          "table-members",
+          "rewrite-keyword-references"
+        ],
+        "restore_requirements": [
+          "table-members",
+          "preserve-namespace-paths"
+        ]
+      },
+      "unsupported_features": []
+    },
+    "files": [
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms",
+        "device": 64769,
+        "inode": 54004726,
+        "mode": 17912,
+        "size": 4096,
+        "mtime_ns": 1784884757922030632,
+        "ctime_ns": 1791820834848147676
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/ANTENNA",
+        "device": 64769,
+        "inode": 54004765,
+        "mode": 17912,
+        "size": 4096,
+        "mtime_ns": 1784883327632784325,
+        "ctime_ns": 1791820823028260805
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/ANTENNA/table.dat",
+        "device": 64769,
+        "inode": 54004767,
+        "mode": 33200,
+        "size": 3051,
+        "mtime_ns": 1784883327628784312,
+        "ctime_ns": 1791820823028260805
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/ANTENNA/table.f0",
+        "device": 64769,
+        "inode": 54004768,
+        "mode": 33200,
+        "size": 17172,
+        "mtime_ns": 1784883327636784339,
+        "ctime_ns": 1791820823028260805
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/ANTENNA/table.info",
+        "device": 64769,
+        "inode": 54004766,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1784883327632784325,
+        "ctime_ns": 1791820823028260805
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/ANTENNA/table.lock",
+        "device": 64769,
+        "inode": 54004769,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1784883327640784351,
+        "ctime_ns": 1791820823028260805
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/DATA_DESCRIPTION",
+        "device": 64769,
+        "inode": 54004815,
+        "mode": 17912,
+        "size": 4096,
+        "mtime_ns": 1784883120535585454,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/DATA_DESCRIPTION/table.dat",
+        "device": 64769,
+        "inode": 54004817,
+        "mode": 33200,
+        "size": 997,
+        "mtime_ns": 1784883120535585454,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/DATA_DESCRIPTION/table.f0",
+        "device": 64769,
+        "inode": 54004818,
+        "mode": 33200,
+        "size": 1032,
+        "mtime_ns": 1784883306552710597,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/DATA_DESCRIPTION/table.info",
+        "device": 64769,
+        "inode": 54004816,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1784883120535585454,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/DATA_DESCRIPTION/table.lock",
+        "device": 64769,
+        "inode": 54004819,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1784883306552710597,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FEED",
+        "device": 64769,
+        "inode": 54004809,
+        "mode": 17912,
+        "size": 4096,
+        "mtime_ns": 1784883120663586564,
+        "ctime_ns": 1791820834784148287
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FEED/table.dat",
+        "device": 64769,
+        "inode": 54004811,
+        "mode": 33200,
+        "size": 4311,
+        "mtime_ns": 1784883120663586564,
+        "ctime_ns": 1791820834784148287
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FEED/table.f0",
+        "device": 64769,
+        "inode": 54004812,
+        "mode": 33200,
+        "size": 12800,
+        "mtime_ns": 1784883120663586564,
+        "ctime_ns": 1791820834784148287
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FEED/table.f0i",
+        "device": 64769,
+        "inode": 54004813,
+        "mode": 33200,
+        "size": 4456,
+        "mtime_ns": 1784883120663586564,
+        "ctime_ns": 1791820834784148287
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FEED/table.info",
+        "device": 64769,
+        "inode": 54004810,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1784883120663586564,
+        "ctime_ns": 1791820834784148287
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FEED/table.lock",
+        "device": 64769,
+        "inode": 54004814,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1784883120663586564,
+        "ctime_ns": 1791820834784148287
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FIELD",
+        "device": 64769,
+        "inode": 54004775,
+        "mode": 17912,
+        "size": 4096,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FIELD/table.dat",
+        "device": 64769,
+        "inode": 54004777,
+        "mode": 33200,
+        "size": 3466,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FIELD/table.f0",
+        "device": 64769,
+        "inode": 54004778,
+        "mode": 33200,
+        "size": 6668,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FIELD/table.f0i",
+        "device": 64769,
+        "inode": 54004779,
+        "mode": 33200,
+        "size": 108,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FIELD/table.info",
+        "device": 64769,
+        "inode": 54004776,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FIELD/table.lock",
+        "device": 64769,
+        "inode": 54004780,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FLAG_CMD",
+        "device": 64769,
+        "inode": 54004795,
+        "mode": 17912,
+        "size": 4096,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FLAG_CMD/table.dat",
+        "device": 64769,
+        "inode": 54004797,
+        "mode": 33200,
+        "size": 2423,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FLAG_CMD/table.f0",
+        "device": 64769,
+        "inode": 54004798,
+        "mode": 33200,
+        "size": 2436,
+        "mtime_ns": 1784883120539585488,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FLAG_CMD/table.info",
+        "device": 64769,
+        "inode": 54004796,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/FLAG_CMD/table.lock",
+        "device": 64769,
+        "inode": 54004799,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/HISTORY",
+        "device": 64769,
+        "inode": 54004784,
+        "mode": 17912,
+        "size": 4096,
+        "mtime_ns": 1784883120663586564,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/HISTORY/table.dat",
+        "device": 64769,
+        "inode": 54004786,
+        "mode": 33200,
+        "size": 2592,
+        "mtime_ns": 1784883120663586564,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/HISTORY/table.f0",
+        "device": 64769,
+        "inode": 54004787,
+        "mode": 33200,
+        "size": 3328,
+        "mtime_ns": 1784883120547585557,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/HISTORY/table.info",
+        "device": 64769,
+        "inode": 54004785,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1784883120663586564,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/HISTORY/table.lock",
+        "device": 64769,
+        "inode": 54004788,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1784883120667586598,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/OBSERVATION",
+        "device": 64769,
+        "inode": 54004789,
+        "mode": 17912,
+        "size": 4096,
+        "mtime_ns": 1784883120667586598,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/OBSERVATION/table.dat",
+        "device": 64769,
+        "inode": 54004791,
+        "mode": 33200,
+        "size": 2880,
+        "mtime_ns": 1784883120667586598,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/OBSERVATION/table.f0",
+        "device": 64769,
+        "inode": 54004792,
+        "mode": 33200,
+        "size": 9740,
+        "mtime_ns": 1784883120667586598,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/OBSERVATION/table.info",
+        "device": 64769,
+        "inode": 54004790,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1784883120667586598,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/OBSERVATION/table.lock",
+        "device": 64769,
+        "inode": 54004793,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1784883120667586598,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/POINTING",
+        "device": 64769,
+        "inode": 54004821,
+        "mode": 17896,
+        "size": 4096,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/POINTING/table.dat",
+        "device": 64769,
+        "inode": 54004824,
+        "mode": 33200,
+        "size": 3424,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/POINTING/table.f0",
+        "device": 64769,
+        "inode": 54004825,
+        "mode": 33184,
+        "size": 39030,
+        "mtime_ns": 1784883120615586148,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/POINTING/table.f0i",
+        "device": 64769,
+        "inode": 54004826,
+        "mode": 33184,
+        "size": 16,
+        "mtime_ns": 1784883120615586148,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/POINTING/table.f1",
+        "device": 64769,
+        "inode": 54004823,
+        "mode": 33184,
+        "size": 33280,
+        "mtime_ns": 1784883120615586148,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/POINTING/table.info",
+        "device": 64769,
+        "inode": 54004822,
+        "mode": 33184,
+        "size": 20,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/POINTING/table.lock",
+        "device": 64769,
+        "inode": 54004827,
+        "mode": 33184,
+        "size": 329,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/POLARIZATION",
+        "device": 64769,
+        "inode": 54004747,
+        "mode": 17912,
+        "size": 4096,
+        "mtime_ns": 1784883120551585592,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/POLARIZATION/table.dat",
+        "device": 64769,
+        "inode": 54004749,
+        "mode": 33200,
+        "size": 1306,
+        "mtime_ns": 1784883120551585592,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/POLARIZATION/table.f0",
+        "device": 64769,
+        "inode": 54004750,
+        "mode": 33200,
+        "size": 1800,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/POLARIZATION/table.f0i",
+        "device": 64769,
+        "inode": 54004751,
+        "mode": 33200,
+        "size": 84,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/POLARIZATION/table.info",
+        "device": 64769,
+        "inode": 54004748,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1784883120551585592,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/POLARIZATION/table.lock",
+        "device": 64769,
+        "inode": 54004752,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/PROCESSOR",
+        "device": 64769,
+        "inode": 54004829,
+        "mode": 17912,
+        "size": 4096,
+        "mtime_ns": 1784883120551585592,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/PROCESSOR/table.dat",
+        "device": 64769,
+        "inode": 54004831,
+        "mode": 33200,
+        "size": 1344,
+        "mtime_ns": 1784883120551585592,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/PROCESSOR/table.f0",
+        "device": 64769,
+        "inode": 54004832,
+        "mode": 33200,
+        "size": 1540,
+        "mtime_ns": 1784883120551585592,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/PROCESSOR/table.info",
+        "device": 64769,
+        "inode": 54004830,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1784883120551585592,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/PROCESSOR/table.lock",
+        "device": 64769,
+        "inode": 54004833,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1784883120551585592,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/SOURCE",
+        "device": 64769,
+        "inode": 54004740,
+        "mode": 17912,
+        "size": 4096,
+        "mtime_ns": 1784883120655586494,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/SOURCE/table.dat",
+        "device": 64769,
+        "inode": 54004742,
+        "mode": 33200,
+        "size": 3887,
+        "mtime_ns": 1784883120655586494,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/SOURCE/table.f0",
+        "device": 64769,
+        "inode": 54004743,
+        "mode": 33200,
+        "size": 11776,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/SOURCE/table.f0i",
+        "device": 64769,
+        "inode": 54004744,
+        "mode": 33200,
+        "size": 24,
+        "mtime_ns": 1784883120655586494,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/SOURCE/table.info",
+        "device": 64769,
+        "inode": 54004741,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1784883120659586529,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/SOURCE/table.lock",
+        "device": 64769,
+        "inode": 54004745,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/SPECTRAL_WINDOW",
+        "device": 64769,
+        "inode": 54004733,
+        "mode": 17912,
+        "size": 4096,
+        "mtime_ns": 1784883120555585627,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/SPECTRAL_WINDOW/table.dat",
+        "device": 64769,
+        "inode": 54004735,
+        "mode": 33200,
+        "size": 5126,
+        "mtime_ns": 1784883120551585592,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/SPECTRAL_WINDOW/table.f0",
+        "device": 64769,
+        "inode": 54004736,
+        "mode": 33200,
+        "size": 6408,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/SPECTRAL_WINDOW/table.f0i",
+        "device": 64769,
+        "inode": 54004737,
+        "mode": 33200,
+        "size": 28912,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/SPECTRAL_WINDOW/table.info",
+        "device": 64769,
+        "inode": 54004734,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1784883120555585627,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/SPECTRAL_WINDOW/table.lock",
+        "device": 64769,
+        "inode": 54004738,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1784883306556710612,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/STATE",
+        "device": 64769,
+        "inode": 54004754,
+        "mode": 17912,
+        "size": 4096,
+        "mtime_ns": 1784883120555585627,
+        "ctime_ns": 1791820818208307093
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/STATE/table.dat",
+        "device": 64769,
+        "inode": 54004756,
+        "mode": 33200,
+        "size": 2016,
+        "mtime_ns": 1784883120555585627,
+        "ctime_ns": 1791820818208307093
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/STATE/table.f0",
+        "device": 64769,
+        "inode": 54004757,
+        "mode": 33200,
+        "size": 3620,
+        "mtime_ns": 1784883120667586598,
+        "ctime_ns": 1791820818208307093
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/STATE/table.info",
+        "device": 64769,
+        "inode": 54004755,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1784883120555585627,
+        "ctime_ns": 1791820818208307093
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/STATE/table.lock",
+        "device": 64769,
+        "inode": 54004758,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1784883120667586598,
+        "ctime_ns": 1791820818208307093
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.dat",
+        "device": 64769,
+        "inode": 54004771,
+        "mode": 33200,
+        "size": 12306,
+        "mtime_ns": 1784884757922030632,
+        "ctime_ns": 1791820823028260805
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f1",
+        "device": 64769,
+        "inode": 54004761,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1784883306516710463,
+        "ctime_ns": 1791820823024260844
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f10",
+        "device": 64769,
+        "inode": 54004802,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1784883306516710463,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f11",
+        "device": 64769,
+        "inode": 54004801,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1784883306516710463,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f12",
+        "device": 64769,
+        "inode": 54004759,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1784883306516710463,
+        "ctime_ns": 1791820818208307093
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f13",
+        "device": 64769,
+        "inode": 54004732,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1784883306516710463,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f14",
+        "device": 64769,
+        "inode": 54004739,
+        "mode": 33200,
+        "size": 1049088,
+        "mtime_ns": 1784883306516710463,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f15",
+        "device": 64769,
+        "inode": 54004772,
+        "mode": 33200,
+        "size": 1049088,
+        "mtime_ns": 1784883306516710463,
+        "ctime_ns": 1791820823028260805
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f16",
+        "device": 64769,
+        "inode": 54004731,
+        "mode": 33200,
+        "size": 1049088,
+        "mtime_ns": 1784883306516710463,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f17",
+        "device": 64769,
+        "inode": 54004783,
+        "mode": 33200,
+        "size": 487,
+        "mtime_ns": 1784883306540710552,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f17_TSM1",
+        "device": 64769,
+        "inode": 54004773,
+        "mode": 33200,
+        "size": 3567628800,
+        "mtime_ns": 1784883306520710478,
+        "ctime_ns": 1791820834768148440
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f18",
+        "device": 64769,
+        "inode": 54004807,
+        "mode": 33200,
+        "size": 331,
+        "mtime_ns": 1784883306540710552,
+        "ctime_ns": 1791820834784148287
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f19",
+        "device": 64769,
+        "inode": 54004764,
+        "mode": 33200,
+        "size": 490,
+        "mtime_ns": 1784883340300824089,
+        "ctime_ns": 1791820823028260805
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f19_TSM1",
+        "device": 64769,
+        "inode": 54004753,
+        "mode": 33200,
+        "size": 1784196000,
+        "mtime_ns": 1784883340300824089,
+        "ctime_ns": 1791820818208307093
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f2",
+        "device": 64769,
+        "inode": 54004728,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1784883306516710463,
+        "ctime_ns": 1791820816336325096
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f21",
+        "device": 64769,
+        "inode": 54004794,
+        "mode": 33200,
+        "size": 276,
+        "mtime_ns": 1784883306548710582,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f21_TSM0",
+        "device": 64769,
+        "inode": 54004805,
+        "mode": 33200,
+        "size": 6289920,
+        "mtime_ns": 1784883306544710567,
+        "ctime_ns": 1791820834784148287
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f22",
+        "device": 64769,
+        "inode": 54004804,
+        "mode": 33200,
+        "size": 483,
+        "mtime_ns": 1784884561120507730,
+        "ctime_ns": 1791820834780148325
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f22_TSM1",
+        "device": 64769,
+        "inode": 54004834,
+        "mode": 33200,
+        "size": 55784700,
+        "mtime_ns": 1784884561120507730,
+        "ctime_ns": 1791820834844147714
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f23",
+        "device": 64769,
+        "inode": 54004808,
+        "mode": 33200,
+        "size": 470,
+        "mtime_ns": 1784883340300824089,
+        "ctime_ns": 1791820834784148287
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f23_TSM1",
+        "device": 64769,
+        "inode": 54004774,
+        "mode": 33200,
+        "size": 4193280,
+        "mtime_ns": 1784883340300824089,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f24",
+        "device": 64769,
+        "inode": 54004820,
+        "mode": 33200,
+        "size": 472,
+        "mtime_ns": 1784883340304824100,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f24_TSM1",
+        "device": 64769,
+        "inode": 54004803,
+        "mode": 33200,
+        "size": 4193280,
+        "mtime_ns": 1784883340300824089,
+        "ctime_ns": 1791820834780148325
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f25",
+        "device": 64769,
+        "inode": 54004762,
+        "mode": 33200,
+        "size": 2046976,
+        "mtime_ns": 1784883929544070532,
+        "ctime_ns": 1791820823028260805
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f25i",
+        "device": 64769,
+        "inode": 54004727,
+        "mode": 33200,
+        "size": 3571592844,
+        "mtime_ns": 1784884757922030632,
+        "ctime_ns": 1791820816336325096
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f26",
+        "device": 64769,
+        "inode": 54004828,
+        "mode": 33200,
+        "size": 304,
+        "mtime_ns": 1784884557792709434,
+        "ctime_ns": 1791820834788148249
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f26_TSM0",
+        "device": 64769,
+        "inode": 54004760,
+        "mode": 33200,
+        "size": 3679453184,
+        "mtime_ns": 1784884557792709434,
+        "ctime_ns": 1791820823024260844
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f3",
+        "device": 64769,
+        "inode": 54004770,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1784883306516710463,
+        "ctime_ns": 1791820823028260805
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f4",
+        "device": 64769,
+        "inode": 54004763,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1784883306516710463,
+        "ctime_ns": 1791820823028260805
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f5",
+        "device": 64769,
+        "inode": 54004781,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1784883306516710463,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f6",
+        "device": 64769,
+        "inode": 54004746,
+        "mode": 33200,
+        "size": 41472,
+        "mtime_ns": 1784884561136506763,
+        "ctime_ns": 1791820816340325058
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f7",
+        "device": 64769,
+        "inode": 54004800,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1784883306516710463,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f8",
+        "device": 64769,
+        "inode": 54004730,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1784883306516710463,
+        "ctime_ns": 1791820816336325096
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.f9",
+        "device": 64769,
+        "inode": 54004782,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1784883306516710463,
+        "ctime_ns": 1791820834772148402
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.info",
+        "device": 64769,
+        "inode": 54004729,
+        "mode": 33200,
+        "size": 176,
+        "mtime_ns": 1784884757922030632,
+        "ctime_ns": 1791820816336325096
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/source-copy.ms/table.lock",
+        "device": 64769,
+        "inode": 54004806,
+        "mode": 33200,
+        "size": 421,
+        "mtime_ns": 1784884757922030632,
+        "ctime_ns": 1791820834784148287
+      }
+    ],
+    "table_columns": {
+      "ANTENNA": [
+        "DISH_DIAMETER",
+        "FLAG_ROW",
+        "MOUNT",
+        "NAME",
+        "OFFSET",
+        "POSITION",
+        "STATION",
+        "TELESCOPE_NAME",
+        "TYPE"
+      ],
+      "DATA_DESCRIPTION": [
+        "FLAG_ROW",
+        "POLARIZATION_ID",
+        "SPECTRAL_WINDOW_ID"
+      ],
+      "FEED": [
+        "ANTENNA_ID",
+        "BEAM_ID",
+        "BEAM_OFFSET",
+        "FEED_ID",
+        "INTERVAL",
+        "NUM_RECEPTORS",
+        "POLARIZATION_TYPE",
+        "POL_RESPONSE",
+        "POSITION",
+        "RECEPTOR_ANGLE",
+        "SPECTRAL_WINDOW_ID",
+        "TIME"
+      ],
+      "FIELD": [
+        "CODE",
+        "DELAY_DIR",
+        "FLAG_ROW",
+        "NAME",
+        "NUM_POLY",
+        "PHASE_DIR",
+        "REFERENCE_DIR",
+        "SOURCE_ID",
+        "TIME"
+      ],
+      "FLAG_CMD": [
+        "APPLIED",
+        "COMMAND",
+        "INTERVAL",
+        "LEVEL",
+        "REASON",
+        "SEVERITY",
+        "TIME",
+        "TYPE"
+      ],
+      "HISTORY": [
+        "APPLICATION",
+        "APP_PARAMS",
+        "CLI_COMMAND",
+        "MESSAGE",
+        "OBJECT_ID",
+        "OBSERVATION_ID",
+        "ORIGIN",
+        "PRIORITY",
+        "TIME"
+      ],
+      "OBSERVATION": [
+        "FLAG_ROW",
+        "LOG",
+        "OBSERVER",
+        "PROJECT",
+        "RELEASE_DATE",
+        "SCHEDULE",
+        "SCHEDULE_TYPE",
+        "TELESCOPE_NAME",
+        "TIME_RANGE"
+      ],
+      "POINTING": [
+        "ANTENNA_ID",
+        "DIRECTION",
+        "INTERVAL",
+        "NAME",
+        "NUM_POLY",
+        "TARGET",
+        "TIME",
+        "TIME_ORIGIN",
+        "TRACKING"
+      ],
+      "POLARIZATION": [
+        "CORR_PRODUCT",
+        "CORR_TYPE",
+        "FLAG_ROW",
+        "NUM_CORR"
+      ],
+      "PROCESSOR": [
+        "FLAG_ROW",
+        "MODE_ID",
+        "SUB_TYPE",
+        "TYPE",
+        "TYPE_ID"
+      ],
+      "SOURCE": [
+        "CALIBRATION_GROUP",
+        "CODE",
+        "DIRECTION",
+        "INTERVAL",
+        "NAME",
+        "NUM_LINES",
+        "PROPER_MOTION",
+        "REST_FREQUENCY",
+        "SOURCE_ID",
+        "SPECTRAL_WINDOW_ID",
+        "TIME"
+      ],
+      "SPECTRAL_WINDOW": [
+        "CHAN_FREQ",
+        "CHAN_WIDTH",
+        "EFFECTIVE_BW",
+        "FLAG_ROW",
+        "FREQ_GROUP",
+        "FREQ_GROUP_NAME",
+        "IF_CONV_CHAIN",
+        "MEAS_FREQ_REF",
+        "NAME",
+        "NET_SIDEBAND",
+        "NUM_CHAN",
+        "REF_FREQUENCY",
+        "RESOLUTION",
+        "TOTAL_BANDWIDTH"
+      ],
+      "STATE": [
+        "CAL",
+        "FLAG_ROW",
+        "LOAD",
+        "OBS_MODE",
+        "REF",
+        "SIG",
+        "SUB_SCAN"
+      ]
+    }
+  },
+  "restored_observation": {
+    "structural_profile": "msv2-structural/v1",
+    "closure_profile": "msv2-dataset-closure/v2",
+    "root": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms",
+    "descriptor": {
+      "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms",
+      "expected": {
+        "kind": "measurement-set-v2",
+        "profile": "msv2-structural/v1"
+      },
+      "status": "valid",
+      "message": "MeasurementSet satisfies msv2-structural/v1",
+      "nrows": 247752,
+      "columns": [
+        "ANTENNA1",
+        "ANTENNA2",
+        "ARRAY_ID",
+        "CORRECTED_DATA",
+        "DATA",
+        "DATA_DESC_ID",
+        "EXPOSURE",
+        "FEED1",
+        "FEED2",
+        "FIELD_ID",
+        "FLAG",
+        "FLAG_CATEGORY",
+        "FLAG_ROW",
+        "INTERVAL",
+        "MODEL_DATA",
+        "OBSERVATION_ID",
+        "PROCESSOR_ID",
+        "SCAN_NUMBER",
+        "SIGMA",
+        "STATE_ID",
+        "TIME",
+        "TIME_CENTROID",
+        "UVW",
+        "WEIGHT",
+        "WEIGHT_SPECTRUM"
+      ],
+      "keywords": [
+        "ANTENNA",
+        "DATA_DESCRIPTION",
+        "FEED",
+        "FIELD",
+        "FLAG_CMD",
+        "HISTORY",
+        "MS_VERSION",
+        "OBSERVATION",
+        "POINTING",
+        "POLARIZATION",
+        "PROCESSOR",
+        "SOURCE",
+        "SPECTRAL_WINDOW",
+        "STATE"
+      ],
+      "subtables": [
+        "ANTENNA",
+        "DATA_DESCRIPTION",
+        "FEED",
+        "FIELD",
+        "FLAG_CMD",
+        "HISTORY",
+        "OBSERVATION",
+        "POINTING",
+        "POLARIZATION",
+        "PROCESSOR",
+        "SPECTRAL_WINDOW",
+        "STATE"
+      ],
+      "missing_columns": [],
+      "missing_primary_data_columns": [],
+      "missing_subtables": [],
+      "unreadable_subtables": [],
+      "missing_subtable_columns": {},
+      "unsupported_features": []
+    },
+    "closure": {
+      "profile": "msv2-dataset-closure/v2",
+      "requested_root": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms",
+      "storage_namespace": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012",
+      "root": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms",
+      "status": "valid",
+      "message": "resolved 14 canonical physical resources for msv2-dataset-closure/v2",
+      "resources": [
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms",
+          "namespace_path": "diagnostic-j0408-native.ms",
+          "members": [
+            "MAIN"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.f1",
+            "table.f10",
+            "table.f11",
+            "table.f12",
+            "table.f13",
+            "table.f14",
+            "table.f15",
+            "table.f16",
+            "table.f16_TSM1",
+            "table.f17",
+            "table.f18",
+            "table.f18_TSM1",
+            "table.f19",
+            "table.f19_TSM0",
+            "table.f2",
+            "table.f20",
+            "table.f20_TSM1",
+            "table.f21",
+            "table.f21_TSM1",
+            "table.f22",
+            "table.f22_TSM1",
+            "table.f23",
+            "table.f23i",
+            "table.f24",
+            "table.f24_TSM0",
+            "table.f3",
+            "table.f4",
+            "table.f5",
+            "table.f6",
+            "table.f7",
+            "table.f8",
+            "table.f9",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "IncrementalStMan",
+            "StandardStMan",
+            "TiledColumnStMan",
+            "TiledShapeStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/ANTENNA",
+          "namespace_path": "diagnostic-j0408-native.ms/ANTENNA",
+          "members": [
+            "ANTENNA"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/DATA_DESCRIPTION",
+          "namespace_path": "diagnostic-j0408-native.ms/DATA_DESCRIPTION",
+          "members": [
+            "DATA_DESCRIPTION"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FEED",
+          "namespace_path": "diagnostic-j0408-native.ms/FEED",
+          "members": [
+            "FEED"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.f0i",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FIELD",
+          "namespace_path": "diagnostic-j0408-native.ms/FIELD",
+          "members": [
+            "FIELD"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.f0i",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FLAG_CMD",
+          "namespace_path": "diagnostic-j0408-native.ms/FLAG_CMD",
+          "members": [
+            "FLAG_CMD"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/HISTORY",
+          "namespace_path": "diagnostic-j0408-native.ms/HISTORY",
+          "members": [
+            "HISTORY"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/OBSERVATION",
+          "namespace_path": "diagnostic-j0408-native.ms/OBSERVATION",
+          "members": [
+            "OBSERVATION"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/POINTING",
+          "namespace_path": "diagnostic-j0408-native.ms/POINTING",
+          "members": [
+            "POINTING"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.f0i",
+            "table.f1",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "IncrementalStMan",
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/POLARIZATION",
+          "namespace_path": "diagnostic-j0408-native.ms/POLARIZATION",
+          "members": [
+            "POLARIZATION"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.f0i",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/PROCESSOR",
+          "namespace_path": "diagnostic-j0408-native.ms/PROCESSOR",
+          "members": [
+            "PROCESSOR"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/SOURCE",
+          "namespace_path": "diagnostic-j0408-native.ms/SOURCE",
+          "members": [
+            "SOURCE"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.f0i",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/SPECTRAL_WINDOW",
+          "namespace_path": "diagnostic-j0408-native.ms/SPECTRAL_WINDOW",
+          "members": [
+            "SPECTRAL_WINDOW"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.f0i",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/STATE",
+          "namespace_path": "diagnostic-j0408-native.ms/STATE",
+          "members": [
+            "STATE"
+          ],
+          "table_files": [
+            "table.dat",
+            "table.f0",
+            "table.info",
+            "table.lock"
+          ],
+          "external_to_root": false,
+          "storage_managers": [
+            "StandardStMan"
+          ]
+        }
+      ],
+      "capabilities": {
+        "copy_requirements": [
+          "table-members",
+          "preserve-namespace-paths"
+        ],
+        "mount_requirements": [
+          "table-members",
+          "preserve-namespace-paths"
+        ],
+        "stage_requirements": [
+          "table-members",
+          "preserve-namespace-paths"
+        ],
+        "materialize_requirements": [
+          "table-members",
+          "rewrite-keyword-references"
+        ],
+        "restore_requirements": [
+          "table-members",
+          "preserve-namespace-paths"
+        ]
+      },
+      "unsupported_features": []
+    },
+    "files": [
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms",
+        "device": 64769,
+        "inode": 36639175,
+        "mode": 16888,
+        "size": 4096,
+        "mtime_ns": 1791825187036903274,
+        "ctime_ns": 1791825295587947459
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/ANTENNA",
+        "device": 64769,
+        "inode": 36639207,
+        "mode": 16888,
+        "size": 4096,
+        "mtime_ns": 1791825185508916788,
+        "ctime_ns": 1791825185508916788
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/ANTENNA/table.dat",
+        "device": 64769,
+        "inode": 36639211,
+        "mode": 33200,
+        "size": 3051,
+        "mtime_ns": 1791825185508916788,
+        "ctime_ns": 1791825185508916788
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/ANTENNA/table.f0",
+        "device": 64769,
+        "inode": 36639210,
+        "mode": 33200,
+        "size": 13840,
+        "mtime_ns": 1791825266032206925,
+        "ctime_ns": 1791825266032206925
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/ANTENNA/table.info",
+        "device": 64769,
+        "inode": 36639208,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1791825185508916788,
+        "ctime_ns": 1791825185508916788
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/ANTENNA/table.lock",
+        "device": 64769,
+        "inode": 36639209,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1791825266036206890,
+        "ctime_ns": 1791825266036206890
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/DATA_DESCRIPTION",
+        "device": 64769,
+        "inode": 36639212,
+        "mode": 16888,
+        "size": 4096,
+        "mtime_ns": 1791825185508916788,
+        "ctime_ns": 1791825185508916788
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/DATA_DESCRIPTION/table.dat",
+        "device": 64769,
+        "inode": 36639216,
+        "mode": 33200,
+        "size": 997,
+        "mtime_ns": 1791825185508916788,
+        "ctime_ns": 1791825185508916788
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/DATA_DESCRIPTION/table.f0",
+        "device": 64769,
+        "inode": 36639215,
+        "mode": 33200,
+        "size": 1032,
+        "mtime_ns": 1791825266048206785,
+        "ctime_ns": 1791825266048206785
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/DATA_DESCRIPTION/table.info",
+        "device": 64769,
+        "inode": 36639213,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1791825185508916788,
+        "ctime_ns": 1791825185508916788
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/DATA_DESCRIPTION/table.lock",
+        "device": 64769,
+        "inode": 36639214,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1791825266048206785,
+        "ctime_ns": 1791825266048206785
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FEED",
+        "device": 64769,
+        "inode": 36639217,
+        "mode": 16888,
+        "size": 4096,
+        "mtime_ns": 1791825185512916752,
+        "ctime_ns": 1791825185512916752
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FEED/table.dat",
+        "device": 64769,
+        "inode": 36639222,
+        "mode": 33200,
+        "size": 4311,
+        "mtime_ns": 1791825185512916752,
+        "ctime_ns": 1791825185512916752
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FEED/table.f0",
+        "device": 64769,
+        "inode": 36639220,
+        "mode": 33200,
+        "size": 12800,
+        "mtime_ns": 1791825266100206328,
+        "ctime_ns": 1791825266100206328
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FEED/table.f0i",
+        "device": 64769,
+        "inode": 36639221,
+        "mode": 33200,
+        "size": 4456,
+        "mtime_ns": 1791825266100206328,
+        "ctime_ns": 1791825266100206328
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FEED/table.info",
+        "device": 64769,
+        "inode": 36639218,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1791825185512916752,
+        "ctime_ns": 1791825185512916752
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FEED/table.lock",
+        "device": 64769,
+        "inode": 36639219,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1791825266100206328,
+        "ctime_ns": 1791825266100206328
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FIELD",
+        "device": 64769,
+        "inode": 36639223,
+        "mode": 16888,
+        "size": 4096,
+        "mtime_ns": 1791825185512916752,
+        "ctime_ns": 1791825185512916752
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FIELD/table.dat",
+        "device": 64769,
+        "inode": 36639228,
+        "mode": 33200,
+        "size": 3466,
+        "mtime_ns": 1791825185512916752,
+        "ctime_ns": 1791825185512916752
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FIELD/table.f0",
+        "device": 64769,
+        "inode": 36639226,
+        "mode": 33200,
+        "size": 6668,
+        "mtime_ns": 1791825266136206012,
+        "ctime_ns": 1791825266136206012
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FIELD/table.f0i",
+        "device": 64769,
+        "inode": 36639227,
+        "mode": 33200,
+        "size": 108,
+        "mtime_ns": 1791825266136206012,
+        "ctime_ns": 1791825266136206012
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FIELD/table.info",
+        "device": 64769,
+        "inode": 36639224,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1791825185512916752,
+        "ctime_ns": 1791825185512916752
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FIELD/table.lock",
+        "device": 64769,
+        "inode": 36639225,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1791825266136206012,
+        "ctime_ns": 1791825266136206012
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FLAG_CMD",
+        "device": 64769,
+        "inode": 36639229,
+        "mode": 16888,
+        "size": 4096,
+        "mtime_ns": 1791825185516916717,
+        "ctime_ns": 1791825185516916717
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FLAG_CMD/table.dat",
+        "device": 64769,
+        "inode": 36639233,
+        "mode": 33200,
+        "size": 2423,
+        "mtime_ns": 1791825185516916717,
+        "ctime_ns": 1791825185516916717
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FLAG_CMD/table.f0",
+        "device": 64769,
+        "inode": 36639232,
+        "mode": 33200,
+        "size": 2436,
+        "mtime_ns": 1791825185516916717,
+        "ctime_ns": 1791825185516916717
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FLAG_CMD/table.info",
+        "device": 64769,
+        "inode": 36639230,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1791825185516916717,
+        "ctime_ns": 1791825185516916717
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/FLAG_CMD/table.lock",
+        "device": 64769,
+        "inode": 36639231,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1791825185516916717,
+        "ctime_ns": 1791825185516916717
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/HISTORY",
+        "device": 64769,
+        "inode": 37224449,
+        "mode": 16888,
+        "size": 4096,
+        "mtime_ns": 1791825185516916717,
+        "ctime_ns": 1791825185516916717
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/HISTORY/table.dat",
+        "device": 64769,
+        "inode": 37224453,
+        "mode": 33200,
+        "size": 2592,
+        "mtime_ns": 1791825185516916717,
+        "ctime_ns": 1791825185516916717
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/HISTORY/table.f0",
+        "device": 64769,
+        "inode": 37224452,
+        "mode": 33200,
+        "size": 3328,
+        "mtime_ns": 1791825185516916717,
+        "ctime_ns": 1791825185516916717
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/HISTORY/table.info",
+        "device": 64769,
+        "inode": 37224450,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1791825185516916717,
+        "ctime_ns": 1791825185516916717
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/HISTORY/table.lock",
+        "device": 64769,
+        "inode": 37224451,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1791825185516916717,
+        "ctime_ns": 1791825185516916717
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/OBSERVATION",
+        "device": 64769,
+        "inode": 37224454,
+        "mode": 16888,
+        "size": 4096,
+        "mtime_ns": 1791825185516916717,
+        "ctime_ns": 1791825185516916717
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/OBSERVATION/table.dat",
+        "device": 64769,
+        "inode": 37224458,
+        "mode": 33200,
+        "size": 2880,
+        "mtime_ns": 1791825185516916717,
+        "ctime_ns": 1791825185516916717
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/OBSERVATION/table.f0",
+        "device": 64769,
+        "inode": 37224457,
+        "mode": 33200,
+        "size": 9740,
+        "mtime_ns": 1791825266176205660,
+        "ctime_ns": 1791825266176205660
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/OBSERVATION/table.info",
+        "device": 64769,
+        "inode": 37224455,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1791825185516916717,
+        "ctime_ns": 1791825185516916717
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/OBSERVATION/table.lock",
+        "device": 64769,
+        "inode": 37224456,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1791825266176205660,
+        "ctime_ns": 1791825266176205660
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/POINTING",
+        "device": 64769,
+        "inode": 37224459,
+        "mode": 16888,
+        "size": 4096,
+        "mtime_ns": 1791825185520916681,
+        "ctime_ns": 1791825185520916681
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/POINTING/table.dat",
+        "device": 64769,
+        "inode": 37224465,
+        "mode": 33200,
+        "size": 3430,
+        "mtime_ns": 1791825185520916681,
+        "ctime_ns": 1791825185520916681
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/POINTING/table.f0",
+        "device": 64769,
+        "inode": 37224462,
+        "mode": 33200,
+        "size": 39030,
+        "mtime_ns": 1791825185520916681,
+        "ctime_ns": 1791825185520916681
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/POINTING/table.f0i",
+        "device": 64769,
+        "inode": 37224463,
+        "mode": 33200,
+        "size": 16,
+        "mtime_ns": 1791825185520916681,
+        "ctime_ns": 1791825185520916681
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/POINTING/table.f1",
+        "device": 64769,
+        "inode": 37224464,
+        "mode": 33200,
+        "size": 33280,
+        "mtime_ns": 1791825185520916681,
+        "ctime_ns": 1791825185520916681
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/POINTING/table.info",
+        "device": 64769,
+        "inode": 37224460,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1791825185520916681,
+        "ctime_ns": 1791825185520916681
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/POINTING/table.lock",
+        "device": 64769,
+        "inode": 37224461,
+        "mode": 33200,
+        "size": 329,
+        "mtime_ns": 1791825185520916681,
+        "ctime_ns": 1791825185520916681
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/POLARIZATION",
+        "device": 64769,
+        "inode": 37224466,
+        "mode": 16888,
+        "size": 4096,
+        "mtime_ns": 1791825185520916681,
+        "ctime_ns": 1791825185520916681
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/POLARIZATION/table.dat",
+        "device": 64769,
+        "inode": 37224471,
+        "mode": 33200,
+        "size": 1306,
+        "mtime_ns": 1791825185520916681,
+        "ctime_ns": 1791825185520916681
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/POLARIZATION/table.f0",
+        "device": 64769,
+        "inode": 37224469,
+        "mode": 33200,
+        "size": 1800,
+        "mtime_ns": 1791825266196205484,
+        "ctime_ns": 1791825266196205484
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/POLARIZATION/table.f0i",
+        "device": 64769,
+        "inode": 37224470,
+        "mode": 33200,
+        "size": 84,
+        "mtime_ns": 1791825266196205484,
+        "ctime_ns": 1791825266196205484
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/POLARIZATION/table.info",
+        "device": 64769,
+        "inode": 37224467,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1791825185520916681,
+        "ctime_ns": 1791825185520916681
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/POLARIZATION/table.lock",
+        "device": 64769,
+        "inode": 37224468,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1791825266196205484,
+        "ctime_ns": 1791825266196205484
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/PROCESSOR",
+        "device": 64769,
+        "inode": 37224472,
+        "mode": 16888,
+        "size": 4096,
+        "mtime_ns": 1791825185524916647,
+        "ctime_ns": 1791825185524916647
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/PROCESSOR/table.dat",
+        "device": 64769,
+        "inode": 37224476,
+        "mode": 33200,
+        "size": 1344,
+        "mtime_ns": 1791825185524916647,
+        "ctime_ns": 1791825185524916647
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/PROCESSOR/table.f0",
+        "device": 64769,
+        "inode": 37224475,
+        "mode": 33200,
+        "size": 1540,
+        "mtime_ns": 1791825185524916647,
+        "ctime_ns": 1791825185524916647
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/PROCESSOR/table.info",
+        "device": 64769,
+        "inode": 37224473,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1791825185524916647,
+        "ctime_ns": 1791825185524916647
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/PROCESSOR/table.lock",
+        "device": 64769,
+        "inode": 37224474,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1791825185524916647,
+        "ctime_ns": 1791825185524916647
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/SOURCE",
+        "device": 64769,
+        "inode": 37224477,
+        "mode": 16888,
+        "size": 4096,
+        "mtime_ns": 1791825185524916647,
+        "ctime_ns": 1791825185524916647
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/SOURCE/table.dat",
+        "device": 64769,
+        "inode": 37224482,
+        "mode": 33200,
+        "size": 3887,
+        "mtime_ns": 1791825185524916647,
+        "ctime_ns": 1791825185524916647
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/SOURCE/table.f0",
+        "device": 64769,
+        "inode": 37224480,
+        "mode": 33200,
+        "size": 8960,
+        "mtime_ns": 1791825266240205097,
+        "ctime_ns": 1791825266240205097
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/SOURCE/table.f0i",
+        "device": 64769,
+        "inode": 37224481,
+        "mode": 33200,
+        "size": 24,
+        "mtime_ns": 1791825266240205097,
+        "ctime_ns": 1791825266240205097
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/SOURCE/table.info",
+        "device": 64769,
+        "inode": 37224478,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1791825185524916647,
+        "ctime_ns": 1791825185524916647
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/SOURCE/table.lock",
+        "device": 64769,
+        "inode": 37224479,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1791825266240205097,
+        "ctime_ns": 1791825266240205097
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/SPECTRAL_WINDOW",
+        "device": 64769,
+        "inode": 37224483,
+        "mode": 16888,
+        "size": 4096,
+        "mtime_ns": 1791825185528916611,
+        "ctime_ns": 1791825185528916611
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/SPECTRAL_WINDOW/table.dat",
+        "device": 64769,
+        "inode": 37224488,
+        "mode": 33200,
+        "size": 5126,
+        "mtime_ns": 1791825185528916611,
+        "ctime_ns": 1791825185528916611
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/SPECTRAL_WINDOW/table.f0",
+        "device": 64769,
+        "inode": 37224486,
+        "mode": 33200,
+        "size": 6408,
+        "mtime_ns": 1791825266292204640,
+        "ctime_ns": 1791825266292204640
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/SPECTRAL_WINDOW/table.f0i",
+        "device": 64769,
+        "inode": 37224487,
+        "mode": 33200,
+        "size": 14448,
+        "mtime_ns": 1791825266292204640,
+        "ctime_ns": 1791825266292204640
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/SPECTRAL_WINDOW/table.info",
+        "device": 64769,
+        "inode": 37224484,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1791825185528916611,
+        "ctime_ns": 1791825185528916611
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/SPECTRAL_WINDOW/table.lock",
+        "device": 64769,
+        "inode": 37224485,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1791825266292204640,
+        "ctime_ns": 1791825266292204640
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/STATE",
+        "device": 64769,
+        "inode": 37224489,
+        "mode": 16888,
+        "size": 4096,
+        "mtime_ns": 1791825185528916611,
+        "ctime_ns": 1791825185528916611
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/STATE/table.dat",
+        "device": 64769,
+        "inode": 37224493,
+        "mode": 33200,
+        "size": 2016,
+        "mtime_ns": 1791825185528916611,
+        "ctime_ns": 1791825185528916611
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/STATE/table.f0",
+        "device": 64769,
+        "inode": 37224492,
+        "mode": 33200,
+        "size": 3620,
+        "mtime_ns": 1791825266320204394,
+        "ctime_ns": 1791825266320204394
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/STATE/table.info",
+        "device": 64769,
+        "inode": 37224490,
+        "mode": 33200,
+        "size": 20,
+        "mtime_ns": 1791825185528916611,
+        "ctime_ns": 1791825185528916611
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/STATE/table.lock",
+        "device": 64769,
+        "inode": 37224491,
+        "mode": 33200,
+        "size": 325,
+        "mtime_ns": 1791825266320204394,
+        "ctime_ns": 1791825266320204394
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.dat",
+        "device": 64769,
+        "inode": 36639234,
+        "mode": 33200,
+        "size": 12250,
+        "mtime_ns": 1791825185536916540,
+        "ctime_ns": 1791825185536916540
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f0",
+        "device": 64769,
+        "inode": 36639178,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1791825179264972027,
+        "ctime_ns": 1791825179264972027
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f1",
+        "device": 64769,
+        "inode": 36639179,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1791825265980207382,
+        "ctime_ns": 1791825265980207382
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f10",
+        "device": 64769,
+        "inode": 36639188,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1791825265980207382,
+        "ctime_ns": 1791825265980207382
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f11",
+        "device": 64769,
+        "inode": 36639189,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1791825265980207382,
+        "ctime_ns": 1791825265980207382
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f12",
+        "device": 64769,
+        "inode": 36639190,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1791825265980207382,
+        "ctime_ns": 1791825265980207382
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f13",
+        "device": 64769,
+        "inode": 36639191,
+        "mode": 33200,
+        "size": 1049088,
+        "mtime_ns": 1791825265980207382,
+        "ctime_ns": 1791825265980207382
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f14",
+        "device": 64769,
+        "inode": 36639192,
+        "mode": 33200,
+        "size": 1049088,
+        "mtime_ns": 1791825265980207382,
+        "ctime_ns": 1791825265980207382
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f15",
+        "device": 64769,
+        "inode": 36639193,
+        "mode": 33200,
+        "size": 1049088,
+        "mtime_ns": 1791825265984207347,
+        "ctime_ns": 1791825265984207347
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f16",
+        "device": 64769,
+        "inode": 36639199,
+        "mode": 33200,
+        "size": 487,
+        "mtime_ns": 1791825265984207347,
+        "ctime_ns": 1791825265984207347
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f16_TSM1",
+        "device": 64769,
+        "inode": 36639237,
+        "mode": 33200,
+        "size": 3664926720,
+        "mtime_ns": 1791825265984207347,
+        "ctime_ns": 1791825265984207347
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f17",
+        "device": 64769,
+        "inode": 36639200,
+        "mode": 33200,
+        "size": 331,
+        "mtime_ns": 1791825180496961125,
+        "ctime_ns": 1791825180496961125
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f18",
+        "device": 64769,
+        "inode": 36639201,
+        "mode": 33200,
+        "size": 490,
+        "mtime_ns": 1791825265984207347,
+        "ctime_ns": 1791825265984207347
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f18_TSM1",
+        "device": 64769,
+        "inode": 36639238,
+        "mode": 33200,
+        "size": 1832463360,
+        "mtime_ns": 1791825265984207347,
+        "ctime_ns": 1791825265984207347
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f19",
+        "device": 64769,
+        "inode": 36639202,
+        "mode": 33200,
+        "size": 276,
+        "mtime_ns": 1791825265984207347,
+        "ctime_ns": 1791825265984207347
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f19_TSM0",
+        "device": 64769,
+        "inode": 36639194,
+        "mode": 33200,
+        "size": 6289920,
+        "mtime_ns": 1791825265984207347,
+        "ctime_ns": 1791825265984207347
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f2",
+        "device": 64769,
+        "inode": 36639180,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1791825179264972027,
+        "ctime_ns": 1791825179264972027
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f20",
+        "device": 64769,
+        "inode": 36639203,
+        "mode": 33200,
+        "size": 483,
+        "mtime_ns": 1791825265988207312,
+        "ctime_ns": 1791825265988207312
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f20_TSM1",
+        "device": 64769,
+        "inode": 36639198,
+        "mode": 33200,
+        "size": 57264480,
+        "mtime_ns": 1791825265988207312,
+        "ctime_ns": 1791825265988207312
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f21",
+        "device": 64769,
+        "inode": 36639204,
+        "mode": 33200,
+        "size": 470,
+        "mtime_ns": 1791825265988207312,
+        "ctime_ns": 1791825265988207312
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f21_TSM1",
+        "device": 64769,
+        "inode": 36639235,
+        "mode": 33200,
+        "size": 4193280,
+        "mtime_ns": 1791825265988207312,
+        "ctime_ns": 1791825265988207312
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f22",
+        "device": 64769,
+        "inode": 36639205,
+        "mode": 33200,
+        "size": 472,
+        "mtime_ns": 1791825265988207312,
+        "ctime_ns": 1791825265988207312
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f22_TSM1",
+        "device": 64769,
+        "inode": 36639236,
+        "mode": 33200,
+        "size": 4193280,
+        "mtime_ns": 1791825265988207312,
+        "ctime_ns": 1791825265988207312
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f23",
+        "device": 64769,
+        "inode": 36639195,
+        "mode": 33200,
+        "size": 2111232,
+        "mtime_ns": 1791825265988207312,
+        "ctime_ns": 1791825265988207312
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f23i",
+        "device": 64769,
+        "inode": 36639196,
+        "mode": 33200,
+        "size": 3571592844,
+        "mtime_ns": 1791825265992207277,
+        "ctime_ns": 1791825265992207277
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f24",
+        "device": 64769,
+        "inode": 36639206,
+        "mode": 33200,
+        "size": 304,
+        "mtime_ns": 1791825265992207277,
+        "ctime_ns": 1791825265992207277
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f24_TSM0",
+        "device": 64769,
+        "inode": 36639197,
+        "mode": 33200,
+        "size": 3679453184,
+        "mtime_ns": 1791825265992207277,
+        "ctime_ns": 1791825265992207277
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f3",
+        "device": 64769,
+        "inode": 36639181,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1791825179264972027,
+        "ctime_ns": 1791825179264972027
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f4",
+        "device": 64769,
+        "inode": 36639182,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1791825179264972027,
+        "ctime_ns": 1791825179264972027
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f5",
+        "device": 64769,
+        "inode": 36639183,
+        "mode": 33200,
+        "size": 41472,
+        "mtime_ns": 1791825265980207382,
+        "ctime_ns": 1791825265980207382
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f6",
+        "device": 64769,
+        "inode": 36639184,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1791825265980207382,
+        "ctime_ns": 1791825265980207382
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f7",
+        "device": 64769,
+        "inode": 36639185,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1791825179672968417,
+        "ctime_ns": 1791825179672968417
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f8",
+        "device": 64769,
+        "inode": 36639186,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1791825265980207382,
+        "ctime_ns": 1791825265980207382
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.f9",
+        "device": 64769,
+        "inode": 36639187,
+        "mode": 33200,
+        "size": 33362,
+        "mtime_ns": 1791825265980207382,
+        "ctime_ns": 1791825265980207382
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.info",
+        "device": 64769,
+        "inode": 36639176,
+        "mode": 33200,
+        "size": 176,
+        "mtime_ns": 1791825185532916575,
+        "ctime_ns": 1791825185532916575
+      },
+      {
+        "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/diagnostic-j0408-native.ms/table.lock",
+        "device": 64769,
+        "inode": 36639177,
+        "mode": 33200,
+        "size": 421,
+        "mtime_ns": 1791825265992207277,
+        "ctime_ns": 1791825265992207277
+      }
+    ],
+    "table_columns": {
+      "ANTENNA": [
+        "DISH_DIAMETER",
+        "FLAG_ROW",
+        "MOUNT",
+        "NAME",
+        "OFFSET",
+        "POSITION",
+        "STATION",
+        "TELESCOPE_NAME",
+        "TYPE"
+      ],
+      "DATA_DESCRIPTION": [
+        "FLAG_ROW",
+        "POLARIZATION_ID",
+        "SPECTRAL_WINDOW_ID"
+      ],
+      "FEED": [
+        "ANTENNA_ID",
+        "BEAM_ID",
+        "BEAM_OFFSET",
+        "FEED_ID",
+        "INTERVAL",
+        "NUM_RECEPTORS",
+        "POLARIZATION_TYPE",
+        "POL_RESPONSE",
+        "POSITION",
+        "RECEPTOR_ANGLE",
+        "SPECTRAL_WINDOW_ID",
+        "TIME"
+      ],
+      "FIELD": [
+        "CODE",
+        "DELAY_DIR",
+        "FLAG_ROW",
+        "NAME",
+        "NUM_POLY",
+        "PHASE_DIR",
+        "REFERENCE_DIR",
+        "SOURCE_ID",
+        "TIME"
+      ],
+      "FLAG_CMD": [
+        "APPLIED",
+        "COMMAND",
+        "INTERVAL",
+        "LEVEL",
+        "REASON",
+        "SEVERITY",
+        "TIME",
+        "TYPE"
+      ],
+      "HISTORY": [
+        "APPLICATION",
+        "APP_PARAMS",
+        "CLI_COMMAND",
+        "MESSAGE",
+        "OBJECT_ID",
+        "OBSERVATION_ID",
+        "ORIGIN",
+        "PRIORITY",
+        "TIME"
+      ],
+      "OBSERVATION": [
+        "FLAG_ROW",
+        "LOG",
+        "OBSERVER",
+        "PROJECT",
+        "RELEASE_DATE",
+        "SCHEDULE",
+        "SCHEDULE_TYPE",
+        "TELESCOPE_NAME",
+        "TIME_RANGE"
+      ],
+      "POINTING": [
+        "ANTENNA_ID",
+        "DIRECTION",
+        "INTERVAL",
+        "NAME",
+        "NUM_POLY",
+        "TARGET",
+        "TIME",
+        "TIME_ORIGIN",
+        "TRACKING"
+      ],
+      "POLARIZATION": [
+        "CORR_PRODUCT",
+        "CORR_TYPE",
+        "FLAG_ROW",
+        "NUM_CORR"
+      ],
+      "PROCESSOR": [
+        "FLAG_ROW",
+        "MODE_ID",
+        "SUB_TYPE",
+        "TYPE",
+        "TYPE_ID"
+      ],
+      "SOURCE": [
+        "CALIBRATION_GROUP",
+        "CODE",
+        "DIRECTION",
+        "INTERVAL",
+        "NAME",
+        "NUM_LINES",
+        "PROPER_MOTION",
+        "REST_FREQUENCY",
+        "SOURCE_ID",
+        "SPECTRAL_WINDOW_ID",
+        "TIME"
+      ],
+      "SPECTRAL_WINDOW": [
+        "CHAN_FREQ",
+        "CHAN_WIDTH",
+        "EFFECTIVE_BW",
+        "FLAG_ROW",
+        "FREQ_GROUP",
+        "FREQ_GROUP_NAME",
+        "IF_CONV_CHAIN",
+        "MEAS_FREQ_REF",
+        "NAME",
+        "NET_SIDEBAND",
+        "NUM_CHAN",
+        "REF_FREQUENCY",
+        "RESOLUTION",
+        "TOTAL_BANDWIDTH"
+      ],
+      "STATE": [
+        "CAL",
+        "FLAG_ROW",
+        "LOAD",
+        "OBS_MODE",
+        "REF",
+        "SIG",
+        "SUB_SCAN"
+      ]
+    }
+  }
+}

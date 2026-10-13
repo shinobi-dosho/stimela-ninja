@@ -1,0 +1,47 @@
+{
+  "exit_code": 1,
+  "failed_stage": "export-baseline",
+  "schema_version": "shinobi-state-codec-qualification/v1",
+  "script_sha256": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+  "source": "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-applied-CHI-OPH-avg.ms",
+  "stages": [
+    {
+      "copied_native_id": "msutils-logical-hash/v1:af683b8f46b5a0f24c7dd1597110df3f553570b68b7b64743550142d704cef0a",
+      "original_native_id": "msutils-logical-hash/v1:af683b8f46b5a0f24c7dd1597110df3f553570b68b7b64743550142d704cef0a",
+      "peak_rss_kib": 650856,
+      "seconds": 626.1899006124586,
+      "source_observation_after": {
+        "entries": 112,
+        "stat_sha256": "675614681218d9733cf107909089589c738c21cc08b94d1756eb76b36aa62c75"
+      },
+      "source_observation_before": {
+        "entries": 112,
+        "stat_sha256": "675614681218d9733cf107909089589c738c21cc08b94d1756eb76b36aa62c75"
+      },
+      "stage": "prepare",
+      "versions": {
+        "arcae": "0.5.4",
+        "msutils": "3.0.0",
+        "msutils_origin": {
+          "url": "https://github.com/shinobi-dosho/msutils.git",
+          "vcs_info": {
+            "commit_id": "25c280a8ab412b5015a80bf4ff6f83b7a6820675",
+            "requested_revision": "25c280a8ab412b5015a80bf4ff6f83b7a6820675",
+            "vcs": "git"
+          }
+        },
+        "numcodecs": "0.16.5",
+        "numpy": "2.5.3",
+        "python": "3.12.14",
+        "python-casacore": "3.8.1",
+        "stimela-ninja": "0.1.0b7",
+        "xarray": "2026.7.0",
+        "xarray-ms": "0.5.8",
+        "zarr": "3.3.0"
+      }
+    }
+  ],
+  "status": "failed",
+  "traceback": "Traceback (most recent call last):\n  File \"/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v3/examples/state_codec_qualification.py\", line 321, in main\n    _stage(workdir, args.stage, args.block_rows)\n  File \"/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v3/examples/state_codec_qualification.py\", line 90, in _stage\n    result = store.export(copied, block_rows=block_rows, lossless_profile=profile)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v3/src/shinobi/dataset_state.py\", line 753, in export\n    raise failure from exc\n  File \"/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v3/src/shinobi/dataset_state.py\", line 700, in export\n    _write(rep / \"representation.json\", physical)\n  File \"/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v3/src/shinobi/dataset_state.py\", line 417, in _write\n    raise StateError(\"metadata-size\", f\"manifest exceeds {MAX_METADATA} bytes: {path}\")\nshinobi.dataset_state.StateError: metadata-size: manifest exceeds 67108864 bytes: /home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-chioph_avg/store/staging/12c3f1d7-1eed-46b1-a389-7fc6cc67c301/representation/representation.json\n",
+  "workdir": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-chioph_avg"
+}

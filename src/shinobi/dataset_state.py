@@ -24,7 +24,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationErr
 
 from shinobi import _state_adapter as adapter
 from shinobi.state_codecs import LosslessProfile, rewrite_lossless
-from shinobi.dataset_lifecycle import DatasetObservation, member_fingerprint, observe_dataset, structural_signature
+from shinobi.dataset_lifecycle import DatasetObservation, _structural_signature_document, member_fingerprint, observe_dataset, structural_signature
 from shinobi.exceptions import ShinobiError
 from shinobi.ownership import acquire_workspace, inspect_ownership, ownership_registry, release_workspace
 from shinobi.storage import JsonFileStore, SharedFileLock, publish_directory, sync_directory, sync_directory_chain
@@ -33,6 +33,7 @@ from shinobi.steps.schema import paths_overlap
 LogicalID = Annotated[str, Field(pattern=r"^msutils-logical-hash/v1:[0-9a-f]{64}$")]
 RepresentationID = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
 MAX_METADATA = 64 * 1024 * 1024
+MAX_REPRESENTATION_METADATA = 256 * 1024 * 1024
 _MSV4_SCHEMA = adapter.MSV4_SCHEMA
 NativeModel = Literal["msutils-native-model/v1", "msutils-native-model/v2"]
 LogicalHash = Literal["msutils-logical-hash/v1"]
@@ -302,7 +303,7 @@ class StateProvenance(_Record):
 
 
 class StateAttempt(_Record):
-    schema_version: Literal["shinobi-state-attempt/v1", "shinobi-state-attempt/v2"] = "shinobi-state-attempt/v2"
+    schema_version: Literal["shinobi-state-attempt/v1", "shinobi-state-attempt/v2", "shinobi-state-attempt/v3"] = "shinobi-state-attempt/v2"
     attempt_id: uuid.UUID
     operation: Literal["export", "materialize"]
     store: Path
@@ -327,17 +328,28 @@ class StateAttempt(_Record):
     events: tuple[str, ...] = ()
     error: str | None = None
     structural_signature: str | None = None
+    restored_structural_signature: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", exclude_if=lambda value: value is None)
     provenance: StateProvenance | None = None
 
     @model_validator(mode="after")
     def consistent_provenance(self):
+        if self.schema_version == "shinobi-state-attempt/v3":
+            if self.operation != "materialize":
+                raise ValueError("state attempt schema v3 is only for materialization")
+            if self.phase in {"ready", "published", "committed"} and self.restored_structural_signature is None:
+                raise ValueError("ready materialization schema v3 requires a restored structural signature")
+        elif self.restored_structural_signature is not None:
+            raise ValueError("legacy state attempts cannot carry a restored structural signature")
         if self.schema_version == "shinobi-state-attempt/v1":
             if self.provenance is not None:
                 raise ValueError("state attempt schema v1 cannot carry reusable-state provenance")
             return self
         if self.versions is not None:
             _complete_state_stack(self.versions)
-        if self.phase == "committed":
+        validated_phase = self.phase == "committed" or (self.schema_version == "shinobi-state-attempt/v3" and self.phase in {"ready", "published"})
+        if validated_phase:
+            if self.schema_version == "shinobi-state-attempt/v3" and (self.candidate_identity is None or self.state_id is None or self.representation_id is None):
+                raise ValueError("validated materialization schema v3 requires candidate and state identities")
             if self.provenance is None or self.versions is None:
                 raise ValueError("a committed state attempt requires reusable-state provenance and a complete runtime stack")
             if self.structural_signature is None or self.structural_signature != self.provenance.structural_signature:
@@ -385,6 +397,20 @@ def _digest(value: dict) -> str:
     return "sha256:" + hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
+def _state_replay_structure_matches(source: DatasetObservation, restored: DatasetObservation) -> bool:
+    """Match frozen structure inputs except regenerated per-resource table files.
+
+    Only reusable-state exact native replay uses this comparison; observed-state
+    signatures, snapshots and mutation recovery retain their frozen v1 identity.
+    """
+    source_document = _structural_signature_document(source)
+    restored_document = _structural_signature_document(restored)
+    for document in (source_document, restored_document):
+        for resource in document["resources"]:
+            resource.pop("files")
+    return source_document == restored_document
+
+
 def _directory_identity(path: Path, *, missing_ok: bool = False) -> tuple[int, int] | None:
     """Inspect the entry itself: a file or symlink is never our published MS."""
     try:
@@ -403,25 +429,41 @@ def _identity(path: Path) -> tuple[int, int]:
     return identity
 
 
+def _metadata_limit(path: Path) -> int:
+    """Only physical representation ledgers receive the larger finite budget."""
+    return MAX_REPRESENTATION_METADATA if path.name == "representation.json" else MAX_METADATA
+
+
 def _read(path: Path) -> bytes:
+    limit = _metadata_limit(path)
     info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_METADATA:
-        raise StateError("metadata", f"expected a regular metadata file of at most {MAX_METADATA} bytes: {path}")
-    return path.read_bytes()
+    if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+        raise StateError("metadata", f"expected a regular metadata file of at most {limit} bytes: {path}")
+    with path.open("rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size > limit:
+            raise StateError("metadata", f"expected a regular metadata file of at most {limit} bytes: {path}")
+        payload = stream.read(limit + 1)
+    if len(payload) > limit:
+        raise StateError("metadata", f"metadata exceeds {limit} bytes: {path}")
+    return payload
 
 
 def _write(path: Path, model: BaseModel) -> None:
     # This is inside private staging; publication is one no-replace directory move.
-    payload = model.model_dump_json(indent=2).encode()
-    if len(payload) > MAX_METADATA:
-        raise StateError("metadata-size", f"manifest exceeds {MAX_METADATA} bytes: {path}")
+    limit = _metadata_limit(path)
+    payload = model.model_dump_json(indent=None if path.name == "representation.json" else 2).encode()
+    if len(payload) > limit:
+        raise StateError("metadata-size", f"manifest exceeds {limit} bytes: {path}")
     with path.open("xb") as stream:
         stream.write(payload)
         stream.flush()
         os.fsync(stream.fileno())
 
 
-def _manifest(path: Path, model):
+def _manifest_data(path: Path) -> dict:
+    """Read one bounded JSON object, refusing duplicates at every nesting level."""
+
     def unique(pairs):
         result = {}
         for key, value in pairs:
@@ -433,7 +475,11 @@ def _manifest(path: Path, model):
     data = json.loads(_read(path), object_pairs_hook=unique)
     if not isinstance(data, dict) or "schema_version" not in data:
         raise StateError("schema-version", f"missing explicit manifest version: {path}")
-    return model.model_validate(data)
+    return data
+
+
+def _manifest(path: Path, model):
+    return model.model_validate(_manifest_data(path))
 
 
 def _inventory(root: Path) -> tuple[tuple[FileEntry, ...], dict[str, str]]:
@@ -526,13 +572,16 @@ class DatasetStateStore:
         state = self._state(state_id)
         rep = self._representation(state_id, representation_id)
         logical = _manifest(state / "logical.json", LogicalState)
-        raw = json.loads(_read(rep / "representation.json"))
-        model = {
+        raw = _manifest_data(rep / "representation.json")
+        models = {
             "shinobi-state-representation/v1": StateRepresentation,
             "shinobi-state-representation/v2": StateRepresentationV2,
             "shinobi-state-representation/v3": StateRepresentationV3,
-        }.get(raw.get("schema_version"), StateRepresentation)
-        physical = _manifest(rep / "representation.json", model)
+        }
+        version = raw["schema_version"]
+        if not isinstance(version, str) or version not in models:
+            raise StateError("schema-version", f"unsupported representation manifest version: {version!r}")
+        physical = models[version].model_validate(raw)
         if logical.state_id != state_id or physical.state_id != state_id or physical.representation_id != "sha256:" + rep.name:
             raise StateError("identity", "directory and manifest identities disagree")
         if _digest(physical.model_dump(mode="json", exclude={"representation_id"})) != physical.representation_id:
@@ -664,7 +713,8 @@ class DatasetStateStore:
                     (rep / "msv4.zarr").rename(original)
                     rewrite_lossless(original, rep / "msv4.zarr", lossless_profile)
                     shutil.rmtree(original)
-                adapter.capture(source, rep / "msv4.zarr", rep / "preservation", block_rows)
+                capture_options = {"semantic_filters": lossless_profile.semantic_filters} if lossless_profile is not None and lossless_profile.semantic_filters is not None else {}
+                adapter.capture(source, rep / "msv4.zarr", rep / "preservation", block_rows, **capture_options)
                 attempt = self._save(attempt, phase="validating")
                 ids = adapter.verify(rep / "msv4.zarr", rep / "preservation")
                 _profile_model_pair(ids.profile, ids.native_model)
@@ -789,6 +839,7 @@ class DatasetStateStore:
                 operation = uuid.uuid4()
                 stage = target.parent / f".shinobi-state-{operation}"
                 attempt = StateAttempt(
+                    schema_version="shinobi-state-attempt/v3",
                     attempt_id=operation,
                     operation="materialize",
                     store=self.root,
@@ -828,15 +879,16 @@ class DatasetStateStore:
                     attempt = self._save(attempt, phase="validating")
                     observed = observe_dataset(product, stage)
                     signature = structural_signature(observed)
-                    if signature != physical.structural_signature or adapter.native_id(product) != state_id:
-                        raise StateError("postcondition", "independent Shinobi structural signature/native logical ID differs from stored state")
+                    if not _state_replay_structure_matches(physical.observation, observed) or adapter.native_id(product) != state_id:
+                        raise StateError("postcondition", "independent Shinobi replay structure/native logical ID differs from stored state")
                     self._verify_rep(rep, physical)
                     _sync_tree(product)
                     attempt = self._save(
                         attempt,
                         phase="ready",
                         candidate_identity=_identity(product),
-                        structural_signature=signature,
+                        structural_signature=physical.structural_signature,
+                        restored_structural_signature=signature,
                         provenance=provenance.validated_replay(),
                     )
                     if self._destination(destination, physical) != target or _identity(target.parent) != attempt.parent_identity:
@@ -950,7 +1002,17 @@ class DatasetStateStore:
                     adapter.runtime()
                     self.verify(attempt.state_id, attempt.representation_id)
                     observed = observe_dataset(attempt.destination, attempt.destination.parent)
-                    if structural_signature(observed) != attempt.structural_signature or adapter.native_id(attempt.destination) != attempt.state_id:
+                    signature = structural_signature(observed)
+                    if attempt.schema_version == "shinobi-state-attempt/v3":
+                        _, _, physical = self._load(attempt.state_id, attempt.representation_id)
+                        structure_matches = (
+                            attempt.structural_signature == physical.structural_signature
+                            and signature == attempt.restored_structural_signature
+                            and _state_replay_structure_matches(physical.observation, observed)
+                        )
+                    else:
+                        structure_matches = signature == attempt.structural_signature
+                    if not structure_matches or adapter.native_id(attempt.destination) != attempt.state_id:
                         raise StateError("recovery-postcondition", "published destination no longer matches the recorded state; preserving it")
                     committed = True
                 elif attempt.operation == "export" and attempt.state_id and attempt.representation_id:

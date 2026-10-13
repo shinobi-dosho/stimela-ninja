@@ -22,10 +22,15 @@ class LosslessProfile(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: Literal["shinobi-msv4-lossless-profile/v1"] = "shinobi-msv4-lossless-profile/v1"
-    codec: Literal["zstd", "gzip", "blosc-zstd"] = "zstd"
+    codec: Literal["zstd", "gzip", "blosc-zstd", "packbits-zstd", "delta-zstd", "packbits-delta-zstd"] = "zstd"
     level: int = Field(default=3, ge=1, le=9)
     shuffle: Literal["none", "byte", "bit"] = "none"
     chunk_rows: int | None = Field(default=None, ge=1, le=1_048_576)
+
+    @property
+    def semantic_filters(self) -> Literal["packbits", "delta", "packbits-delta"] | None:
+        """Optional native-payload filter selection, absent from profile JSON."""
+        return {"packbits-zstd": "packbits", "delta-zstd": "delta", "packbits-delta-zstd": "packbits-delta"}.get(self.codec)
 
     @model_validator(mode="after")
     def codec_options(self):
@@ -57,11 +62,24 @@ def tile_slices(shape: tuple[int, ...], chunks: tuple[int, ...]):
 def _compressor(profile: LosslessProfile):
     from zarr.codecs import BloscCodec, GzipCodec, ZstdCodec
 
-    if profile.codec == "zstd":
+    if profile.codec in ("zstd", "packbits-zstd", "delta-zstd", "packbits-delta-zstd"):
         return ZstdCodec(level=profile.level)
     if profile.codec == "gzip":
         return GzipCodec(level=profile.level)
     return BloscCodec(cname="zstd", clevel=profile.level, shuffle={"none": "noshuffle", "byte": "shuffle", "bit": "bitshuffle"}[profile.shuffle])
+
+
+def _filters(profile: LosslessProfile, dtype):
+    if dtype.kind == "b" and profile.semantic_filters in ("packbits", "packbits-delta"):
+        from zarr.codecs import PackBits
+
+        return [PackBits()]
+    if dtype.kind in "iu" and profile.semantic_filters in ("delta", "packbits-delta"):
+        from zarr.codecs import Delta
+
+        # Zarr serializes a dtype string; passing np.dtype fails on 3.3.0.
+        return [Delta(dtype=dtype.name)]
+    return []
 
 
 def rewrite_lossless(source: Path, destination: Path, profile: LosslessProfile, *, timings: dict | None = None) -> str:
@@ -97,18 +115,33 @@ def rewrite_lossless(source: Path, destination: Path, profile: LosslessProfile, 
                 chunks = (min(shape[0] or 1, profile.chunk_rows), *chunks[1:])
             if shape and array.dtype.kind in "biufc":
                 chunks = bounded_chunks(shape, chunks, array.dtype.itemsize)
+            filters = _filters(profile, array.dtype)
+            serializer = {}
+            if filters and array.dtype.kind in "iu":
+                import sys
+                from zarr.codecs import BytesCodec
+
+                serializer["serializer"] = BytesCodec(endian=sys.byteorder)
             created = dst.create_array(
                 name,
                 shape=shape,
                 dtype=array.dtype,
                 chunks=chunks,
+                filters=filters,
+                **serializer,
                 compressors=[_compressor(profile)],
+                config={"order": "C", "write_empty_chunks": True} if profile.semantic_filters is not None else {"write_empty_chunks": True},
                 fill_value=array.fill_value,
                 attributes=array.attrs.asdict(),
                 dimension_names=array.metadata.dimension_names,
             )
             for region in tile_slices(shape, chunks):
-                created[region] = array[region]
+                values = array[region]
+                if profile.semantic_filters is not None and shape:
+                    import numpy as np
+
+                    values = np.ascontiguousarray(values)
+                created[region] = values
             per_array_seconds[f"{prefix}{name}"] = time.perf_counter() - array_started
             if timings is not None:
                 import resource

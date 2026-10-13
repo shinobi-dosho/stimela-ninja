@@ -1,0 +1,83 @@
+"""Final checker tests use immutable collected handoffs and July receipts."""
+
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+
+spec = importlib.util.spec_from_file_location("final_checker", Path(__file__).with_name("verify-final-qualification.py"))
+c = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(c)
+
+
+def handoff_pair(label):
+    version, _ = c.CAPTURES[label]
+    capture = c.read(f"qualification-{version}-{label}.json")
+    name = f"handoff-{label}.json"
+    receipt = c.read(name)
+    replay = {
+        "schema_version": c.EXPECTED_SCHEMA[label],
+        "capture_report_status": capture["status"],
+        "capture_failed_stage": capture.get("failed_stage"),
+        "prior_verify": {"completed": False, "disposition": "superseded/not-used"},
+        "operator_transition": {"path": str(c.REMOTE / name), "sha256": c.sha((c.EVIDENCE / name).read_bytes()), "receipt": receipt},
+        "capture_report_sha256": c.sha((c.EVIDENCE / f"qualification-{version}-{label}.json").read_bytes()),
+        "capture_root": receipt["capture_root"],
+        "command": ["python", "driver.py", "--capture-checkout", receipt["capture_checkout"], "--workdir", receipt["continuation_path"]],
+    }
+    return capture, replay
+
+
+@pytest.mark.parametrize("label", ["original", "chioph_avg"])
+def test_collected_cancellation_handoff_satisfies_all_guards(label):
+    c.validate_capture_handoff(label, *handoff_pair(label))
+
+
+@pytest.mark.parametrize("label", ["original", "chioph_avg"])
+@pytest.mark.parametrize("mutation", ["absent", "wrong-schema", "wrong-handoff", "verify-passed", "wrong-exit"])
+def test_known_cancelled_capture_cannot_omit_or_substitute_proof(label, mutation):
+    capture, replay = handoff_pair(label)
+    if mutation == "absent":
+        replay["operator_transition"] = None
+    elif mutation == "wrong-schema":
+        replay["schema_version"] = "shinobi-published-state-qualification/v1"
+    elif mutation == "wrong-handoff":
+        replay["operator_transition"]["path"] = str(c.REMOTE / "handoff-other.json")
+    elif mutation == "verify-passed":
+        replay["prior_verify"] = {"completed": True, "disposition": "passed"}
+    else:
+        capture["exit_code"] = 1
+    with pytest.raises(AssertionError):
+        c.validate_capture_handoff(label, capture, replay)
+
+
+@pytest.mark.parametrize("schema", ["shinobi-published-state-qualification/v2", "invented/v1", "invented/v2"])
+def test_july_schema_is_exact(schema):
+    with pytest.raises(AssertionError):
+        c.validate_capture_handoff("j0408", {}, {"schema_version": schema})
+
+
+def test_completed_xc_verify_needs_no_cancellation():
+    capture = c.read("qualification-v3-xc_calibrators.json")
+    assert capture["status"] == "failed" and capture["failed_stage"] == "materialize"
+    replay = {
+        "schema_version": c.EXPECTED_SCHEMA["xc_calibrators"],
+        "capture_report_status": capture["status"],
+        "capture_failed_stage": capture["failed_stage"],
+        "prior_verify": {"completed": True, "disposition": "passed"},
+        "operator_transition": None,
+    }
+    c.validate_capture_handoff("xc_calibrators", capture, replay)
+    replay["operator_transition"] = {"unexpected": True}
+    with pytest.raises(AssertionError):
+        c.validate_capture_handoff("xc_calibrators", capture, replay)
+
+
+@pytest.mark.parametrize("label", ["j0408", "j0410"])
+def test_completed_july_real_receipt_full_readonly_audit(label, tmp_path):
+    result = c.check_label(label, c.ROWS[label])
+    assert result["main_rows"] == c.ROWS[label]
+    assert set(result["profiles"]) == set(c.PROFILES)
+    # Explicit subset receipt only, never the five-corpus summary.
+    (tmp_path / f"july-{label}-checked.json").write_text(json.dumps({"qualified_subset": [label], "result": result}))

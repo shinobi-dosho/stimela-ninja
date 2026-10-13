@@ -1,0 +1,20 @@
+"""Preserve one exact native replay and compare observed structural fields."""
+import json, pathlib, time
+from shinobi import _state_adapter as adapter
+from shinobi.dataset_state import DatasetStateStore
+from shinobi.dataset_lifecycle import observe_dataset, structural_signature
+w=pathlib.Path('/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012')
+q=w/'qualification-v3-j0408'
+r=json.loads((q/'report.json').read_text())
+e=next(s for s in r['stages'] if s['stage']=='export-baseline')
+store=DatasetStateStore(q/'store',cache_dir=q/'cache')
+rep,_,physical=store._load(e['state_id'],e['representation_id'])
+destination=w/'diagnostic-j0408-native.ms'
+assert not destination.exists()
+started=time.perf_counter()
+adapter.materialize(rep/'msv4.zarr',rep/'preservation',destination,e['state_id'])
+observed=observe_dataset(destination,destination.parent)
+native=adapter.native_id(destination)
+result={'runtime':adapter.runtime(),'seconds':time.perf_counter()-started,'destination':str(destination),'source_native_id':e['state_id'],'restored_native_id':native,'source_signature':physical.structural_signature,'restored_signature':structural_signature(observed),'source_observation':physical.observation.model_dump(mode='json'),'restored_observation':observed.model_dump(mode='json')}
+(w/'diagnostic-j0408-structure.json').write_text(json.dumps(result,indent=2)+'\n')
+print(json.dumps({k:v for k,v in result.items() if not k.endswith('observation')},indent=2),flush=True)

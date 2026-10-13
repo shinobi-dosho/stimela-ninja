@@ -1,0 +1,42 @@
+"""Schema-only regression probe; does not claim full-volume replay."""
+import hashlib
+import importlib.metadata as metadata
+import json
+from pathlib import Path
+import sys
+import time
+from casacore.tables import table
+from msutils import _native_preservation as native
+
+root = Path('/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012')
+source = root / 'source-v3'
+sys.path.insert(0, str(source / 'examples'))
+import state_codec_qualification as qualification
+from shinobi import _state_adapter
+runtime = _state_adapter.runtime()
+assert runtime['msutils_commit'] == '25c280a8ab412b5015a80bf4ff6f83b7a6820675'
+work = root / 'schema-v3'
+work.mkdir(exist_ok=False)
+sources = json.loads((root / 'hypercolumn-diagnostics.json').read_text())
+report = {'scope': 'Fresh zero-row MAIN schema construction and exact descriptor/canonical-manager checks only; no cell replay.', 'runtime': runtime, 'msutils_origin': json.loads(metadata.distribution('msutils').read_text('direct_url.json')), 'native_module_sha256': hashlib.sha256(Path(native.__file__).read_bytes()).hexdigest(), 'script_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), 'results': {}}
+try:
+    for label, info in sources.items():
+        original = Path(info['source'])
+        observed = qualification._observation(original)
+        started = time.perf_counter()
+        with table(str(original), readonly=True, ack=False, lockoptions='usernoread') as tab:
+            item = native._table_metadata(tab, original, 'MAIN', original)
+        item['columns'] = [{'name': name} for name in item['names']]
+        descriptor, temporary = native._creation_descriptor(item)
+        target = work / f'{label}.ms'
+        with table(str(target), descriptor, nrow=0, readonly=False, dminfo=native._decode(item['managers']), ack=False) as tab:
+            if temporary:
+                tab.removecols(temporary)
+            native._verify_table_schema(tab, item, target, target, native.NATIVE_MODEL_V2)
+            assert tab.nrows() == 0
+        assert observed == qualification._observation(original)
+        report['results'][label] = {'passed': True, 'temporary_columns_removed': temporary, 'source_observation': observed, 'seconds': time.perf_counter() - started}
+        print(label, 'schema passed', temporary, flush=True)
+    report['passed'] = True
+finally:
+    (root / 'real-schema-v3.json').write_text(json.dumps(report, indent=2) + '\n')

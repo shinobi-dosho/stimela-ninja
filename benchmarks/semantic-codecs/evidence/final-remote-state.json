@@ -1,0 +1,131 @@
+{
+  "observed_at_utc": "2026-10-12T23:11:49.669798+00:00",
+  "workdir": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012",
+  "corpora": {
+    "original": {
+      "replay_status": "passed",
+      "recorded_source_absent": true,
+      "archive_exists": true,
+      "final_materialize_attempts": [
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-original/store/attempts/6b0b28ba-8fdf-4474-8e75-f665907011a2.json",
+          "destination": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/replay-v5-original/export-combined.ms",
+          "phase": "committed",
+          "finished": true
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-original/store/attempts/2e2790ba-fac5-4bf1-b1d2-6a7754985f00.json",
+          "destination": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/replay-v5-original/export-baseline.ms",
+          "phase": "committed",
+          "finished": true
+        }
+      ]
+    },
+    "j0408": {
+      "replay_status": "passed",
+      "recorded_source_absent": true,
+      "archive_exists": true,
+      "final_materialize_attempts": [
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/store/attempts/3399a64d-6c83-4073-94bb-5e04ce9ba648.json",
+          "destination": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/replay-v5-j0408/export-baseline.ms",
+          "phase": "committed",
+          "finished": true
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0408/store/attempts/960f60eb-a9fc-4347-816f-f1b5bb10953e.json",
+          "destination": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/replay-v5-j0408/export-combined.ms",
+          "phase": "committed",
+          "finished": true
+        }
+      ]
+    },
+    "j0410": {
+      "replay_status": "passed",
+      "recorded_source_absent": true,
+      "archive_exists": true,
+      "final_materialize_attempts": [
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0410/store/attempts/95feeaae-6119-4841-bac1-f79197270231.json",
+          "destination": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/replay-v5-j0410/export-combined.ms",
+          "phase": "committed",
+          "finished": true
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-j0410/store/attempts/bae54e0a-7e1e-4797-963c-7bad91d4d33f.json",
+          "destination": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/replay-v5-j0410/export-baseline.ms",
+          "phase": "committed",
+          "finished": true
+        }
+      ]
+    },
+    "chioph_avg": {
+      "replay_status": "passed",
+      "recorded_source_absent": true,
+      "archive_exists": true,
+      "final_materialize_attempts": [
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v4-chioph_avg/store/attempts/5b6e42f4-0d30-42d8-bb39-bfd1b59cddd6.json",
+          "destination": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/replay-v5-chioph_avg/export-combined.ms",
+          "phase": "committed",
+          "finished": true
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v4-chioph_avg/store/attempts/02441381-4874-4090-ab49-7ad6469a1c4a.json",
+          "destination": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/replay-v5-chioph_avg/export-baseline.ms",
+          "phase": "committed",
+          "finished": true
+        }
+      ]
+    },
+    "xc_calibrators": {
+      "replay_status": "passed",
+      "recorded_source_absent": true,
+      "archive_exists": true,
+      "final_materialize_attempts": [
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-xc_calibrators/store/attempts/19175437-1474-436c-8295-b111ddaeaf0b.json",
+          "destination": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/replay-v5-xc_calibrators/export-baseline.ms",
+          "phase": "committed",
+          "finished": true
+        },
+        {
+          "path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v3-xc_calibrators/store/attempts/5e7a4a1b-229f-4319-a3da-6a1bdd2157b3.json",
+          "destination": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/replay-v5-xc_calibrators/export-combined.ms",
+          "phase": "committed",
+          "finished": true
+        }
+      ]
+    }
+  },
+  "ownership_registries": {
+    "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/owners-v3.json": {
+      "owners": {}
+    },
+    "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/owners-v4.json": {
+      "owners": {}
+    },
+    "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/owners-v5.json": {
+      "owners": {}
+    }
+  },
+  "checkouts": {
+    "v3": {
+      "commit": "d15bab8ad4b5598dd8c52f5c00fabec16dd72d51",
+      "status": ""
+    },
+    "v4": {
+      "commit": "0b2164db12a1865a90c2a17cbe2c6971de79e82a",
+      "status": ""
+    },
+    "v5": {
+      "commit": "6576e5cc5af5453227e7c711a466a42f22d96791",
+      "status": ""
+    }
+  },
+  "drivers": {
+    "qualify-published-replay.py": "4ddf0acc75fd36214681a07b2ac094ca5cacc8bfcb43563df980a5d086921018",
+    "qualify-published-replay-v2.py": "3efec54603fc9f56333be429c8dbb9ba36ea029373df57a973dd83992ca86c51",
+    "handoff-old-verification.py": "64fd572da125f9ac0dcf251b41d5a09904ba58dba40091be591d3a7fffdf4ce3"
+  }
+}

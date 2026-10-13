@@ -169,14 +169,8 @@ def dataset_snapshot_matches(before: DatasetLifecycleSnapshot, after: DatasetLif
     )
 
 
-def structural_signature(observation: DatasetObservation) -> str:
-    """The structural identity of one observed MSv2 closure.
-
-    Paths are recorded relative to the root and stat metadata is excluded, so
-    an exact snapshot restored at the same path, or the same state observed
-    through an alias, has the same signature. See
-    :data:`STRUCTURAL_SIGNATURE_COVERAGE` for what it does *not* cover.
-    """
+def _structural_signature_document(observation: DatasetObservation) -> dict:
+    """Build the exact frozen structural-signature v1 hash document."""
 
     root = observation.root
     descriptor = observation.descriptor
@@ -202,7 +196,19 @@ def structural_signature(observation: DatasetObservation) -> str:
         "subtables": sorted(descriptor.subtables),
         "resources": sorted(resources, key=lambda item: item["path"]),
     }
-    return hashlib.sha256(json.dumps(blob, sort_keys=True).encode()).hexdigest()
+    return blob
+
+
+def structural_signature(observation: DatasetObservation) -> str:
+    """The structural identity of one observed MSv2 closure.
+
+    Paths are recorded relative to the root and stat metadata is excluded, so
+    an exact snapshot restored at the same path, or the same state observed
+    through an alias, has the same signature. See
+    :data:`STRUCTURAL_SIGNATURE_COVERAGE` for what it does *not* cover.
+    """
+
+    return hashlib.sha256(json.dumps(_structural_signature_document(observation), sort_keys=True).encode()).hexdigest()
 
 
 class DatasetMutationOutcome(str, Enum):

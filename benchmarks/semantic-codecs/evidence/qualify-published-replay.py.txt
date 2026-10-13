@@ -1,0 +1,264 @@
+"""Qualify published full-MS exports under an explicitly recorded replay revision."""
+
+from __future__ import annotations
+import argparse
+import hashlib
+import importlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import resource
+import subprocess
+import sys
+import time
+import traceback
+
+PROFILES = ("export-baseline", "export-combined")
+STAGES = ("audit", "verify", "materialize-baseline", "materialize-combined", "compare-baseline", "compare-combined", "final-audit")
+FILES = (
+    "examples/state_codec_qualification.py",
+    "src/shinobi/__init__.py",
+    "src/shinobi/dataset_state.py",
+    "src/shinobi/dataset_lifecycle.py",
+    "src/shinobi/_state_adapter.py",
+    "src/shinobi/state_codecs.py",
+    "uv.lock",
+)
+PIN = "25c280a8ab412b5015a80bf4ff6f83b7a6820675"
+
+
+def sha(path):
+    with Path(path).open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+REQUIRED_MODULES = {
+    "shinobi": "src/shinobi/__init__.py",
+    "shinobi.dataset_state": "src/shinobi/dataset_state.py",
+    "shinobi.dataset_lifecycle": "src/shinobi/dataset_lifecycle.py",
+    "shinobi._state_adapter": "src/shinobi/_state_adapter.py",
+    "shinobi.state_codecs": "src/shinobi/state_codecs.py",
+}
+
+
+def package_hashes(checkout):
+    """Record tracked Python sources, so ignored files cannot supply modules."""
+    checkout = Path(checkout).resolve(strict=True)
+    names = subprocess.check_output(["git", "ls-files", "-z", "--", "src/shinobi"], cwd=checkout).decode().split("\0")
+    return {name: sha(checkout / name) for name in names if name.endswith(".py")}
+
+
+def loaded_source_guard(checkout, recorded_files, recorded_package):
+    """Verify ambient imports against the recorded checkout without changing paths."""
+    checkout = Path(checkout).resolve(strict=True)
+    package_root = (checkout / "src/shinobi").resolve(strict=True)
+    if not package_root.is_relative_to(checkout):
+        raise RuntimeError(f"Shinobi package resolves outside declared checkout: {package_root}")
+    for name, expected in recorded_files.items():
+        if sha(checkout / name) != expected:
+            raise RuntimeError(f"recorded checkout source hash changed: {name}")
+    if package_hashes(checkout) != recorded_package:
+        raise RuntimeError("recorded Shinobi package source hashes changed")
+    for name, relative in REQUIRED_MODULES.items():
+        if relative not in recorded_files or recorded_files[relative] != recorded_package.get(relative):
+            raise RuntimeError(f"missing or inconsistent recorded source hash for {name}")
+        importlib.import_module(name)
+    loaded = {}
+    for name, module in sorted(sys.modules.copy().items()):
+        if name != "shinobi" and not name.startswith("shinobi."):
+            continue
+        filename = getattr(module, "__file__", None)
+        if not filename:
+            raise RuntimeError(f"Shinobi module has no inspectable source file: {name}")
+        path = Path(filename).resolve(strict=True)
+        if not path.is_relative_to(package_root):
+            raise RuntimeError(f"Shinobi module {name} loaded from {path}; expected under {package_root}")
+        relative = path.relative_to(checkout).as_posix()
+        expected = recorded_package.get(relative)
+        actual = sha(path)
+        if expected is None or actual != expected:
+            raise RuntimeError(f"Shinobi module {name} has unrecorded or changed source: {path}")
+        if name in REQUIRED_MODULES and path != (checkout / REQUIRED_MODULES[name]).resolve(strict=True):
+            raise RuntimeError(f"Shinobi module {name} loaded from unexpected source: {path}")
+        namespaces = [str(Path(root).resolve(strict=True)) for root in getattr(module, "__path__", ())]
+        if any(not Path(root).is_relative_to(package_root) for root in namespaces):
+            raise RuntimeError(f"Shinobi package {name} has a namespace outside declared checkout: {namespaces}")
+        loaded[name] = {"path": str(path), "sha256": actual, "namespace_paths": namespaces}
+    return loaded
+
+
+def write(path, data):
+    pending = path.with_suffix(".pending")
+    pending.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    pending.replace(path)
+
+
+def run_stage(args, report):
+    from shinobi import _state_adapter as adapter
+    from shinobi.dataset_state import DatasetStateStore, read_state_attempt
+    from shinobi.dataset_lifecycle import observe_dataset, structural_signature
+
+    loaded_before = loaded_source_guard(args.checkout, report["source_sha256"], report["package_source_sha256"])
+    spec = importlib.util.spec_from_file_location("qualification", args.checkout / "examples/state_codec_qualification.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    old = json.loads((args.capture_root / "report.json").read_text())
+    assert sha(args.capture_root / "report.json") == report["capture_report_sha256"]
+    stages = {s["stage"]: s for s in old["stages"]}
+    source = Path(old["source"])
+    archive = args.capture_root / "og-data/source-copy.ms"
+    assert archive.is_dir() and not os.path.lexists(args.capture_root / "source-copy.ms")
+    assert stages["archive"]["recorded_source_absent"]
+    store = DatasetStateStore(args.capture_root / "store", cache_dir=args.capture_root / "cache")
+    runtime = adapter.runtime()
+    assert runtime["msutils_commit"] == PIN
+    expected = stages["prepare"]["original_native_id"]
+    loaded = {}
+    for profile in PROFILES:
+        prior = stages[profile]
+        rep, _, physical = store._load(prior["state_id"], prior["representation_id"])
+        assert physical.versions == runtime
+        assert physical.state_id == expected == prior["state_id"]
+        assert not os.path.lexists(physical.source)
+        assert sha(rep / "representation.json") == report["representation_sha256"][profile]
+        loaded[profile] = (rep, physical)
+    before = {"original": module._observation(source), "archive": module._observation(archive)}
+    if report["stages"]:
+        assert before == report["stages"][0]["observations_before"]
+    assert before["original"] == stages["prepare"]["source_observation_before"]
+    result = {"runtime": runtime, "versions": module._versions(), "observations_before": before, "recorded_source_absent": True, "loaded_sources_before": loaded_before}
+    stage = args.stage
+    if stage in ("audit", "final-audit"):
+        ids = {"original": adapter.native_id(source), "archive": adapter.native_id(archive)}
+        assert ids["original"] == ids["archive"] == expected
+        result["native_ids"] = ids
+        result["representations"] = {
+            profile: {
+                "state_id": physical.state_id,
+                "representation_id": physical.representation_id,
+                "manifest_bytes": (rep / "representation.json").stat().st_size,
+                "ledger_entries": len(physical.files),
+                "zarr_nodes": len(physical.zarr_metadata),
+                "source_structural_signature": physical.structural_signature,
+                "capture_attempt": str(physical.capture_attempt),
+            }
+            for profile, (rep, physical) in loaded.items()
+        }
+    elif stage == "verify":
+        for profile, (_, physical) in loaded.items():
+            verified = store.verify(physical.state_id, physical.representation_id)
+            assert verified.verified
+            result[profile] = {"verified": True, "attempt": str(verified.attempt)}
+    else:
+        action, suffix = stage.split("-", 1)
+        profile = "export-" + suffix
+        rep, physical = loaded[profile]
+        destination = args.workdir / (profile + ".ms")
+        if action == "materialize":
+            assert not os.path.lexists(destination)
+            restored = store.materialize(physical.state_id, destination, representation_id=physical.representation_id)
+            native_id = adapter.native_id(destination)
+            assert native_id == expected
+            attempt = read_state_attempt(restored.attempt)
+            observed = observe_dataset(destination, destination.parent)
+            assert attempt.schema_version == "shinobi-state-attempt/v3" and attempt.finished and attempt.phase == "committed"
+            assert attempt.structural_signature == physical.structural_signature
+            assert attempt.restored_structural_signature == structural_signature(observed)
+            result[profile] = {"destination": str(destination), "native_id": native_id, "attempt": str(restored.attempt), "attempt_record": attempt.model_dump(mode="json")}
+        elif action == "compare":
+            manifest = json.loads((rep / "preservation/manifest.json").read_text())
+            result[profile] = module._compare_values(archive, destination, 128, manifest["native_model"])
+        else:
+            raise ValueError(stage)
+    after = {"original": module._observation(source), "archive": module._observation(archive)}
+    assert before == after
+    result["observations_after"] = after
+    assert sha(args.capture_root / "report.json") == report["capture_report_sha256"]
+    for profile, (rep, _) in loaded.items():
+        assert sha(rep / "representation.json") == report["representation_sha256"][profile]
+    result["loaded_sources_after"] = loaded_source_guard(args.checkout, report["source_sha256"], report["package_source_sha256"])
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--capture-root", type=Path, required=True)
+    parser.add_argument("--workdir", type=Path, required=True)
+    parser.add_argument("--checkout", type=Path, required=True)
+    parser.add_argument("--capture-commit", required=True)
+    parser.add_argument("--capture-checkout", type=Path, required=True)
+    parser.add_argument("--replay-commit", required=True)
+    parser.add_argument("--stage", choices=STAGES)
+    args = parser.parse_args()
+    report_path = args.workdir / "report.json"
+    if args.stage:
+        report = json.loads(report_path.read_text())
+        started = time.perf_counter()
+        try:
+            details = run_stage(args, report)
+            report["stages"].append({"stage": args.stage, "seconds": time.perf_counter() - started, "peak_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, **details})
+        except Exception:
+            report.update(status="failed", failed_stage=args.stage, traceback=traceback.format_exc())
+            write(report_path, report)
+            raise
+        write(report_path, report)
+        return
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.checkout, text=True).strip() == args.replay_commit
+    assert not subprocess.check_output(["git", "status", "--porcelain"], cwd=args.checkout, text=True).strip()
+    from shinobi.dataset_state import DatasetStateStore
+    from shinobi import _state_adapter as adapter
+
+    hashes = {name: sha(args.checkout / name) for name in FILES}
+    packages = package_hashes(args.checkout)
+    loaded_source_guard(args.checkout, hashes, packages)
+    assert adapter.runtime()["msutils_commit"] == PIN
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.capture_checkout, text=True).strip() == args.capture_commit
+    assert not subprocess.check_output(["git", "status", "--porcelain"], cwd=args.capture_checkout, text=True).strip()
+    old = json.loads((args.capture_root / "report.json").read_text())
+    assert old["script_sha256"] == sha(args.capture_checkout / "examples/state_codec_qualification.py")
+    stages = {s["stage"]: s for s in old["stages"]}
+    assert all(s in stages for s in ("prepare", *PROFILES, "archive", "verify"))
+    store = DatasetStateStore(args.capture_root / "store", cache_dir=args.capture_root / "cache")
+    representations = {}
+    for profile in PROFILES:
+        prior = stages[profile]
+        rep, _, _ = store._load(prior["state_id"], prior["representation_id"])
+        representations[profile] = sha(rep / "representation.json")
+    args.workdir.mkdir(parents=True, exist_ok=False)
+    loaded_parent = loaded_source_guard(args.checkout, hashes, packages)
+    report = {
+        "schema_version": "shinobi-published-state-qualification/v1",
+        "status": "running",
+        "source": old["source"],
+        "capture_root": str(args.capture_root),
+        "command": [sys.executable, __file__, *sys.argv[1:]],
+        "capture_commit": args.capture_commit,
+        "replay_commit": args.replay_commit,
+        "capture_report_sha256": sha(args.capture_root / "report.json"),
+        "capture_script_sha256": old["script_sha256"],
+        "capture_source_sha256": {name: sha(args.capture_checkout / name) for name in FILES},
+        "capture_stages": old["stages"],
+        "representation_sha256": representations,
+        "source_sha256": hashes,
+        "package_source_sha256": packages,
+        "loaded_sources_parent": loaded_parent,
+        "driver_sha256": sha(__file__),
+        "runtime": adapter.runtime(),
+        "stages": [],
+    }
+    write(report_path, report)
+    for stage in STAGES:
+        print(stage, flush=True)  # noqa: T201
+        subprocess.run([sys.executable, __file__, *sys.argv[1:], "--stage", stage], check=True)
+    report = json.loads(report_path.read_text())
+    assert hashes == {name: sha(args.checkout / name) for name in FILES}
+    assert not subprocess.check_output(["git", "status", "--porcelain"], cwd=args.checkout, text=True).strip()
+    assert report["capture_source_sha256"] == {name: sha(args.capture_checkout / name) for name in FILES}
+    loaded_final = loaded_source_guard(args.checkout, hashes, packages)
+    report.update(status="passed", source_sha256_after=hashes, loaded_sources_parent_after=loaded_final)
+    write(report_path, report)
+
+
+if __name__ == "__main__":
+    main()

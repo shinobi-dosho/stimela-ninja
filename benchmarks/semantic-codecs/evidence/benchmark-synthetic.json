@@ -1,0 +1,4469 @@
+{
+  "schema_version": "shinobi-codec-benchmark/v2",
+  "selection": {
+    "kind": "synthetic",
+    "seed": 16,
+    "rows": 1024
+  },
+  "source_observation_before": null,
+  "source_observation_after": null,
+  "flag_versions_observation_before": null,
+  "flag_versions_observation_after": null,
+  "sample_hashes": {
+    "VISIBILITY": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+    "WEIGHT_SPECTRUM": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+    "FLAG": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+    "FLAG_SPARSE": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+    "FLAG_DENSE": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+    "FLAG_BURST": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+    "UVW": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+    "TIME": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+    "ANTENNA1": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+    "ROW_ID_RAMP": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+    "FIELD_LABEL": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715"
+  },
+  "baseline_msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+  "versions": {
+    "python": "3.12.14",
+    "stimela-ninja": "0.1.0b7",
+    "msutils": "3.0.0",
+    "xarray-ms": "0.5.8",
+    "xarray": "2026.7.0",
+    "zarr": "3.3.0",
+    "numcodecs": "0.16.5",
+    "arcae": "0.5.4",
+    "numpy": "2.5.3",
+    "python-casacore": "3.8.1",
+    "dask": "2026.8.0",
+    "pyarrow": "23.0.1",
+    "pandas": "3.0.6",
+    "msutils_origin": {
+      "url": "https://github.com/shinobi-dosho/msutils.git",
+      "vcs_info": {
+        "vcs": "git",
+        "commit_id": "2856d3ae357c4c2ec70060df641fe48e32ff8288",
+        "requested_revision": "2856d3ae357c4c2ec70060df641fe48e32ff8288"
+      }
+    }
+  },
+  "script_sha256": "de296700bee85b67fbf3342f33498556f2d3e1ab32e11eae62aec8e188ef27fc",
+  "state_codecs_sha256": "91a34742aeddec9feaf58f4604fc4c95238262f569df630552ce38e1cb61b44d",
+  "repetitions": 3,
+  "results": [
+    {
+      "repetition": 1,
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+      "encoded_bytes": 1534992,
+      "copy_encode_seconds": 1.3509836196899414,
+      "rewrite_verified_seconds": 2.2118764147162437,
+      "decode_seconds": 0.271810507401824,
+      "copy_encode_mib_s": 1.5469053210871877,
+      "decode_mib_s": 7.688605455235525,
+      "peak_worker_rss_kib": 111848,
+      "per_column": {
+        "VISIBILITY": {
+          "raw_bytes": 1048576,
+          "sample_sha256": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+          "encoded_bytes": 970393,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.16781536303460598,
+          "decode_seconds": 0.026952333748340607,
+          "copy_encode_mib_s": 5.9589299925644195,
+          "decode_mib_s": 37.10253847912401,
+          "worker_highwater_rss_kib_after_copy": 111848
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 524288,
+          "sample_sha256": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+          "encoded_bytes": 473642,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.14593837969005108,
+          "decode_seconds": 0.03342505358159542,
+          "copy_encode_mib_s": 3.426103544947649,
+          "decode_mib_s": 14.958839146792307,
+          "worker_highwater_rss_kib_after_copy": 111848
+        },
+        "FLAG": {
+          "raw_bytes": 131072,
+          "sample_sha256": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+          "encoded_bytes": 23160,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13026636093854904,
+          "decode_seconds": 0.024717222899198532,
+          "copy_encode_mib_s": 0.9595723646488186,
+          "decode_mib_s": 5.057202441786176,
+          "worker_highwater_rss_kib_after_copy": 111848
+        },
+        "FLAG_SPARSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+          "encoded_bytes": 2471,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12264610081911087,
+          "decode_seconds": 0.022794531658291817,
+          "copy_encode_mib_s": 1.019192613260171,
+          "decode_mib_s": 5.4837713655998535,
+          "worker_highwater_rss_kib_after_copy": 111848
+        },
+        "FLAG_DENSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+          "encoded_bytes": 21864,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12478750944137573,
+          "decode_seconds": 0.024883762001991272,
+          "copy_encode_mib_s": 1.0017028191329045,
+          "decode_mib_s": 5.02335619469424,
+          "worker_highwater_rss_kib_after_copy": 111848
+        },
+        "FLAG_BURST": {
+          "raw_bytes": 131072,
+          "sample_sha256": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+          "encoded_bytes": 1282,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11124751903116703,
+          "decode_seconds": 0.025012657046318054,
+          "copy_encode_mib_s": 1.1236205633042484,
+          "decode_mib_s": 4.9974698716944355,
+          "worker_highwater_rss_kib_after_copy": 111848
+        },
+        "UVW": {
+          "raw_bytes": 24576,
+          "sample_sha256": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+          "encoded_bytes": 25590,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11325465328991413,
+          "decode_seconds": 0.02253280021250248,
+          "copy_encode_mib_s": 0.2069451392871574,
+          "decode_mib_s": 1.040150348778912,
+          "worker_highwater_rss_kib_after_copy": 111848
+        },
+        "TIME": {
+          "raw_bytes": 8192,
+          "sample_sha256": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+          "encoded_bytes": 4886,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.10095839202404022,
+          "decode_seconds": 0.022405095398426056,
+          "copy_encode_mib_s": 0.07738336401138092,
+          "decode_mib_s": 0.34869300313485047,
+          "worker_highwater_rss_kib_after_copy": 111848
+        },
+        "ANTENNA1": {
+          "raw_bytes": 4096,
+          "sample_sha256": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+          "encoded_bytes": 2951,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.10100299306213856,
+          "decode_seconds": 0.022577006369829178,
+          "copy_encode_mib_s": 0.0386745964804906,
+          "decode_mib_s": 0.1730189528236181,
+          "worker_highwater_rss_kib_after_copy": 111848
+        },
+        "ROW_ID_RAMP": {
+          "raw_bytes": 8192,
+          "sample_sha256": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+          "encoded_bytes": 3878,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11011862941086292,
+          "decode_seconds": 0.022664103657007217,
+          "copy_encode_mib_s": 0.0709462153842365,
+          "decode_mib_s": 0.3447080951548929,
+          "worker_highwater_rss_kib_after_copy": 111848
+        },
+        "FIELD_LABEL": {
+          "raw_bytes": 49152,
+          "sample_sha256": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715",
+          "encoded_bytes": 4809,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.10323813930153847,
+          "decode_seconds": 0.023818619549274445,
+          "copy_encode_mib_s": 0.4540473154314344,
+          "decode_mib_s": 1.9679981832292162,
+          "worker_highwater_rss_kib_after_copy": 111848
+        }
+      }
+    },
+    {
+      "repetition": 2,
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+      "encoded_bytes": 1534992,
+      "copy_encode_seconds": 1.478936079889536,
+      "rewrite_verified_seconds": 2.3641575518995523,
+      "decode_seconds": 0.2711678072810173,
+      "copy_encode_mib_s": 1.4130723960403304,
+      "decode_mib_s": 7.706828369321318,
+      "peak_worker_rss_kib": 116544,
+      "per_column": {
+        "VISIBILITY": {
+          "raw_bytes": 1048576,
+          "sample_sha256": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+          "encoded_bytes": 970393,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.17470773681998253,
+          "decode_seconds": 0.02762833796441555,
+          "copy_encode_mib_s": 5.723844966467582,
+          "decode_mib_s": 36.19472156768783,
+          "worker_highwater_rss_kib_after_copy": 116544
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 524288,
+          "sample_sha256": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+          "encoded_bytes": 473642,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13976244628429413,
+          "decode_seconds": 0.02505243569612503,
+          "copy_encode_mib_s": 3.5774989154306733,
+          "decode_mib_s": 19.958139243017285,
+          "worker_highwater_rss_kib_after_copy": 116544
+        },
+        "FLAG": {
+          "raw_bytes": 131072,
+          "sample_sha256": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+          "encoded_bytes": 23160,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13467715121805668,
+          "decode_seconds": 0.02322351559996605,
+          "copy_encode_mib_s": 0.9281455604715878,
+          "decode_mib_s": 5.382475338926839,
+          "worker_highwater_rss_kib_after_copy": 116544
+        },
+        "FLAG_SPARSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+          "encoded_bytes": 2471,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13931585103273392,
+          "decode_seconds": 0.02442997321486473,
+          "copy_encode_mib_s": 0.8972417644753845,
+          "decode_mib_s": 5.116665454382985,
+          "worker_highwater_rss_kib_after_copy": 116544
+        },
+        "FLAG_DENSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+          "encoded_bytes": 21864,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.14741851203143597,
+          "decode_seconds": 0.02418786659836769,
+          "copy_encode_mib_s": 0.8479260730385382,
+          "decode_mib_s": 5.167880329240594,
+          "worker_highwater_rss_kib_after_copy": 116544
+        },
+        "FLAG_BURST": {
+          "raw_bytes": 131072,
+          "sample_sha256": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+          "encoded_bytes": 1282,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12115850113332272,
+          "decode_seconds": 0.023791082203388214,
+          "copy_encode_mib_s": 1.0317063914685616,
+          "decode_mib_s": 5.254069526194066,
+          "worker_highwater_rss_kib_after_copy": 116544
+        },
+        "UVW": {
+          "raw_bytes": 24576,
+          "sample_sha256": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+          "encoded_bytes": 25590,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1226886622607708,
+          "decode_seconds": 0.023514151573181152,
+          "copy_encode_mib_s": 0.1910323217167724,
+          "decode_mib_s": 0.9967401939660635,
+          "worker_highwater_rss_kib_after_copy": 116544
+        },
+        "TIME": {
+          "raw_bytes": 8192,
+          "sample_sha256": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+          "encoded_bytes": 4886,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1175204049795866,
+          "decode_seconds": 0.023145312443375587,
+          "copy_encode_mib_s": 0.06647781720422967,
+          "decode_mib_s": 0.3375413496410161,
+          "worker_highwater_rss_kib_after_copy": 116544
+        },
+        "ANTENNA1": {
+          "raw_bytes": 4096,
+          "sample_sha256": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+          "encoded_bytes": 2951,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12210363522171974,
+          "decode_seconds": 0.02378891035914421,
+          "copy_encode_mib_s": 0.0319912670323607,
+          "decode_mib_s": 0.1642046626359445,
+          "worker_highwater_rss_kib_after_copy": 116544
+        },
+        "ROW_ID_RAMP": {
+          "raw_bytes": 8192,
+          "sample_sha256": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+          "encoded_bytes": 3878,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11159912124276161,
+          "decode_seconds": 0.025638192892074585,
+          "copy_encode_mib_s": 0.07000503151817357,
+          "decode_mib_s": 0.30472116474383193,
+          "worker_highwater_rss_kib_after_copy": 116544
+        },
+        "FIELD_LABEL": {
+          "raw_bytes": 49152,
+          "sample_sha256": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715",
+          "encoded_bytes": 4809,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12672716565430164,
+          "decode_seconds": 0.026742279529571533,
+          "copy_encode_mib_s": 0.36988912170473426,
+          "decode_mib_s": 1.752842346448655,
+          "worker_highwater_rss_kib_after_copy": 116544
+        }
+      }
+    },
+    {
+      "repetition": 3,
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+      "encoded_bytes": 1534992,
+      "copy_encode_seconds": 1.431196017190814,
+      "rewrite_verified_seconds": 2.29343931004405,
+      "decode_seconds": 0.2726346794515848,
+      "copy_encode_mib_s": 1.460207913449896,
+      "decode_mib_s": 7.665362873878706,
+      "peak_worker_rss_kib": 116568,
+      "per_column": {
+        "VISIBILITY": {
+          "raw_bytes": 1048576,
+          "sample_sha256": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+          "encoded_bytes": 970393,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.16065923869609833,
+          "decode_seconds": 0.029339902102947235,
+          "copy_encode_mib_s": 6.224354155515399,
+          "decode_mib_s": 34.083276641183765,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 524288,
+          "sample_sha256": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+          "encoded_bytes": 473642,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1449281070381403,
+          "decode_seconds": 0.026144342496991158,
+          "copy_encode_mib_s": 3.4499864120105874,
+          "decode_mib_s": 19.12459646126281,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG": {
+          "raw_bytes": 131072,
+          "sample_sha256": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+          "encoded_bytes": 23160,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13956654258072376,
+          "decode_seconds": 0.02477279119193554,
+          "copy_encode_mib_s": 0.8956301251619913,
+          "decode_mib_s": 5.045858540183075,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_SPARSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+          "encoded_bytes": 2471,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13139083236455917,
+          "decode_seconds": 0.02389298379421234,
+          "copy_encode_mib_s": 0.9513601348773933,
+          "decode_mib_s": 5.231661356179343,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_DENSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+          "encoded_bytes": 21864,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1397277619689703,
+          "decode_seconds": 0.02435300685465336,
+          "copy_encode_mib_s": 0.8945967375313653,
+          "decode_mib_s": 5.132836398644345,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_BURST": {
+          "raw_bytes": 131072,
+          "sample_sha256": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+          "encoded_bytes": 1282,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12141483277082443,
+          "decode_seconds": 0.024459408596158028,
+          "copy_encode_mib_s": 1.0295282474748593,
+          "decode_mib_s": 5.110507864839971,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "UVW": {
+          "raw_bytes": 24576,
+          "sample_sha256": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+          "encoded_bytes": 25590,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12002536654472351,
+          "decode_seconds": 0.024090899154543877,
+          "copy_encode_mib_s": 0.19527122203177597,
+          "decode_mib_s": 0.9728777597568152,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "TIME": {
+          "raw_bytes": 8192,
+          "sample_sha256": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+          "encoded_bytes": 4886,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11234786733984947,
+          "decode_seconds": 0.023422427475452423,
+          "copy_encode_mib_s": 0.06953848065818094,
+          "decode_mib_s": 0.333547836072405,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ANTENNA1": {
+          "raw_bytes": 4096,
+          "sample_sha256": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+          "encoded_bytes": 2951,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1168460100889206,
+          "decode_seconds": 0.024662157520651817,
+          "copy_encode_mib_s": 0.03343075212433285,
+          "decode_mib_s": 0.15839044076857223,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ROW_ID_RAMP": {
+          "raw_bytes": 8192,
+          "sample_sha256": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+          "encoded_bytes": 3878,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.10747585631906986,
+          "decode_seconds": 0.024491816759109497,
+          "copy_encode_mib_s": 0.07269074439199232,
+          "decode_mib_s": 0.31898409484442247,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FIELD_LABEL": {
+          "raw_bytes": 49152,
+          "sample_sha256": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715",
+          "encoded_bytes": 4809,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11576432920992374,
+          "decode_seconds": 0.022979771718382835,
+          "copy_encode_mib_s": 0.4049174760473773,
+          "decode_mib_s": 2.039837495970511,
+          "worker_highwater_rss_kib_after_copy": 116568
+        }
+      }
+    },
+    {
+      "repetition": 1,
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 128
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+      "encoded_bytes": 1522615,
+      "copy_encode_seconds": 0.6453804112970829,
+      "rewrite_verified_seconds": 1.3364615179598331,
+      "decode_seconds": 0.09508742392063141,
+      "copy_encode_mib_s": 3.238158012574073,
+      "decode_mib_s": 21.978129849688358,
+      "peak_worker_rss_kib": 116568,
+      "per_column": {
+        "VISIBILITY": {
+          "raw_bytes": 1048576,
+          "sample_sha256": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+          "encoded_bytes": 969965,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.07776234857738018,
+          "decode_seconds": 0.011081745848059654,
+          "copy_encode_mib_s": 12.859693904498197,
+          "decode_mib_s": 90.2384889268232,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 524288,
+          "sample_sha256": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+          "encoded_bytes": 473107,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.07084470242261887,
+          "decode_seconds": 0.010426945984363556,
+          "copy_encode_mib_s": 7.05769073624287,
+          "decode_mib_s": 47.95267960050904,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG": {
+          "raw_bytes": 131072,
+          "sample_sha256": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+          "encoded_bytes": 22260,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.060840923339128494,
+          "decode_seconds": 0.009279260411858559,
+          "copy_encode_mib_s": 2.0545381815336294,
+          "decode_mib_s": 13.470901176591028,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_SPARSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+          "encoded_bytes": 1939,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.05717312917113304,
+          "decode_seconds": 0.008268497884273529,
+          "copy_encode_mib_s": 2.1863417625060313,
+          "decode_mib_s": 15.117618913315173,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_DENSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+          "encoded_bytes": 21032,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.0601882990449667,
+          "decode_seconds": 0.008274039253592491,
+          "copy_encode_mib_s": 2.0768156266820643,
+          "decode_mib_s": 15.107494195864065,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_BURST": {
+          "raw_bytes": 131072,
+          "sample_sha256": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+          "encoded_bytes": 829,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.043537624180316925,
+          "decode_seconds": 0.007897324860095978,
+          "copy_encode_mib_s": 2.8710799533363534,
+          "decode_mib_s": 15.82814462041528,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "UVW": {
+          "raw_bytes": 24576,
+          "sample_sha256": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+          "encoded_bytes": 24632,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.0514281764626503,
+          "decode_seconds": 0.008380241692066193,
+          "copy_encode_mib_s": 0.4557326666447425,
+          "decode_mib_s": 2.796757046063353,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "TIME": {
+          "raw_bytes": 8192,
+          "sample_sha256": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+          "encoded_bytes": 2273,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.05163123458623886,
+          "decode_seconds": 0.007804013788700104,
+          "copy_encode_mib_s": 0.1513134454871673,
+          "decode_mib_s": 1.0010874162360124,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ANTENNA1": {
+          "raw_bytes": 4096,
+          "sample_sha256": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+          "encoded_bytes": 2487,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.05417286604642868,
+          "decode_seconds": 0.007850069552659988,
+          "copy_encode_mib_s": 0.07210713194779396,
+          "decode_mib_s": 0.4976070560644104,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ROW_ID_RAMP": {
+          "raw_bytes": 8192,
+          "sample_sha256": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+          "encoded_bytes": 2055,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.04838958941400051,
+          "decode_seconds": 0.007969459518790245,
+          "copy_encode_mib_s": 0.16145001630742536,
+          "decode_mib_s": 0.9803048728185182,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FIELD_LABEL": {
+          "raw_bytes": 49152,
+          "sample_sha256": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715",
+          "encoded_bytes": 1970,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.050236426293849945,
+          "decode_seconds": 0.007827147841453552,
+          "copy_encode_mib_s": 0.9330878698618444,
+          "decode_mib_s": 5.988771510325146,
+          "worker_highwater_rss_kib_after_copy": 116568
+        }
+      }
+    },
+    {
+      "repetition": 2,
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 128
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+      "encoded_bytes": 1522615,
+      "copy_encode_seconds": 0.6375493668019772,
+      "rewrite_verified_seconds": 1.3094029948115349,
+      "decode_seconds": 0.08946922793984413,
+      "copy_encode_mib_s": 3.2779324375818972,
+      "decode_mib_s": 23.35824057188842,
+      "peak_worker_rss_kib": 116568,
+      "per_column": {
+        "VISIBILITY": {
+          "raw_bytes": 1048576,
+          "sample_sha256": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+          "encoded_bytes": 969965,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.07559799216687679,
+          "decode_seconds": 0.00983498990535736,
+          "copy_encode_mib_s": 13.22786454159492,
+          "decode_mib_s": 101.67778611092172,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 524288,
+          "sample_sha256": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+          "encoded_bytes": 473107,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.06852085515856743,
+          "decode_seconds": 0.009576067328453064,
+          "copy_encode_mib_s": 7.297048451058087,
+          "decode_mib_s": 52.21350089241394,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG": {
+          "raw_bytes": 131072,
+          "sample_sha256": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+          "encoded_bytes": 22260,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.05640089884400368,
+          "decode_seconds": 0.008606676012277603,
+          "copy_encode_mib_s": 2.21627673604513,
+          "decode_mib_s": 14.523609326258464,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_SPARSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+          "encoded_bytes": 1939,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.055856168270111084,
+          "decode_seconds": 0.008264480158686638,
+          "copy_encode_mib_s": 2.2378907087847653,
+          "decode_mib_s": 15.124968249650268,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_DENSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+          "encoded_bytes": 21032,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.05836692452430725,
+          "decode_seconds": 0.007753010839223862,
+          "copy_encode_mib_s": 2.1416238909066214,
+          "decode_mib_s": 16.122768636876238,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_BURST": {
+          "raw_bytes": 131072,
+          "sample_sha256": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+          "encoded_bytes": 829,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.04456157982349396,
+          "decode_seconds": 0.0075309500098228455,
+          "copy_encode_mib_s": 2.805107011356382,
+          "decode_mib_s": 16.59817152377306,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "UVW": {
+          "raw_bytes": 24576,
+          "sample_sha256": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+          "encoded_bytes": 24632,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.05470408871769905,
+          "decode_seconds": 0.0074557531625032425,
+          "copy_encode_mib_s": 0.4284414666141215,
+          "decode_mib_s": 3.1435455934717322,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "TIME": {
+          "raw_bytes": 8192,
+          "sample_sha256": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+          "encoded_bytes": 2273,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.051715247333049774,
+          "decode_seconds": 0.007939215749502182,
+          "copy_encode_mib_s": 0.15106763291079242,
+          "decode_mib_s": 0.9840392611184389,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ANTENNA1": {
+          "raw_bytes": 4096,
+          "sample_sha256": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+          "encoded_bytes": 2487,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.050141993910074234,
+          "decode_seconds": 0.007344624027609825,
+          "copy_encode_mib_s": 0.07790376280220439,
+          "decode_mib_s": 0.5318515944881141,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ROW_ID_RAMP": {
+          "raw_bytes": 8192,
+          "sample_sha256": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+          "encoded_bytes": 2055,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.05040205270051956,
+          "decode_seconds": 0.007392415776848793,
+          "copy_encode_mib_s": 0.1550036076193275,
+          "decode_mib_s": 1.0568263793368882,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FIELD_LABEL": {
+          "raw_bytes": 49152,
+          "sample_sha256": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715",
+          "encoded_bytes": 1970,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.05070873722434044,
+          "decode_seconds": 0.007745781913399696,
+          "copy_encode_mib_s": 0.9243969099964053,
+          "decode_mib_s": 6.051680840498403,
+          "worker_highwater_rss_kib_after_copy": 116568
+        }
+      }
+    },
+    {
+      "repetition": 3,
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 128
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+      "encoded_bytes": 1522615,
+      "copy_encode_seconds": 0.7881741020828485,
+      "rewrite_verified_seconds": 1.5058406796306372,
+      "decode_seconds": 0.10392784513533115,
+      "copy_encode_mib_s": 2.651500150128413,
+      "decode_mib_s": 20.108602726042086,
+      "peak_worker_rss_kib": 116568,
+      "per_column": {
+        "VISIBILITY": {
+          "raw_bytes": 1048576,
+          "sample_sha256": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+          "encoded_bytes": 969965,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.09040886722505093,
+          "decode_seconds": 0.011875780299305916,
+          "copy_encode_mib_s": 11.060861956280712,
+          "decode_mib_s": 84.20499325492283,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 524288,
+          "sample_sha256": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+          "encoded_bytes": 473107,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.07405377551913261,
+          "decode_seconds": 0.010378444567322731,
+          "copy_encode_mib_s": 6.751850212833773,
+          "decode_mib_s": 48.176776082062,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG": {
+          "raw_bytes": 131072,
+          "sample_sha256": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+          "encoded_bytes": 22260,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.0731842890381813,
+          "decode_seconds": 0.009064938873052597,
+          "copy_encode_mib_s": 1.7080168659530968,
+          "decode_mib_s": 13.789392487972348,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_SPARSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+          "encoded_bytes": 1939,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.0714593194425106,
+          "decode_seconds": 0.008055860176682472,
+          "copy_encode_mib_s": 1.749246997804998,
+          "decode_mib_s": 15.516654616450522,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_DENSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+          "encoded_bytes": 21032,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.07070881873369217,
+          "decode_seconds": 0.010062137618660927,
+          "copy_encode_mib_s": 1.7678134388128102,
+          "decode_mib_s": 12.422807631668533,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_BURST": {
+          "raw_bytes": 131072,
+          "sample_sha256": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+          "encoded_bytes": 829,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.058725256472826004,
+          "decode_seconds": 0.00910281203687191,
+          "copy_encode_mib_s": 2.1285560507997334,
+          "decode_mib_s": 13.732020335438563,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "UVW": {
+          "raw_bytes": 24576,
+          "sample_sha256": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+          "encoded_bytes": 24632,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.06174672022461891,
+          "decode_seconds": 0.009529370814561844,
+          "copy_encode_mib_s": 0.3795748165204616,
+          "decode_mib_s": 2.4595013098016008,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "TIME": {
+          "raw_bytes": 8192,
+          "sample_sha256": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+          "encoded_bytes": 2273,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.061961131170392036,
+          "decode_seconds": 0.008283840492367744,
+          "copy_encode_mib_s": 0.1260871106196522,
+          "decode_mib_s": 0.9431012109899979,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ANTENNA1": {
+          "raw_bytes": 4096,
+          "sample_sha256": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+          "encoded_bytes": 2487,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.06958699598908424,
+          "decode_seconds": 0.009538654237985611,
+          "copy_encode_mib_s": 0.05613476978676811,
+          "decode_mib_s": 0.40951793644476714,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ROW_ID_RAMP": {
+          "raw_bytes": 8192,
+          "sample_sha256": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+          "encoded_bytes": 2055,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.060113295912742615,
+          "decode_seconds": 0.008301351219415665,
+          "copy_encode_mib_s": 0.12996292885587615,
+          "decode_mib_s": 0.9411118495658499,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FIELD_LABEL": {
+          "raw_bytes": 49152,
+          "sample_sha256": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715",
+          "encoded_bytes": 1970,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.06718824803829193,
+          "decode_seconds": 0.009706292301416397,
+          "copy_encode_mib_s": 0.6976666510679813,
+          "decode_mib_s": 4.829341477091075,
+          "worker_highwater_rss_kib_after_copy": 116568
+        }
+      }
+    },
+    {
+      "repetition": 1,
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "packbits-zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+      "encoded_bytes": 1517209,
+      "copy_encode_seconds": 1.4076778683811426,
+      "rewrite_verified_seconds": 2.3107199482619762,
+      "decode_seconds": 0.2817921210080385,
+      "copy_encode_mib_s": 1.484603684508702,
+      "decode_mib_s": 7.416260406870582,
+      "peak_worker_rss_kib": 116568,
+      "per_column": {
+        "VISIBILITY": {
+          "raw_bytes": 1048576,
+          "sample_sha256": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+          "encoded_bytes": 970393,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1595309879630804,
+          "decode_seconds": 0.026349596679210663,
+          "copy_encode_mib_s": 6.268374644751939,
+          "decode_mib_s": 37.951245029453574,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 524288,
+          "sample_sha256": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+          "encoded_bytes": 473642,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1358197145164013,
+          "decode_seconds": 0.024447135627269745,
+          "copy_encode_mib_s": 3.681350691836575,
+          "decode_mib_s": 20.45229378292773,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG": {
+          "raw_bytes": 131072,
+          "sample_sha256": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+          "encoded_bytes": 14189,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.14131111279129982,
+          "decode_seconds": 0.028543958440423012,
+          "copy_encode_mib_s": 0.8845730355588562,
+          "decode_mib_s": 4.379210411930082,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_SPARSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+          "encoded_bytes": 2267,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1367950476706028,
+          "decode_seconds": 0.029534200206398964,
+          "copy_encode_mib_s": 0.9137757698728625,
+          "decode_mib_s": 4.232381412953148,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_DENSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+          "encoded_bytes": 13181,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.14751481637358665,
+          "decode_seconds": 0.030416101217269897,
+          "copy_encode_mib_s": 0.847372508558279,
+          "decode_mib_s": 4.1096654402578885,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_BURST": {
+          "raw_bytes": 131072,
+          "sample_sha256": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+          "encoded_bytes": 1357,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1159529983997345,
+          "decode_seconds": 0.028253698721528053,
+          "copy_encode_mib_s": 1.0780230069521533,
+          "decode_mib_s": 4.424199508602943,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "UVW": {
+          "raw_bytes": 24576,
+          "sample_sha256": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+          "encoded_bytes": 25590,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11868917755782604,
+          "decode_seconds": 0.021784275770187378,
+          "copy_encode_mib_s": 0.19746956278790556,
+          "decode_mib_s": 1.0758907134326277,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "TIME": {
+          "raw_bytes": 8192,
+          "sample_sha256": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+          "encoded_bytes": 4886,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.10922129638493061,
+          "decode_seconds": 0.022872041910886765,
+          "copy_encode_mib_s": 0.0715290905581844,
+          "decode_mib_s": 0.3415742254425199,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ANTENNA1": {
+          "raw_bytes": 4096,
+          "sample_sha256": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+          "encoded_bytes": 2951,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.10577461495995522,
+          "decode_seconds": 0.023842424154281616,
+          "copy_encode_mib_s": 0.03692993826050656,
+          "decode_mib_s": 0.16383610889241382,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ROW_ID_RAMP": {
+          "raw_bytes": 8192,
+          "sample_sha256": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+          "encoded_bytes": 3878,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1086679995059967,
+          "decode_seconds": 0.0230982918292284,
+          "copy_encode_mib_s": 0.07189328997971364,
+          "decode_mib_s": 0.3382284741122771,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FIELD_LABEL": {
+          "raw_bytes": 49152,
+          "sample_sha256": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715",
+          "encoded_bytes": 4809,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.106259286403656,
+          "decode_seconds": 0.022625545039772987,
+          "copy_encode_mib_s": 0.44113791449654605,
+          "decode_mib_s": 2.0717732950786107,
+          "worker_highwater_rss_kib_after_copy": 116568
+        }
+      }
+    },
+    {
+      "repetition": 2,
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "packbits-zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+      "encoded_bytes": 1517209,
+      "copy_encode_seconds": 1.4029774330556393,
+      "rewrite_verified_seconds": 2.363791460171342,
+      "decode_seconds": 0.32034572027623653,
+      "copy_encode_mib_s": 1.4895775945935126,
+      "decode_mib_s": 6.5237136559773985,
+      "peak_worker_rss_kib": 116568,
+      "per_column": {
+        "VISIBILITY": {
+          "raw_bytes": 1048576,
+          "sample_sha256": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+          "encoded_bytes": 970393,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.16180227510631084,
+          "decode_seconds": 0.030950503423810005,
+          "copy_encode_mib_s": 6.180382811941045,
+          "decode_mib_s": 32.309652166455784,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 524288,
+          "sample_sha256": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+          "encoded_bytes": 473642,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.14291745610535145,
+          "decode_seconds": 0.03012731671333313,
+          "copy_encode_mib_s": 3.4985229490190863,
+          "decode_mib_s": 16.596234067493977,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG": {
+          "raw_bytes": 131072,
+          "sample_sha256": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+          "encoded_bytes": 14189,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13994555547833443,
+          "decode_seconds": 0.031186385080218315,
+          "copy_encode_mib_s": 0.8932045006556266,
+          "decode_mib_s": 4.008159319474578,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_SPARSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+          "encoded_bytes": 2267,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1312515940517187,
+          "decode_seconds": 0.030224451795220375,
+          "copy_encode_mib_s": 0.952369385706239,
+          "decode_mib_s": 4.135724308480831,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_DENSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+          "encoded_bytes": 13181,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1376778669655323,
+          "decode_seconds": 0.033959535881876945,
+          "copy_encode_mib_s": 0.9079164484099234,
+          "decode_mib_s": 3.680851247048646,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_BURST": {
+          "raw_bytes": 131072,
+          "sample_sha256": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+          "encoded_bytes": 1357,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1239584218710661,
+          "decode_seconds": 0.028494780883193016,
+          "copy_encode_mib_s": 1.0084026410889395,
+          "decode_mib_s": 4.386768247575062,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "UVW": {
+          "raw_bytes": 24576,
+          "sample_sha256": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+          "encoded_bytes": 25590,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11384346894919872,
+          "decode_seconds": 0.022387279197573662,
+          "copy_encode_mib_s": 0.20587478769167428,
+          "decode_mib_s": 1.0469114979608671,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "TIME": {
+          "raw_bytes": 8192,
+          "sample_sha256": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+          "encoded_bytes": 4886,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1030652355402708,
+          "decode_seconds": 0.025236064568161964,
+          "copy_encode_mib_s": 0.07580150531890467,
+          "decode_mib_s": 0.3095767954983091,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ANTENNA1": {
+          "raw_bytes": 4096,
+          "sample_sha256": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+          "encoded_bytes": 2951,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.10671854391694069,
+          "decode_seconds": 0.030732441693544388,
+          "copy_encode_mib_s": 0.036603291767551144,
+          "decode_mib_s": 0.12710509756927452,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ROW_ID_RAMP": {
+          "raw_bytes": 8192,
+          "sample_sha256": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+          "encoded_bytes": 3878,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.10806580632925034,
+          "decode_seconds": 0.030443614348769188,
+          "copy_encode_mib_s": 0.07229391299036075,
+          "decode_mib_s": 0.2566219605365568,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FIELD_LABEL": {
+          "raw_bytes": 49152,
+          "sample_sha256": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715",
+          "encoded_bytes": 4809,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11304259672760963,
+          "decode_seconds": 0.026576116681098938,
+          "copy_encode_mib_s": 0.4146666951835087,
+          "decode_mib_s": 1.76380170822089,
+          "worker_highwater_rss_kib_after_copy": 116568
+        }
+      }
+    },
+    {
+      "repetition": 3,
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "packbits-zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+      "encoded_bytes": 1517209,
+      "copy_encode_seconds": 1.5149139519780874,
+      "rewrite_verified_seconds": 2.405009215697646,
+      "decode_seconds": 0.29004236683249474,
+      "copy_encode_mib_s": 1.3795131712076467,
+      "decode_mib_s": 7.205305117396613,
+      "peak_worker_rss_kib": 116568,
+      "per_column": {
+        "VISIBILITY": {
+          "raw_bytes": 1048576,
+          "sample_sha256": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+          "encoded_bytes": 970393,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.16541607305407524,
+          "decode_seconds": 0.029022464528679848,
+          "copy_encode_mib_s": 6.045361744702376,
+          "decode_mib_s": 34.45606760968922,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 524288,
+          "sample_sha256": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+          "encoded_bytes": 473642,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.16190169751644135,
+          "decode_seconds": 0.026794519275426865,
+          "copy_encode_mib_s": 3.088293746575599,
+          "decode_mib_s": 18.66053258356263,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG": {
+          "raw_bytes": 131072,
+          "sample_sha256": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+          "encoded_bytes": 14189,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1584934387356043,
+          "decode_seconds": 0.030728081241250038,
+          "copy_encode_mib_s": 0.7886761811542408,
+          "decode_mib_s": 4.067940299252962,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_SPARSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+          "encoded_bytes": 2267,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.14753858745098114,
+          "decode_seconds": 0.029432103037834167,
+          "copy_encode_mib_s": 0.8472359818513956,
+          "decode_mib_s": 4.2470631418800044,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_DENSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+          "encoded_bytes": 13181,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.15556577406823635,
+          "decode_seconds": 0.028029724955558777,
+          "copy_encode_mib_s": 0.80351864507916,
+          "decode_mib_s": 4.459551429712133,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_BURST": {
+          "raw_bytes": 131072,
+          "sample_sha256": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+          "encoded_bytes": 1357,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12861061096191406,
+          "decode_seconds": 0.029193248599767685,
+          "copy_encode_mib_s": 0.9719260258939032,
+          "decode_mib_s": 4.281811925548935,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "UVW": {
+          "raw_bytes": 24576,
+          "sample_sha256": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+          "encoded_bytes": 25590,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11893623694777489,
+          "decode_seconds": 0.02241549827158451,
+          "copy_encode_mib_s": 0.1970593706465713,
+          "decode_mib_s": 1.045593531583951,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "TIME": {
+          "raw_bytes": 8192,
+          "sample_sha256": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+          "encoded_bytes": 4886,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1085950955748558,
+          "decode_seconds": 0.022673657163977623,
+          "copy_encode_mib_s": 0.07194155462218602,
+          "decode_mib_s": 0.3445628529839453,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ANTENNA1": {
+          "raw_bytes": 4096,
+          "sample_sha256": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+          "encoded_bytes": 2951,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11820022575557232,
+          "decode_seconds": 0.024136047810316086,
+          "copy_encode_mib_s": 0.03304773721902851,
+          "decode_mib_s": 0.16184298401706074,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ROW_ID_RAMP": {
+          "raw_bytes": 8192,
+          "sample_sha256": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+          "encoded_bytes": 3878,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11618086509406567,
+          "decode_seconds": 0.024104904383420944,
+          "copy_encode_mib_s": 0.06724429185197253,
+          "decode_mib_s": 0.3241041688335151,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FIELD_LABEL": {
+          "raw_bytes": 49152,
+          "sample_sha256": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715",
+          "encoded_bytes": 4809,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11072476394474506,
+          "decode_seconds": 0.02348463609814644,
+          "copy_encode_mib_s": 0.42334703033001736,
+          "decode_mib_s": 1.9959857927583422,
+          "worker_highwater_rss_kib_after_copy": 116568
+        }
+      }
+    },
+    {
+      "repetition": 1,
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "delta-zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+      "encoded_bytes": 1533330,
+      "copy_encode_seconds": 1.4591426122933626,
+      "rewrite_verified_seconds": 2.349346475675702,
+      "decode_seconds": 0.31168587505817413,
+      "copy_encode_mib_s": 1.432240914899574,
+      "decode_mib_s": 6.7049677808144,
+      "peak_worker_rss_kib": 116568,
+      "per_column": {
+        "VISIBILITY": {
+          "raw_bytes": 1048576,
+          "sample_sha256": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+          "encoded_bytes": 970393,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1598155740648508,
+          "decode_seconds": 0.029339104890823364,
+          "copy_encode_mib_s": 6.257212451611347,
+          "decode_mib_s": 34.08420276355392,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 524288,
+          "sample_sha256": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+          "encoded_bytes": 473642,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.15045404806733131,
+          "decode_seconds": 0.026635248214006424,
+          "copy_encode_mib_s": 3.3232738262797663,
+          "decode_mib_s": 18.77211715778454,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG": {
+          "raw_bytes": 131072,
+          "sample_sha256": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+          "encoded_bytes": 23160,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12550588697195053,
+          "decode_seconds": 0.023170430213212967,
+          "copy_encode_mib_s": 0.9959692171884846,
+          "decode_mib_s": 5.39480703852959,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_SPARSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+          "encoded_bytes": 2471,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11845235526561737,
+          "decode_seconds": 0.03391442820429802,
+          "copy_encode_mib_s": 1.0552766107495304,
+          "decode_mib_s": 3.685746940712348,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_DENSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+          "encoded_bytes": 21864,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.125442611053586,
+          "decode_seconds": 0.030069543048739433,
+          "copy_encode_mib_s": 0.9964716052235477,
+          "decode_mib_s": 4.1570302480948484,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_BURST": {
+          "raw_bytes": 131072,
+          "sample_sha256": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+          "encoded_bytes": 1282,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11628261022269726,
+          "decode_seconds": 0.024568472057580948,
+          "copy_encode_mib_s": 1.0749672694877397,
+          "decode_mib_s": 5.087821485481003,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "UVW": {
+          "raw_bytes": 24576,
+          "sample_sha256": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+          "encoded_bytes": 25590,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12973699904978275,
+          "decode_seconds": 0.025972997769713402,
+          "copy_encode_mib_s": 0.18065393967534696,
+          "decode_mib_s": 0.9023794714728696,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "TIME": {
+          "raw_bytes": 8192,
+          "sample_sha256": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+          "encoded_bytes": 4886,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12320120632648468,
+          "decode_seconds": 0.02492045983672142,
+          "copy_encode_mib_s": 0.06341252843983346,
+          "decode_mib_s": 0.3134974254563284,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ANTENNA1": {
+          "raw_bytes": 4096,
+          "sample_sha256": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+          "encoded_bytes": 3597,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.delta",
+              "configuration": {
+                "dtype": "int32"
+              }
+            },
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1468196865171194,
+          "decode_seconds": 0.032388463616371155,
+          "copy_encode_mib_s": 0.02660576447658145,
+          "decode_mib_s": 0.1206062148012954,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ROW_ID_RAMP": {
+          "raw_bytes": 8192,
+          "sample_sha256": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+          "encoded_bytes": 1570,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.delta",
+              "configuration": {
+                "dtype": "int64"
+              }
+            },
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13108337298035622,
+          "decode_seconds": 0.033591631799936295,
+          "copy_encode_mib_s": 0.05959947339141753,
+          "decode_mib_s": 0.2325728040402853,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FIELD_LABEL": {
+          "raw_bytes": 49152,
+          "sample_sha256": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715",
+          "encoded_bytes": 4809,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.10843815095722675,
+          "decode_seconds": 0.027090368792414665,
+          "copy_encode_mib_s": 0.4322740620917611,
+          "decode_mib_s": 1.730319744230468,
+          "worker_highwater_rss_kib_after_copy": 116568
+        }
+      }
+    },
+    {
+      "repetition": 2,
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "delta-zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+      "encoded_bytes": 1533330,
+      "copy_encode_seconds": 1.5487035773694515,
+      "rewrite_verified_seconds": 2.4159561321139336,
+      "decode_seconds": 0.28058232367038727,
+      "copy_encode_mib_s": 1.3494149432712628,
+      "decode_mib_s": 7.4482373752632896,
+      "peak_worker_rss_kib": 116568,
+      "per_column": {
+        "VISIBILITY": {
+          "raw_bytes": 1048576,
+          "sample_sha256": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+          "encoded_bytes": 970393,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.17099804431200027,
+          "decode_seconds": 0.027653485536575317,
+          "copy_encode_mib_s": 5.848020098846371,
+          "decode_mib_s": 36.161806752258066,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 524288,
+          "sample_sha256": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+          "encoded_bytes": 473642,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.14820799231529236,
+          "decode_seconds": 0.02565748244524002,
+          "copy_encode_mib_s": 3.3736372255574314,
+          "decode_mib_s": 19.487492627818597,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG": {
+          "raw_bytes": 131072,
+          "sample_sha256": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+          "encoded_bytes": 23160,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13784665055572987,
+          "decode_seconds": 0.023150989785790443,
+          "copy_encode_mib_s": 0.9068047681685518,
+          "decode_mib_s": 5.3993371841372495,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_SPARSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+          "encoded_bytes": 2471,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13675654120743275,
+          "decode_seconds": 0.025185663253068924,
+          "copy_encode_mib_s": 0.9140330612076508,
+          "decode_mib_s": 4.963141083241812,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_DENSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+          "encoded_bytes": 21864,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.14747399277985096,
+          "decode_seconds": 0.02466934733092785,
+          "copy_encode_mib_s": 0.8476070773143024,
+          "decode_mib_s": 5.067016906575719,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_BURST": {
+          "raw_bytes": 131072,
+          "sample_sha256": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+          "encoded_bytes": 1282,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12199807353317738,
+          "decode_seconds": 0.026134969666600227,
+          "copy_encode_mib_s": 1.0246063431977575,
+          "decode_mib_s": 4.782863787278337,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "UVW": {
+          "raw_bytes": 24576,
+          "sample_sha256": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+          "encoded_bytes": 25590,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13515187799930573,
+          "decode_seconds": 0.023559246212244034,
+          "copy_encode_mib_s": 0.17341601424229117,
+          "decode_mib_s": 0.9948323383886213,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "TIME": {
+          "raw_bytes": 8192,
+          "sample_sha256": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+          "encoded_bytes": 4886,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13307755440473557,
+          "decode_seconds": 0.023246057331562042,
+          "copy_encode_mib_s": 0.05870636889102609,
+          "decode_mib_s": 0.33607849660564487,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ANTENNA1": {
+          "raw_bytes": 4096,
+          "sample_sha256": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+          "encoded_bytes": 3597,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.delta",
+              "configuration": {
+                "dtype": "int32"
+              }
+            },
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13557015359401703,
+          "decode_seconds": 0.029217949137091637,
+          "copy_encode_mib_s": 0.028813495422434856,
+          "decode_mib_s": 0.13369350400576505,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ROW_ID_RAMP": {
+          "raw_bytes": 8192,
+          "sample_sha256": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+          "encoded_bytes": 1570,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.delta",
+              "configuration": {
+                "dtype": "int64"
+              }
+            },
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13645139895379543,
+          "decode_seconds": 0.028665360063314438,
+          "copy_encode_mib_s": 0.05725481790513144,
+          "decode_mib_s": 0.2725414919869902,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FIELD_LABEL": {
+          "raw_bytes": 49152,
+          "sample_sha256": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715",
+          "encoded_bytes": 4809,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11699617095291615,
+          "decode_seconds": 0.023416908457875252,
+          "copy_encode_mib_s": 0.4006541378081881,
+          "decode_mib_s": 2.001758690064642,
+          "worker_highwater_rss_kib_after_copy": 116568
+        }
+      }
+    },
+    {
+      "repetition": 3,
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "delta-zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+      "encoded_bytes": 1533330,
+      "copy_encode_seconds": 1.488802008330822,
+      "rewrite_verified_seconds": 2.3538136575371027,
+      "decode_seconds": 0.279725544154644,
+      "copy_encode_mib_s": 1.403708309302349,
+      "decode_mib_s": 7.471050798437796,
+      "peak_worker_rss_kib": 116568,
+      "per_column": {
+        "VISIBILITY": {
+          "raw_bytes": 1048576,
+          "sample_sha256": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+          "encoded_bytes": 970393,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.16218122839927673,
+          "decode_seconds": 0.02867696061730385,
+          "copy_encode_mib_s": 6.165941705276044,
+          "decode_mib_s": 34.87119898601088,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 524288,
+          "sample_sha256": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+          "encoded_bytes": 473642,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.14826359413564205,
+          "decode_seconds": 0.024501977488398552,
+          "copy_encode_mib_s": 3.372372043959521,
+          "decode_mib_s": 20.406516177592,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG": {
+          "raw_bytes": 131072,
+          "sample_sha256": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+          "encoded_bytes": 23160,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13350541703402996,
+          "decode_seconds": 0.024372415617108345,
+          "copy_encode_mib_s": 0.9362915960791166,
+          "decode_mib_s": 5.128748908756323,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_SPARSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+          "encoded_bytes": 2471,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13615674152970314,
+          "decode_seconds": 0.02383986860513687,
+          "copy_encode_mib_s": 0.9180595730746887,
+          "decode_mib_s": 5.2433174893030134,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_DENSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+          "encoded_bytes": 21864,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.14107463136315346,
+          "decode_seconds": 0.02428058721125126,
+          "copy_encode_mib_s": 0.8860558329457956,
+          "decode_mib_s": 5.148145673432349,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_BURST": {
+          "raw_bytes": 131072,
+          "sample_sha256": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+          "encoded_bytes": 1282,
+          "actual_codecs": [
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11581099033355713,
+          "decode_seconds": 0.023594144731760025,
+          "copy_encode_mib_s": 1.0793448846260343,
+          "decode_mib_s": 5.297924608885602,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "UVW": {
+          "raw_bytes": 24576,
+          "sample_sha256": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+          "encoded_bytes": 25590,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12632899917662144,
+          "decode_seconds": 0.023757394403219223,
+          "copy_encode_mib_s": 0.1855274731277802,
+          "decode_mib_s": 0.986534954221416,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "TIME": {
+          "raw_bytes": 8192,
+          "sample_sha256": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+          "encoded_bytes": 4886,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1221404168754816,
+          "decode_seconds": 0.023717721924185753,
+          "copy_encode_mib_s": 0.0639632662132192,
+          "decode_mib_s": 0.3293950416052957,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ANTENNA1": {
+          "raw_bytes": 4096,
+          "sample_sha256": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+          "encoded_bytes": 3597,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.delta",
+              "configuration": {
+                "dtype": "int32"
+              }
+            },
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13682670705020428,
+          "decode_seconds": 0.029561489820480347,
+          "copy_encode_mib_s": 0.02854888555175653,
+          "decode_mib_s": 0.1321398219007802,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ROW_ID_RAMP": {
+          "raw_bytes": 8192,
+          "sample_sha256": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+          "encoded_bytes": 1570,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.delta",
+              "configuration": {
+                "dtype": "int64"
+              }
+            },
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12875730358064175,
+          "decode_seconds": 0.02885446511209011,
+          "copy_encode_mib_s": 0.060676169683119896,
+          "decode_mib_s": 0.270755322257786,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FIELD_LABEL": {
+          "raw_bytes": 49152,
+          "sample_sha256": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715",
+          "encoded_bytes": 4809,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11699392646551132,
+          "decode_seconds": 0.024543486535549164,
+          "copy_encode_mib_s": 0.4006618242171597,
+          "decode_mib_s": 1.9098753525545578,
+          "worker_highwater_rss_kib_after_copy": 116568
+        }
+      }
+    },
+    {
+      "repetition": 1,
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "packbits-delta-zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+      "encoded_bytes": 1515547,
+      "copy_encode_seconds": 1.5200729724019766,
+      "rewrite_verified_seconds": 2.4599214512854815,
+      "decode_seconds": 0.30353572592139244,
+      "copy_encode_mib_s": 1.3748312008322126,
+      "decode_mib_s": 6.885000912680747,
+      "peak_worker_rss_kib": 116568,
+      "per_column": {
+        "VISIBILITY": {
+          "raw_bytes": 1048576,
+          "sample_sha256": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+          "encoded_bytes": 970393,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.16652651317417622,
+          "decode_seconds": 0.02913728728890419,
+          "copy_encode_mib_s": 6.005049772188907,
+          "decode_mib_s": 34.32028486676628,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 524288,
+          "sample_sha256": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+          "encoded_bytes": 473642,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.14811174012720585,
+          "decode_seconds": 0.025845127180218697,
+          "copy_encode_mib_s": 3.375829624110653,
+          "decode_mib_s": 19.346006561062282,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG": {
+          "raw_bytes": 131072,
+          "sample_sha256": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+          "encoded_bytes": 14189,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1595590654760599,
+          "decode_seconds": 0.030508186668157578,
+          "copy_encode_mib_s": 0.783408950328522,
+          "decode_mib_s": 4.097260888024745,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_SPARSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+          "encoded_bytes": 2267,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.15241153724491596,
+          "decode_seconds": 0.02916017547249794,
+          "copy_encode_mib_s": 0.8201478855182248,
+          "decode_mib_s": 4.286668306159275,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_DENSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+          "encoded_bytes": 13181,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.15037289634346962,
+          "decode_seconds": 0.028499776497483253,
+          "copy_encode_mib_s": 0.8312668242718761,
+          "decode_mib_s": 4.385999308136275,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_BURST": {
+          "raw_bytes": 131072,
+          "sample_sha256": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+          "encoded_bytes": 1357,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12741616182029247,
+          "decode_seconds": 0.029419787228107452,
+          "copy_encode_mib_s": 0.9810372421694806,
+          "decode_mib_s": 4.248841061657166,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "UVW": {
+          "raw_bytes": 24576,
+          "sample_sha256": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+          "encoded_bytes": 25590,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12406680546700954,
+          "decode_seconds": 0.023203393444418907,
+          "copy_encode_mib_s": 0.1889103206274803,
+          "decode_mib_s": 1.0100893240526163,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "TIME": {
+          "raw_bytes": 8192,
+          "sample_sha256": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+          "encoded_bytes": 4886,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11033736169338226,
+          "decode_seconds": 0.02379152551293373,
+          "copy_encode_mib_s": 0.0708055719304785,
+          "decode_mib_s": 0.32837322666648294,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ANTENNA1": {
+          "raw_bytes": 4096,
+          "sample_sha256": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+          "encoded_bytes": 3597,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.delta",
+              "configuration": {
+                "dtype": "int32"
+              }
+            },
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1356780957430601,
+          "decode_seconds": 0.030331527814269066,
+          "copy_encode_mib_s": 0.02879057211561582,
+          "decode_mib_s": 0.1287851381545758,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ROW_ID_RAMP": {
+          "raw_bytes": 8192,
+          "sample_sha256": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+          "encoded_bytes": 1570,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.delta",
+              "configuration": {
+                "dtype": "int64"
+              }
+            },
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11025039292871952,
+          "decode_seconds": 0.02804419957101345,
+          "copy_encode_mib_s": 0.07086142545588056,
+          "decode_mib_s": 0.2785781059722246,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FIELD_LABEL": {
+          "raw_bytes": 49152,
+          "sample_sha256": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715",
+          "encoded_bytes": 4809,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1136817280203104,
+          "decode_seconds": 0.02556968666613102,
+          "copy_encode_mib_s": 0.41233539299847116,
+          "decode_mib_s": 1.8332254365122698,
+          "worker_highwater_rss_kib_after_copy": 116568
+        }
+      }
+    },
+    {
+      "repetition": 2,
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "packbits-delta-zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+      "encoded_bytes": 1515547,
+      "copy_encode_seconds": 1.4836557619273663,
+      "rewrite_verified_seconds": 2.408591767773032,
+      "decode_seconds": 0.30513445287942886,
+      "copy_encode_mib_s": 1.4085772479224936,
+      "decode_mib_s": 6.848927514670994,
+      "peak_worker_rss_kib": 116568,
+      "per_column": {
+        "VISIBILITY": {
+          "raw_bytes": 1048576,
+          "sample_sha256": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+          "encoded_bytes": 970393,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.15917125530540943,
+          "decode_seconds": 0.028712693601846695,
+          "copy_encode_mib_s": 6.282541392798923,
+          "decode_mib_s": 34.8278017335052,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 524288,
+          "sample_sha256": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+          "encoded_bytes": 473642,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1422784961760044,
+          "decode_seconds": 0.02640257216989994,
+          "copy_encode_mib_s": 3.5142345009148763,
+          "decode_mib_s": 18.937548841170155,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG": {
+          "raw_bytes": 131072,
+          "sample_sha256": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+          "encoded_bytes": 14189,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.14934686198830605,
+          "decode_seconds": 0.029897654429078102,
+          "copy_encode_mib_s": 0.8369777465413876,
+          "decode_mib_s": 4.180929988889914,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_SPARSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+          "encoded_bytes": 2267,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.15645981952548027,
+          "decode_seconds": 0.029888629913330078,
+          "copy_encode_mib_s": 0.7989271646810453,
+          "decode_mib_s": 4.182192370893891,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_DENSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+          "encoded_bytes": 13181,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1478466186672449,
+          "decode_seconds": 0.03076762892305851,
+          "copy_encode_mib_s": 0.8454708070215303,
+          "decode_mib_s": 4.062711504763369,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_BURST": {
+          "raw_bytes": 131072,
+          "sample_sha256": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+          "encoded_bytes": 1357,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11934318579733372,
+          "decode_seconds": 0.03005211055278778,
+          "copy_encode_mib_s": 1.047399557543843,
+          "decode_mib_s": 4.159441639895218,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "UVW": {
+          "raw_bytes": 24576,
+          "sample_sha256": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+          "encoded_bytes": 25590,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11607487499713898,
+          "decode_seconds": 0.02377297915518284,
+          "copy_encode_mib_s": 0.2019170815439404,
+          "decode_mib_s": 0.985888215650511,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "TIME": {
+          "raw_bytes": 8192,
+          "sample_sha256": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+          "encoded_bytes": 4886,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.10683013685047626,
+          "decode_seconds": 0.02119583636522293,
+          "copy_encode_mib_s": 0.07313011319020107,
+          "decode_mib_s": 0.368586540553708,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ANTENNA1": {
+          "raw_bytes": 4096,
+          "sample_sha256": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+          "encoded_bytes": 3597,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.delta",
+              "configuration": {
+                "dtype": "int32"
+              }
+            },
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12341818399727345,
+          "decode_seconds": 0.029274456202983856,
+          "copy_encode_mib_s": 0.03165052242290566,
+          "decode_mib_s": 0.13343544190589773,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ROW_ID_RAMP": {
+          "raw_bytes": 8192,
+          "sample_sha256": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+          "encoded_bytes": 1570,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.delta",
+              "configuration": {
+                "dtype": "int64"
+              }
+            },
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12892208062112331,
+          "decode_seconds": 0.029975691810250282,
+          "copy_encode_mib_s": 0.06059861865679475,
+          "decode_mib_s": 0.26062784637145525,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FIELD_LABEL": {
+          "raw_bytes": 49152,
+          "sample_sha256": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715",
+          "encoded_bytes": 4809,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11432461626827717,
+          "decode_seconds": 0.02515551820397377,
+          "copy_encode_mib_s": 0.410016683458634,
+          "decode_mib_s": 1.863408243865763,
+          "worker_highwater_rss_kib_after_copy": 116568
+        }
+      }
+    },
+    {
+      "repetition": 3,
+      "profile": {
+        "schema_version": "shinobi-msv4-lossless-profile/v1",
+        "codec": "packbits-delta-zstd",
+        "level": 3,
+        "shuffle": "none",
+        "chunk_rows": 32
+      },
+      "msv4_logical_id": "msutils-logical-hash/v1:1a194e9c69975cac0134927a289b9b3782cd772086487666555683c8e5f76b41",
+      "encoded_bytes": 1515547,
+      "copy_encode_seconds": 1.4627188928425312,
+      "rewrite_verified_seconds": 2.337824957445264,
+      "decode_seconds": 0.2980894800275564,
+      "copy_encode_mib_s": 1.428739151607432,
+      "decode_mib_s": 7.0107933691816555,
+      "peak_worker_rss_kib": 116568,
+      "per_column": {
+        "VISIBILITY": {
+          "raw_bytes": 1048576,
+          "sample_sha256": "a62329f23588f0de735fc7e8a0bcb220d9e0bb4f5d2845e1e762530610f5e256",
+          "encoded_bytes": 970393,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.15690975449979305,
+          "decode_seconds": 0.02818937599658966,
+          "copy_encode_mib_s": 6.37309008090583,
+          "decode_mib_s": 35.4743574359709,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "WEIGHT_SPECTRUM": {
+          "raw_bytes": 524288,
+          "sample_sha256": "4203735a6505a6e1fd5c7ae20ae3a0894113934f4ea892f68787abc1cd1d0f49",
+          "encoded_bytes": 473642,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.1441518720239401,
+          "decode_seconds": 0.02637341432273388,
+          "copy_encode_mib_s": 3.468564042768465,
+          "decode_mib_s": 18.958485764545095,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG": {
+          "raw_bytes": 131072,
+          "sample_sha256": "cbe221277c10de170a589d92a3221b9eb05fc4257ec9f42778381450417de752",
+          "encoded_bytes": 14189,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.14719670079648495,
+          "decode_seconds": 0.028858304023742676,
+          "copy_encode_mib_s": 0.8492038158710212,
+          "decode_mib_s": 4.331508875128573,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_SPARSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "5591b4a322ea09eceffc971d92e565e1a059dcb38ad416f5f1e14b32572e146c",
+          "encoded_bytes": 2267,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13209806382656097,
+          "decode_seconds": 0.02893337979912758,
+          "copy_encode_mib_s": 0.9462667080731749,
+          "decode_mib_s": 4.320269559513027,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_DENSE": {
+          "raw_bytes": 131072,
+          "sample_sha256": "822094c0825b767299cba94ef314652fb09ce222c94ae1128004e03a7675595a",
+          "encoded_bytes": 13181,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.14436623826622963,
+          "decode_seconds": 0.02939677983522415,
+          "copy_encode_mib_s": 0.865853412135628,
+          "decode_mib_s": 4.25216641756867,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FLAG_BURST": {
+          "raw_bytes": 131072,
+          "sample_sha256": "98c399e335176e98d640ff5e825ae32d36c408cf27e8b69755a1cda32ef1130b",
+          "encoded_bytes": 1357,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.packbits",
+              "configuration": {}
+            },
+            {
+              "name": "bytes"
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11608070507645607,
+          "decode_seconds": 0.030345888808369637,
+          "copy_encode_mib_s": 1.0768370153994953,
+          "decode_mib_s": 4.119174125673459,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "UVW": {
+          "raw_bytes": 24576,
+          "sample_sha256": "11c1251be094853d84812f76e688aa2808e3dfe4069f97b52df89d2edf11cc0a",
+          "encoded_bytes": 25590,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.13134790025651455,
+          "decode_seconds": 0.022567396983504295,
+          "copy_encode_mib_s": 0.17843833022247005,
+          "decode_mib_s": 1.038555754442203,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "TIME": {
+          "raw_bytes": 8192,
+          "sample_sha256": "4de4b6ad3a0717a94e13cd92cda1ce2f6135302501f3e4b6a3ad8700918c7e16",
+          "encoded_bytes": 4886,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11053858324885368,
+          "decode_seconds": 0.022711435332894325,
+          "copy_encode_mib_s": 0.07067667931306708,
+          "decode_mib_s": 0.3439897076291207,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ANTENNA1": {
+          "raw_bytes": 4096,
+          "sample_sha256": "cef119485f0980181ca13beb44a104e73f2b86d649b6e5ad71e9412a5f50afb8",
+          "encoded_bytes": 3597,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.delta",
+              "configuration": {
+                "dtype": "int32"
+              }
+            },
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12073423340916634,
+          "decode_seconds": 0.029461639001965523,
+          "copy_encode_mib_s": 0.03235412102847237,
+          "decode_mib_s": 0.13258766763585,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "ROW_ID_RAMP": {
+          "raw_bytes": 8192,
+          "sample_sha256": "2f88e9ce00d238e7e011a7b140b413dcad818f1da41a721f914f1af604d0e217",
+          "encoded_bytes": 1570,
+          "actual_codecs": [
+            {
+              "name": "numcodecs.delta",
+              "configuration": {
+                "dtype": "int64"
+              }
+            },
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.12878477945923805,
+          "decode_seconds": 0.028124984353780746,
+          "copy_encode_mib_s": 0.0606632245891507,
+          "decode_mib_s": 0.2777779323084243,
+          "worker_highwater_rss_kib_after_copy": 116568
+        },
+        "FIELD_LABEL": {
+          "raw_bytes": 49152,
+          "sample_sha256": "61376f386a667b237082a94c54deb66d61ef686a6d290b9139b24b13782d6715",
+          "encoded_bytes": 4809,
+          "actual_codecs": [
+            {
+              "name": "bytes",
+              "configuration": {
+                "endian": "little"
+              }
+            },
+            {
+              "name": "zstd",
+              "configuration": {
+                "level": 3,
+                "checksum": false
+              }
+            }
+          ],
+          "copy_encode_seconds": 0.11027508415281773,
+          "decode_seconds": 0.023101063445210457,
+          "copy_encode_mib_s": 0.4250733550567167,
+          "decode_mib_s": 2.0291273651178425,
+          "worker_highwater_rss_kib_after_copy": 116568
+        }
+      }
+    }
+  ],
+  "scope": "sampled MSv2 columns encoded as independent Zarr v3 arrays; no native preservation sidecar or full export measured",
+  "rss_scope": "Each codec runs in a fresh worker; per-column RSS is that worker\u2019s cumulative high-water when copying the column ends."
+}

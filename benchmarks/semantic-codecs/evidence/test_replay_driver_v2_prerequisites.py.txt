@@ -1,0 +1,194 @@
+"""Continuation prerequisites require completed exports, not obsolete verification."""
+
+import copy
+import importlib.util
+import json
+from pathlib import Path
+from datetime import datetime, timezone
+import uuid
+
+from shinobi import dataset_state as state
+from shinobi.dataset_lifecycle import structural_signature
+from tests.test_dataset_lifecycle import _snapshot
+from tests.test_dataset_state import _versions
+
+import pytest
+
+spec = importlib.util.spec_from_file_location("replay_v2", Path(__file__).with_name("qualify-published-replay-v2.py"))
+driver = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(driver)
+
+
+@pytest.fixture
+def capture():
+    return {
+        "status": "failed",
+        "failed_stage": "verify",
+        "script_sha256": "a" * 64,
+        "stages": [
+            {"stage": "prepare", "original_native_id": "n", "copied_native_id": "n"},
+            *({"stage": name, "state_id": "n", "representation_id": name, "attempt": name + ".json"} for name in driver.PROFILES),
+            {"stage": "archive", "recorded_source_absent": True},
+        ],
+    }
+
+
+def test_missing_old_verify_is_explicitly_superseded(capture):
+    stages, disposition = driver.capture_prerequisites(capture)
+    assert set(stages) == {"prepare", *driver.PROFILES, "archive"}
+    assert disposition["disposition"] == "superseded/not-used"
+    assert disposition["completed"] is False
+    assert disposition["capture_failed_stage"] == "verify"
+    assert driver.transition_receipt(None, capture, "b" * 64, disposition) is None
+
+
+@pytest.mark.parametrize("missing", ["prepare", *driver.PROFILES, "archive"])
+def test_missing_prerequisite_refuses(capture, missing):
+    capture["stages"] = [s for s in capture["stages"] if s["stage"] != missing]
+    with pytest.raises(ValueError, match="successful prepare"):
+        driver.capture_prerequisites(capture)
+
+
+def test_incomplete_or_duplicate_export_refuses(capture):
+    capture["stages"][1].pop("attempt")
+    with pytest.raises(ValueError, match="incomplete capture export"):
+        driver.capture_prerequisites(capture)
+    capture["stages"].append(copy.deepcopy(capture["stages"][1]))
+    with pytest.raises(ValueError, match="duplicate"):
+        driver.capture_prerequisites(capture)
+
+
+def test_completed_verify_is_passed_only_when_both_verified(capture):
+    verify = {"stage": "verify", **{p: {"verified": True} for p in driver.PROFILES}}
+    capture["stages"].append(verify)
+    assert driver.capture_prerequisites(capture)[1]["disposition"] == "passed"
+    verify[driver.PROFILES[1]]["verified"] = False
+    assert driver.capture_prerequisites(capture)[1]["disposition"] == "superseded/not-used"
+
+
+def test_running_capture_requires_bound_exit_receipt(capture, tmp_path):
+    capture["status"] = "running"
+    disposition = driver.capture_prerequisites(capture)[1]
+    with pytest.raises(ValueError, match="operator transition receipt"):
+        driver.transition_receipt(None, capture, "b" * 64, disposition)
+    receipt = {
+        "schema_version": "shinobi-qualification-transition/v1",
+        "disposition": "cancelled-obsolete-verification",
+        "capture_report_sha256": "b" * 64,
+        "capture_script_sha256": "a" * 64,
+        "processes": [{"pid": 123, "argv": ["python", "capture.py", "--stage", "verify"], "script_sha256": "a" * 64, "exit_confirmed": True}],
+    }
+    path = tmp_path / "transition.json"
+    path.write_text(json.dumps(receipt))
+    recorded = driver.transition_receipt(path, capture, "b" * 64, disposition)
+    assert recorded["sha256"] == driver.sha(path)
+    assert recorded["receipt"] == receipt
+    with pytest.raises(ValueError, match="match capture evidence"):
+        driver.transition_receipt(path, capture, "c" * 64, disposition)
+    receipt["processes"][0]["exit_confirmed"] = False
+    path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="exit confirmation"):
+        driver.transition_receipt(path, capture, "b" * 64, disposition)
+
+
+def test_running_capture_with_completed_verify_still_requires_exit_receipt(capture):
+    capture["status"] = "running"
+    capture["stages"].append({"stage": "verify", **{p: {"verified": True} for p in driver.PROFILES}})
+    disposition = driver.capture_prerequisites(capture)[1]
+    assert disposition["completed"] is True
+    with pytest.raises(ValueError, match="running capture requires"):
+        driver.transition_receipt(None, capture, "b" * 64, disposition)
+
+
+@pytest.fixture
+def publication(tmp_path):
+    store = state.DatasetStateStore(tmp_path / "store")
+    observation = _snapshot(tmp_path / "source.ms").observations[0]
+    physical = state.StateRepresentation(
+        representation_id="sha256:" + "0" * 64,
+        state_id="msutils-logical-hash/v1:" + "a" * 64,
+        msv4_id="msutils-logical-hash/v1:" + "b" * 64,
+        payload_id="msutils-logical-hash/v1:" + "c" * 64,
+        versions=_versions(),
+        source_spelling=str(observation.root),
+        source=observation.root,
+        observation=observation,
+        structural_signature=structural_signature(observation),
+        capture_attempt=uuid.uuid4(),
+        captured_at=datetime.now(timezone.utc),
+        files=(),
+        zarr_metadata={},
+    )
+    attempt = state.StateAttempt(
+        attempt_id=physical.capture_attempt,
+        operation="export",
+        store=store.root,
+        authority=tmp_path,
+        registry=tmp_path / "owners.json",
+        source=physical.source,
+        stage=tmp_path / "stage",
+        parent_identity=(1, 2),
+        state_id=physical.state_id,
+        representation_id=physical.representation_id,
+        versions=physical.versions,
+        structural_signature=physical.structural_signature,
+        phase="committed",
+        finished=True,
+        provenance=state.StateProvenance.from_representation(physical, operation="export"),
+    )
+    path = store._attempt_path(physical.capture_attempt)
+    path.parent.mkdir(parents=True)
+    state._write(path, attempt)
+    prior = {"state_id": physical.state_id, "representation_id": physical.representation_id, "attempt": str(path)}
+    return prior, physical, store, attempt
+
+
+def test_committed_export_real_uuid_attempt_matches_physical_and_report(publication):
+    prior, physical, store, attempt = publication
+    recorded = driver.validate_capture_export(prior, physical, physical.versions, store, state.read_state_attempt)
+    assert recorded == attempt.model_dump(mode="json")
+    assert recorded["attempt_id"] == str(physical.capture_attempt)
+    assert recorded["phase"] == "committed"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("finished", False),
+        ("phase", "published"),
+        ("operation", "materialize"),
+        ("state_id", "msutils-logical-hash/v1:" + "d" * 64),
+        ("representation_id", "sha256:" + "e" * 64),
+        ("attempt_id", uuid.uuid4()),
+    ],
+)
+def test_unfinished_or_mismatched_real_export_attempt_refuses(publication, field, value):
+    prior, physical, store, attempt = publication
+    data = attempt.model_dump()
+    data[field] = value
+    if field in {"state_id", "representation_id"}:
+        data["provenance"] = {**data["provenance"], field: value}
+    if field == "operation":
+        data["provenance"] = state.StateProvenance.from_representation(physical, operation="materialize").validated_replay().model_dump()
+    changed = state.StateAttempt.model_validate(data)
+    store._attempt_path(physical.capture_attempt).write_text(changed.model_dump_json())
+    with pytest.raises(ValueError, match="capture export attempt"):
+        driver.validate_capture_export(prior, physical, physical.versions, store, state.read_state_attempt)
+
+
+def test_real_export_attempt_runtime_mismatch_refuses(publication):
+    prior, physical, store, attempt = publication
+    versions = {**attempt.versions, "numpy": "different"}
+    changed = state.StateAttempt.model_validate({**attempt.model_dump(), "versions": versions})
+    store._attempt_path(physical.capture_attempt).write_text(changed.model_dump_json())
+    with pytest.raises(ValueError, match="runtime differ"):
+        driver.validate_capture_export(prior, physical, physical.versions, store, state.read_state_attempt)
+
+
+def test_report_and_canonical_store_attempt_paths_must_match(publication, tmp_path):
+    prior, physical, store, attempt = publication
+    other = tmp_path / "other.json"
+    state._write(other, attempt)
+    prior["attempt"] = str(other)
+    with pytest.raises(ValueError, match="attempt differs"):
+        driver.validate_capture_export(prior, physical, physical.versions, store, state.read_state_attempt)

@@ -51,7 +51,11 @@ def state(ctx, store):
 @state.command("export")
 @click.argument("source", type=click.Path(path_type=Path))
 @click.option("--block-rows", type=click.IntRange(min=1), help="Native payload rows per chunk.")
-@click.option("--codec", type=click.Choice(["zstd", "gzip", "blosc-zstd"]), help="Explicit lossless MSv4 codec; omitted keeps historical export.")
+@click.option(
+    "--codec",
+    type=click.Choice(["zstd", "gzip", "blosc-zstd", "packbits-zstd", "delta-zstd", "packbits-delta-zstd"]),
+    help="Explicit lossless MSv4 codec; semantic choices apply PackBits to bool and Delta to integers, with Zstd for other arrays.",
+)
 @click.option("--level", type=click.IntRange(1, 9), default=3)
 @click.option("--shuffle", type=click.Choice(["none", "byte", "bit"]), default="none")
 @click.option("--chunk-rows", type=click.IntRange(1, 1_048_576))

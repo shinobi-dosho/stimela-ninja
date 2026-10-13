@@ -1,0 +1,366 @@
+"""Qualify published full-MS exports under an explicitly recorded replay revision."""
+
+from __future__ import annotations
+import argparse
+import hashlib
+import importlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import resource
+import subprocess
+import sys
+import time
+import traceback
+
+PROFILES = ("export-baseline", "export-combined")
+STAGES = ("audit", "verify", "materialize-baseline", "materialize-combined", "compare-baseline", "compare-combined", "final-audit")
+FILES = (
+    "examples/state_codec_qualification.py",
+    "src/shinobi/__init__.py",
+    "src/shinobi/dataset_state.py",
+    "src/shinobi/dataset_lifecycle.py",
+    "src/shinobi/_state_adapter.py",
+    "src/shinobi/state_codecs.py",
+    "uv.lock",
+)
+PIN = "25c280a8ab412b5015a80bf4ff6f83b7a6820675"
+
+
+def sha(path):
+    with Path(path).open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+REQUIRED_MODULES = {
+    "shinobi": "src/shinobi/__init__.py",
+    "shinobi.dataset_state": "src/shinobi/dataset_state.py",
+    "shinobi.dataset_lifecycle": "src/shinobi/dataset_lifecycle.py",
+    "shinobi._state_adapter": "src/shinobi/_state_adapter.py",
+    "shinobi.state_codecs": "src/shinobi/state_codecs.py",
+}
+
+
+def package_hashes(checkout):
+    """Record tracked Python sources, so ignored files cannot supply modules."""
+    checkout = Path(checkout).resolve(strict=True)
+    names = subprocess.check_output(["git", "ls-files", "-z", "--", "src/shinobi"], cwd=checkout).decode().split("\0")
+    return {name: sha(checkout / name) for name in names if name.endswith(".py")}
+
+
+def loaded_source_guard(checkout, recorded_files, recorded_package):
+    """Verify ambient imports against the recorded checkout without changing paths."""
+    checkout = Path(checkout).resolve(strict=True)
+    package_root = (checkout / "src/shinobi").resolve(strict=True)
+    if not package_root.is_relative_to(checkout):
+        raise RuntimeError(f"Shinobi package resolves outside declared checkout: {package_root}")
+    for name, expected in recorded_files.items():
+        if sha(checkout / name) != expected:
+            raise RuntimeError(f"recorded checkout source hash changed: {name}")
+    if package_hashes(checkout) != recorded_package:
+        raise RuntimeError("recorded Shinobi package source hashes changed")
+    for name, relative in REQUIRED_MODULES.items():
+        if relative not in recorded_files or recorded_files[relative] != recorded_package.get(relative):
+            raise RuntimeError(f"missing or inconsistent recorded source hash for {name}")
+        importlib.import_module(name)
+    loaded = {}
+    for name, module in sorted(sys.modules.copy().items()):
+        if name != "shinobi" and not name.startswith("shinobi."):
+            continue
+        filename = getattr(module, "__file__", None)
+        if not filename:
+            raise RuntimeError(f"Shinobi module has no inspectable source file: {name}")
+        path = Path(filename).resolve(strict=True)
+        if not path.is_relative_to(package_root):
+            raise RuntimeError(f"Shinobi module {name} loaded from {path}; expected under {package_root}")
+        relative = path.relative_to(checkout).as_posix()
+        expected = recorded_package.get(relative)
+        actual = sha(path)
+        if expected is None or actual != expected:
+            raise RuntimeError(f"Shinobi module {name} has unrecorded or changed source: {path}")
+        if name in REQUIRED_MODULES and path != (checkout / REQUIRED_MODULES[name]).resolve(strict=True):
+            raise RuntimeError(f"Shinobi module {name} loaded from unexpected source: {path}")
+        namespaces = [str(Path(root).resolve(strict=True)) for root in getattr(module, "__path__", ())]
+        if any(not Path(root).is_relative_to(package_root) for root in namespaces):
+            raise RuntimeError(f"Shinobi package {name} has a namespace outside declared checkout: {namespaces}")
+        loaded[name] = {"path": str(path), "sha256": actual, "namespace_paths": namespaces}
+    return loaded
+
+
+def write(path, data):
+    pending = path.with_suffix(".pending")
+    pending.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    pending.replace(path)
+
+
+def capture_prerequisites(old):
+    """Require completed scientific preparation and publication, not old verification."""
+    stages = {}
+    for stage in old["stages"]:
+        name = stage["stage"]
+        if name in stages:
+            raise ValueError(f"duplicate capture stage: {name}")
+        stages[name] = stage
+    required = ("prepare", *PROFILES, "archive")
+    if not all(name in stages for name in required):
+        raise ValueError("capture requires successful prepare, both exports, and archive")
+    prepare = stages["prepare"]
+    if prepare["original_native_id"] != prepare["copied_native_id"]:
+        raise ValueError("capture working copy native ID differs from original")
+    if stages["archive"].get("recorded_source_absent") is not True:
+        raise ValueError("capture archive did not remove recorded source")
+    for profile in PROFILES:
+        prior = stages[profile]
+        if prior["state_id"] != prepare["original_native_id"] or not prior.get("attempt") or not prior.get("representation_id"):
+            raise ValueError(f"incomplete capture export: {profile}")
+    verify = stages.get("verify")
+    verified = verify is not None and all(verify.get(profile, {}).get("verified") is True for profile in PROFILES)
+    return stages, {
+        "disposition": "passed" if verified else "superseded/not-used",
+        "completed": verified,
+        "capture_report_status": old.get("status"),
+        "capture_failed_stage": old.get("failed_stage"),
+        "reason": "completed capture verification" if verified else "final replay driver verifies both source-absent representations independently",
+    }
+
+
+def transition_receipt(path, old, capture_report_sha256, prior_verify):
+    """Bind an operator-confirmed cancellation to immutable capture evidence."""
+    if path is None:
+        if old.get("status") == "running":
+            raise ValueError("running capture requires an operator transition receipt")
+        return None
+    path = Path(path).resolve(strict=True)
+    receipt = json.loads(path.read_text())
+    if receipt.get("schema_version") != "shinobi-qualification-transition/v1" or receipt.get("disposition") != "cancelled-obsolete-verification":
+        raise ValueError("unsupported operator transition receipt")
+    if receipt.get("capture_report_sha256") != capture_report_sha256 or receipt.get("capture_script_sha256") != old["script_sha256"]:
+        raise ValueError("operator transition receipt does not match capture evidence")
+    processes = receipt.get("processes")
+    if not isinstance(processes, list) or not processes:
+        raise ValueError("operator transition receipt requires exited processes")
+    for process in processes:
+        if (
+            type(process.get("pid")) is not int
+            or process["pid"] <= 0
+            or not isinstance(process.get("argv"), list)
+            or not process["argv"]
+            or not all(isinstance(arg, str) and arg for arg in process["argv"])
+            or process.get("script_sha256") != old["script_sha256"]
+            or process.get("exit_confirmed") is not True
+        ):
+            raise ValueError("operator transition process lacks exact identity or exit confirmation")
+    return {"path": str(path), "sha256": sha(path), "receipt": receipt}
+
+
+def validate_capture_export(prior, physical, runtime, store, read_attempt):
+    """Prove each reported export is the completed publication named by its manifest."""
+    if physical.versions != runtime:
+        raise ValueError("capture export runtime differs from replay runtime")
+    if physical.state_id != prior["state_id"] or physical.representation_id != prior["representation_id"]:
+        raise ValueError("capture export IDs differ from physical manifest")
+    attempt_path = store._attempt_path(physical.capture_attempt)
+    if Path(prior["attempt"]).resolve(strict=True) != attempt_path.resolve(strict=True):
+        raise ValueError("capture export attempt differs from physical manifest")
+    attempt = read_attempt(attempt_path)
+    if attempt.attempt_id != physical.capture_attempt:
+        raise ValueError("capture export attempt UUID differs from physical manifest")
+    if not attempt.finished or attempt.phase != "committed" or attempt.operation != "export":
+        raise ValueError("capture export attempt is not a finished committed export")
+    if attempt.state_id != physical.state_id or attempt.representation_id != physical.representation_id or attempt.versions != runtime:
+        raise ValueError("capture export attempt IDs or runtime differ from physical manifest")
+    return attempt.model_dump(mode="json")
+
+
+def run_stage(args, report):
+    from shinobi import _state_adapter as adapter
+    from shinobi.dataset_state import DatasetStateStore, read_state_attempt
+    from shinobi.dataset_lifecycle import observe_dataset, structural_signature
+
+    loaded_before = loaded_source_guard(args.checkout, report["source_sha256"], report["package_source_sha256"])
+    spec = importlib.util.spec_from_file_location("qualification", args.checkout / "examples/state_codec_qualification.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    old = json.loads((args.capture_root / "report.json").read_text())
+    assert sha(args.capture_root / "report.json") == report["capture_report_sha256"]
+    stages, prior_verify = capture_prerequisites(old)
+    assert prior_verify == report["prior_verify"]
+    transition = transition_receipt(args.transition_receipt, old, report["capture_report_sha256"], prior_verify)
+    assert transition == report["operator_transition"]
+    source = Path(old["source"])
+    archive = args.capture_root / "og-data/source-copy.ms"
+    assert archive.is_dir() and not os.path.lexists(args.capture_root / "source-copy.ms")
+    assert stages["archive"]["recorded_source_absent"]
+    store = DatasetStateStore(args.capture_root / "store", cache_dir=args.capture_root / "cache")
+    runtime = adapter.runtime()
+    assert runtime["msutils_commit"] == PIN
+    expected = stages["prepare"]["original_native_id"]
+    loaded = {}
+    capture_attempts = {}
+    for profile in PROFILES:
+        prior = stages[profile]
+        rep, _, physical = store._load(prior["state_id"], prior["representation_id"])
+        capture_attempts[profile] = validate_capture_export(prior, physical, runtime, store, read_state_attempt)
+        assert physical.state_id == expected == prior["state_id"]
+        assert not os.path.lexists(physical.source)
+        assert sha(rep / "representation.json") == report["representation_sha256"][profile]
+        loaded[profile] = (rep, physical)
+    before = {"original": module._observation(source), "archive": module._observation(archive)}
+    if report["stages"]:
+        assert before == report["stages"][0]["observations_before"]
+    assert before["original"] == stages["prepare"]["source_observation_before"]
+    result = {
+        "runtime": runtime,
+        "versions": module._versions(),
+        "observations_before": before,
+        "recorded_source_absent": True,
+        "loaded_sources_before": loaded_before,
+        "prior_verify": prior_verify,
+        "operator_transition": transition,
+        "capture_export_attempts": capture_attempts,
+    }
+    stage = args.stage
+    if stage in ("audit", "final-audit"):
+        ids = {"original": adapter.native_id(source), "archive": adapter.native_id(archive)}
+        assert ids["original"] == ids["archive"] == expected
+        result["native_ids"] = ids
+        result["representations"] = {
+            profile: {
+                "state_id": physical.state_id,
+                "representation_id": physical.representation_id,
+                "manifest_bytes": (rep / "representation.json").stat().st_size,
+                "ledger_entries": len(physical.files),
+                "zarr_nodes": len(physical.zarr_metadata),
+                "source_structural_signature": physical.structural_signature,
+                "capture_attempt": str(physical.capture_attempt),
+            }
+            for profile, (rep, physical) in loaded.items()
+        }
+    elif stage == "verify":
+        for profile, (_, physical) in loaded.items():
+            verified = store.verify(physical.state_id, physical.representation_id)
+            assert verified.verified
+            result[profile] = {"verified": True, "attempt": str(verified.attempt)}
+    else:
+        action, suffix = stage.split("-", 1)
+        profile = "export-" + suffix
+        rep, physical = loaded[profile]
+        destination = args.workdir / (profile + ".ms")
+        if action == "materialize":
+            assert not os.path.lexists(destination)
+            restored = store.materialize(physical.state_id, destination, representation_id=physical.representation_id)
+            native_id = adapter.native_id(destination)
+            assert native_id == expected
+            attempt = read_state_attempt(restored.attempt)
+            observed = observe_dataset(destination, destination.parent)
+            assert attempt.schema_version == "shinobi-state-attempt/v3" and attempt.finished and attempt.phase == "committed"
+            assert attempt.structural_signature == physical.structural_signature
+            assert attempt.restored_structural_signature == structural_signature(observed)
+            result[profile] = {"destination": str(destination), "native_id": native_id, "attempt": str(restored.attempt), "attempt_record": attempt.model_dump(mode="json")}
+        elif action == "compare":
+            manifest = json.loads((rep / "preservation/manifest.json").read_text())
+            result[profile] = module._compare_values(archive, destination, 128, manifest["native_model"])
+        else:
+            raise ValueError(stage)
+    after = {"original": module._observation(source), "archive": module._observation(archive)}
+    assert before == after
+    result["observations_after"] = after
+    assert sha(args.capture_root / "report.json") == report["capture_report_sha256"]
+    for profile, (rep, _) in loaded.items():
+        assert sha(rep / "representation.json") == report["representation_sha256"][profile]
+    assert transition_receipt(args.transition_receipt, old, report["capture_report_sha256"], prior_verify) == transition
+    result["loaded_sources_after"] = loaded_source_guard(args.checkout, report["source_sha256"], report["package_source_sha256"])
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--capture-root", type=Path, required=True)
+    parser.add_argument("--workdir", type=Path, required=True)
+    parser.add_argument("--checkout", type=Path, required=True)
+    parser.add_argument("--capture-commit", required=True)
+    parser.add_argument("--capture-checkout", type=Path, required=True)
+    parser.add_argument("--replay-commit", required=True)
+    parser.add_argument("--transition-receipt", type=Path)
+    parser.add_argument("--stage", choices=STAGES)
+    args = parser.parse_args()
+    report_path = args.workdir / "report.json"
+    if args.stage:
+        report = json.loads(report_path.read_text())
+        started = time.perf_counter()
+        try:
+            details = run_stage(args, report)
+            report["stages"].append({"stage": args.stage, "seconds": time.perf_counter() - started, "peak_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, **details})
+        except Exception:
+            report.update(status="failed", failed_stage=args.stage, traceback=traceback.format_exc())
+            write(report_path, report)
+            raise
+        write(report_path, report)
+        return
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.checkout, text=True).strip() == args.replay_commit
+    assert not subprocess.check_output(["git", "status", "--porcelain"], cwd=args.checkout, text=True).strip()
+    from shinobi.dataset_state import DatasetStateStore, read_state_attempt
+    from shinobi import _state_adapter as adapter
+
+    hashes = {name: sha(args.checkout / name) for name in FILES}
+    packages = package_hashes(args.checkout)
+    loaded_source_guard(args.checkout, hashes, packages)
+    assert adapter.runtime()["msutils_commit"] == PIN
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.capture_checkout, text=True).strip() == args.capture_commit
+    assert not subprocess.check_output(["git", "status", "--porcelain"], cwd=args.capture_checkout, text=True).strip()
+    old = json.loads((args.capture_root / "report.json").read_text())
+    assert old["script_sha256"] == sha(args.capture_checkout / "examples/state_codec_qualification.py")
+    stages, prior_verify = capture_prerequisites(old)
+    transition = transition_receipt(args.transition_receipt, old, sha(args.capture_root / "report.json"), prior_verify)
+    store = DatasetStateStore(args.capture_root / "store", cache_dir=args.capture_root / "cache")
+    representations = {}
+    capture_attempts = {}
+    for profile in PROFILES:
+        prior = stages[profile]
+        rep, _, physical = store._load(prior["state_id"], prior["representation_id"])
+        capture_attempts[profile] = validate_capture_export(prior, physical, adapter.runtime(), store, read_state_attempt)
+        representations[profile] = sha(rep / "representation.json")
+    args.workdir.mkdir(parents=True, exist_ok=False)
+    loaded_parent = loaded_source_guard(args.checkout, hashes, packages)
+    report = {
+        "schema_version": "shinobi-published-state-qualification/v2",
+        "status": "running",
+        "source": old["source"],
+        "capture_root": str(args.capture_root),
+        "command": [sys.executable, __file__, *sys.argv[1:]],
+        "capture_commit": args.capture_commit,
+        "replay_commit": args.replay_commit,
+        "capture_report_sha256": sha(args.capture_root / "report.json"),
+        "capture_script_sha256": old["script_sha256"],
+        "capture_source_sha256": {name: sha(args.capture_checkout / name) for name in FILES},
+        "capture_stages": old["stages"],
+        "capture_export_attempts": capture_attempts,
+        "capture_report_status": old.get("status"),
+        "capture_failed_stage": old.get("failed_stage"),
+        "prior_verify": prior_verify,
+        "operator_transition": transition,
+        "representation_sha256": representations,
+        "source_sha256": hashes,
+        "package_source_sha256": packages,
+        "loaded_sources_parent": loaded_parent,
+        "driver_sha256": sha(__file__),
+        "runtime": adapter.runtime(),
+        "stages": [],
+    }
+    write(report_path, report)
+    for stage in STAGES:
+        print(stage, flush=True)  # noqa: T201
+        subprocess.run([sys.executable, __file__, *sys.argv[1:], "--stage", stage], check=True)
+    report = json.loads(report_path.read_text())
+    assert hashes == {name: sha(args.checkout / name) for name in FILES}
+    assert not subprocess.check_output(["git", "status", "--porcelain"], cwd=args.checkout, text=True).strip()
+    assert report["capture_source_sha256"] == {name: sha(args.capture_checkout / name) for name in FILES}
+    assert transition_receipt(args.transition_receipt, old, report["capture_report_sha256"], prior_verify) == transition
+    loaded_final = loaded_source_guard(args.checkout, hashes, packages)
+    report.update(status="passed", source_sha256_after=hashes, loaded_sources_parent_after=loaded_final)
+    write(report_path, report)
+
+
+if __name__ == "__main__":
+    main()

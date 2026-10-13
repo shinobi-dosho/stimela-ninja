@@ -51,6 +51,17 @@ every file/directory, sizes/checksums and actual Zarr node metadata: chunks,
 shards, codecs, dtype, shape, dimensions and schema attributes. Node documents
 are JSON text, preserving non-finite fill values without normalization.
 
+Ordinary metadata files retain a 64 MiB serialized limit. Only the physical
+``representation.json`` ledger has a separate finite 256 MiB limit, allowing
+full datasets with many independently hashed chunks. New physical manifests
+use compact JSON; historical pretty JSON remains readable within the physical
+limit. Formatting does not change the canonical model digest or omit ledger
+entries. Reads are bounded to the selected limit plus one byte and reject
+nonregular files and duplicate JSON keys before strict model validation.
+An oversized physical manifest refuses while export is still private staging.
+Decoded JSON and Pydantic ledger objects can consume substantially more memory
+than the serialized file; this byte budget is not a peak-memory guarantee.
+
 Fresh source observations include supplemental ``table_columns`` evidence
 for supported MSv2 subtables. Historical observations omit this optional field;
 an empty default stays omitted even in nested representation serialization,
@@ -58,9 +69,11 @@ preserving their original canonical representation digests. The evidence does
 not enter the frozen structural-signature v1 inputs or scientific logical IDs.
 
 Manifests reject unknown fields/contracts. Reopening requires the exact
-recorded runtime stack and pinned msutils commit, not only nominal version
-3.0.0. There is no implicit migration: recovery of a published-but-uncommitted
-attempt also needs its original stack, so settle attempts before upgrading.
+recorded runtime stack and exact installed msutils Git commit, not only its
+nominal version. The development group tracks upstream ``main``; the lockfile
+resolves it to a commit, and provenance records that installed commit. There
+is no implicit migration: recovery of a published-but-uncommitted attempt also
+needs its original stack, so settle attempts before upgrading.
 The MSv4 adapter contract identifies
 xarray-ms 0.5.8's schema; no universal upstream schema version is invented.
 Verification reads every physical file and both logical trees. This is
@@ -78,8 +91,13 @@ qualified runtime for replay. Native profile v2 accepts typed empty column
 keywords, uniformly defined zero-length cells and TiledColumn/TiledShape
 managers. Casacore can regenerate physical manager fields, which the v2
 native model excludes from its logical identity. After msutils succeeds Shinobi checks
-its existing structural signature and independently recomputes the native
-logical root before publication. Consumers needing identical files refuse.
+the frozen structural document and independently recomputes the native
+logical root before publication. Only this reusable-state replay comparison
+omits per-resource table filenames, which casacore may regenerate when it
+renumbers storage managers. Resource paths, members, manager types, profiles,
+status, rows, columns, keywords and subtables remain exact. The frozen observed
+structural signature, mutation snapshots and their recovery rules are unchanged.
+Consumers needing identical files refuse.
 
 Transactions and recovery
 -------------------------
@@ -101,8 +119,17 @@ There is no overwrite. msutils runs inside a recorded outer stage;
 independent validation and content sync precede Linux
 ``renameat2(RENAME_NOREPLACE)`` publication. A racing empty directory survives.
 
-New operations write ``shinobi-state-attempt/v2``.  In addition to IDs,
-versions, phase events, staging/parent/candidate identities and outcome, each
+Exports continue to write ``shinobi-state-attempt/v2``. New materializations
+write ``shinobi-state-attempt/v3`` and keep the source structural signature in
+both the attempt and its ``shinobi-state-provenance/v1`` record. A separate
+``restored_structural_signature`` records the observed candidate's frozen
+signature before publication. It may equal the source signature. The field is
+omitted while absent; historical v1/v2 attempts reject a non-null restored
+signature and retain their serialized shape and exact-signature recovery.
+Ready, published and committed v3 attempts require both signatures, validated
+exact replay provenance, complete versions and candidate/state identities.
+In addition to IDs, versions, phase events, staging/parent/candidate identities
+and outcome, each
 committed attempt embeds closed ``shinobi-state-provenance/v1`` evidence.  It
 keeps the native logical, MSv4, preservation-payload and representation IDs
 separate; names the MSv2/closure/mapping/MSv4 profiles and complete software
@@ -112,8 +139,8 @@ Closed cache, materialization, replay and transformation decisions distinguish
 ``store-requested`` from ``selected-representation``, requested work from
 validated reconstruction, and explicit ``not-requested`` behavior.  Producer
 and replay-runtime stacks remain separate and each complete stack contains the
-exact qualified package-key set plus the pinned msutils commit.  Actual fidelity
-is absent until reconstruction validates. A refusal before validation cannot
+exact qualified package-key set plus the installed msutils Git commit. Actual
+fidelity is absent until reconstruction validates. A refusal before validation cannot
 claim successful exact replay; a later publication failure may retain the
 validated staged-reconstruction evidence while its attempt remains failed. Legacy
 ``shinobi-state-attempt/v1`` recovery records remain readable.
@@ -124,7 +151,7 @@ strictly reopens the selected representation and rejects different MSv2,
 closure, mapping, MSv4 or preservation profiles, any software-stack mismatch,
 and any fidelity other than exact-logical.  Recipes and detached workers still
 cannot consume state IDs; run-manifest replay therefore cannot silently select
-or downgrade a reusable state. The exact package-key set is part of the v2
+or downgrade a reusable state. The exact package-key set is part of the v2/v3
 attempt and representation reader contract: changing ``adapter.PACKAGES``
 requires a compatible reader or migration first, otherwise existing v2 records
 and representations are intentionally refused and unfinished attempts cannot
@@ -138,7 +165,10 @@ recorded, and unexpected operational exceptions remain distinct ``failed``
 attempts. Recovery uses persistent
 operation locks and ownership liveness, never PID age or broad globs. It
 removes only recorded private staging. After a crash following publication,
-it recognizes the candidate inode, revalidates and records success rather
+it recognizes the candidate inode and revalidates the selected representation.
+For v3, recovery also repeats the replay structural comparison and native ID
+check and requires the observed destination signature to equal the recorded
+restored signature. It records success rather
 than deleting the destination. An unrelated file or symlink that won the
 publication race is preserved while only recorded private staging is cleaned.
 Live/uncertain owners or mismatched directory identities refuse. A crash
@@ -168,8 +198,13 @@ are recorded; native reconstruction does not use the padded MSv4 view.
 Explicit MSv4 codec and precision artifacts
 -------------------------------------------
 
-``export`` accepts an optional named lossless profile: ``--codec zstd|gzip|blosc-zstd``,
+``export`` accepts an optional named lossless profile: ``--codec zstd|gzip|blosc-zstd|packbits-zstd|delta-zstd|packbits-delta-zstd``,
 ``--level``, ``--chunk-rows`` and, for Blosc only, ``--shuffle none|byte|bit``.
+PackBits applies only to boolean arrays; Delta applies only to signed and
+unsigned integer arrays. The combined choice applies each where eligible.
+Other array types use Zstd alone. These are explicit selections; the default
+export still uses its historical layout. Semantic selections write C-order
+chunks explicitly and preserve the array's native dtype.
 For native profile v1, the historical export keeps its v1 representation
 manifest; an explicit lossless selection uses ``shinobi-state-representation/v2``.
 Native profile v2 uses ``shinobi-state-representation/v3`` with explicit
@@ -180,8 +215,10 @@ the MSv4 tree inside private export staging. It checks the public
 ``msutils.logical_id`` before and after rewriting, then captures the usual
 native preservation sidecar against the final MSv4 tree. Numeric copies use
 bounded N-dimensional tiles. Variable-length strings retain the upstream
-decode expansion risk. The native payload retains msutils' existing codec;
-the profile describes the companion MSv4 tree only.
+decode expansion risk. The original ``zstd``, ``gzip`` and ``blosc-zstd``
+profiles retain msutils' existing native payload layout and describe the
+companion MSv4 tree only. The semantic profiles select filters for both trees
+as described below.
 
 ``derive-precision`` creates a separate approximate MSv4 artifact under
 ``derived/``. Its closed ``mantissa-round-nearest-even/v1`` policy names exact
@@ -206,3 +243,21 @@ consume only exact states.
 Provision for full data reads during verification and duplicate native/MSv4
 storage. Existing exact states can carry multiple lossless representations;
 derived artifacts add separate storage and are opt-in.
+
+The semantic lossless profiles also apply to the exact native preservation
+payload: ``packbits-zstd`` packs native boolean columns, ``delta-zstd`` filters
+native integers, and ``packbits-delta-zstd`` selects both. Every other dtype
+retains Zstd. The mapped MSv4 ``FLAG`` column is uint8 in the qualified exporter;
+it retains that type and is eligible for Delta, while the native boolean FLAG
+payload is eligible for PackBits. Neither path casts flags or changes logical
+identity. Export reads use an explicit Xarray chunk map together with backend
+``preferred_chunks`` before any array is computed. The explicit map also bounds
+secondary columns, which lack backend preferred-chunk hints. Numeric chunks
+are limited to 16 MiB.
+
+``examples/state_codec_qualification.py`` runs full export, independent fresh
+verification and replay, and casacore comparisons in separate processes. It
+makes its own deep working copy and archives only that generated copy before
+replay, proving that its recorded source path is absent. The original source
+is retained for independent comparison. Reports retain timings, RSS, actual
+codec metadata, runtime origins, source observations, and failure tracebacks.

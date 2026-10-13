@@ -49,10 +49,25 @@ git config core.hooksPath .githooks
 ### The lockfile
 
 `uv.lock` **is** committed, and `uv sync` installs exactly what it pins. CI
-runs every job with `--locked`, so the versions the matrix tests are the
-versions you ran locally — not whatever PyPI published that morning. When a
-build goes red, that keeps "this branch broke it" and "a dependency broke it"
-as separate, answerable questions.
+runs ordinary test and audit jobs with `--locked`, so their versions match
+the committed lock. When a build goes red, that keeps "this branch broke it"
+and "a dependency broke it" as separate, answerable questions.
+
+The Measurement Set integration job refreshes `msutils[exact-native]` from
+upstream `main` with `uv lock --upgrade-package msutils` before its locked
+installs on every run. It also runs hourly after the workflow is merged to
+`main`; ordinary tests and audits skip scheduled runs. Its installation log
+records the resolved runtime, including the exact installed msutils Git SHA,
+so upstream failures can be attributed. To check current upstream locally:
+
+```bash
+uv lock --upgrade-package msutils
+uv sync --locked --group dev --group measurement-set
+```
+
+Review and commit the resulting lock diff to make that revision the new local
+baseline. State provenance records the installed SHA, and verification and
+materialization require the original exact runtime even if `main` has moved.
 
 The floors in `pyproject.toml` still define what a downstream `pip install`
 resolves. The lock binds only this repo's checkouts and CI.
@@ -61,9 +76,8 @@ Two consequences worth knowing:
 
 - **Change `pyproject.toml`, re-run `uv lock`, commit both.** CI's `--locked`
   rejects the mismatch, and so does the pre-commit hook.
-- **Dependency upgrades are a deliberate commit**, not a side effect of the
-  clock: `uv lock --upgrade` (or `--upgrade-package <name>`) produces a
-  reviewable diff.
+- **Changes to the committed dependency baseline are deliberate**:
+  `uv lock --upgrade` (or `--upgrade-package <name>`) produces a reviewable diff.
 
 Dependabot (`.github/dependabot.yaml`) opens those upgrade PRs weekly, updating
 `pyproject.toml` and `uv.lock` together so they pass the `--locked` jobs.

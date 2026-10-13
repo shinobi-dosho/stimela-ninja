@@ -1,0 +1,80 @@
+{
+  "capture_checkout": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v4",
+  "capture_evidence": {
+    "exports": {
+      "export-baseline": {
+        "attempt_sha256": "20e7a6fd922f53159b20d63dcc5efc568102474555b46ddc3222f59fe484b243",
+        "manifest_sha256": "6b4a87cc3b9753924bc725756858bd9064a43c89672782179c125fd9b5e2c509"
+      },
+      "export-combined": {
+        "attempt_sha256": "9a81be9f7f2240025ba5fa6c0e13ff58f2e01b7d6a292d44b1efd6851cad574c",
+        "manifest_sha256": "a216737848a89e98ea530105a18e104f4c9626776af231968ebeed9e7ac7fc70"
+      }
+    },
+    "recorded_source_absent": true,
+    "report_sha256": "dc8fa5e11c141854bbf65c8abb5bed7df30aba1f9d36be6683f8d90662dd7da2",
+    "script_sha256": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+    "stages_sha256": {
+      "archive": "37c57a5ee69d381cb67202dda9b00645fea3244714e00caebeb599e4a24bdc23",
+      "export-baseline": "61c6f4aae27a17cbcfa41914ac947ddc30e569188abcd4c4d749a8267068e779",
+      "export-combined": "115df25dc87185601b88e8e6beab2283d119b96b8ba1a943a880aaf330e57baa",
+      "prepare": "c400cb6a6b64d8b717fbe2fcb97adfb2725be0ef10bb326850469d474a8a7e94"
+    }
+  },
+  "capture_root": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v4-chioph_avg",
+  "captured_at": "2026-10-12T19:30:10.470979+00:00",
+  "continuation_path": "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/replay-v5-chioph_avg",
+  "operator_argv": [
+    "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/handoff-old-verification.py",
+    "--capture-root",
+    "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v4-chioph_avg",
+    "--capture-checkout",
+    "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v4",
+    "--output-receipt",
+    "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/handoff-chioph_avg.json",
+    "--continuation-path",
+    "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/replay-v5-chioph_avg"
+  ],
+  "operator_script_sha256": "64fd572da125f9ac0dcf251b41d5a09904ba58dba40091be591d3a7fffdf4ce3",
+  "pre_report_sha256": "dc8fa5e11c141854bbf65c8abb5bed7df30aba1f9d36be6683f8d90662dd7da2",
+  "processes": [
+    {
+      "argv": [
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/venv-v4/bin/python",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v4/examples/state_codec_qualification.py",
+        "--workdir",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v4-chioph_avg",
+        "--block-rows",
+        "128",
+        "--stage",
+        "verify"
+      ],
+      "exit_confirmed": false,
+      "pid": 1139047,
+      "ppid": 977237,
+      "script_sha256": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+      "startticks": 916499269,
+      "state": "R"
+    },
+    {
+      "argv": [
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/venv-v4/bin/python",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v4/examples/state_codec_qualification.py",
+        "--source",
+        "/data/projects/katplus/xcal/chioph-casa/msdir/small_1767335776_sdp-applied-CHI-OPH-avg.ms",
+        "--workdir",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v4-chioph_avg",
+        "--block-rows",
+        "128"
+      ],
+      "exit_confirmed": false,
+      "pid": 977237,
+      "ppid": 977149,
+      "script_sha256": "38e0e9fac97d7fb5b773f497ca5631e82a993d5d939124d8503ca6c6e9c29f39",
+      "startticks": 915780251,
+      "state": "S"
+    }
+  ],
+  "reason": "supersede obsolete capture-code verification with final-code complete source-absent verification",
+  "schema_version": "shinobi-qualification-handoff-snapshot/v1"
+}

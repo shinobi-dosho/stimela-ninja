@@ -1,0 +1,352 @@
+{
+  "verified": true,
+  "total_main_rows": 2595942,
+  "scope": "Full captures plus final-code source-absent verification, materialization and independent all-cell comparison; revisions recorded separately",
+  "corpora": {
+    "original": {
+      "main_rows": 247752,
+      "native_id": "msutils-logical-hash/v1:7a6cc377629f7b69ebc848f3bedd6397dabc1337611050487afeeaee480c71ba",
+      "capture_commit": "d15bab8ad4b5598dd8c52f5c00fabec16dd72d51",
+      "replay_commit": "6576e5cc5af5453227e7c711a466a42f22d96791",
+      "profiles": {
+        "export-baseline": {
+          "representation_bytes": 76333142511,
+          "export_seconds": 5229.140866950154,
+          "export_peak_rss_kib": 3796676,
+          "array_count": 143,
+          "manifest_bytes": 19776140,
+          "ledger_entries": 109182,
+          "compared_tables": 14,
+          "compared_blocks": 46605,
+          "source_structural_signature": "5195be26e55da00ea714972e703d772865150df45a32d6028076a5bd96fae723",
+          "restored_structural_signature": "9c8e964d596ac8989542e05db26f686b8a6ecbbf79741f9e3375f727d0509f11",
+          "export_warnings": [
+            "FrameConversionWarning: UVW coordinate frame was set to ITRF which is an unsupported MSv4 frame for UVW. Setting the frame to fk5 from the FIELD_PHASE_CENTER_DIRECTION of the field associated with this dataset. See https://github.com/casangi/xradio/issues/476",
+            "ImputedMetadataWarning: No row exists in the PROCESSOR table of length 0 for PROCESSOR_ID=0. Artificial metadata will be substituted.",
+            "IrregularBaselineGridWarning: 13764 / 261516 (5.3%) rows missing from the full (time, baseline_id) grid in partition (('DATA_DESC_ID', 0), ('FIELD_ID', 0), ('OBSERVATION_ID', 0), ('OBS_MODE', 'CALIBRATE_BANDPASS,CALIBRATE_FLUX'), ('PROCESSOR_ID', -1)). Dataset variables will be padded with nans in the case of data variables and flags will be set for these cases. This situation is benign, especially if auto-corelations have been requested on a dataset without them. See https://xarray-ms.readthedocs.io/en/latest/partitioning.html",
+            "ZarrUserWarning: Consolidated metadata is currently not part in the Zarr format 3 specification. It may not be supported by other zarr implementations and may change in the future."
+          ]
+        },
+        "export-combined": {
+          "representation_bytes": 76324370651,
+          "export_seconds": 5908.57732356526,
+          "export_peak_rss_kib": 3802560,
+          "array_count": 143,
+          "manifest_bytes": 19780323,
+          "ledger_entries": 109182,
+          "compared_tables": 14,
+          "compared_blocks": 46605,
+          "source_structural_signature": "5195be26e55da00ea714972e703d772865150df45a32d6028076a5bd96fae723",
+          "restored_structural_signature": "9c8e964d596ac8989542e05db26f686b8a6ecbbf79741f9e3375f727d0509f11",
+          "export_warnings": [
+            "FrameConversionWarning: UVW coordinate frame was set to ITRF which is an unsupported MSv4 frame for UVW. Setting the frame to fk5 from the FIELD_PHASE_CENTER_DIRECTION of the field associated with this dataset. See https://github.com/casangi/xradio/issues/476",
+            "ImputedMetadataWarning: No row exists in the PROCESSOR table of length 0 for PROCESSOR_ID=0. Artificial metadata will be substituted.",
+            "IrregularBaselineGridWarning: 13764 / 261516 (5.3%) rows missing from the full (time, baseline_id) grid in partition (('DATA_DESC_ID', 0), ('FIELD_ID', 0), ('OBSERVATION_ID', 0), ('OBS_MODE', 'CALIBRATE_BANDPASS,CALIBRATE_FLUX'), ('PROCESSOR_ID', -1)). Dataset variables will be padded with nans in the case of data variables and flags will be set for these cases. This situation is benign, especially if auto-corelations have been requested on a dataset without them. See https://xarray-ms.readthedocs.io/en/latest/partitioning.html",
+            "ZarrUserWarning: Consolidated metadata is currently not part in the Zarr format 3 specification. It may not be supported by other zarr implementations and may change in the future."
+          ]
+        }
+      },
+      "capture_stage_seconds": {
+        "prepare": 2260.8002691250294,
+        "export-baseline": 5229.140866950154,
+        "export-combined": 5908.57732356526,
+        "archive": 0.04678008705377579
+      },
+      "replay_stage_seconds": {
+        "audit": 1199.5139846745878,
+        "verify": 2974.3306436277926,
+        "materialize-baseline": 3555.8902742210776,
+        "materialize-combined": 3380.780609421432,
+        "compare-baseline": 259.64682741463184,
+        "compare-combined": 259.04780500754714,
+        "final-audit": 995.5967741534114
+      },
+      "replay_stage_peak_rss_kib": {
+        "audit": 1201444,
+        "verify": 1332412,
+        "materialize-baseline": 2239836,
+        "materialize-combined": 2216856,
+        "compare-baseline": 704580,
+        "compare-combined": 702856,
+        "final-audit": 1201796
+      }
+    },
+    "j0408": {
+      "main_rows": 247752,
+      "native_id": "msutils-logical-hash/v1:b3f5c7ff91a2666b639cecb89a16a72da90b2b53e7fe12fa34b836f19e0a2e2e",
+      "capture_commit": "d15bab8ad4b5598dd8c52f5c00fabec16dd72d51",
+      "replay_commit": "6576e5cc5af5453227e7c711a466a42f22d96791",
+      "profiles": {
+        "export-baseline": {
+          "representation_bytes": 15113188179,
+          "export_seconds": 1644.2815072722733,
+          "export_peak_rss_kib": 6593224,
+          "array_count": 134,
+          "manifest_bytes": 15053677,
+          "ledger_entries": 83115,
+          "compared_tables": 14,
+          "compared_blocks": 46542,
+          "source_structural_signature": "167b9990a272a85dfe566bc44f8233ca1621b571df2cd1f3d65d84924bd721d1",
+          "restored_structural_signature": "a8b8689340a22e7d156a481fd6918d5e38f5a9bb705f3e399ce79d3aaf756af7",
+          "export_warnings": [
+            "FrameConversionWarning: UVW coordinate frame was set to ITRF which is an unsupported MSv4 frame for UVW. Setting the frame to fk5 from the FIELD_PHASE_CENTER_DIRECTION of the field associated with this dataset. See https://github.com/casangi/xradio/issues/476",
+            "ImputedMetadataWarning: No row exists in the PROCESSOR table of length 0 for PROCESSOR_ID=0. Artificial metadata will be substituted.",
+            "IrregularBaselineGridWarning: 13764 / 261516 (5.3%) rows missing from the full (time, baseline_id) grid in partition (('DATA_DESC_ID', 0), ('FIELD_ID', 0), ('OBSERVATION_ID', 0), ('OBS_MODE', 'CALIBRATE_BANDPASS,CALIBRATE_FLUX'), ('PROCESSOR_ID', -1)). Dataset variables will be padded with nans in the case of data variables and flags will be set for these cases. This situation is benign, especially if auto-corelations have been requested on a dataset without them. See https://xarray-ms.readthedocs.io/en/latest/partitioning.html",
+            "ZarrUserWarning: Consolidated metadata is currently not part in the Zarr format 3 specification. It may not be supported by other zarr implementations and may change in the future."
+          ]
+        },
+        "export-combined": {
+          "representation_bytes": 15108478613,
+          "export_seconds": 1545.5627631992102,
+          "export_peak_rss_kib": 4857452,
+          "array_count": 134,
+          "manifest_bytes": 15058660,
+          "ledger_entries": 83115,
+          "compared_tables": 14,
+          "compared_blocks": 46542,
+          "source_structural_signature": "167b9990a272a85dfe566bc44f8233ca1621b571df2cd1f3d65d84924bd721d1",
+          "restored_structural_signature": "a8b8689340a22e7d156a481fd6918d5e38f5a9bb705f3e399ce79d3aaf756af7",
+          "export_warnings": [
+            "FrameConversionWarning: UVW coordinate frame was set to ITRF which is an unsupported MSv4 frame for UVW. Setting the frame to fk5 from the FIELD_PHASE_CENTER_DIRECTION of the field associated with this dataset. See https://github.com/casangi/xradio/issues/476",
+            "ImputedMetadataWarning: No row exists in the PROCESSOR table of length 0 for PROCESSOR_ID=0. Artificial metadata will be substituted.",
+            "IrregularBaselineGridWarning: 13764 / 261516 (5.3%) rows missing from the full (time, baseline_id) grid in partition (('DATA_DESC_ID', 0), ('FIELD_ID', 0), ('OBSERVATION_ID', 0), ('OBS_MODE', 'CALIBRATE_BANDPASS,CALIBRATE_FLUX'), ('PROCESSOR_ID', -1)). Dataset variables will be padded with nans in the case of data variables and flags will be set for these cases. This situation is benign, especially if auto-corelations have been requested on a dataset without them. See https://xarray-ms.readthedocs.io/en/latest/partitioning.html",
+            "ZarrUserWarning: Consolidated metadata is currently not part in the Zarr format 3 specification. It may not be supported by other zarr implementations and may change in the future."
+          ]
+        }
+      },
+      "capture_stage_seconds": {
+        "prepare": 397.8359036576003,
+        "export-baseline": 1644.2815072722733,
+        "export-combined": 1545.5627631992102,
+        "archive": 0.020536847412586212,
+        "verify": 455.2771702539176
+      },
+      "replay_stage_seconds": {
+        "audit": 405.4880648870021,
+        "verify": 1385.163464019075,
+        "materialize-baseline": 870.3195459730923,
+        "materialize-combined": 869.247068528086,
+        "compare-baseline": 147.87745484896004,
+        "compare-combined": 25.038557801395655,
+        "final-audit": 384.7709180433303
+      },
+      "replay_stage_peak_rss_kib": {
+        "audit": 1061372,
+        "verify": 1087724,
+        "materialize-baseline": 1759184,
+        "materialize-combined": 1747488,
+        "compare-baseline": 357860,
+        "compare-combined": 357952,
+        "final-audit": 1068968
+      }
+    },
+    "j0410": {
+      "main_rows": 98568,
+      "native_id": "msutils-logical-hash/v1:14096a14acaa564dea832caf2a984307ca6b698ce1c92b31e4eaa9b6ef4f719e",
+      "capture_commit": "d15bab8ad4b5598dd8c52f5c00fabec16dd72d51",
+      "replay_commit": "6576e5cc5af5453227e7c711a466a42f22d96791",
+      "profiles": {
+        "export-baseline": {
+          "representation_bytes": 18390581890,
+          "export_seconds": 1601.7248431723565,
+          "export_peak_rss_kib": 7190896,
+          "array_count": 134,
+          "manifest_bytes": 8132468,
+          "ledger_entries": 44484,
+          "compared_tables": 14,
+          "compared_blocks": 18582,
+          "source_structural_signature": "2f8426c7b2ae39c9b617c361b8a4032a41d3c3b775583c13ad2a6c4791e20580",
+          "restored_structural_signature": "ac5b3e949d1512d756ddc76f6d000e0c8de697708452a7be502ba5fdccd8d6e0",
+          "export_warnings": [
+            "FrameConversionWarning: UVW coordinate frame was set to ITRF which is an unsupported MSv4 frame for UVW. Setting the frame to fk5 from the FIELD_PHASE_CENTER_DIRECTION of the field associated with this dataset. See https://github.com/casangi/xradio/issues/476",
+            "ImputedMetadataWarning: No row exists in the PROCESSOR table of length 0 for PROCESSOR_ID=0. Artificial metadata will be substituted.",
+            "IrregularBaselineGridWarning: 5476 / 104044 (5.3%) rows missing from the full (time, baseline_id) grid in partition (('DATA_DESC_ID', 0), ('FIELD_ID', 0), ('OBSERVATION_ID', 0), ('OBS_MODE', 'TARGET'), ('PROCESSOR_ID', -1)). Dataset variables will be padded with nans in the case of data variables and flags will be set for these cases. This situation is benign, especially if auto-corelations have been requested on a dataset without them. See https://xarray-ms.readthedocs.io/en/latest/partitioning.html",
+            "ZarrUserWarning: Consolidated metadata is currently not part in the Zarr format 3 specification. It may not be supported by other zarr implementations and may change in the future."
+          ]
+        },
+        "export-combined": {
+          "representation_bytes": 18387028038,
+          "export_seconds": 1677.9838444013149,
+          "export_peak_rss_kib": 7452868,
+          "array_count": 134,
+          "manifest_bytes": 8136791,
+          "ledger_entries": 44484,
+          "compared_tables": 14,
+          "compared_blocks": 18582,
+          "source_structural_signature": "2f8426c7b2ae39c9b617c361b8a4032a41d3c3b775583c13ad2a6c4791e20580",
+          "restored_structural_signature": "ac5b3e949d1512d756ddc76f6d000e0c8de697708452a7be502ba5fdccd8d6e0",
+          "export_warnings": [
+            "FrameConversionWarning: UVW coordinate frame was set to ITRF which is an unsupported MSv4 frame for UVW. Setting the frame to fk5 from the FIELD_PHASE_CENTER_DIRECTION of the field associated with this dataset. See https://github.com/casangi/xradio/issues/476",
+            "ImputedMetadataWarning: No row exists in the PROCESSOR table of length 0 for PROCESSOR_ID=0. Artificial metadata will be substituted.",
+            "IrregularBaselineGridWarning: 5476 / 104044 (5.3%) rows missing from the full (time, baseline_id) grid in partition (('DATA_DESC_ID', 0), ('FIELD_ID', 0), ('OBSERVATION_ID', 0), ('OBS_MODE', 'TARGET'), ('PROCESSOR_ID', -1)). Dataset variables will be padded with nans in the case of data variables and flags will be set for these cases. This situation is benign, especially if auto-corelations have been requested on a dataset without them. See https://xarray-ms.readthedocs.io/en/latest/partitioning.html",
+            "ZarrUserWarning: Consolidated metadata is currently not part in the Zarr format 3 specification. It may not be supported by other zarr implementations and may change in the future."
+          ]
+        }
+      },
+      "capture_stage_seconds": {
+        "prepare": 820.9360989462584,
+        "export-baseline": 1601.7248431723565,
+        "export-combined": 1677.9838444013149,
+        "archive": 0.02072494849562645,
+        "verify": 254.62002473324537
+      },
+      "replay_stage_seconds": {
+        "audit": 414.8687390293926,
+        "verify": 1240.3755915239453,
+        "materialize-baseline": 878.9975763391703,
+        "materialize-combined": 919.7529980335385,
+        "compare-baseline": 242.29582610540092,
+        "compare-combined": 53.563339315354824,
+        "final-audit": 444.82935708016157
+      },
+      "replay_stage_peak_rss_kib": {
+        "audit": 1052944,
+        "verify": 934908,
+        "materialize-baseline": 1776092,
+        "materialize-combined": 1757872,
+        "compare-baseline": 467060,
+        "compare-combined": 468300,
+        "final-audit": 1060300
+      }
+    },
+    "chioph_avg": {
+      "main_rows": 1507391,
+      "native_id": "msutils-logical-hash/v1:af683b8f46b5a0f24c7dd1597110df3f553570b68b7b64743550142d704cef0a",
+      "capture_commit": "0b2164db12a1865a90c2a17cbe2c6971de79e82a",
+      "replay_commit": "6576e5cc5af5453227e7c711a466a42f22d96791",
+      "profiles": {
+        "export-baseline": {
+          "representation_bytes": 18092934132,
+          "export_seconds": 3211.1056605186313,
+          "export_peak_rss_kib": 7288548,
+          "array_count": 145,
+          "manifest_bytes": 71611966,
+          "ledger_entries": 523724,
+          "compared_tables": 14,
+          "compared_blocks": 306288,
+          "source_structural_signature": "87bebe0ffe861e5c684d39312e88dcc988717d4128f8db2389782f5692ee41f8",
+          "restored_structural_signature": "7f8dac985ffeeba60f664682548498a8e949c880eeefb6037f0493331f5c610a",
+          "export_warnings": [
+            "FrameConversionWarning: UVW coordinate frame was set to ITRF which is an unsupported MSv4 frame for UVW. Setting the frame to fk5 from the FIELD_PHASE_CENTER_DIRECTION of the field associated with this dataset. See https://github.com/casangi/xradio/issues/476",
+            "ImputedMetadataWarning: No row exists in the PROCESSOR table of length 0 for PROCESSOR_ID=0. Artificial metadata will be substituted.",
+            "IrregularBaselineGridWarning: 51979 / 1559370 (3.3%) rows missing from the full (time, baseline_id) grid in partition (('DATA_DESC_ID', 0), ('FIELD_ID', 0), ('OBSERVATION_ID', 0), ('OBS_MODE', 'TARGET'), ('PROCESSOR_ID', -1)). Dataset variables will be padded with nans in the case of data variables and flags will be set for these cases. This situation is benign, especially if auto-corelations have been requested on a dataset without them. See https://xarray-ms.readthedocs.io/en/latest/partitioning.html",
+            "ZarrUserWarning: Consolidated metadata is currently not part in the Zarr format 3 specification. It may not be supported by other zarr implementations and may change in the future."
+          ]
+        },
+        "export-combined": {
+          "representation_bytes": 18091187682,
+          "export_seconds": 3351.7112592346966,
+          "export_peak_rss_kib": 7275080,
+          "array_count": 145,
+          "manifest_bytes": 71615825,
+          "ledger_entries": 523724,
+          "compared_tables": 14,
+          "compared_blocks": 306288,
+          "source_structural_signature": "87bebe0ffe861e5c684d39312e88dcc988717d4128f8db2389782f5692ee41f8",
+          "restored_structural_signature": "7f8dac985ffeeba60f664682548498a8e949c880eeefb6037f0493331f5c610a",
+          "export_warnings": [
+            "FrameConversionWarning: UVW coordinate frame was set to ITRF which is an unsupported MSv4 frame for UVW. Setting the frame to fk5 from the FIELD_PHASE_CENTER_DIRECTION of the field associated with this dataset. See https://github.com/casangi/xradio/issues/476",
+            "ImputedMetadataWarning: No row exists in the PROCESSOR table of length 0 for PROCESSOR_ID=0. Artificial metadata will be substituted.",
+            "IrregularBaselineGridWarning: 51979 / 1559370 (3.3%) rows missing from the full (time, baseline_id) grid in partition (('DATA_DESC_ID', 0), ('FIELD_ID', 0), ('OBSERVATION_ID', 0), ('OBS_MODE', 'TARGET'), ('PROCESSOR_ID', -1)). Dataset variables will be padded with nans in the case of data variables and flags will be set for these cases. This situation is benign, especially if auto-corelations have been requested on a dataset without them. See https://xarray-ms.readthedocs.io/en/latest/partitioning.html",
+            "ZarrUserWarning: Consolidated metadata is currently not part in the Zarr format 3 specification. It may not be supported by other zarr implementations and may change in the future."
+          ]
+        }
+      },
+      "capture_stage_seconds": {
+        "prepare": 615.8846311140805,
+        "export-baseline": 3211.1056605186313,
+        "export-combined": 3351.7112592346966,
+        "archive": 0.0454347375780344
+      },
+      "replay_stage_seconds": {
+        "audit": 378.53241854533553,
+        "verify": 5039.598712258041,
+        "materialize-baseline": 3214.6301469281316,
+        "materialize-combined": 3304.460599131882,
+        "compare-baseline": 134.96516460552812,
+        "compare-combined": 82.9454551152885,
+        "final-audit": 428.0775041822344
+      },
+      "replay_stage_peak_rss_kib": {
+        "audit": 1417360,
+        "verify": 2127452,
+        "materialize-baseline": 2754128,
+        "materialize-combined": 2779092,
+        "compare-baseline": 1180248,
+        "compare-combined": 1179880,
+        "final-audit": 1417320
+      }
+    },
+    "xc_calibrators": {
+      "main_rows": 494479,
+      "native_id": "msutils-logical-hash/v1:b3f08309cdd76f4cb209793fef67e088c910749ac6335fb56b80b24458772736",
+      "capture_commit": "d15bab8ad4b5598dd8c52f5c00fabec16dd72d51",
+      "replay_commit": "6576e5cc5af5453227e7c711a466a42f22d96791",
+      "profiles": {
+        "export-baseline": {
+          "representation_bytes": 40122380678,
+          "export_seconds": 3824.0728245787323,
+          "export_peak_rss_kib": 3559224,
+          "array_count": 175,
+          "manifest_bytes": 31270640,
+          "ledger_entries": 172992,
+          "compared_tables": 14,
+          "compared_blocks": 92850,
+          "source_structural_signature": "522686bf56a6fb8c0f6ab182d45e3e51d961e8371914b1133c6e57e81d60bd40",
+          "restored_structural_signature": "b24abbfd564607e2fb466aee2a55ec16306e68ac121c11f515f43d7d243c9c7a",
+          "export_warnings": [
+            "FrameConversionWarning: UVW coordinate frame was set to ITRF which is an unsupported MSv4 frame for UVW. Setting the frame to fk5 from the FIELD_PHASE_CENTER_DIRECTION of the field associated with this dataset. See https://github.com/casangi/xradio/issues/476",
+            "ImputedMetadataWarning: No row exists in the PROCESSOR table of length 0 for PROCESSOR_ID=0. Artificial metadata will be substituted.",
+            "IrregularBaselineGridWarning: 12862 / 385860 (3.3%) rows missing from the full (time, baseline_id) grid in partition (('DATA_DESC_ID', 0), ('FIELD_ID', 0), ('OBSERVATION_ID', 0), ('OBS_MODE', 'CALIBRATE_BANDPASS,CALIBRATE_FLUX'), ('PROCESSOR_ID', -1)). Dataset variables will be padded with nans in the case of data variables and flags will be set for these cases. This situation is benign, especially if auto-corelations have been requested on a dataset without them. See https://xarray-ms.readthedocs.io/en/latest/partitioning.html",
+            "IrregularBaselineGridWarning: 4189 / 125670 (3.3%) rows missing from the full (time, baseline_id) grid in partition (('DATA_DESC_ID', 0), ('FIELD_ID', 1), ('OBSERVATION_ID', 0), ('OBS_MODE', 'CALIBRATE_PHASE,CALIBRATE_AMPLI'), ('PROCESSOR_ID', -1)). Dataset variables will be padded with nans in the case of data variables and flags will be set for these cases. This situation is benign, especially if auto-corelations have been requested on a dataset without them. See https://xarray-ms.readthedocs.io/en/latest/partitioning.html",
+            "ZarrUserWarning: Consolidated metadata is currently not part in the Zarr format 3 specification. It may not be supported by other zarr implementations and may change in the future."
+          ]
+        },
+        "export-combined": {
+          "representation_bytes": 40116284322,
+          "export_seconds": 3569.544224182144,
+          "export_peak_rss_kib": 3375412,
+          "array_count": 175,
+          "manifest_bytes": 31275894,
+          "ledger_entries": 172992,
+          "compared_tables": 14,
+          "compared_blocks": 92850,
+          "source_structural_signature": "522686bf56a6fb8c0f6ab182d45e3e51d961e8371914b1133c6e57e81d60bd40",
+          "restored_structural_signature": "b24abbfd564607e2fb466aee2a55ec16306e68ac121c11f515f43d7d243c9c7a",
+          "export_warnings": [
+            "FrameConversionWarning: UVW coordinate frame was set to ITRF which is an unsupported MSv4 frame for UVW. Setting the frame to fk5 from the FIELD_PHASE_CENTER_DIRECTION of the field associated with this dataset. See https://github.com/casangi/xradio/issues/476",
+            "ImputedMetadataWarning: No row exists in the PROCESSOR table of length 0 for PROCESSOR_ID=0. Artificial metadata will be substituted.",
+            "IrregularBaselineGridWarning: 12862 / 385860 (3.3%) rows missing from the full (time, baseline_id) grid in partition (('DATA_DESC_ID', 0), ('FIELD_ID', 0), ('OBSERVATION_ID', 0), ('OBS_MODE', 'CALIBRATE_BANDPASS,CALIBRATE_FLUX'), ('PROCESSOR_ID', -1)). Dataset variables will be padded with nans in the case of data variables and flags will be set for these cases. This situation is benign, especially if auto-corelations have been requested on a dataset without them. See https://xarray-ms.readthedocs.io/en/latest/partitioning.html",
+            "IrregularBaselineGridWarning: 4189 / 125670 (3.3%) rows missing from the full (time, baseline_id) grid in partition (('DATA_DESC_ID', 0), ('FIELD_ID', 1), ('OBSERVATION_ID', 0), ('OBS_MODE', 'CALIBRATE_PHASE,CALIBRATE_AMPLI'), ('PROCESSOR_ID', -1)). Dataset variables will be padded with nans in the case of data variables and flags will be set for these cases. This situation is benign, especially if auto-corelations have been requested on a dataset without them. See https://xarray-ms.readthedocs.io/en/latest/partitioning.html",
+            "ZarrUserWarning: Consolidated metadata is currently not part in the Zarr format 3 specification. It may not be supported by other zarr implementations and may change in the future."
+          ]
+        }
+      },
+      "capture_stage_seconds": {
+        "prepare": 1172.9369951989502,
+        "export-baseline": 3824.0728245787323,
+        "export-combined": 3569.544224182144,
+        "archive": 0.05637197941541672,
+        "verify": 2313.2389141097665
+      },
+      "replay_stage_seconds": {
+        "audit": 613.9152859449387,
+        "verify": 2777.048955794424,
+        "materialize-baseline": 1850.8438089508563,
+        "materialize-combined": 1934.3647627402097,
+        "compare-baseline": 108.20839628390968,
+        "compare-combined": 77.30055153369904,
+        "final-audit": 677.8619698397815
+      },
+      "replay_stage_peak_rss_kib": {
+        "audit": 1272148,
+        "verify": 1342028,
+        "materialize-baseline": 2031720,
+        "materialize-combined": 2045864,
+        "compare-baseline": 616468,
+        "compare-combined": 616624,
+        "final-audit": 1273564
+      }
+    }
+  }
+}

@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
   push:
     branches:
       - main
@@ -10,6 +13,7 @@ on:
 
 jobs:
   test:
+    if: github.event_name != 'schedule'
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
@@ -29,7 +33,7 @@ jobs:
       - name: Install Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
-      # --locked everywhere: install the versions committed in uv.lock and fail
+      # Ordinary jobs use --locked: install versions committed in uv.lock and fail
       # if the lock does not match pyproject.toml. Without it, a green run only
       # means the tree passed against whatever PyPI happened to publish that
       # morning -- a red one tomorrow could be this repo's fault or a
@@ -69,8 +73,24 @@ jobs:
       - name: Install Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
+      # Refresh upstream main on every integration run, including hourly checks.
+      - name: Resolve current msutils main
+        run: uv lock --upgrade-package msutils
+
       - name: Verify optional inspector installation
-        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set python -c "import casacore.tables, xarray_ms, zarr, msutils; from shinobi._state_adapter import runtime; runtime()"
+        run: |
+          uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set python - <<'PY'
+          import importlib.metadata as metadata
+          import json
+
+          installed = metadata.distribution("msutils")
+          direct = json.loads(installed.read_text("direct_url.json") or "{}")
+          print({"msutils": installed.version, "msutils_commit": direct.get("vcs_info", {}).get("commit_id")}, flush=True)
+
+          import casacore.tables, xarray_ms, zarr, msutils
+          from shinobi._state_adapter import runtime
+          print(runtime())
+          PY
 
       # Run each module containing a casacore-gated test, rather than naming
       # one fixture test and leaving the closure/access cases silently skipped
@@ -92,9 +112,10 @@ jobs:
         run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set --group fits pytest -q tests/test_fits.py tests/test_fits_lifecycle.py tests/test_fits_products.py
 
       - name: Run real state export, materialization and process-death recovery
-        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set pytest -q tests/test_dataset_state.py tests/test_dataset_state_live.py
+        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set pytest -q tests/test_dataset_state.py tests/test_dataset_state_live.py tests/test_state_precision.py tests/test_state_metadata.py tests/test_state_qualification.py tests/test_state_replay_structure.py
 
   audit:
+    if: github.event_name != 'schedule'
     name: Dependency audit
     runs-on: ubuntu-latest
 

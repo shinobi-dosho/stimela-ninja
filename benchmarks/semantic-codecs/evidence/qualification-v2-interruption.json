@@ -1,0 +1,51 @@
+{
+  "utc": "2026-10-12T11:14:16.597452+00:00",
+  "reason": "Stop obsolete-pin diagnostic workers after confirmed dangling-hypercolumn restore failure; final full qualification will restart under reviewed corrected public pin.",
+  "signals": [
+    {
+      "pid": 369784,
+      "start_ticks": "913146306",
+      "argv": [
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/venv-v2/bin/python",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v2/examples/state_codec_qualification.py",
+        "--workdir",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v2-original",
+        "--block-rows",
+        "128",
+        "--stage",
+        "export-baseline"
+      ],
+      "signal": "SIGINT"
+    },
+    {
+      "pid": 448193,
+      "start_ticks": "913487865",
+      "argv": [
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/venv-v2/bin/python",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v2/examples/state_codec_qualification.py",
+        "--workdir",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v2-chioph_avg",
+        "--block-rows",
+        "128",
+        "--stage",
+        "export-baseline"
+      ],
+      "signal": "SIGINT"
+    },
+    {
+      "pid": 457201,
+      "start_ticks": "913514702",
+      "argv": [
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/venv-v2/bin/python",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/source-v2/examples/state_codec_qualification.py",
+        "--workdir",
+        "/home/sphemakh/sandbox/shinobiMSv24-16/issue16-work/semantic-codecs-20261012/qualification-v2-xc_calibrators",
+        "--block-rows",
+        "128",
+        "--stage",
+        "export-baseline"
+      ],
+      "signal": "SIGINT"
+    }
+  ]
+}
