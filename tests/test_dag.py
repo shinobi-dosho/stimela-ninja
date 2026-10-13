@@ -178,28 +178,53 @@ def test_nested_recipe_is_a_branch_holding_its_own_steps():
         ],
     )
     nodes = graph_nodes(recipe)
-    assert [(n.name, n.recipe, n.group) for n in nodes] == [("make", False, None), ("sub", True, None), ("sub.a", False, 1), ("sub.b", False, 1), ("use", False, None)]
-    # edges stay within a level: sub waits on make, sub.b on sub.a, use on sub
+    assert [(n.name, n.recipe, n.group) for n in nodes] == [("make", False, None), ("sub", True, None), ("a", False, 1), ("b", False, 1), ("use", False, None)]
+    # edges stay within a level: sub waits on make, b on a, use on sub
     assert [n.depends_on for n in nodes] == [set(), {0}, set(), {2}, {1}]
+    # a is one of sub's steps (dashed); b waits on a, use waits on sub (solid)
     assert render_dag(nodes).splitlines() == [
         "make",
         "└── sub  (recipe)",
-        "    ├── sub.a",
-        "    │   └── sub.b",
+        "    ├╌╌ a",
+        "    │   └── b",
         "    └── use",
     ]
 
 
-def test_recipes_nested_two_deep_get_full_dotted_names():
+def test_recipes_nested_two_deep():
     a = _cab("a", In, OkOut)
     inner = Recipe(name="inner", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="x", step=a)])
     middle = Recipe(name="middle", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="inner", step=inner), StepRef(name="y", step=a)])
     recipe = Recipe(name="r", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="mid", step=middle)])
     assert render_dag(graph_nodes(recipe)).splitlines() == [
         "mid  (recipe)",
-        "├── mid.inner  (recipe)",
-        "│   └── mid.inner.x",
-        "└── mid.y",
+        "├╌╌ inner  (recipe)",
+        "│   └╌╌ x",
+        "└╌╌ y",
+    ]
+
+
+def test_dotted_step_name_cannot_pass_for_a_nested_step():
+    """Step names are free strings, and `add_loop` declares dotted ones, so a
+    top-level `sub.a` waiting on `sub` must not look like `sub`'s own `a`.
+    Unqualified names plus the membership connector keep them apart."""
+    a = _cab("a", In, OkOut)
+    inner = Recipe(name="inner", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="a", step=a)])
+    recipe = Recipe(
+        name="r",
+        inputs_model=In,
+        outputs_model=OkOut,
+        steps=[
+            StepRef(name="sub", step=inner),
+            StepRef(name="sub.a", step=a, after=["sub"]),
+            StepRef(name="last", step=a, after=["sub", "sub.a"]),
+        ],
+    )
+    assert render_dag(graph_nodes(recipe)).splitlines() == [
+        "sub  (recipe)",
+        "├╌╌ a",
+        "└── sub.a",
+        "    └── last  (also waits on: sub)",
     ]
 
 

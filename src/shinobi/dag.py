@@ -9,18 +9,24 @@ disagree. `graph_nodes(recipe)` adapts that graph into `TraceStep` nodes for
 
     make
     ├── sub  (recipe)
-    │   ├── sub.a
-    │   └── sub.b
+    │   ├╌╌ a
+    │   └╌╌ b
     └── after
         └── merge  (also waits on: sub)
 
-A step sits under the step it waits on, so every branch is a real fan-out.
-A step that waits on several is drawn once, under the last of them in
-declaration order, and names the others in an "also waits on" note -- a DAG
-is not a tree, and the note is what keeps the drawing honest about that. A
-nested `Recipe` step is a branch of its own: its steps hang beneath it under
-dotted names (`sub.a`), and whatever waits on the whole recipe hangs beneath
-it too, without the prefix.
+A step sits under the step it waits on (`──`), so every branch is a real
+fan-out. A step that waits on several is drawn once, under the last of them
+in declaration order, and names the others in an "also waits on" note -- a
+DAG is not a tree, and the note is what keeps the drawing honest about that.
+A nested `Recipe` step is a branch of its own: its first steps hang beneath
+it on a dashed connector (`╌╌`, "is a step of"), and whatever waits on the
+whole recipe hangs beneath it on the ordinary one.
+
+Every name is the step's own, unqualified. `build_graph` guarantees those
+are unique among siblings, and an edge or note only ever connects siblings,
+so the drawing is unambiguous. A qualified name (`sub.a`) would not be: step
+names are free strings, and `Recipe.add_loop` itself declares dotted ones
+(`selfcal.3.image`) that a nested path could spell identically.
 """
 
 from __future__ import annotations
@@ -41,7 +47,8 @@ class TraceStep:
     Attributes:
         id: Index of the node in `graph_nodes`'s output -- declaration
             order, with a nested recipe's own steps right after it.
-        name: The step's name; dotted (`sub.a`) inside a nested recipe.
+        name: The step's own name, unqualified even inside a nested recipe
+            (see the module docstring for why).
         depends_on: IDs of the steps, at the same nesting level, this one
             waits on.
         recipe: Whether the step is a nested `Recipe`.
@@ -80,11 +87,11 @@ def graph_nodes(recipe: "Recipe", inputs: dict[str, Any] | None = None, *, works
     plan = plan_recipe_accesses(recipe, inputs, workspace=workspace) if inputs is not None else None
     graph = plan.graph if plan is not None else build_graph(recipe)
     nodes: list[TraceStep] = []
-    _place(recipe, graph, "", None, nodes, plan)
+    _place(recipe, graph, None, nodes, plan)
     return nodes
 
 
-def _place(recipe: "Recipe", graph, prefix: str, group: int | None, nodes: list[TraceStep], plan=None) -> None:
+def _place(recipe: "Recipe", graph, group: int | None, nodes: list[TraceStep], plan=None) -> None:
     """Append `recipe`'s steps to `nodes` in declaration order, each nested
     recipe followed by its own steps, then add the edges between them.
 
@@ -105,7 +112,7 @@ def _place(recipe: "Recipe", graph, prefix: str, group: int | None, nodes: list[
         declared = scope.resources
         node = TraceStep(
             id=len(nodes),
-            name=f"{prefix}{name}",
+            name=name,
             resources=declared.describe() if declared else "",
             access_reasons=access_reasons,
             recipe=isinstance(scope, Recipe),
@@ -114,7 +121,7 @@ def _place(recipe: "Recipe", graph, prefix: str, group: int | None, nodes: list[
         nodes.append(node)
         ids.append(node.id)
         if node.recipe and scope.steps:
-            _place(scope, build_graph(scope), f"{node.name}.", node.id, nodes)
+            _place(scope, build_graph(scope), node.id, nodes)
     for i, deps in enumerate(graph.deps):
         nodes[ids[i]].depends_on = {ids[dep] for dep in deps}
 
@@ -145,14 +152,13 @@ def render_dag(steps: list[TraceStep]) -> str:
         return "(no steps traced)"
 
     by_id = {step.id: step for step in steps}
-    parent_of: dict[int, int | None] = {}
     children: dict[int, list[TraceStep]] = {step.id: [] for step in steps}
     roots: list[TraceStep] = []
     for step in steps:
         # The last thing it waits on, in declaration order: by the time that
-        # one is drawn, every earlier dependency already has been.
+        # one is drawn, every earlier dependency already has been. A step
+        # that waits on nothing in its own recipe hangs from the recipe.
         parent = max(step.depends_on) if step.depends_on else step.group
-        parent_of[step.id] = parent
         if parent is None:
             roots.append(step)
         else:
@@ -164,7 +170,9 @@ def render_dag(steps: list[TraceStep]) -> str:
         kids = sorted(children[step.id], key=lambda kid: kid.id)
         for position, kid in enumerate(kids):
             last = position == len(kids) - 1
-            lines.append(f"{indent}{'└── ' if last else '├── '}{_label(kid, by_id, step.id)}")
+            # Dashed: `kid` is one of `step`'s own steps. Solid: it waits on `step`.
+            line = "╌╌" if kid.group == step.id and not kid.depends_on else "──"
+            lines.append(f"{indent}{'└' if last else '├'}{line} {_label(kid, by_id, step.id)}")
             draw(kid, indent + ("    " if last else "│   "))
 
     for root in roots:

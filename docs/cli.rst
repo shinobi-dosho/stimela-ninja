@@ -70,19 +70,22 @@ executor uses -- so a cyclic or mis-wired recipe is rejected identically
 either way, and the diagram can never disagree with what a real run would
 do.
 
-The graph is drawn as a tree. Each step sits under the step it waits on;
-siblings may run concurrently; a step that waits on several is drawn under the
-last of them with an ``also waits on`` note; and a nested recipe is a branch
-holding its own steps under dotted names. ``tests/fixtures/sample_targets.py``
-has one:
+The graph is drawn as a tree. Each step sits under the step it waits on
+(``──``); siblings may run concurrently; a step that waits on several is drawn
+under the last of them with an ``also waits on`` note. A nested recipe is a
+branch of its own: its first steps hang beneath it on a dashed connector
+(``╌╌``, "is a step of"), and anything waiting on the whole recipe hangs
+beneath it on the solid one. Names are shown unqualified -- each is unique
+among its siblings -- so a step named ``sub.a`` can never be mistaken for
+``sub``'s own ``a``. ``tests/fixtures/sample_targets.py`` has one:
 
 .. code-block:: console
 
     $ ninja run tests/fixtures/sample_targets.py:nested --dryrun
     make
     ├── sub  (recipe)
-    │   ├── sub.a
-    │   └── sub.b
+    │   ├╌╌ a
+    │   └╌╌ b
     └── after
         └── merge  (also waits on: sub)
 

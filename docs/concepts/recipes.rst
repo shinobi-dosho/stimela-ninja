@@ -107,8 +107,8 @@ node is scheduled. ``build_graph`` validates that internal graph together with
 the parent's, at every level of nesting, so a mis-wired sub-recipe fails the
 parent's ``--dryrun`` rather than surfacing only when the executor reaches it.
 A recipe nested inside itself is refused. ``--dryrun`` draws a nested recipe
-as a branch of its own: its steps hang beneath it under dotted names
-(``sub.image``), and so does anything that waits on the whole recipe.
+as a branch of its own: its steps hang beneath it on a dashed connector, and
+anything that waits on the whole recipe hangs beneath it on the ordinary one.
 
 Execution and concurrency
 -------------------------

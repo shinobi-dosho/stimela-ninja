@@ -198,8 +198,8 @@ def test_run_nested_recipe_dryrun_draws_the_sub_recipe_as_a_branch():
     assert result.output.splitlines() == [
         "make",
         "├── sub  (recipe)",
-        "│   ├── sub.a",
-        "│   └── sub.b",
+        "│   ├╌╌ a",
+        "│   └╌╌ b",
         "└── after",
         "    └── merge  (also waits on: sub)",
     ]
