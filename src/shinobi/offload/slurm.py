@@ -766,6 +766,7 @@ def _prepare_worker_slurm(
     jobs: list[SlurmJob] = []
     workflow_accesses: dict[Path, bool] = {}
     generic_workflow_accesses: dict[Path, bool] = {}
+    product_candidates: dict[str, dict[str, tuple[str, ...]]] = {}
     dataset_accesses: dict[str, tuple] = {}
     topological = graph.topological_indices()
     order_rank = {index: rank for rank, index in enumerate(topological)}
@@ -791,6 +792,11 @@ def _prepare_worker_slurm(
         }
         _require_static_write_declarations(frozen.name, scope, known)
         generic_accesses = path_accesses(scope, known, workspace=Path(pinned.workspace))
+        if any(meta.family for meta in scope.field_meta.values()):
+            from shinobi.steps.dispatch import _snapshot_product_inputs
+
+            reservations = _snapshot_product_inputs(scope, known, workspace=Path(pinned.workspace))
+            product_candidates[frozen.name] = {name: tuple(sorted(map(str, paths))) for name, paths in reservations.candidate_paths.items()}
         for path, writes in generic_accesses:
             workflow_accesses[path] = workflow_accesses.get(path, False) or writes
             generic_workflow_accesses[path] = generic_workflow_accesses.get(path, False) or writes
@@ -868,6 +874,7 @@ def _prepare_worker_slurm(
         accesses=tuple(WorkspaceAccess(path=str(path), writes=writes) for path, writes in sorted(workflow_accesses.items(), key=lambda item: str(item[0]))),
         execution_blocked_reason=execution_blocked_reason,
         dataset_lifecycle=dataset_lifecycle,
+        product_candidates=product_candidates,
     )
     write_new(submission_dir / "execution.json", plan)
 

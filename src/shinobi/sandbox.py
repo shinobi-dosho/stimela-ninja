@@ -319,10 +319,7 @@ def clear_stale_outputs(scope: Scope, run_inputs: dict[str, Any], workspace: Pat
 
     for name, plan in family_plans(scope, run_inputs, workspace).items():
         for candidate in plan.candidates:
-            absolute = (
-                Path(plan.spec.root.format(**run_inputs)).is_absolute()
-                or Path(candidate.rule.path.format(**{**run_inputs, **dict.fromkeys(candidate.rule.axes, "")})).is_absolute()
-            )
+            absolute = not candidate.is_relative(plan.spec, run_inputs)
             if not candidate.rule.accept_existing and (absolute or not sandboxed):
                 candidates.append((candidate.path, f"output {name!r}"))
     if not candidates:

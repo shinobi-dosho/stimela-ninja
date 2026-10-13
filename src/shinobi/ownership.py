@@ -131,11 +131,11 @@ def _resolved_leaf_inputs(
     scope: Scope,
     values: dict[str, Any] | BaseModel,
     *,
-    step_inputs: dict[int, tuple[BaseModel, bool]],
+    step_inputs: dict[int | tuple[int, ...], tuple[BaseModel, bool]],
     reusable: bool = True,
     unresolved_inputs: set[str] | None = None,
-    validated_steps: dict[int, tuple[BaseModel, bool]] | None = None,
-    known_steps: dict[int, dict[str, Any]] | None = None,
+    validated_steps: dict[int | tuple[int, ...], tuple[BaseModel, bool]] | None = None,
+    known_steps: dict[int | tuple[int, ...], dict[str, Any]] | None = None,
 ) -> Iterable[tuple[Scope, dict[str, Any], set[str]]]:
     """Yield each leaf with the inputs knowable at a workflow boundary.
 
@@ -179,10 +179,44 @@ def _resolved_leaf_inputs(
     for index in build_graph(scope).topological_indices():
         ref = scope.steps[index]
         known, unresolved_fields = static_wiring_values(ref, recipe_inputs, outputs, unresolved_inputs=unresolved_inputs)
+        from shinobi.steps.schema import validate_family_scatter_inputs
+
+        validate_family_scatter_inputs(ref, known, unresolved_fields, error_type=WorkspaceOwnershipError)
         runtime_dependent = bool(unresolved_fields)
         # A statically predicted OutputRef still needs its actual returned
         # value validated at execution against the workflow's claim.
         output_wired = any(isinstance(item, OutputRef) for source in ref.wiring.values() for item in (source if isinstance(source, list) else [source]))
+        if ref.scatter is not None and all(field in known for field in ref.scatter.fields):
+            from shinobi.steps.dispatch import _build_scatter_slices
+            from shinobi.steps.schema import _slice_descendants
+
+            for slice_index, inputs in enumerate(_build_scatter_slices(ref, known)):
+                key = (id(ref), slice_index)
+                model = None
+                try:
+                    prior_slice = (validated_steps or {}).get(key)
+                    model = prior_slice[0] if prior_slice is not None else ref.step.inputs_model(**inputs)
+                    inputs = _model_values(model)
+                    step_inputs[key] = (model, reusable and not runtime_dependent and not output_wired)
+                except Exception:
+                    pass
+                if known_steps is not None:
+                    known_steps[key] = {name: value for name, value in inputs.items() if name not in unresolved_fields}
+                nested_steps = {}
+                nested_known = {}
+                yield from _resolved_leaf_inputs(
+                    ref.step,
+                    model if model is not None and not runtime_dependent else inputs,
+                    step_inputs=nested_steps,
+                    reusable=False,
+                    unresolved_inputs=unresolved_fields,
+                    known_steps=nested_known,
+                    validated_steps=_slice_descendants(validated_steps, id(ref), slice_index),
+                )
+                step_inputs.update({(*key, *(nested_key if isinstance(nested_key, tuple) else (nested_key,))): value for nested_key, value in nested_steps.items()})
+                if known_steps is not None:
+                    known_steps.update({(*key, *(nested_key if isinstance(nested_key, tuple) else (nested_key,))): value for nested_key, value in nested_known.items()})
+            continue
         validated = None
         prior = validated_steps.get(id(ref)) if validated_steps is not None else None
         try:
@@ -214,8 +248,8 @@ def scope_path_accesses(
     values: dict[str, Any] | BaseModel,
     *,
     workspace: Path,
-    known_steps: dict[int, dict[str, Any]] | None = None,
-) -> tuple[list[tuple[Path, bool]], dict[int, tuple[BaseModel, bool]]]:
+    known_steps: dict[int | tuple[int, ...], dict[str, Any]] | None = None,
+) -> tuple[list[tuple[Path, bool]], dict[int | tuple[int, ...], tuple[BaseModel, bool]]]:
     """Resolve every path access known at a workflow boundary.
 
     Also returns each StepRef's validated inputs model, keyed by StepRef
@@ -225,7 +259,7 @@ def scope_path_accesses(
     for product reservations that do not depend on unresolved scalar inputs.
     """
     collected: dict[Path, bool] = {}
-    step_inputs: dict[int, tuple[BaseModel, bool]] = {}
+    step_inputs: dict[int | tuple[int, ...], tuple[BaseModel, bool]] = {}
     from shinobi.dataset_access import ResolvedAccessPlanner, dataset_workspace_accesses
 
     planner = ResolvedAccessPlanner(workspace)
@@ -258,7 +292,7 @@ def contained_access_issues(
     *,
     workspace: Path,
     dataset_resources: set[Path],
-    validated_steps: dict[int, tuple[BaseModel, bool]] | None = None,
+    validated_steps: dict[int | tuple[int, ...], tuple[BaseModel, bool]] | None = None,
 ) -> tuple[str, ...]:
     """Return generic filesystem declarations a contained read cannot prove.
 
@@ -286,7 +320,7 @@ def contained_access_issues(
 
     root = workspace.resolve()
     issues: list[str] = []
-    step_inputs: dict[int, tuple[BaseModel, bool]] = {}
+    step_inputs: dict[int | tuple[int, ...], tuple[BaseModel, bool]] = {}
 
     def concrete_paths(value: Any) -> tuple[Path, ...]:
         from shinobi.products import iter_product_paths
@@ -384,7 +418,7 @@ def contained_access_issues(
     return tuple(dict.fromkeys(issues))
 
 
-def planned_leaf_inputs(scope: Scope, values: dict[str, Any] | BaseModel) -> dict[int, dict[str, Any]]:
+def planned_leaf_inputs(scope: Scope, values: dict[str, Any] | BaseModel) -> dict[int | tuple[int, ...], dict[str, Any]]:
     """Reconstruct claim-time input snapshots from immutable declaration data.
 
     Unlike ownership discovery, this does not inspect datasets or plan access
@@ -394,7 +428,7 @@ def planned_leaf_inputs(scope: Scope, values: dict[str, Any] | BaseModel) -> dic
     required inputs cannot be resolved until execution; they are not reused
     as validated execution models.
     """
-    snapshots: dict[int, dict[str, Any]] = {}
+    snapshots: dict[int | tuple[int, ...], dict[str, Any]] = {}
     for _leaf in _resolved_leaf_inputs(scope, values, step_inputs={}, known_steps=snapshots):
         pass
     return snapshots
@@ -408,11 +442,10 @@ def validate_contained_execution(
     dataset_resources: set[Path],
     planned_inputs: _ProductReservations | None = None,
 ) -> None:
-    """Prove actual leaf destinations and preserve its planned pattern parents.
+    """Preserve finite candidate paths and conservative pattern parents.
 
-    Comparing each declaration's canonical directory keeps the ownership and
-    per-leaf ordering assumptions even if another leaf claims the new parent.
-    Basename changes within the same reservation remain allowed when safe.
+    Runtime finite candidates may shrink or reorder, but cannot gain a path
+    from another leaf or another output field's reservation.
     """
     from shinobi.exceptions import DatasetLifecycleUnavailableError
 
@@ -431,7 +464,7 @@ def validate_contained_execution(
             raise DatasetLifecycleUnavailableError("derived read paths changed since planning")
     if planned_inputs is not None and (tuple(scope.harvest), tuple(scope.scratch)) != (planned_inputs.harvest, planned_inputs.scratch):
         raise DatasetLifecycleUnavailableError(f"scope {scope.name!r} changed its planned harvest/scratch declarations")
-    issues = list(contained_access_issues(scope, prepared, workspace=workspace, dataset_resources=dataset_resources))
+    issues = list(contained_access_issues(scope, prepared, workspace=workspace, dataset_resources=dataset_resources)) if dataset_resources else []
     families = {name: meta.family for name, meta in scope.field_meta.items() if meta.family}
     if planned_inputs is not None and families != (planned_inputs.families or {}):
         issues.append(f"scope {scope.name!r} changed its planned family declarations")
@@ -440,10 +473,18 @@ def validate_contained_execution(
             issues.append(f"scope {scope.name!r} has no frozen product directory reservations")
         else:
             declarations = planned_inputs.declarations
+            from shinobi.products import family_plans
+
+            frozen_candidates = planned_inputs.candidate_paths or {}
+            for name, plan in family_plans(scope, prepared, workspace, best_effort=True).items():
+                expected_paths = frozen_candidates.get(name, set())
+                for path in sorted({candidate.path.resolve() for candidate in plan.candidates} - expected_paths, key=str):
+                    expected = ", ".join(map(str, sorted(expected_paths, key=str))) or "no frozen paths"
+                    issues.append(f"scope {scope.name!r} family {name!r} changed its planned candidate reservation: {expected} -> {path}")
 
             def parents(inputs):
                 reservations: dict[str, set[Path]] = {}
-                for source, pattern in _resolved_product_patterns(scope, inputs, declarations=declarations, workspace=workspace):
+                for source, pattern in _resolved_product_patterns(scope, inputs, declarations=declarations, workspace=workspace, include_candidates=False):
                     try:
                         if pattern is None:
                             issues.append(f"scope {scope.name!r} {source} has an unresolved product directory reservation")
@@ -460,7 +501,8 @@ def validate_contained_execution(
                     expected = ", ".join(map(str, sorted(expected_parents, key=str))) or "no frozen parents"
                     issues.append(f"scope {scope.name!r} {source} changed its planned product directory reservation: {expected} -> {actual_parent}")
     if issues:
-        raise DatasetLifecycleUnavailableError("contained MSv2 execution refused: " + "; ".join(issues))
+        context = "contained MSv2 execution" if dataset_resources else "product execution"
+        raise DatasetLifecycleUnavailableError(context + " refused: " + "; ".join(issues))
 
 
 class WorkspaceOwner(BaseModel):

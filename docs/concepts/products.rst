@@ -119,8 +119,8 @@ empty directories. Symlinks, special nodes and failed enumeration prevent
 success publication. Bundle children do not become independently owned files
 or scientific partitions.
 
-The ``root`` is a containment/search boundary and reservation, never itself a
-produced directory or a target to clear. Members cannot escape it through
+The ``root`` is a containment/search boundary, never itself a produced
+directory or a target to clear. Members cannot escape it through
 ``..``, absolute paths or symlinks. Families may share a search parent, but
 cannot claim overlapping physical products. Output members cannot overlap
 input trees. Discovery namespaces are checked against every physical input
@@ -131,6 +131,24 @@ canonical boundaries before accepting or publishing members, so a run-created
 ancestor symlink cannot redirect a product into another tree. A killMS output
 implicitly placed inside its input MS therefore
 needs a different explicit destination.
+
+Finite candidates reserve their canonical exact paths for dependency ordering
+and workspace ownership, including candidates that have not been created yet.
+Sibling files can run concurrently; identical paths and directory/descendant
+overlap remain ordered. Discovery, harvest and scratch retain conservative
+parent reservations. Candidate parents still drive directory creation and
+container mounts. Nested recipes reserve their leaves' combined accesses when
+ordered against sibling steps. Runtime inputs may shrink or reorder the frozen candidate
+set, but may not add or redirect a candidate, even to a path reserved by another
+leaf. Canonical candidates are frozen at planning time, so retargeting a
+symlink cannot transfer a reservation. Local scatter freezes each slice
+separately. Finite-family scatter requires its slice inputs and candidate
+paths to resolve before dispatch; an unresolved upstream reference cannot
+supply an execution-time slice envelope. Local execution and detached workers
+enforce the same per-leaf
+boundary before clearing outputs or launching tools. Sandbox preparation retains
+workspace destinations derived from anchored Path inputs; declarations that
+remain relative use the sandbox cwd.
 
 Execution evidence and reuse
 ----------------------------

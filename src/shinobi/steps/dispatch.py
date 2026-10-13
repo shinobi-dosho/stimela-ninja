@@ -60,7 +60,7 @@ from shinobi.sandbox import (
     relativize_path_outputs,
 )
 from shinobi.steps.loops import passthrough_result, should_skip
-from shinobi.steps.schema import _ProductReservations, Cab, InputRef, Mutability, OutputRef, Recipe, Scope, StepRef, validate_declared_writes
+from shinobi.steps.schema import _ProductReservations, _slice_descendants, Cab, InputRef, Mutability, OutputRef, Recipe, Scope, StepRef, validate_declared_writes
 from shinobi.wranglers import apply_wranglers
 
 # Run-log records (step lifecycle + captured tool output) go through the
@@ -435,7 +435,7 @@ def _validate_inputs(scope: Scope, kwargs: dict[str, Any]) -> BaseModel:
     return validated
 
 
-def _snapshot_product_inputs(scope: Scope, inputs: BaseModel | dict[str, Any] | _ProductReservations | None) -> _ProductReservations | None:
+def _snapshot_product_inputs(scope: Scope, inputs: BaseModel | dict[str, Any] | _ProductReservations | None, *, workspace: Path | None = None) -> _ProductReservations | None:
     """Freeze declarations and inputs without changing execution mutability."""
     if inputs is None:
         return None
@@ -447,28 +447,69 @@ def _snapshot_product_inputs(scope: Scope, inputs: BaseModel | dict[str, Any] | 
         from shinobi.ownership import _model_values
 
         values = _model_values(inputs) if isinstance(inputs, BaseModel) else inputs
+        from shinobi.products import family_plans
+
+        plans = family_plans(scope, values, workspace or Path.cwd(), best_effort=True)
+        candidates = {name: frozenset(candidate.path.resolve() for candidate in plan.candidates) for name, plan in plans.items()}
+        relative = {
+            name: tuple(
+                (candidate.path.resolve(), Path(plan.spec.root.format(**values)) / candidate.declaration_path(values), candidate.rule.path, tuple(candidate.axis_suffixes.items()))
+                for candidate in plan.candidates
+                if candidate.is_relative(plan.spec, values)
+            )
+            for name, plan in plans.items()
+        }
         return _ProductReservations(
             tuple(scope.harvest),
             tuple(scope.scratch),
             copy.deepcopy(values),
             copy.deepcopy({name: meta.family for name, meta in scope.field_meta.items() if meta.family}),
             copy.deepcopy(scope.derived_reads),
+            candidates,
+            relative,
         )
     except Exception as exc:
         raise DatasetLifecycleUnavailableError(f"scope {scope.name!r} cannot freeze product directory reservation inputs: {exc}") from exc
 
 
-def _snapshot_product_leaf_inputs(scope: Scope, leaf_inputs: dict[int, tuple[BaseModel, bool] | dict[str, Any]] | None) -> dict[int, _ProductReservations]:
+def _snapshot_product_leaf_inputs(
+    scope: Scope, leaf_inputs: dict[int | tuple[int, ...], tuple[BaseModel, bool] | dict[str, Any]] | None, *, under_scatter: bool = False
+) -> dict[int | tuple[int, ...], _ProductReservations]:
     """Capture every patterned descendant before any recipe callback runs."""
-    snapshots: dict[int, _ProductReservations] = {}
+    snapshots: dict[int | tuple[int, ...], _ProductReservations] = {}
     if isinstance(scope, Recipe) and leaf_inputs is not None:
         for ref in scope.steps:
+            if ref.scatter is not None:
+                for key, prior in leaf_inputs.items():
+                    if isinstance(key, tuple) and len(key) == 2 and key[0] == id(ref):
+                        frozen = _snapshot_product_inputs(ref.step, prior[0] if isinstance(prior, tuple) else prior)
+                        if frozen is not None:
+                            _require_finite_scatter_reservations(ref.step, frozen)
+                            snapshots[key] = frozen
+                        nested = _slice_descendants(leaf_inputs, *key)
+                        snapshots.update(
+                            {
+                                (*key, *(nested_key if isinstance(nested_key, tuple) else (nested_key,))): value
+                                for nested_key, value in _snapshot_product_leaf_inputs(ref.step, nested, under_scatter=True).items()
+                            }
+                        )
+                continue
             prior = leaf_inputs.get(id(ref))
             frozen = _snapshot_product_inputs(ref.step, prior[0] if isinstance(prior, tuple) else prior) if prior is not None else None
             if frozen is not None:
+                if under_scatter:
+                    _require_finite_scatter_reservations(ref.step, frozen)
                 snapshots[id(ref)] = frozen
-            snapshots.update(_snapshot_product_leaf_inputs(ref.step, leaf_inputs))
+            snapshots.update(_snapshot_product_leaf_inputs(ref.step, leaf_inputs, under_scatter=under_scatter))
     return snapshots
+
+
+def _require_finite_scatter_reservations(scope: Scope, frozen: _ProductReservations) -> None:
+    from shinobi.steps.schema import _finite_family_fields
+
+    unknown = _finite_family_fields(scope) - (frozen.candidate_paths or {}).keys()
+    if unknown:
+        raise DatasetLifecycleUnavailableError(f"scope {scope.name!r}: finite-family scatter has unresolved candidate paths before dispatch: {', '.join(sorted(unknown))}")
 
 
 class ExecContext:
@@ -499,8 +540,8 @@ class ExecContext:
         run_id: str = "",
         validated_inputs: BaseModel | None = None,
         planned_inputs: BaseModel | dict[str, Any] | _ProductReservations | None = None,
-        planned_leaf_inputs: dict[int, _ProductReservations] | None = None,
-        leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
+        planned_leaf_inputs: dict[int | tuple[int, ...], _ProductReservations] | None = None,
+        leaf_inputs: dict[int | tuple[int, ...], tuple[BaseModel, bool]] | None = None,
         dataset_lifecycle: Any | None = None,
         publication_gate: Callable[[Callable[[], None]], None] | None = None,
     ):
@@ -584,12 +625,10 @@ class ExecContext:
         # wiring or ctx.run overrides select another product directory.
         self._planned_inputs = (
             _snapshot_product_inputs(scope, planned_inputs if planned_inputs is not None or not scope.derived_reads else self.inputs)
-            if dataset_lifecycle is not None or scope.derived_reads
+            if dataset_lifecycle is not None or scope.derived_reads or any(meta.family for meta in scope.field_meta.values())
             else None
         )
-        self._planned_leaf_inputs = (
-            (planned_leaf_inputs if planned_leaf_inputs is not None else _snapshot_product_leaf_inputs(scope, leaf_inputs)) if dataset_lifecycle is not None else None
-        )
+        self._planned_leaf_inputs = planned_leaf_inputs if planned_leaf_inputs is not None else _snapshot_product_leaf_inputs(scope, leaf_inputs)
         # Non-None only for leaves executing under the top-level contained
         # MSv2 read lifecycle and its already-acquired shared claim.
         self._dataset_lifecycle = dataset_lifecycle
@@ -622,13 +661,13 @@ class ExecContext:
     def validate_contained_inputs(self, prepared: dict[str, Any] | None = None) -> None:
         """Check every leaf launcher, including native and manual functions."""
         resources = self.workflow_dataset_resources()
-        if resources and not isinstance(self.scope, Recipe):
+        if (resources or any(meta.family for meta in self.scope.field_meta.values())) and not isinstance(self.scope, Recipe):
             from shinobi.ownership import validate_contained_execution
 
             validate_contained_execution(
                 self.scope,
                 self.prepare_inputs() if prepared is None else prepared,
-                workspace=self._dataset_lifecycle.workspace,
+                workspace=self._dataset_lifecycle.workspace if self._dataset_lifecycle is not None else Path.cwd(),
                 dataset_resources=resources,
                 planned_inputs=self._planned_inputs,
             )
@@ -1010,8 +1049,8 @@ def _dispatch(
     _dataset_lifecycle: Any | None = None,
     _validated_inputs: BaseModel | None = None,
     _planned_inputs: BaseModel | dict[str, Any] | _ProductReservations | None = None,
-    _planned_leaf_inputs: dict[int, _ProductReservations] | None = None,
-    _leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
+    _planned_leaf_inputs: dict[int | tuple[int, ...], _ProductReservations] | None = None,
+    _leaf_inputs: dict[int | tuple[int, ...], tuple[BaseModel, bool]] | None = None,
     _boundary_fields: frozenset[str] = frozenset(),
     _boundary_elements: frozenset[tuple[str, int]] = frozenset(),
     overwrite_steps: Sequence[str] = (),
@@ -1182,7 +1221,7 @@ def _dispatch(
                 if overwrites:
                     logger.warning("overwrite: invalidated cached results of %s", ", ".join(overwrites[0].invalidated))
                 lifecycle.amend(overwrites=overwrites)
-            known_steps: dict[int, dict[str, Any]] = {}
+            known_steps: dict[int | tuple[int, ...], dict[str, Any]] = {}
             accesses, leaf_inputs = scope_path_accesses(scope, validated_inputs, workspace=launch_workspace, known_steps=known_steps)
             planned_leaf_inputs = _snapshot_product_leaf_inputs(scope, known_steps)
             planned = resolve_snapshot()
@@ -1468,7 +1507,9 @@ def _dispatch(
             # could claim one factory-produced path and execute with another.
             validated_inputs = _validated_inputs if _validated_inputs is not None else _validate_inputs(scope, kwargs)
             launch_workspace = Path.cwd()
-            accesses, leaf_inputs = scope_path_accesses(scope, validated_inputs, workspace=launch_workspace)
+            known_steps: dict[int | tuple[int, ...], dict[str, Any]] = {}
+            accesses, leaf_inputs = scope_path_accesses(scope, validated_inputs, workspace=launch_workspace, known_steps=known_steps)
+            planned_leaf_inputs = _snapshot_product_leaf_inputs(scope, known_steps)
             writes = [path for path, writes in accesses if writes]
             if writes:
                 workspace = ownership_workspace(launch_workspace, writes)
@@ -1517,6 +1558,8 @@ def _dispatch(
                     _dataset_lifecycle=_dataset_lifecycle,
                     _validated_inputs=validated_inputs,
                     _leaf_inputs=leaf_inputs,
+                    _planned_inputs=validated_inputs if not isinstance(scope, Recipe) else None,
+                    _planned_leaf_inputs=planned_leaf_inputs,
                     **kwargs,
                 )
             finally:
@@ -2035,7 +2078,11 @@ def _run_cab(
     sandbox_dir = None
     run_inputs = prepared
     workspace = Path.cwd()
-    planned = _snapshot_product_inputs(cab, planned_inputs if planned_inputs is not None else prepared) if dataset_resources or cab.derived_reads else None
+    planned = (
+        _snapshot_product_inputs(cab, planned_inputs if planned_inputs is not None else prepared)
+        if dataset_resources or cab.derived_reads or any(meta.family for meta in cab.field_meta.values())
+        else None
+    )
     run_planned = planned
     if cab.derived_reads:
         from shinobi.derived import derived_reads
@@ -2047,15 +2094,15 @@ def _run_cab(
             != [(read.address, read.path) for read in derived_reads(cab, prepared, workspace)]
         ):
             raise DatasetLifecycleUnavailableError("derived dependency paths/declarations changed after planning")
-    if dataset_resources:
+    if dataset_resources or any(meta.family for meta in cab.field_meta.values()):
         from shinobi.ownership import validate_contained_execution
 
-        validate_contained_execution(cab, prepared, workspace=workspace, dataset_resources=dataset_resources, planned_inputs=planned)
+        validate_contained_execution(cab, prepared, workspace=workspace, dataset_resources=dataset_resources or set(), planned_inputs=planned)
     if sandbox_root is not None:
         sandbox_dir = create_sandbox(sandbox_root, label or cab.name, **({"dataset_resources": dataset_resources} if dataset_resources else {}))
         run_inputs = absolutize_path_inputs(cab, prepared, workspace)
         if planned is not None:
-            run_planned = planned.with_inputs(absolutize_path_inputs(cab, planned.inputs, workspace))
+            run_planned = planned.with_inputs(absolutize_path_inputs(cab, planned.inputs, workspace), workspace=sandbox_dir)
     # Against `run_inputs`, so the destinations are the ones the tool is
     # really given, and before the run, because a tool that refuses to
     # overwrite has already failed by the time anything harvests.
@@ -2064,10 +2111,10 @@ def _run_cab(
 
     backend = get_step_backend(backend_name)
     uses_mounts = backend_name in CONTAINER_RUNTIMES or (backend_name == "slurm" and cab.image and getattr(backend, "container_runtime", None))
-    if dataset_resources:
+    if dataset_resources or any(meta.family for meta in cab.field_meta.values()):
         from shinobi.ownership import validate_contained_execution
 
-        validate_contained_execution(cab, run_inputs, workspace=run_cwd, dataset_resources=dataset_resources, planned_inputs=run_planned)
+        validate_contained_execution(cab, run_inputs, workspace=run_cwd, dataset_resources=dataset_resources or set(), planned_inputs=run_planned)
     validate_declared_writes(cab, run_inputs, run_cwd, error_type=BackendError if uses_mounts else ParameterError)
     from shinobi.derived import derived_reads, read_fingerprint, stage_derived_reads
 
@@ -2298,6 +2345,12 @@ def _aggregate_scatter_results(
         returncode = 0
 
     inputs_data = {name: value for name, value in sub_kwargs.items() if name in scope.inputs_model.model_fields}
+    if slices:
+        # Record defaults from execution rather than evaluating factories for
+        # a synthetic extra invocation during result aggregation.
+        for name in scope.inputs_model.model_fields:
+            if name not in inputs_data:
+                inputs_data[name] = getattr(slices[0].inputs, name)
 
     outputs = OutputsModel(**outputs_data)
     inputs = InputsModel(**inputs_data)
@@ -2390,8 +2443,8 @@ def _run_recipe(
     input_keys: dict[str, Any] | None = None,
     budget: Budget | None = None,
     run_id: str = "",
-    leaf_inputs: dict[int, tuple[BaseModel, bool]] | None = None,
-    planned_leaf_inputs: dict[int, _ProductReservations] | None = None,
+    leaf_inputs: dict[int | tuple[int, ...], tuple[BaseModel, bool]] | None = None,
+    planned_leaf_inputs: dict[int | tuple[int, ...], _ProductReservations] | None = None,
     validated_inputs: BaseModel | None = None,
     dataset_lifecycle: Any | None = None,
     publication_gate: Callable[[Callable[[], None]], None] | None = None,
@@ -2598,7 +2651,11 @@ def _run_recipe(
                 scatter_sub_kwargs[i] = sub_kwargs
                 slice_results[i] = [None] * len(slices)
                 for slice_idx, slice_kwargs in enumerate(slices):
-                    unit_payload[(i, slice_idx)] = (slice_kwargs, sub_input_keys, None)
+                    prior = (leaf_inputs or {}).get((id(ref), slice_idx))
+                    if prior is not None:
+                        for name in type(prior[0]).model_fields:
+                            slice_kwargs.setdefault(name, getattr(prior[0], name))
+                    unit_payload[(i, slice_idx)] = (slice_kwargs, sub_input_keys, prior[0] if prior is not None and prior[1] else None)
                     heapq.heappush(pending, (i, slice_idx))
                 return
             unit_payload[(i, None)] = (sub_kwargs, sub_input_keys, validated_leaf if reusable_leaf else None)
@@ -2624,6 +2681,11 @@ def _run_recipe(
             """Submit one admission unit that has already been granted."""
             ref = recipe.steps[i]
             unit_kwargs, sub_input_keys, validated_inputs = unit_payload.pop((i, slice_idx))
+            child_leaf_inputs = leaf_inputs
+            child_planned_inputs = planned_leaf_inputs
+            if slice_idx is not None and isinstance(ref.step, Recipe):
+                child_leaf_inputs = _slice_descendants(leaf_inputs, id(ref), slice_idx)
+                child_planned_inputs = _slice_descendants(planned_leaf_inputs, id(ref), slice_idx)
             fut = pool.submit(
                 _dispatch,
                 ref.step,
@@ -2661,10 +2723,10 @@ def _run_recipe(
                 else frozenset(),
                 _run_id=run_id,
                 _slice_index=slice_idx,
-                _leaf_inputs=leaf_inputs,
+                _leaf_inputs=child_leaf_inputs,
                 _validated_inputs=validated_inputs,
-                _planned_inputs=planned_leaf_inputs.get(id(ref)) if planned_leaf_inputs is not None else None,
-                _planned_leaf_inputs=planned_leaf_inputs,
+                _planned_inputs=planned_leaf_inputs.get((id(ref), slice_idx) if slice_idx is not None else id(ref)) if planned_leaf_inputs is not None else None,
+                _planned_leaf_inputs=child_planned_inputs,
                 _dataset_lifecycle=dataset_lifecycle,
                 _publication_gate=publication_gate,
                 **unit_kwargs,
