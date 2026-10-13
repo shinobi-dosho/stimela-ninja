@@ -88,6 +88,12 @@ def test_concrete_ms_paths_are_planned_per_slice(tmp_path):
 
 
 def test_create_write_then_scatter_read_orders_and_recovers(tmp_path):
+    # Optional runtime checks must skip the test before dispatch wraps errors.
+    tables = pytest.importorskip("casacore.tables", reason="requires measurement-set group")
+    pytest.importorskip("numpy", reason="requires measurement-set group")
+    if not hasattr(tables, "default_ms"):
+        pytest.skip("installed python-casacore has no default_ms fixture builder")
+
     @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="create")])
     def create(ms: MeasurementSetV2) -> None:
         make_ms(ms)
