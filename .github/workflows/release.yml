@@ -5,6 +5,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
 jobs:
   preflight:
     name: Verify release metadata
@@ -75,8 +78,8 @@ jobs:
       - name: Build documentation
         run: uv run --python 3.12 --locked --group docs sphinx-build -E -n -W --keep-going -b html docs docs/_build/html
 
-  publish:
-    name: Build and publish to PyPI
+  build:
+    name: Build distribution
     needs: [test, docs]
     runs-on: ubuntu-latest
     steps:
@@ -94,8 +97,24 @@ jobs:
       - name: Check metadata
         run: uvx twine check dist/*
 
+      - name: Upload distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download distribution
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
       - name: Publish to PyPI
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: uvx twine upload --non-interactive dist/*
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_TOKEN }}
