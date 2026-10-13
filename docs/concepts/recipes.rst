@@ -92,7 +92,13 @@ raises ``RecipeGraphError`` on:
   output model/patterns;
 * an ``after`` edge naming a missing step or the step itself;
 * resources declared on a nested ``Recipe`` rather than its executable leaves;
-* a cycle formed by data or ordering-only edges.
+* a cycle formed by data or ordering-only edges;
+* two steps with the same *step path*. The step cache, mutation snapshots and
+  run log identify a step by its dotted path from the outermost recipe --
+  ``sub.a`` for step ``a`` of a nested recipe ``sub``, ``x[3]`` for slice 3 of
+  a scattered ``x`` -- so a sibling literally named ``sub.a`` or ``x[3]``
+  would share that identity and overwrite the other's cache entry. Dotted
+  names are otherwise fine; ``add_loop`` declares them itself.
 
 Validation runs at **run time and dry-run time**, not when you call
 ``add_step``: a recipe is deliberately mutable while you build it, so a forward

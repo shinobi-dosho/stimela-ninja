@@ -206,8 +206,8 @@ def test_recipes_nested_two_deep():
 
 def test_dotted_step_name_cannot_pass_for_a_nested_step():
     """Step names are free strings, and `add_loop` declares dotted ones, so a
-    top-level `sub.a` waiting on `sub` must not look like `sub`'s own `a`.
-    Unqualified names plus the membership connector keep them apart."""
+    top-level `sub.x` waiting on `sub` must not look like one of `sub`'s own
+    steps. Unqualified names plus the membership connector keep them apart."""
     a = _cab("a", In, OkOut)
     inner = Recipe(name="inner", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="a", step=a)])
     recipe = Recipe(
@@ -216,16 +216,24 @@ def test_dotted_step_name_cannot_pass_for_a_nested_step():
         outputs_model=OkOut,
         steps=[
             StepRef(name="sub", step=inner),
-            StepRef(name="sub.a", step=a, after=["sub"]),
-            StepRef(name="last", step=a, after=["sub", "sub.a"]),
+            StepRef(name="sub.x", step=a, after=["sub"]),
+            StepRef(name="last", step=a, after=["sub", "sub.x"]),
         ],
     )
     assert render_dag(graph_nodes(recipe)).splitlines() == [
         "sub  (recipe)",
         "├╌╌ a",
-        "└── sub.a",
+        "└── sub.x",
         "    └── last  (also waits on: sub)",
     ]
+
+
+def test_dryrun_refuses_a_step_whose_path_collides_with_a_nested_step():
+    a = _cab("a", In, OkOut)
+    inner = Recipe(name="inner", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="a", step=a)])
+    recipe = Recipe(name="r", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="sub", step=inner), StepRef(name="sub.a", step=a)])
+    with pytest.raises(RecipeGraphError, match="would share the step path 'sub.a'"):
+        graph_nodes(recipe)
 
 
 def test_empty_nested_recipe_is_a_leaf():

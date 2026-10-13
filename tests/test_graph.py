@@ -459,3 +459,54 @@ def test_graph_of_a_valid_nested_recipe_keeps_it_as_one_node():
     inner = Recipe(name="inner", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="a", step=_cab("a", In, OkOut))])
     graph = build_graph(_recipe([StepRef(name="sub", step=inner), StepRef(name="b", step=_cab("b", In, OkOut))]))
     assert graph.names == ["sub", "b"]
+
+
+# -- step paths: the cache/snapshot/log identity of a step --
+
+
+def _inner(*names):
+    return Recipe(name="inner", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name=n, step=_cab(n, In, OkOut)) for n in names])
+
+
+def test_dotted_name_colliding_with_a_nested_step_path_is_rejected():
+    # dispatch keys sub's `a` as `<root>.sub.a`: the same key as this sibling
+    recipe = _recipe([StepRef(name="sub", step=_inner("a")), StepRef(name="sub.a", step=_cab("x", In, OkOut))])
+    with pytest.raises(RecipeGraphError, match=r"steps 'sub' -> 'a' and 'sub.a' would share the step path 'sub.a'"):
+        build_graph(recipe)
+
+
+def test_step_path_collision_two_levels_down_is_rejected():
+    middle = Recipe(name="middle", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="inner", step=_inner("a"))])
+    recipe = _recipe([StepRef(name="m", step=middle), StepRef(name="m.inner.a", step=_cab("x", In, OkOut))])
+    with pytest.raises(RecipeGraphError, match=r"'m' -> 'inner' -> 'a' and 'm.inner.a'"):
+        build_graph(recipe)
+
+
+def test_collision_inside_a_nested_recipe_is_reported_with_its_path():
+    middle = Recipe(name="middle", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="s", step=_inner("a")), StepRef(name="s.a", step=_cab("x", In, OkOut))])
+    with pytest.raises(RecipeGraphError, match=r"step 'mid' of recipe 'r' is an invalid nested recipe: recipe 'middle': steps 's' -> 'a' and 's.a'"):
+        build_graph(_recipe([StepRef(name="mid", step=middle)]))
+
+
+def test_name_mimicking_a_scatter_slice_is_rejected():
+    class ListIn(BaseModel):
+        name: list[str] = []
+
+    scattered = StepRef(name="x", step=_cab("x", ListIn, OkOut), scatter={"fields": ["name"]})
+    with pytest.raises(RecipeGraphError, match=r"'x \(scattered\)' and 'x\[3\]' would share the step path 'x\[3\]'"):
+        build_graph(_recipe([scattered, StepRef(name="x[3]", step=_cab("y", In, OkOut))]))
+
+
+def test_dotted_names_that_collide_with_nothing_are_accepted():
+    # add_loop's own `selfcal.1.work` shape, and bracketed names with no
+    # scattered sibling to collide with
+    recipe = _recipe(
+        [
+            StepRef(name="sub", step=_inner("a")),
+            StepRef(name="sub.b", step=_cab("b", In, OkOut)),
+            StepRef(name="selfcal.1.work", step=_cab("w", In, OkOut)),
+            StepRef(name="x[1]", step=_cab("x1", In, OkOut)),
+            StepRef(name="x[2]", step=_cab("x2", In, OkOut)),
+        ]
+    )
+    assert build_graph(recipe).names == ["sub", "sub.b", "selfcal.1.work", "x[1]", "x[2]"]

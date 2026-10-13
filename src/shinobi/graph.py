@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import graphlib
 import heapq
+import re
 from dataclasses import dataclass
 
 from shinobi.policies import EXECUTABLE_FLAVOURS
@@ -97,8 +98,10 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
     wiring or in `output_wiring`) to an unknown step or to a field that is not
     an output of that step; a wiring field that is not an input of the
     consuming step; a recipe output field that is not in the recipe's outputs
-    model; a dependency cycle; or non-Cab derived reads anywhere in the
-    declared recipe tree.
+    model; a dependency cycle; non-Cab derived reads anywhere in the
+    declared recipe tree; or two steps anywhere in the tree that dispatch
+    would key by the same dotted step path (see
+    `_refuse_step_path_collisions`).
 
     Every nested `Recipe` step is validated the same way, recursively, and a
     recipe that contains itself is refused. The returned graph still describes
@@ -238,8 +241,69 @@ def _build_graph(recipe: "Recipe") -> RecipeGraph:
             _build_graph(ref.step)
         except RecipeGraphError as exc:
             raise RecipeGraphError(f"step '{ref.name}' of recipe '{recipe.name}' is an invalid nested recipe: {exc}") from exc
+    _refuse_step_path_collisions(recipe)
 
     return RecipeGraph(names=names, deps=deps, dependents=dependents)
+
+
+# A scatter slice's step path suffix, as dispatch spells it (`name[3]`).
+_SLICE = re.compile(r"\[\d+\]")
+
+
+@dataclass(frozen=True)
+class _StepPath:
+    """One step's dotted path below a recipe, as dispatch keys it.
+
+    `canonical` writes every slice index as `[#]`; `scattered` says whether
+    the path contains a real scatter slice (any index) rather than only
+    literal brackets someone put in a step name.
+    """
+
+    canonical: str
+    literal: str
+    scattered: bool
+    names: tuple[str, ...]
+
+
+def _step_paths(recipe: "Recipe") -> list[_StepPath]:
+    """Every step path below `recipe`, nested recipes included, relative to it."""
+    paths: list[_StepPath] = []
+    for ref in recipe.steps:
+        own = _StepPath(_SLICE.sub("[#]", ref.name), ref.name, False, (ref.name,))
+        if ref.scatter is not None:
+            own = _StepPath(f"{own.canonical}[#]", f"{ref.name}[<i>]", True, (f"{ref.name} (scattered)",))
+        paths.append(own)
+        if isinstance(ref.step, Recipe):
+            for sub in _step_paths(ref.step):
+                paths.append(_StepPath(f"{own.canonical}.{sub.canonical}", f"{own.literal}.{sub.literal}", own.scattered or sub.scattered, (*own.names, *sub.names)))
+    return paths
+
+
+def _refuse_step_path_collisions(recipe: "Recipe") -> None:
+    """Refuse two steps that dispatch would key by the same dotted path.
+
+    The step cache, mutation snapshots and run log identify a step by its
+    path from the outermost recipe -- `sub.a` for step `a` of nested recipe
+    `sub`, `x[3]` for slice 3 of a scattered `x` (see `_run_recipe`). Step
+    names are free strings and `Recipe.add_loop` declares dotted ones, so a
+    sibling literally named `sub.a` (or `x[3]`) would share that identity:
+    each run would overwrite the other's cache entry, and a mutation chain
+    could restore the other step's snapshot.
+
+    Checked at every level, so a collision is reported by the innermost
+    recipe holding both steps. A scattered path matches any index, so a
+    literal `x[3]` beside a scattered `x` collides while `x[1]` beside
+    `x[2]` does not.
+    """
+    seen: dict[str, list[_StepPath]] = {}
+    for path in _step_paths(recipe):
+        for other in seen.get(path.canonical, ()):
+            if path.scattered or other.scattered or path.literal == other.literal:
+                raise RecipeGraphError(
+                    f"recipe '{recipe.name}': steps {' -> '.join(repr(n) for n in other.names)} and {' -> '.join(repr(n) for n in path.names)} "
+                    f"would share the step path '{path.literal}', which the step cache, mutation snapshots and run log use as a step's identity -- rename one"
+                )
+        seen.setdefault(path.canonical, []).append(path)
 
 
 def _check_acyclic(recipe_name: str, names: list[str], deps: list[set[int]]) -> None:
