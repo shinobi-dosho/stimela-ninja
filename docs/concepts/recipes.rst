@@ -103,7 +103,12 @@ valid.
 
 Because a recipe is itself a scope, a recipe used as a step of a larger recipe
 is simply one node in the parent's graph; its own internal graph runs when that
-node is scheduled.
+node is scheduled. ``build_graph`` validates that internal graph together with
+the parent's, at every level of nesting, so a mis-wired sub-recipe fails the
+parent's ``--dryrun`` rather than surfacing only when the executor reaches it.
+A recipe nested inside itself is refused. ``--dryrun`` draws a nested recipe
+as a branch of its own: its steps hang beneath it under dotted names
+(``sub.image``), and so does anything that waits on the whole recipe.
 
 Execution and concurrency
 -------------------------
@@ -344,10 +349,11 @@ graph, which is fixed by the ``InputRef``/``OutputRef`` wiring passed to
    compiled to a cluster workflow). Use :ref:`add_loop <declared-loops>`
    instead -- it expresses the same thing as declared steps.
 
-The rendered graph groups independent steps that share the same set of
-dependencies onto a single row (a **fan-out**), and shows steps that several
-others feed into as a **fan-in** -- the same wavefront structure the executor
-runs. See :doc:`../cli` for the ``--dryrun`` output.
+The rendered graph is an indented tree: each step sits under the step it waits
+on, so siblings are a **fan-out** the executor may run concurrently, and steps
+with no dependency at all start their own tree. A step that several others feed
+into (a **fan-in**) is drawn once, under the last of them, with an ``also waits
+on`` note naming the rest. See :doc:`../cli` for the ``--dryrun`` output.
 
 Offloading
 ----------

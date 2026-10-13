@@ -4,11 +4,23 @@ Recipes are declared DAGs (see AGENTS.md): a `Recipe`'s `steps` list plus
 its wiring already *is* the graph. The graph itself -- nodes, true
 dependency edges, cycle/wiring validation -- is built by
 `shinobi.graph.build_graph`, shared with the executor so the two can never
-disagree. `graph_nodes(recipe)` adapts that graph into `TraceStep` nodes
-for *display*: it re-adds a display-only edge chaining a step with no
-output-dependency after the immediately preceding one, so unrelated steps
-still render in declaration order rather than as a meaningless flat list.
-`render_dag` (box-drawing, kept verbatim from the old model) draws them.
+disagree. `graph_nodes(recipe)` adapts that graph into `TraceStep` nodes for
+*display*, and `render_dag` draws them as an indented tree:
+
+    make
+    ├── sub  (recipe)
+    │   ├── sub.a
+    │   └── sub.b
+    └── after
+        └── merge  (also waits on: sub)
+
+A step sits under the step it waits on, so every branch is a real fan-out.
+A step that waits on several is drawn once, under the last of them in
+declaration order, and names the others in an "also waits on" note -- a DAG
+is not a tree, and the note is what keeps the drawing honest about that. A
+nested `Recipe` step is a branch of its own: its steps hang beneath it under
+dotted names (`sub.a`), and whatever waits on the whole recipe hangs beneath
+it too, without the prefix.
 """
 
 from __future__ import annotations
@@ -27,33 +39,40 @@ class TraceStep:
     """A recipe step node for display purposes.
 
     Attributes:
-        id: Index of the step within the recipe's step list.
-        name: The step's name.
-        depends_on: IDs of steps this one depends on -- either a real
-            output-dependency edge or a display-only "declaration order"
-            edge (see `graph_nodes`).
+        id: Index of the node in `graph_nodes`'s output -- declaration
+            order, with a nested recipe's own steps right after it.
+        name: The step's name; dotted (`sub.a`) inside a nested recipe.
+        depends_on: IDs of the steps, at the same nesting level, this one
+            waits on.
+        recipe: Whether the step is a nested `Recipe`.
+        group: ID of the nested-recipe node this step belongs to, or None at
+            the top level.
     """
 
     id: int
     name: str
     depends_on: set[int] = field(default_factory=set)
-    # The step's declared resource footprint, rendered in its box. `--dryrun`
-    # shows what is *declared*, and a footprint is one of the few
+    # The step's declared resource footprint, rendered beside its name.
+    # `--dryrun` shows what is *declared*, and a footprint is one of the few
     # declarations that changes the shape of a run rather than its content:
     # it is what turns parallel branches into a queue. Seeing that before
     # running, rather than inferring it from timings afterwards, is the
     # whole point of the dry run.
     resources: str = ""
     access_reasons: tuple[str, ...] = ()
+    recipe: bool = False
+    group: int | None = None
 
 
 def graph_nodes(recipe: "Recipe", inputs: dict[str, Any] | None = None, *, workspace: Path | None = None) -> list[TraceStep]:
     """Build the display graph from a Recipe's validated dependency graph.
 
-    Uses the shared `build_graph` (so a cyclic/mis-wired recipe raises here
-    exactly as it would at execution time), then adds a *display-only*
-    edge: a step with no real output-dependency is chained after the
-    immediately preceding step so ordering stays visible.
+    Uses the shared `build_graph`, so a cyclic or mis-wired recipe raises
+    here exactly as it would at execution time, nested recipes included.
+    A nested `Recipe` step is followed by its own steps, each in that
+    recipe's `group`, with edges among themselves only: the executor runs
+    the sub-recipe as one node, so its steps wait on whatever the node waits
+    on, and its dependents wait on the node.
     """
     from shinobi.dataset_access import plan_recipe_accesses
     from shinobi.graph import build_graph
@@ -61,164 +80,94 @@ def graph_nodes(recipe: "Recipe", inputs: dict[str, Any] | None = None, *, works
     plan = plan_recipe_accesses(recipe, inputs, workspace=workspace) if inputs is not None else None
     graph = plan.graph if plan is not None else build_graph(recipe)
     nodes: list[TraceStep] = []
+    _place(recipe, graph, "", None, nodes, plan)
+    return nodes
+
+
+def _place(recipe: "Recipe", graph, prefix: str, group: int | None, nodes: list[TraceStep], plan=None) -> None:
+    """Append `recipe`'s steps to `nodes` in declaration order, each nested
+    recipe followed by its own steps, then add the edges between them.
+
+    `plan` applies to the top level only, which is all `plan_recipe_accesses`
+    resolves.
+    """
+    from shinobi.graph import build_graph
+    from shinobi.steps.schema import Recipe
+
+    ids: list[int] = []
     for i, name in enumerate(graph.names):
-        depends_on = set(graph.deps[i])
-        if not depends_on and nodes:
-            depends_on = {nodes[-1].id}
-        declared = recipe.steps[i].step.resources
-        access_reasons = ()
+        scope = recipe.steps[i].step
+        access_reasons: tuple[str, ...] = ()
         if plan is not None:
             access_reasons = tuple(
                 reason for parent in sorted((graph.names[item] for item in graph.deps[i]), key=graph.names.index) for reason in plan.reasons.get((name, parent), ())
             )
-        nodes.append(
-            TraceStep(
-                id=i,
-                name=name,
-                depends_on=depends_on,
-                resources=declared.describe() if declared else "",
-                access_reasons=access_reasons,
-            )
+        declared = scope.resources
+        node = TraceStep(
+            id=len(nodes),
+            name=f"{prefix}{name}",
+            resources=declared.describe() if declared else "",
+            access_reasons=access_reasons,
+            recipe=isinstance(scope, Recipe),
+            group=group,
         )
-    return nodes
+        nodes.append(node)
+        ids.append(node.id)
+        if node.recipe and scope.steps:
+            _place(scope, build_graph(scope), f"{node.name}.", node.id, nodes)
+    for i, deps in enumerate(graph.deps):
+        nodes[ids[i]].depends_on = {ids[dep] for dep in deps}
 
 
-def _group_into_batches(steps: list[TraceStep]) -> list[list[TraceStep]]:
-    """Consecutive (in call order) steps that share the exact same
-    depends_on set are "parallel" siblings and rendered as one row.
-    """
-    batches: list[list[TraceStep]] = []
-    for step in steps:
-        if batches and batches[-1][0].depends_on == step.depends_on:
-            batches[-1].append(step)
-        else:
-            batches.append([step])
-    return batches
-
-
-def _box(step: TraceStep) -> str:
-    """A step's box. A declared footprint rides along in the label, since it
-    is what decides whether two boxes on the same row actually run at the
-    same time."""
-    details = [item for item in (step.resources, *step.access_reasons) if item]
-    return f"[ {step.name} ]" if not details else f"[ {step.name} ({'; '.join(details)}) ]"
-
-
-def _row_layout(batch: list[TraceStep], gap: int = 3) -> tuple[str, list[int]]:
-    """A batch's row text, and the column-center of each box within it."""
-    boxes = [_box(s) for s in batch]
-    row = (" " * gap).join(boxes)
-    centers = []
-    col = 0
-    for box in boxes:
-        centers.append(col + len(box) // 2)
-        col += len(box) + gap
-    return row, centers
-
-
-def _blank(width: int) -> list[str]:
-    return [" "] * width
-
-
-def _ticks(width: int, cols: list[str] | list[int], ch: str = "|") -> str:
-    line = _blank(width)
-    for c in cols:
-        line[c] = ch
-    return "".join(line)
-
-
-def _bracket(width: int, cols: list[int], junction: str, left_corner: str, right_corner: str, junction_col: int | None = None) -> str:
-    """A horizontal bar spanning cols, with `junction` at the given
-    column (or the bar's own midpoint if not given) and the corner
-    characters at the two ends (a no-op, single '|', if there's only one
-    column).
-    """
-    if len(cols) == 1:
-        return _ticks(width, cols)
-    lo, hi = min(cols), max(cols)
-    mid = junction_col if junction_col is not None else (lo + hi) // 2
-    line = _blank(width)
-    for col in range(lo, hi + 1):
-        line[col] = "-"
-    line[lo], line[hi] = left_corner, right_corner
-    line[mid] = junction
-    return "".join(line)
-
-
-def _arrows(width: int, cols: list[int]) -> str:
-    line = _blank(width)
-    for c in cols:
-        line[c] = "v"
-    return "".join(line)
-
-
-def _connector(prev_batch: list[TraceStep], prev_centers: list[int], batch: list[TraceStep], centers: list[int], width: int) -> list[str]:
-    prev_ids = {s.id for s in prev_batch}
-    shared_deps = batch[0].depends_on
-    clean = shared_deps == prev_ids and bool(shared_deps)
-
-    if not clean:
-        # No exact match between what this batch depends on and the
-        # previous batch's ids -- render a plain sequential connector
-        # rather than implying a fan structure we can't back up.
-        mid_prev = prev_centers[len(prev_centers) // 2]
-        mid_next = centers[len(centers) // 2]
-        return [_ticks(width, [mid_prev]), _ticks(width, [mid_next], "v")]
-
-    lines = [_ticks(width, prev_centers)]
-
-    if len(prev_centers) > 1:
-        # fan-in bracket: lines come UP from parents, and a single line
-        # continues DOWN from the junction -- corners curve up-to-across,
-        # junction points down.
-        lines.append(_bracket(width, prev_centers, junction="+", left_corner="+", right_corner="+"))
-        spine = (min(prev_centers) + max(prev_centers)) // 2
-    else:
-        spine = prev_centers[0]
-
-    if len(centers) > 1:
-        # then, if fanning out again: a single line comes DOWN into the
-        # junction, and spreads back out to each child -- corners curve
-        # across-to-down, junction points up. The junction must sit at
-        # `spine`'s column (where the incoming line actually is), not the
-        # bracket's own geometric midpoint over `centers`. Only need a
-        # fresh tick line here if a fan-in bracket was drawn above --
-        # otherwise the very first tick line (under the lone parent) is
-        # already at this exact column.
-        if len(prev_centers) > 1:
-            lines.append(_ticks(width, [spine]))
-        lines.append(_bracket(width, centers, junction="+", left_corner="+", right_corner="+", junction_col=spine))
-        lines.append(_arrows(width, centers))
-    else:
-        lines.append(_ticks(width, [spine], "v"))
-
-    return lines
+def _label(step: TraceStep, by_id: dict[int, TraceStep], parent: int | None) -> str:
+    """A step's line: its name, then anything that changes how it runs."""
+    others = sorted(dep for dep in step.depends_on if dep != parent)
+    details = [
+        *(["recipe"] if step.recipe else []),
+        *([step.resources] if step.resources else []),
+        *step.access_reasons,
+        *([f"also waits on: {', '.join(by_id[dep].name for dep in others)}"] if others else []),
+    ]
+    return step.name if not details else f"{step.name}  ({'; '.join(details)})"
 
 
 def render_dag(steps: list[TraceStep]) -> str:
-    """Draw a box-and-arrow diagram of a recipe's execution graph.
+    """Draw a recipe's execution graph as an indented tree.
 
     Args:
         steps: Display nodes, as produced by `graph_nodes`.
 
     Returns:
-        A multi-line string with the rendered diagram, or a placeholder
+        A multi-line string with the rendered tree, or a placeholder
         message if `steps` is empty.
     """
     if not steps:
         return "(no steps traced)"
 
-    batches = _group_into_batches(steps)
-    row_texts, row_centers = zip(*(_row_layout(batch) for batch in batches), strict=True)
-    width = max(len(r) for r in row_texts)
-    offsets = [(width - len(r)) // 2 for r in row_texts]
+    by_id = {step.id: step for step in steps}
+    parent_of: dict[int, int | None] = {}
+    children: dict[int, list[TraceStep]] = {step.id: [] for step in steps}
+    roots: list[TraceStep] = []
+    for step in steps:
+        # The last thing it waits on, in declaration order: by the time that
+        # one is drawn, every earlier dependency already has been.
+        parent = max(step.depends_on) if step.depends_on else step.group
+        parent_of[step.id] = parent
+        if parent is None:
+            roots.append(step)
+        else:
+            children[parent].append(step)
 
-    out: list[str] = []
-    for i, batch in enumerate(batches):
-        centers_abs = [c + offsets[i] for c in row_centers[i]]
-        if i > 0:
-            prev_centers_abs = [c + offsets[i - 1] for c in row_centers[i - 1]]
-            out.extend(_connector(batches[i - 1], prev_centers_abs, batch, centers_abs, width))
-        out.append(" " * offsets[i] + row_texts[i])
+    lines: list[str] = []
 
-    return "\n".join(out)
+    def draw(step: TraceStep, indent: str) -> None:
+        kids = sorted(children[step.id], key=lambda kid: kid.id)
+        for position, kid in enumerate(kids):
+            last = position == len(kids) - 1
+            lines.append(f"{indent}{'└── ' if last else '├── '}{_label(kid, by_id, step.id)}")
+            draw(kid, indent + ("    " if last else "│   "))
+
+    for root in roots:
+        lines.append(_label(root, by_id, None))
+        draw(root, "")
+    return "\n".join(lines)

@@ -422,3 +422,40 @@ def test_constant_param_not_on_step_inputs_is_rejected():
                 ]
             )
         )
+
+
+# -- nested recipes are validated with their parent --
+
+
+def test_mis_wired_nested_recipe_is_rejected_with_its_parent():
+    use = _cab("use", UseIn, OkOut)
+    inner = Recipe(
+        name="inner",
+        inputs_model=In,
+        outputs_model=OkOut,
+        steps=[StepRef(name="a", step=use, wiring={"path": OutputRef(step="nope", field="path")})],
+    )
+    outer = _recipe([StepRef(name="sub", step=inner, wiring={"name": InputRef(field="name")})])
+    with pytest.raises(RecipeGraphError, match="step 'sub' of recipe 'r' is an invalid nested recipe: .*'nope', which does not exist in recipe 'inner'"):
+        build_graph(outer)
+
+
+def test_invalid_recipe_nested_two_levels_down_is_rejected():
+    a = _cab("a", In, OkOut)
+    inner = Recipe(name="inner", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="a", step=a), StepRef(name="a", step=a)])
+    middle = Recipe(name="middle", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="inner", step=inner)])
+    with pytest.raises(RecipeGraphError, match="step 'middle'.*step 'inner'.*more than one step named 'a'"):
+        build_graph(_recipe([StepRef(name="middle", step=middle)]))
+
+
+def test_recipe_nested_inside_itself_is_rejected():
+    outer = _recipe([])
+    outer.steps.append(StepRef(name="again", step=outer))
+    with pytest.raises(RecipeGraphError, match="nests recipe 'r' inside itself"):
+        build_graph(outer)
+
+
+def test_graph_of_a_valid_nested_recipe_keeps_it_as_one_node():
+    inner = Recipe(name="inner", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="a", step=_cab("a", In, OkOut))])
+    graph = build_graph(_recipe([StepRef(name="sub", step=inner), StepRef(name="b", step=_cab("b", In, OkOut))]))
+    assert graph.names == ["sub", "b"]

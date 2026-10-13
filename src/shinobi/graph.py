@@ -7,15 +7,19 @@ returns a `RecipeGraph` that BOTH consumers depend on:
 
 - the executor (`shinobi.steps.dispatch._run_recipe`) schedules a
   topological wavefront over these *true* dependency edges;
-- the `--dryrun` renderer (`shinobi.dag.graph_nodes`) builds its display
-  view on top of the same edges (re-adding a display-only sequential chain
-  between otherwise-independent steps).
+- the `--dryrun` renderer (`shinobi.dag.graph_nodes`) draws the same
+  edges as a tree.
 
 Because both go through `build_graph`, they can never disagree on what
 depends on what, or on whether the graph is even valid. Validation runs at
 run time and at dryrun time -- not at build time, since a `Recipe` is
 deliberately mutable through its builder methods and a forward `OutputRef`
 is legitimate mid-construction.
+
+Validation covers the whole declared tree: a nested `Recipe` step is one
+node in its parent's graph, but `build_graph` also validates that recipe's
+own graph (and so on down). Otherwise a mis-wired sub-recipe would pass the
+parent's `--dryrun` and fail only once the executor reached it.
 """
 
 from __future__ import annotations
@@ -95,7 +99,29 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
     consuming step; a recipe output field that is not in the recipe's outputs
     model; a dependency cycle; or non-Cab derived reads anywhere in the
     declared recipe tree.
+
+    Every nested `Recipe` step is validated the same way, recursively, and a
+    recipe that contains itself is refused. The returned graph still describes
+    only `recipe`'s own steps: a nested recipe is one node here, and its
+    executor builds that recipe's graph when the node is scheduled.
     """
+    # First, because every other tree walk (derived reads, the nested
+    # validation below) would recurse forever on such a recipe.
+    _refuse_self_nesting(recipe, ())
+    return _build_graph(recipe)
+
+
+def _refuse_self_nesting(recipe: "Recipe", enclosing: tuple[int, ...]) -> None:
+    """Raise if `recipe` appears among its own nested steps, at any depth."""
+    nesting = (*enclosing, id(recipe))
+    for ref in recipe.steps:
+        if isinstance(ref.step, Recipe):
+            if id(ref.step) in nesting:
+                raise RecipeGraphError(f"step '{ref.name}' of recipe '{recipe.name}' nests recipe '{ref.step.name}' inside itself")
+            _refuse_self_nesting(ref.step, nesting)
+
+
+def _build_graph(recipe: "Recipe") -> RecipeGraph:
     from shinobi.derived import validate_derived_read_scope
 
     try:
@@ -204,6 +230,15 @@ def build_graph(recipe: "Recipe") -> RecipeGraph:
             raise RecipeGraphError("coordinate selection requires a family output")
 
     _check_acyclic(recipe.name, names, deps)
+
+    for ref in recipe.steps:
+        if not isinstance(ref.step, Recipe):
+            continue
+        try:
+            _build_graph(ref.step)
+        except RecipeGraphError as exc:
+            raise RecipeGraphError(f"step '{ref.name}' of recipe '{recipe.name}' is an invalid nested recipe: {exc}") from exc
+
     return RecipeGraph(names=names, deps=deps, dependents=dependents)
 
 

@@ -48,7 +48,7 @@ def test_graph_nodes_detects_output_dependency_edge():
     assert nodes[1].depends_on == {0}  # use depends on make via OutputRef
 
 
-def test_graph_nodes_chains_independent_steps_sequentially():
+def test_independent_steps_are_separate_roots_in_declaration_order():
     a = _cab("a", In, PathOut)
     recipe = Recipe(
         name="r",
@@ -60,8 +60,9 @@ def test_graph_nodes_chains_independent_steps_sequentially():
         ],
     )
     nodes = graph_nodes(recipe)
-    # b has no output dependency, so it's chained after a
-    assert nodes[1].depends_on == {0}
+    # no invented edge: b does not wait on a, and the tree says so
+    assert nodes[1].depends_on == set()
+    assert render_dag(nodes).splitlines() == ["a", "b"]
 
 
 def test_graph_nodes_surfaces_a_cycle_like_the_executor_would():
@@ -80,7 +81,7 @@ def test_graph_nodes_surfaces_a_cycle_like_the_executor_would():
         graph_nodes(recipe)
 
 
-# -- render_dag (kept verbatim from the old model) --
+# -- render_dag: an indented tree --
 
 
 def test_render_dag_empty():
@@ -92,11 +93,7 @@ def test_render_linear_chain():
         TraceStep(id=0, name="Commit", depends_on=set()),
         TraceStep(id=1, name="Build App", depends_on={0}),
     ]
-    out = render_dag(steps)
-    assert "[ Commit ]" in out
-    assert "[ Build App ]" in out
-    assert "v" in out
-    assert out.index("Commit") < out.index("Build App")
+    assert render_dag(steps).splitlines() == ["Commit", "└── Build App"]
 
 
 def test_render_fan_out_and_fan_in_diamond():
@@ -106,28 +103,31 @@ def test_render_fan_out_and_fan_in_diamond():
         TraceStep(id=2, name="Run Tests", depends_on={0}),
         TraceStep(id=3, name="Deploy to QA", depends_on={1, 2}),
     ]
-    out = render_dag(steps)
-    lines = out.splitlines()
-    sibling_line = next(ln for ln in lines if "Build App" in ln and "Run Tests" in ln)
-    assert sibling_line
-    bracket_lines = [ln for ln in lines if "-" in ln and ln.count("+") == 3]
-    assert len(bracket_lines) == 2
-    assert out.index("Commit") < out.index("Build App") < out.index("Deploy to QA")
+    # the fan-in step sits under its last parent and names the other one
+    assert render_dag(steps).splitlines() == [
+        "Commit",
+        "├── Build App",
+        "└── Run Tests",
+        "    └── Deploy to QA  (also waits on: Build App)",
+    ]
 
 
-def test_render_falls_back_to_plain_chain_without_false_fan_structure():
+def test_render_keeps_deep_branches_aligned():
     steps = [
         TraceStep(id=0, name="A", depends_on=set()),
         TraceStep(id=1, name="B", depends_on={0}),
         TraceStep(id=2, name="C", depends_on={0}),
         TraceStep(id=3, name="D", depends_on={1}),
     ]
-    out = render_dag(steps)
-    lines = out.splitlines()
-    assert not any("-" in ln for ln in lines[-4:])
+    assert render_dag(steps).splitlines() == [
+        "A",
+        "├── B",
+        "│   └── D",
+        "└── C",
+    ]
 
 
-def test_dryrun_box_shows_a_declared_footprint():
+def test_dryrun_shows_a_declared_footprint():
     """`--dryrun` shows what is declared, and a footprint is a declaration
     that changes a run's shape -- it is what turns parallel branches into a
     queue -- so it belongs in the diagram, not just in the timings.
@@ -148,6 +148,74 @@ def test_dryrun_box_shows_a_declared_footprint():
     nodes = graph_nodes(recipe)
     assert nodes[0].resources == ""
     assert nodes[1].resources == "cpus=16, memory=200.0GiB"
-    rendered = render_dag(nodes)
-    assert "[ heavy (cpus=16, memory=200.0GiB) ]" in rendered
-    assert "[ cheap ]" in rendered
+    assert render_dag(nodes).splitlines() == ["cheap", "heavy  (cpus=16, memory=200.0GiB)"]
+
+
+# -- nested recipes are drawn as their own branch --
+
+
+def test_nested_recipe_is_a_branch_holding_its_own_steps():
+    make = _cab("make", In, PathOut)
+    use = _cab("use", UseIn, OkOut)
+    inner = Recipe(
+        name="inner",
+        inputs_model=UseIn,
+        outputs_model=PathOut,
+        steps=[
+            StepRef(name="a", step=use, wiring={"path": InputRef(field="path")}),
+            StepRef(name="b", step=make, after=["a"]),
+        ],
+        output_wiring={"path": OutputRef(step="b", field="path")},
+    )
+    recipe = Recipe(
+        name="r",
+        inputs_model=In,
+        outputs_model=OkOut,
+        steps=[
+            StepRef(name="make", step=make, wiring={"name": InputRef(field="name")}),
+            StepRef(name="sub", step=inner, wiring={"path": OutputRef(step="make", field="path")}),
+            StepRef(name="use", step=use, wiring={"path": OutputRef(step="sub", field="path")}),
+        ],
+    )
+    nodes = graph_nodes(recipe)
+    assert [(n.name, n.recipe, n.group) for n in nodes] == [("make", False, None), ("sub", True, None), ("sub.a", False, 1), ("sub.b", False, 1), ("use", False, None)]
+    # edges stay within a level: sub waits on make, sub.b on sub.a, use on sub
+    assert [n.depends_on for n in nodes] == [set(), {0}, set(), {2}, {1}]
+    assert render_dag(nodes).splitlines() == [
+        "make",
+        "└── sub  (recipe)",
+        "    ├── sub.a",
+        "    │   └── sub.b",
+        "    └── use",
+    ]
+
+
+def test_recipes_nested_two_deep_get_full_dotted_names():
+    a = _cab("a", In, OkOut)
+    inner = Recipe(name="inner", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="x", step=a)])
+    middle = Recipe(name="middle", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="inner", step=inner), StepRef(name="y", step=a)])
+    recipe = Recipe(name="r", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="mid", step=middle)])
+    assert render_dag(graph_nodes(recipe)).splitlines() == [
+        "mid  (recipe)",
+        "├── mid.inner  (recipe)",
+        "│   └── mid.inner.x",
+        "└── mid.y",
+    ]
+
+
+def test_empty_nested_recipe_is_a_leaf():
+    inner = Recipe(name="inner", inputs_model=In, outputs_model=OkOut)
+    recipe = Recipe(name="r", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="sub", step=inner)])
+    assert render_dag(graph_nodes(recipe)).splitlines() == ["sub  (recipe)"]
+
+
+def test_mis_wired_nested_recipe_fails_the_dryrun_graph():
+    inner = Recipe(
+        name="inner",
+        inputs_model=In,
+        outputs_model=OkOut,
+        steps=[StepRef(name="a", step=_cab("a", UseIn, OkOut), wiring={"path": OutputRef(step="nope", field="path")})],
+    )
+    recipe = Recipe(name="r", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="sub", step=inner)])
+    with pytest.raises(RecipeGraphError, match="invalid nested recipe"):
+        graph_nodes(recipe)

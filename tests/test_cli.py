@@ -188,9 +188,21 @@ def test_run_cab_target_dryrun_shows_argv_and_does_not_execute():
 def test_run_recipe_target_dryrun_shows_declared_graph():
     result = CliRunner().invoke(main, ["run", f"{FIXTURES}:chained", "--dryrun"])
     assert result.exit_code == 0, result.output
-    assert "[ make_file ]" in result.output
-    assert "[ use_file ]" in result.output
-    assert "v" in result.output  # a dependency edge was drawn
+    # use_file hangs under make_file: the dependency edge was drawn
+    assert result.output.splitlines() == ["make_file", "└── use_file"]
+
+
+def test_run_nested_recipe_dryrun_draws_the_sub_recipe_as_a_branch():
+    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:nested", "--dryrun"])
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == [
+        "make",
+        "├── sub  (recipe)",
+        "│   ├── sub.a",
+        "│   └── sub.b",
+        "└── after",
+        "    └── merge  (also waits on: sub)",
+    ]
 
 
 def test_run_flattened_group_option_reaches_the_nested_model():
