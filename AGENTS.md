@@ -102,6 +102,20 @@ the repository. Run focused tests for the changed contract and the broader
 suite appropriate to its risk; optional live tests must skip clearly when the
 required runtime is unavailable.
 
+## Commit signing
+
+Respect the maintainer's configured Git signing. When `commit.gpgsign` is
+enabled, every assistant-created commit must be signed. Never use
+`--no-gpg-sign`, `-c commit.gpgsign=false`, change the signing configuration,
+or otherwise bypass signing unless the maintainer explicitly authorizes an
+unsigned commit for that action. An intended squash merge does not waive this
+requirement.
+
+If signing fails, diagnose the key, agent, or configuration and retry with
+signing enabled. If the failure cannot be resolved, leave the changes
+uncommitted and report it; never silently fall back to an unsigned commit.
+Check that newly created commits contain a signature before pushing them.
+
 ## Attribution
 
 Commits made with assistant help end with a plain-text trailer:
