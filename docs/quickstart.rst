@@ -128,10 +128,11 @@ produces for a given set of inputs:
 .. code-block:: console
 
     $ ninja run myrecipe.py:selfcal --ms data.ms --dryrun
-    [ image ]
-        |
-        v
-    [ mask ]
+    image
+    └── mask  (read-after-write: /work/img-MFS-image.fits)
+
+``mask`` sits under ``image`` because it reads the image ``image`` writes; the
+note says which path makes that an ordering constraint.
 
 Run the recipe
 --------------

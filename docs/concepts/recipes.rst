@@ -92,7 +92,13 @@ raises ``RecipeGraphError`` on:
   output model/patterns;
 * an ``after`` edge naming a missing step or the step itself;
 * resources declared on a nested ``Recipe`` rather than its executable leaves;
-* a cycle formed by data or ordering-only edges.
+* a cycle formed by data or ordering-only edges;
+* two steps with the same *step path*. The step cache, mutation snapshots and
+  run log identify a step by its dotted path from the outermost recipe --
+  ``sub.a`` for step ``a`` of a nested recipe ``sub``, ``x[3]`` for slice 3 of
+  a scattered ``x`` -- so a sibling literally named ``sub.a`` or ``x[3]``
+  would share that identity and overwrite the other's cache entry. Dotted
+  names are otherwise fine; ``add_loop`` declares them itself.
 
 Validation runs at **run time and dry-run time**, not when you call
 ``add_step``: a recipe is deliberately mutable while you build it, so a forward
@@ -103,7 +109,12 @@ valid.
 
 Because a recipe is itself a scope, a recipe used as a step of a larger recipe
 is simply one node in the parent's graph; its own internal graph runs when that
-node is scheduled.
+node is scheduled. ``build_graph`` validates that internal graph together with
+the parent's, at every level of nesting, so a mis-wired sub-recipe fails the
+parent's ``--dryrun`` rather than surfacing only when the executor reaches it.
+A recipe nested inside itself is refused. ``--dryrun`` draws a nested recipe
+as a branch of its own: its steps hang beneath it on a dashed connector, and
+anything that waits on the whole recipe hangs beneath it on the ordinary one.
 
 Execution and concurrency
 -------------------------
@@ -344,10 +355,11 @@ graph, which is fixed by the ``InputRef``/``OutputRef`` wiring passed to
    compiled to a cluster workflow). Use :ref:`add_loop <declared-loops>`
    instead -- it expresses the same thing as declared steps.
 
-The rendered graph groups independent steps that share the same set of
-dependencies onto a single row (a **fan-out**), and shows steps that several
-others feed into as a **fan-in** -- the same wavefront structure the executor
-runs. See :doc:`../cli` for the ``--dryrun`` output.
+The rendered graph is an indented tree: each step sits under the step it waits
+on, so siblings are a **fan-out** the executor may run concurrently, and steps
+with no dependency at all start their own tree. A step that several others feed
+into (a **fan-in**) is drawn once, under the last of them, with an ``also waits
+on`` note naming the rest. See :doc:`../cli` for the ``--dryrun`` output.
 
 Offloading
 ----------

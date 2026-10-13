@@ -113,6 +113,43 @@ chained = Recipe(
 )
 
 
+# A recipe nesting another, for the --dryrun tree: `sub` fans out into two
+# steps of its own, `after` runs beside it, and `merge` waits on both.
+# `ninja run tests/fixtures/sample_targets.py:nested --dryrun` draws it.
+
+
+class MergeInputs(BaseModel):
+    left: str | None = None
+    right: str | None = None
+
+
+merge_files = Cab(name="merge_files", command="/bin/echo", inputs_model=MergeInputs, outputs_model=OkOutputs)
+
+nested_inner = Recipe(
+    name="nested_inner",
+    inputs_model=UseInputs,
+    outputs_model=PathOutputs,
+    steps=[
+        StepRef(name="a", step=use_file, wiring={"path": InputRef(field="path")}),
+        StepRef(name="b", step=make_file),
+    ],
+    output_wiring={"path": OutputRef(step="b", field="path")},
+)
+
+nested = Recipe(
+    name="nested",
+    inputs_model=MakeInputs,
+    outputs_model=OkOutputs,
+    steps=[
+        StepRef(name="make", step=make_file, wiring={"name": InputRef(field="name")}),
+        StepRef(name="sub", step=nested_inner, wiring={"path": OutputRef(step="make", field="path")}),
+        StepRef(name="after", step=make_file, wiring={"name": InputRef(field="name")}, after=["make"]),
+        StepRef(name="merge", step=merge_files, wiring={"left": OutputRef(step="sub", field="path"), "right": OutputRef(step="after", field="path")}),
+    ],
+    output_wiring={"ok": OutputRef(step="merge", field="ok")},
+)
+
+
 fail_recipe = Recipe(
     name="fail_recipe",
     inputs_model=NoInputs,
