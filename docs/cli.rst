@@ -89,6 +89,13 @@ among its siblings -- so a step named ``sub.a`` can never be mistaken for
     └── after
         └── merge  (also waits on: sub)
 
+Scatter stays one declared graph node. Its label shows up to five static
+values per scattered field and the full slice count when every zip list is
+known and has equal length. Supplied recipe inputs resolve ``InputRef`` values;
+upstream ``OutputRef`` values remain symbolic, including coordinate selections.
+Multiple fields appear as indented details beneath a ``scatter zip(...)``
+label. These previews do not execute steps or evaluate default factories.
+
 A nested recipe is validated together with its parent, so a mis-wired
 sub-recipe fails the dry run rather than the real one.
 

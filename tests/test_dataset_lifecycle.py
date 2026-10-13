@@ -612,7 +612,7 @@ def test_mutation_without_nameable_states_is_refused_before_execution(tmp_path, 
     assert attempt.capability == "contained-native-msv2-mutation/v1"
 
 
-def test_nested_and_scattered_dataset_recipes_remain_refused(tmp_path, monkeypatch):
+def test_nested_and_mutating_scattered_dataset_recipes_remain_refused(tmp_path, monkeypatch):
     ms = tmp_path / "observation.ms"
     ms.mkdir()
     (ms / "table.dat").write_text("data")
@@ -648,7 +648,7 @@ def test_nested_and_scattered_dataset_recipes_remain_refused(tmp_path, monkeypat
         steps=[
             StepRef(
                 name="read",
-                step=read.step,
+                step=read.step.model_copy(update={"dataset_accesses": [DatasetAccess(field="ms", mode="write")]}),
                 func=read.func,
                 wiring={"ms": InputRef(field="ms")},
                 scatter=ScatterSpec(fields=["ms"]),
