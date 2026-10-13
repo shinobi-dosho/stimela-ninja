@@ -39,14 +39,20 @@ For development
 ---------------
 
 Explicit MSv2 state operations currently require a source checkout and
-``uv sync --group measurement-set``. This pins
-xarray-ms, xarray, Zarr, arcae, numcodecs and ``msutils[exact-native]`` at
-commit ``25c280a8ab412b5015a80bf4ff6f83b7a6820675``. Nominal msutils 3.0.0
-alone does not establish preservation v2 capability, and the direct commit
-reference deliberately lives in the unpublished development group because
-PyPI rejects it in wheel metadata. A public extra can be restored after an
-msutils release containing that commit. Zarr is 3.1.6 on Python 3.11 and
-3.3.0 on newer Python; the lock supplies the complete tested stack.
+``uv sync --group measurement-set``. The group tracks
+``msutils[exact-native]`` from the upstream Git ``main`` branch, while
+``uv.lock`` records the resolved commit and complete stack for reproducible
+local installs. Refresh upstream with ``uv lock --upgrade-package msutils``
+then ``uv sync --locked --group measurement-set``. The direct Git reference
+lives in the unpublished development group because PyPI rejects it in wheel
+metadata. Nominal msutils versions alone do not establish preservation v2
+capability; state operations require its public APIs and upstream Git
+provenance and record the exact installed commit.
+
+The other qualified packages remain pinned: xarray-ms, xarray, arcae,
+numcodecs, and Zarr (3.1.6 on Python 3.11 and 3.3.0 on newer Python).
+Measurement Set CI refreshes msutils main on every integration run and hourly
+after this workflow is merged, making upstream regressions visible promptly.
 See :doc:`concepts/states` for the profile and local Linux requirement.
 
 The project uses `uv <https://docs.astral.sh/uv/>`_:

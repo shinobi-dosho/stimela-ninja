@@ -195,7 +195,8 @@ def test_adapter_runtime_reports_missing_stack(monkeypatch):
         adapter.runtime()
 
 
-def test_adapter_runtime_qualifies_arcae_without_dask_ms(monkeypatch):
+@pytest.fixture
+def qualified_adapter(monkeypatch):
     import sys
     from types import SimpleNamespace
 
@@ -207,23 +208,96 @@ def test_adapter_runtime_qualifies_arcae_without_dask_ms(monkeypatch):
         "arcae": "0.5.4",
         "zarr": "3.1.6" if sys.version_info < (3, 12) else "3.3.0",
     }
+    direct = {"url": "https://github.com/shinobi-dosho/msutils.git", "vcs_info": {"vcs": "git", "commit_id": "a" * 40, "requested_revision": "main"}}
 
     def version(name):
         if name == "dask-ms":
             raise adapter.metadata.PackageNotFoundError(name)
         return versions.get(name, "test")
 
-    direct = json.dumps({"vcs_info": {"commit_id": adapter.MSUTILS_COMMIT}})
     monkeypatch.setattr(adapter.metadata, "version", version)
-    monkeypatch.setattr(adapter.metadata, "distribution", lambda _: SimpleNamespace(read_text=lambda _: direct))
-    monkeypatch.setitem(
-        sys.modules, "msutils", SimpleNamespace(**dict.fromkeys(("native_logical_id", "capture_native_preservation", "verify_native_preservation", "to_msv2"), lambda: None))
-    )
+    monkeypatch.setattr(adapter.metadata, "distribution", lambda _: SimpleNamespace(read_text=lambda _: json.dumps(direct)))
+    apis = SimpleNamespace(**dict.fromkeys(("native_logical_id", "capture_native_preservation", "verify_native_preservation", "to_msv2"), lambda: None))
+    monkeypatch.setitem(sys.modules, "msutils", apis)
+    return versions, direct, apis
+
+
+@pytest.mark.parametrize("commit", ["a" * 40, "25c280a8ab412b5015a80bf4ff6f83b7a6820675"])
+@pytest.mark.parametrize("url", ["https://github.com/shinobi-dosho/msutils.git", "https://github.com/shinobi-dosho/msutils"])
+@pytest.mark.parametrize("revision", ["main", "25c280a8ab412b5015a80bf4ff6f83b7a6820675"])
+@pytest.mark.parametrize("version", ["3.0.0", "3.1.0"])
+def test_adapter_runtime_qualifies_upstream_git(qualified_adapter, commit, url, revision, version):
+    versions, direct, _ = qualified_adapter
+    versions["msutils"] = version
+    direct["url"] = url
+    direct["vcs_info"].update(commit_id=commit, requested_revision=revision)
     qualified = adapter.runtime()
     assert qualified["dask-ms"] == "not-installed"
     assert qualified["arcae"] == "0.5.4"
-    assert qualified["msutils_commit"] == adapter.MSUTILS_COMMIT
+    assert qualified["msutils"] == version
+    assert qualified["msutils_commit"] == commit
     assert set(qualified) == {*adapter.PACKAGES, "msutils_commit"}
+
+
+@pytest.mark.parametrize("direct", [None, "{", "[]", "null", '"text"', "{}", '{"vcs_info": []}', '{"vcs_info": null}'])
+def test_adapter_runtime_refuses_invalid_provenance(qualified_adapter, monkeypatch, direct):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(adapter.metadata, "distribution", lambda _: SimpleNamespace(read_text=lambda _: direct))
+    with pytest.raises(ImportError, match="measurement-set development group"):
+        adapter.runtime()
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["file:///local/msutils", "https://example.org/msutils.git", "https://secret:token@github.com/shinobi-dosho/msutils.git", "ssh://git@github.com/shinobi-dosho/msutils.git"],
+)
+def test_adapter_runtime_refuses_wrong_source(qualified_adapter, url):
+    _, direct, _ = qualified_adapter
+    direct["url"] = url
+    with pytest.raises(ImportError, match="upstream Git") as raised:
+        adapter.runtime()
+    assert url not in str(raised.value)
+
+
+@pytest.mark.parametrize("vcs", [None, {}, [], {"vcs": "hg", "commit_id": "a" * 40}, {"vcs": "git"}])
+def test_adapter_runtime_refuses_wrong_vcs(qualified_adapter, vcs):
+    _, direct, _ = qualified_adapter
+    direct["vcs_info"] = vcs
+    with pytest.raises(ImportError, match="upstream Git"):
+        adapter.runtime()
+
+
+@pytest.mark.parametrize("commit", [None, 123, "main", "a" * 39, "a" * 41, "A" * 40, "g" * 40])
+def test_adapter_runtime_refuses_unresolved_revision(qualified_adapter, commit):
+    _, direct, _ = qualified_adapter
+    direct["vcs_info"]["commit_id"] = commit
+    with pytest.raises(ImportError, match="upstream Git"):
+        adapter.runtime()
+
+
+def test_adapter_runtime_refuses_wheel_provenance(qualified_adapter):
+    _, direct, _ = qualified_adapter
+    direct.pop("vcs_info")
+    direct["archive_info"] = {"hash": "sha256=" + "a" * 64}
+    with pytest.raises(ImportError, match="upstream Git"):
+        adapter.runtime()
+
+
+@pytest.mark.parametrize("api", ["native_logical_id", "capture_native_preservation", "verify_native_preservation", "to_msv2"])
+def test_adapter_runtime_refuses_missing_apis(qualified_adapter, api):
+    _, _, apis = qualified_adapter
+    setattr(apis, api, None)
+    with pytest.raises(ImportError, match="public APIs"):
+        adapter.runtime()
+
+
+@pytest.mark.parametrize("package", ["xarray-ms", "xarray", "numcodecs", "arcae", "zarr"])
+def test_adapter_runtime_retains_other_version_gates(qualified_adapter, package):
+    versions, _, _ = qualified_adapter
+    versions[package] = "0.0"
+    with pytest.raises(ImportError, match="unqualified state stack"):
+        adapter.runtime()
 
 
 def test_no_replace_including_empty_directory(tmp_path):

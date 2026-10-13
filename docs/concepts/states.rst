@@ -69,9 +69,11 @@ preserving their original canonical representation digests. The evidence does
 not enter the frozen structural-signature v1 inputs or scientific logical IDs.
 
 Manifests reject unknown fields/contracts. Reopening requires the exact
-recorded runtime stack and pinned msutils commit, not only nominal version
-3.0.0. There is no implicit migration: recovery of a published-but-uncommitted
-attempt also needs its original stack, so settle attempts before upgrading.
+recorded runtime stack and exact installed msutils Git commit, not only its
+nominal version. The development group tracks upstream ``main``; the lockfile
+resolves it to a commit, and provenance records that installed commit. There
+is no implicit migration: recovery of a published-but-uncommitted attempt also
+needs its original stack, so settle attempts before upgrading.
 The MSv4 adapter contract identifies
 xarray-ms 0.5.8's schema; no universal upstream schema version is invented.
 Verification reads every physical file and both logical trees. This is
@@ -137,8 +139,8 @@ Closed cache, materialization, replay and transformation decisions distinguish
 ``store-requested`` from ``selected-representation``, requested work from
 validated reconstruction, and explicit ``not-requested`` behavior.  Producer
 and replay-runtime stacks remain separate and each complete stack contains the
-exact qualified package-key set plus the pinned msutils commit.  Actual fidelity
-is absent until reconstruction validates. A refusal before validation cannot
+exact qualified package-key set plus the installed msutils Git commit. Actual
+fidelity is absent until reconstruction validates. A refusal before validation cannot
 claim successful exact replay; a later publication failure may retain the
 validated staged-reconstruction evidence while its attempt remains failed. Legacy
 ``shinobi-state-attempt/v1`` recovery records remain readable.

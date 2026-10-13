@@ -36,11 +36,11 @@ dev = [
 # Real Measurement Set development and acceptance coverage. Keep this separate
 # from `dev` so ordinary contributors and unsupported platforms retain a light
 # environment, while MS work has one reproducible group that must not silently
-# skip its real-table tests. Keep the unreleased msutils commit here rather than
+# skip its real-table tests. Track upstream msutils main here rather than
 # in project metadata: PyPI rejects direct references in Requires-Dist.
 measurement-set = [
     "python-casacore>=3.7,<4",
-    "msutils[exact-native] @ git+https://github.com/shinobi-dosho/msutils.git@25c280a8ab412b5015a80bf4ff6f83b7a6820675",
+    "msutils[exact-native] @ git+https://github.com/shinobi-dosho/msutils.git@main",
     "xarray-ms==0.5.8",
     "xarray==2026.7.0",
     "dask[array]==2026.8.0",

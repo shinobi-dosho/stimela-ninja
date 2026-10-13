@@ -147,10 +147,11 @@ def test_different_layout_same_native_state(tmp_path, monkeypatch):
     assert adapter.native_id(source) != first.state_id
 
 
-def test_targeted_stack_mismatch_reports_stack_version(state, monkeypatch):
+@pytest.mark.parametrize(("package", "mismatch"), [("zarr", "0.0"), ("msutils_commit", "f" * 40)])
+def test_targeted_stack_mismatch_reports_stack_version(state, monkeypatch, package, mismatch):
     _, store, result = state
     qualified = adapter.runtime()
-    monkeypatch.setattr(adapter, "runtime", lambda: {**qualified, "zarr": "0.0"})
+    monkeypatch.setattr(adapter, "runtime", lambda: {**qualified, package: mismatch})
 
     with pytest.raises(StateError) as raised:
         store.verify(result.state_id)
@@ -163,7 +164,7 @@ def test_targeted_stack_mismatch_reports_stack_version(state, monkeypatch):
     assert len(attempts) == 1
     attempt = attempts[0]
     assert attempt.phase == "refused" and attempt.finished
-    assert attempt.versions == {**qualified, "zarr": "0.0"}
+    assert attempt.versions == {**qualified, package: mismatch}
     assert attempt.provenance is not None
     assert attempt.provenance.producer_versions == qualified
     assert attempt.provenance.actual_fidelity is None
