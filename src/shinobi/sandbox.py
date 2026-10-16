@@ -68,6 +68,7 @@ from glob import has_magic
 from pathlib import Path
 from typing import Any, Sequence
 
+from shinobi.cache import path_exists
 from shinobi.exceptions import ParameterError, StepError
 from shinobi.steps.schema import (
     Scope,
@@ -329,7 +330,7 @@ def clear_stale_outputs(scope: Scope, run_inputs: dict[str, Any], workspace: Pat
     removed: list[Path] = []
     for path, source in candidates:
         dst = path if path.is_absolute() else workspace / path
-        if not dst.exists() and not dst.is_symlink():
+        if not path_exists(dst) and not dst.is_symlink():
             continue
         # Resolve for comparison only -- removal below acts on `dst` itself,
         # so a symlinked destination loses the link, never the target.
@@ -684,7 +685,7 @@ def harvest_outputs(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbo
     candidates = ()
     if _capture is not None:
         try:
-            candidates = {rel for rel in targets if (sandbox_dir / rel).exists()}
+            candidates = {rel for rel in targets if path_exists(sandbox_dir / rel)}
         except OSError:
             _capture.complete = False
             # Actual harvest checks/moves still run and retain their failures.
@@ -705,7 +706,7 @@ def harvest_outputs(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbo
     candidates = {rel for rel in candidates if rel in targets}
     for rel in sorted(targets, key=lambda rel: Path(rel).parts):
         src = sandbox_dir / rel
-        if not src.exists() and not src.is_symlink():
+        if not path_exists(src) and not src.is_symlink():
             continue
         dst = workspace / rel
         _move(src, dst, targets[rel])
@@ -762,10 +763,10 @@ class ProductCapture:
             for candidate in [*plan.candidates, *plan.discovered()]:
                 if candidate.path.is_symlink():
                     raise ValueError(f"symlink family member: {candidate.path}")
-                self.family_before[candidate.path] = observe_product_path(candidate.path, recursive=True) if candidate.path.exists() else None
+                self.family_before[candidate.path] = observe_product_path(candidate.path, recursive=True) if path_exists(candidate.path) else None
                 if candidate.rule.accept_existing and sandbox_dir is not None and candidate.path.is_relative_to(sandbox_dir):
                     prior = workspace / candidate.path.relative_to(sandbox_dir)
-                    if prior.exists() and candidate.path not in self.staged_reads:
+                    if path_exists(prior) and candidate.path not in self.staged_reads:
                         raise ValueError("relative sandbox accept_existing needs explicit staging; use an absolute shared output root or direct execution")
         self.scope = scope
         self.prepared = prepared
@@ -793,7 +794,7 @@ class ProductCapture:
                 self.validate_family_candidate(name, plan, path)
                 if path.is_symlink():
                     raise ValueError(f"symlink family member: {path}")
-                exists = path.is_dir() if plan.member_type is DirectoryBundle else path.is_file()
+                exists = path_exists(path) and (path.is_dir() if plan.member_type is DirectoryBundle else path.is_file())
                 after = observe_product_path(path, recursive=True) if exists else None
                 if exists and after is None:
                     raise ValueError(f"cannot observe family member: {path}")
@@ -876,7 +877,7 @@ class ProductCapture:
         matches = {}
         try:
             for match in _harvest_matches(self.scope, self.prepared, self.workspace, absolute=True, relative=self.sandbox_dir is None, observe=True):
-                if match.exists():
+                if path_exists(match):
                     matches[match] = observe_product_path(match, recursive=True)
         except OSError:
             return None
@@ -891,7 +892,7 @@ class ProductCapture:
         try:
             for _name, path, _required in output_path_values(self.scope, outputs):
                 actual = path if path.is_absolute() else self.workspace / path
-                if actual.exists():
+                if path_exists(actual):
                     if actual in self.prepared_dirs and self.prepared_dirs[actual] == observe_product_path(actual) and actual.is_dir() and not any(actual.iterdir()):
                         # Compare shallow identity before inspecting contents:
                         # changed opaque directories may be legitimate products.

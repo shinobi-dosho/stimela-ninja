@@ -179,7 +179,7 @@ group in `pyproject.toml` (Read the Docs installs from the former).
 3. Push and open a PR against `main`. Reference any related issue
    (e.g. "Closes #12").
 4. **CI must be green.** The `test` job runs the suite, lint and the format
-   check across Python 3.11 and 3.12 — that's the merge gate. An automated `review` job also
+   check across Python 3.11 to 3.14 — that's the merge gate. An automated `review` job also
    posts an AI code-review comment; treat it as **advisory, not a gate**, and
    weigh its findings with judgement. Per `AGENTS.md`'s *"Reviewing changes:
    check the tree, not just the diff"*, verify any "this doesn't exist / is
