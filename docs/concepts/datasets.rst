@@ -761,7 +761,7 @@ the complete compute-side lifecycle plan.  Use ``Path`` or the legacy loader
 dtype ``MS`` when one of the unsupported routes is required.
 
 FITS image and table contracts
------------------------------
+------------------------------
 
 ``FITSImage`` and ``FITSTable`` are ordinary ``Path`` values with versioned
 ``fits-image/v1`` and ``fits-table/v1`` declarations. Model construction,

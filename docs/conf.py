@@ -83,11 +83,26 @@ nitpick_ignore = [
     ("py:class", "shinobi.steps.schema._InputsProxy"),
     ("py:class", "shinobi.steps.schema._LoopOutputsProxy"),
     ("py:class", "shinobi.steps.schema._OutputsProxy"),
+    # Private base class shared by the FITS record models. It only appears in
+    # the "Bases:" line; documenting it would advertise an API that isn't one.
+    ("py:class", "shinobi.fits._Record"),
+    ("py:class", "shinobi.fits_lifecycle._Record"),
+    ("py:class", "shinobi.fits_commit._Closed"),
     # Pydantic Annotated metadata is rendered as pseudo class references by
     # autodoc; these values are not importable classes. Coordinate is a type
     # alias documented as data, and annotated-types has no public inventory.
     ("py:class", "strict=True"),
+    ("py:class", "StrictInt"),
     ("py:class", "ge=0"),
+    ("py:class", "ge=1"),
+    ("py:class", "min_length=1"),
+    ("py:class", "annotated_types.MinLen"),
+    # `Field(pattern=...)` is rendered as `_PydanticGeneralMetadata(pattern=...)`
+    # and autodoc splits the regex at its brackets into these fragments.
+    ("py:class", "_PydanticGeneralMetadata"),
+    ("py:class", "pattern='^"),
+    ("py:class", "a-f0-9"),
+    ("py:class", "{64}$'"),
     ("py:class", "annotated_types.Ge"),
     ("py:class", "Coordinate"),
     # The generic type parameter is a data declaration, not a Python class.

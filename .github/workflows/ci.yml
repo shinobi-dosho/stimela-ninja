@@ -53,6 +53,29 @@ jobs:
       - name: Run tests
         run: uv run --python ${{ matrix.python-version }} --locked --group dev pytest -q
 
+  docs:
+    if: github.event_name != 'schedule'
+    name: Strict documentation build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      # The same command as the release workflow's docs job, which gates
+      # publishing. Building it here too means a dangling cross-reference fails
+      # the pull request that introduced it, not the release tag.
+      - name: Build documentation
+        run: uv run --python 3.12 --locked --group docs sphinx-build -E -n -W --keep-going -b html docs docs/_build/html
+
   casacore:
     name: Measurement Set integration (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest

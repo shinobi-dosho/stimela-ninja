@@ -295,7 +295,7 @@ and recursive kind inventories are product-cache evidence, independent of
 scientific keys, mutation snapshots and reusable dataset-state identities.
 
 FITS byte observations and exact recovery
-----------------------------------------
+-----------------------------------------
 
 Strict FITS records use closed ``fits-lifecycle/v1`` observations and attempts,
 with selected HDU layout, declared WCS diagnostics, parser version and the
