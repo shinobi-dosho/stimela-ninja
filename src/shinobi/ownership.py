@@ -487,7 +487,11 @@ def validate_contained_execution(
                 for source, pattern in _resolved_product_patterns(scope, inputs, declarations=declarations, workspace=workspace, include_candidates=False):
                     try:
                         if pattern is None:
-                            issues.append(f"scope {scope.name!r} {source} has an unresolved product directory reservation")
+                            # Only a strict dataset contract needs every
+                            # pattern proven; elsewhere an unset template
+                            # reserves nothing, as in access planning.
+                            if dataset_resources:
+                                issues.append(f"scope {scope.name!r} {source} has an unresolved product directory reservation")
                             continue
                         reservations.setdefault(source, set()).add(canonical(pattern))
                     except (OSError, RuntimeError, ValueError) as exc:
