@@ -121,6 +121,10 @@ def test_exception_boundaries_follow_exact_oracle(tmp_path, stage):
 
 
 def test_later_rollback_failure_retains_every_fence_and_subset_refused(tmp_path, monkeypatch):
+    # The export below only reaches its pending-mutation refusal once it has
+    # qualified the state stack; casacore alone (e.g. via simms) is not enough.
+    pytest.importorskip("msutils", reason="requires measurement-set group")
+    pytest.importorskip("xarray_ms", reason="requires measurement-set group")
     import shinobi.snapshots as snapshots
 
     paths = roots(tmp_path)
