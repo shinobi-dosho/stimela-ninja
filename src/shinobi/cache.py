@@ -150,6 +150,27 @@ def invalidate_path_hashes() -> None:
 _ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP})
 
 
+def path_exists(path: Path) -> bool:
+    """`Path.exists()` as Python 3.11-3.13 define it: only the absent errnos
+    above (and an embedded NUL) mean "not there"; anything else, EACCES on a
+    parent that lacks search permission above all, raises `OSError`.
+
+    Python 3.14 changed `Path.exists()` to return False for every `OSError`,
+    which makes an unreadable product look absent. Callers that must tell
+    "absent" from "cannot be determined" -- harvest and cache evidence --
+    use this instead and treat the exception as unknown.
+    """
+    try:
+        os.stat(path)
+    except ValueError:
+        return False
+    except OSError as exc:
+        if exc.errno in _ABSENT_ERRNOS:
+            return False
+        raise
+    return True
+
+
 def _walk_fingerprint(path: Path) -> Any:
     """`[relative_path, mtime_ns, size]` per file under `path`, sorted. A
     regular file yields the single entry `["." , mtime_ns, size]`; a
