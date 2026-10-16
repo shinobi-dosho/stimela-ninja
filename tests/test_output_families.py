@@ -1567,3 +1567,44 @@ def test_sandbox_directory_axis_candidate_stays_relative_and_prepares_parent(tmp
     assert result.success
     assert (tmp_path / "dir0/out").read_text() == "product"
     assert result.outputs.image.select(band=0) == Path("dir0/out")
+
+
+def _scratch_cab(tmp_path, spec, *, sandbox):
+    class ScratchInputs(Inputs):
+        cache_dir: str | None = None
+
+    return make_cab(tmp_path, spec, sandbox=sandbox).model_copy(
+        update={
+            "inputs_model": ScratchInputs,
+            "field_meta": {"script": ParamMeta(positional_head=True), "image": ParamMeta(family=spec), "cache_dir": ParamMeta(write_path=True)},
+            "scratch": ["{cache_dir}/*"],
+        }
+    )
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_family_cab_runs_with_unset_scratch_destination(tmp_path, monkeypatch, sandbox):
+    """A tool with a family output and an optional scratch directory (ddfacet's `cache_dir`) runs when the directory is unset; there is no dataset contract to prove."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(tmp_path / "sandboxes"))
+    spec = FamilySpec(coordinates={}, rules=(MemberRule(path="result.txt", required=True),))
+    cab = _scratch_cab(tmp_path, spec, sandbox=sandbox)
+    script = "from pathlib import Path;Path('result.txt').write_text('product')"
+    result = _dispatch(cab, None, backend="native", cache=False, script=script)
+    assert result.success
+    assert (tmp_path / "result.txt").read_text() == "product"
+    result = _dispatch(cab, None, backend="native", cache=False, script=script.replace("'product'", "'again'"), cache_dir="cache")
+    assert result.success
+
+
+def test_unresolved_scratch_destination_is_refused_only_under_a_dataset_contract(tmp_path):
+    from shinobi.exceptions import DatasetLifecycleUnavailableError
+    from shinobi.ownership import validate_contained_execution
+    from shinobi.steps.dispatch import _snapshot_product_inputs
+
+    spec = FamilySpec(coordinates={}, rules=(MemberRule(path="result.txt"),))
+    cab = _scratch_cab(tmp_path, spec, sandbox=False)
+    planned = _snapshot_product_inputs(cab, {}, workspace=tmp_path)
+    validate_contained_execution(cab, {}, workspace=tmp_path, dataset_resources=set(), planned_inputs=planned)
+    with pytest.raises(DatasetLifecycleUnavailableError, match="unresolved product directory reservation"):
+        validate_contained_execution(cab, {}, workspace=tmp_path, dataset_resources={tmp_path / "obs.ms"}, planned_inputs=planned)
