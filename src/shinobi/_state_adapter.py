@@ -61,10 +61,20 @@ def _check_export_chunks(tree) -> None:
 
 
 def _msutils_commit() -> str:
-    """Read the installed upstream Git revision from PEP 610 provenance."""
-    message = "state operations require msutils from the upstream Git repository; install the measurement-set development group"
+    """Identify the installed msutils: its version for an index install, else the upstream Git commit.
+
+    An ordinary index install (a release) has no PEP 610 ``direct_url.json``
+    and is identified by its version. Any ``direct_url.json`` that is present
+    must describe a resolved install from the upstream repository and yields
+    its 40-hex commit; local paths, editable installs, other URLs and empty or
+    malformed files are refused.
+    """
+    message = "state operations require msutils from an index release or the upstream Git repository; install the measurement-set development group"
     try:
-        direct = json.loads(metadata.distribution("msutils").read_text("direct_url.json") or "{}")
+        text = metadata.distribution("msutils").read_text("direct_url.json")
+        if text is None:
+            return metadata.version("msutils")
+        direct = json.loads(text)
     except (metadata.PackageNotFoundError, ValueError) as exc:
         raise ImportError(message) from exc
     if not isinstance(direct, dict):
@@ -83,7 +93,7 @@ def _msutils_commit() -> str:
 
 
 def runtime() -> dict[str, str]:
-    """Qualify the installed APIs and stack, recording the exact msutils revision."""
+    """Qualify the installed APIs and stack, recording the msutils version or Git commit."""
     try:
         versions = {name: metadata.version(name) for name in PACKAGES if name != "dask-ms"}
     except (metadata.PackageNotFoundError, ValueError) as exc:
