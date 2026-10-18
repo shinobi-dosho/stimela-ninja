@@ -45,7 +45,7 @@ measurement-set = [
     "python-casacore>=3.7,<4",
     "msutils[exact-native]>=3.1.0",
     "xarray-ms==0.5.8",
-    "xarray==2026.7.0",
+    "xarray==2026.9.0",
     "dask[array]==2026.8.0",
     "arcae==0.5.4",
     "numcodecs==0.16.5",
