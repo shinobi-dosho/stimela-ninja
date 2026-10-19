@@ -1,14 +1,14 @@
 """Smoke tests for examples/example-simulation.py.
 
 The example imports `dosho` (the native shinobi cab repository) for its real
-wsclean/cubical/simms cabs. dosho is now a plain dependency group --
+wsclean/quartical/simms cabs. dosho is now a plain dependency group --
 `uv sync --group examples` -- since it dropped the [tool.uv.sources] redirect
 that used to make it unresolvable alongside this project (dosho #42). It is
 still not in CI's default `--group dev`, so skip cleanly rather than erroring
 out collection when it is absent.
 
 `RecordingBackend` intercepts every *Cab* step, including the ones carrying
-`backend="native"`, so wsclean and cubical need nothing installed. It cannot
+`backend="native"`, so wsclean and quartical need nothing installed. It cannot
 intercept a **pystep**: as of simms 3.0, dosho's `skysim`/`telsim` are
 `@shinobi.pystep` `StepRef`s rather than binary Cabs, and a pystep runs its
 own Python body (`ctx.import_callable("runit", "simms.apps.telsim")`) instead of
@@ -29,6 +29,7 @@ pytest.importorskip("dosho")
 
 from shinobi.backends.recording import RecordingBackend  # noqa: E402
 from shinobi.dag import graph_nodes, render_dag  # noqa: E402
+from shinobi.policies import build_argv  # noqa: E402
 from shinobi.steps import Recipe, register_step_backend  # noqa: E402
 from shinobi.steps.dispatch import _dispatch  # noqa: E402
 
@@ -73,6 +74,22 @@ def test_dryrun_dag_renders():
         assert name in rendered
 
 
+def test_quartical_command_requests_corrected_data():
+    mod = load_example()
+    calibration = next(ref for ref in mod.recipe.steps if ref.name == "calibrate")
+    argv = build_argv(calibration.step, {**calibration.params, "input_ms_path": "example-simulation.ms"})
+    assert argv[0] == "goquartical"
+    for option in (
+        "input_ms.path=example-simulation.ms",
+        "input_model.recipe=MODEL_DATA",
+        "output.products=[corrected_data]",
+        "output.columns=[CORRECTED_DATA]",
+        "solver.terms=[G]",
+        "G.type=diag_complex",
+    ):
+        assert option in argv
+
+
 @pytest.mark.skipif(
     importlib.util.find_spec("simms") is None,
     reason="dosho's skysim/telsim are pysteps, not Cabs -- a backend override cannot intercept them, so dispatching this recipe imports simms for real",
@@ -85,7 +102,7 @@ def test_recipe_dispatches_with_correct_argv_shape(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     mod = load_example()
     recorder = RecordingBackend()
-    # wsclean/cubical are Cabs, so intercepting "native" keeps them from
+    # wsclean/quartical are Cabs, so intercepting "native" keeps them from
     # shelling out (that override beats any backend passed to _dispatch).
     # Shadow it via monkeypatch so the override can't leak into later tests
     # that run real native commands (_STEP_BACKENDS is module-global).
@@ -105,17 +122,17 @@ def test_recipe_dispatches_with_correct_argv_shape(monkeypatch, tmp_path):
     # pysteps, which run their own body instead of dispatching through one,
     # so the recorder never sees them -- asserting otherwise was asserting
     # that dosho had not yet moved simms to @shinobi.pystep, which it has.
-    assert set(calls_by_name) == {"cubical", "wsclean"}
+    assert set(calls_by_name) == {"quartical", "wsclean"}
     # image_sim (pre-calibration, populates MODEL_DATA) + one per Briggs
     # robust value.
     assert len(calls_by_name["wsclean"]) == 4
 
     # The simms steps are pysteps, so there is no argv to inspect -- what
     # remains checkable, and is the part worth checking, is that their output
-    # still flows through the wiring into the Cab steps. cubical is wired the
+    # still flows through the wiring into the Cab steps. QuartiCal is wired the
     # MS telsim produced.
-    cubical_argv = calls_by_name["cubical"][0]
-    assert any("example-simulation.ms" in str(a) for a in cubical_argv), cubical_argv
+    quartical_argv = calls_by_name["quartical"][0]
+    assert "input_ms.path=example-simulation.ms" in quartical_argv
 
     # wsclean's own real outputs are FITS image products (image/image_mfs/
     # ...), not the MS -- image_sim's `input_ms` is an *outputs_model-only*
@@ -125,38 +142,27 @@ def test_recipe_dispatches_with_correct_argv_shape(monkeypatch, tmp_path):
     # regression guard for a real bug: adding it to inputs_model too (the
     # shape caracal2's own line/selfcal workers use) makes build_argv
     # emit it as a bogus `-input-ms <path>` flag real wsclean doesn't
-    # recognise -- caught by actually running this example against real
-    # wsclean/cubical binaries, not just RecordingBackend.
+    # recognise.
     image_sim_argv = calls_by_name["wsclean"][0]
     assert "-input-ms" not in image_sim_argv
     assert "-data-column" in image_sim_argv
     assert image_sim_argv[image_sim_argv.index("-data-column") + 1] == "DATA"
     assert image_sim_argv[-1] == "example-simulation.ms"
 
-    # real dosho cubical: flattened flag names, per-Jones-term
-    # ParamPattern-matched extras (lowercase g-solvable/g-type -- real
-    # CubiCal per-term CLI flags are always lowercase regardless of the
-    # term label's own case, unlike --sol-jones' own uppercase "G" value),
-    # explicit_true (real cubical.yml policy) emitting "--flag true"
-    # rather than a bare flag, data-ms wired all the way from image_sim's
-    # implicit-template `input_ms` output.
-    cubical_argv = calls_by_name["cubical"][0]
-    assert cubical_argv[0] == "gocubical"
-    i = cubical_argv.index("--data-ms")
-    assert cubical_argv[i : i + 2] == ["--data-ms", "example-simulation.ms"]
-    assert "--sol-jones" in cubical_argv
-    i = cubical_argv.index("--g-solvable")
-    assert cubical_argv[i : i + 2] == ["--g-solvable", "true"]
-    i = cubical_argv.index("--g-type")
-    assert cubical_argv[i : i + 2] == ["--g-type", "complex-2x2"]
-    i = cubical_argv.index("--out-overwrite")
-    assert cubical_argv[i : i + 2] == ["--out-overwrite", "true"]
+    # QuartiCal uses dotted key=value options and writes corrected visibilities
+    # only when the product and its MS column are requested explicitly.
+    assert quartical_argv[0] == "goquartical"
+    assert "input_model.recipe=MODEL_DATA" in quartical_argv
+    assert "output.products=[corrected_data]" in quartical_argv
+    assert "output.columns=[CORRECTED_DATA]" in quartical_argv
+    assert "solver.terms=[G]" in quartical_argv
+    assert "G.type=diag_complex" in quartical_argv
 
     # wsclean (robust=2, the first *post-calibration* image step, i.e.
     # index 1 -- index 0 is image_sim, checked above): repeat_as_tokens
     # for -size (bare tokens, not comma-joined), a real Union[str,
     # Tuple[str, float]] `weight` value, real nom_de_guerre flags
-    # (-data-column/-name), ms wired all the way from cubical's real `ms`
+    # (-data-column/-name), ms wired all the way from QuartiCal's real `ms`
     # output.
     wsclean_argv = calls_by_name["wsclean"][1]
     assert "-size" in wsclean_argv

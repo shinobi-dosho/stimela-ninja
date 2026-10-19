@@ -1,7 +1,6 @@
-"""A minimal @shinobi.step example: two free-standing decorated steps over
-loaded cabs, plus a tiny two-step Recipe wiring one into the next.
+"""A two-step Recipe wiring an image into a FITS mask.
 
-Run a single step:      ninja run examples/simple_selfcal.py:image --ms obs.ms
+Inspect a single cab:   ninja run examples/simple_selfcal.py:wsclean --help
 Dry-run the recipe:     ninja run examples/simple_selfcal.py:selfcal --dryrun
 """
 
@@ -11,7 +10,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from shinobi import Cab, Recipe, step
+from shinobi import Cab, FITSImage, Recipe
 from shinobi.loaders import build_model
 from shinobi.steps import ParamMeta
 
@@ -26,13 +25,14 @@ class PipelineInputs(ImageInputs):
 
 
 class ImageOutputs(BaseModel):
-    restored: Path | None = None
+    restored: FITSImage | None = None
 
 
 wsclean = Cab(
     name="wsclean",
     command="wsclean",
     image="quay.io/stimela/wsclean:latest",
+    backend="native",
     inputs_model=ImageInputs,
     outputs_model=ImageOutputs,
     field_meta={"restored": ParamMeta(implicit="{prefix}-MFS-image.fits")},
@@ -45,11 +45,12 @@ breizorro = Cab(
     inputs_model=build_model(
         "MaskInputs",
         {
-            "restored_image": ("File", True, None),
+            "restored_image": ("FITSImage", True, None),
             "outfile": ("File", True, None),
         },
     ),
-    outputs_model=build_model("MaskOutputs", {"mask": ("File", True, None)}),
+    outputs_model=build_model("MaskOutputs", {"mask": ("FITSImage", True, None)}),
+    backend="native",
     field_meta={
         "restored_image": ParamMeta(nom_de_guerre="restored-image"),
         "mask": ParamMeta(implicit="{outfile}"),
@@ -57,22 +58,11 @@ breizorro = Cab(
 )
 
 
-@step(wsclean, backend="native")
-def image(ctx):
-    """Image the visibilities."""
-    return ctx.run()
-
-
-@step(breizorro, backend="native")
-def make_mask(ctx):
-    return ctx.run()
-
-
 # A two-step recipe: image, then mask the image it produced.
 selfcal = Recipe(
     name="selfcal",
     inputs_model=PipelineInputs,
-    outputs_model=build_model("Out", {"mask": ("File", False, None)}),
+    outputs_model=build_model("Out", {"mask": ("FITSImage", False, None)}),
 )
 selfcal.add_step("image", wsclean, ms=selfcal.inputs.ms, prefix=selfcal.inputs.prefix)
 selfcal.add_step(

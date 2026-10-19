@@ -179,10 +179,9 @@ group in `pyproject.toml` (Read the Docs installs from the former).
 3. Push and open a PR against `main`. Reference any related issue
    (e.g. "Closes #12").
 4. **CI must be green.** The `test` job runs the suite, lint and the format
-   check across Python 3.11 and 3.12 — that's the merge gate. An automated `review` job also
-   posts an AI code-review comment; treat it as **advisory, not a gate**, and
-   weigh its findings with judgement. Per `AGENTS.md`'s *"Reviewing changes:
-   check the tree, not just the diff"*, verify any "this doesn't exist / is
+   check across Python 3.11 and 3.12 — that's the merge gate. If an automated `review` job
+   posts an AI code-review comment, treat it as **advisory, not a gate**, and
+   weigh its findings with judgement: check the tree, not just the diff; verify any "this doesn't exist / is
    unused" claim against the actual tree before acting on it.
 
 ### Commit messages
@@ -190,8 +189,8 @@ group in `pyproject.toml` (Read the Docs installs from the former).
 Write clear, descriptive commit messages explaining *why* a change is made. No
 formal convention (Conventional Commits, sign-off/DCO, or CLA) is required.
 
-Provenance for an assistant-assisted commit goes in a commit trailer and never
-in the PR description — see
+Provenance for an assistant-assisted commit (for example an LLM) goes in a commit trailer as
+``Assisted-by: <LLM> <MODEL>`` and never in the PR description — see
 [*Attribution: commit trailers yes, PR trailers no*](https://github.com/shinobi-dosho/stimela-ninja/blob/main/AGENTS.md#attribution-commit-trailers-yes-pr-trailers-no).
 
 ## Versioning and releases

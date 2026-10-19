@@ -20,7 +20,7 @@ task. Give it a ``name``, the ``command`` to run, an optional container
 
     from pydantic import BaseModel
 
-    from shinobi import Cab, Recipe, step
+    from shinobi import Cab, FITSImage, Recipe
     from shinobi.steps import ParamMeta
     from shinobi.loaders import build_model
 
@@ -35,13 +35,14 @@ task. Give it a ``name``, the ``command`` to run, an optional container
 
 
     class ImageOutputs(BaseModel):
-        restored: Path | None = None
+        restored: FITSImage | None = None
 
 
     wsclean = Cab(
         name="wsclean",
         command="wsclean",
         image="quay.io/stimela/wsclean:latest",
+        backend="native",
         inputs_model=ImageInputs,
         outputs_model=ImageOutputs,
         field_meta={"restored": ParamMeta(implicit="{prefix}-MFS-image.fits")},
@@ -54,13 +55,14 @@ task. Give it a ``name``, the ``command`` to run, an optional container
         inputs_model=build_model(
             "MaskInputs",
             {
-                "restored_image": ("File", True, None),
+                "restored_image": ("FITSImage", True, None),
                 "outfile": ("File", True, None),
             },
         ),
         outputs_model=build_model(
-            "MaskOutputs", {"mask": ("File", True, None)}
+            "MaskOutputs", {"mask": ("FITSImage", True, None)}
         ),
+        backend="native",
         field_meta={
             "restored_image": ParamMeta(nom_de_guerre="restored-image"),
             "mask": ParamMeta(implicit="{outfile}"),
@@ -70,27 +72,25 @@ task. Give it a ``name``, the ``command`` to run, an optional container
 You can hand-write the pydantic models, or build them from a compact
 ``{name: (dtype, required, default)}`` spec with
 :func:`shinobi.loaders.build_model` (the same helper the YAML loaders use).
+``FITSImage`` declares the restored image read by Breizorro and the mask it
+creates. These direct input and output paths infer read and create access.
+Running the FITS contract requires ``stimela-ninja[fits]`` and native WSClean
+and Breizorro executables.
 
 Run a single cab
 ----------------
 
-Wrap a cab in a :func:`@shinobi.step <shinobi.step>` function to make it
-runnable. The body receives an :class:`~shinobi.ExecContext` (``ctx``); calling
-``ctx.run()`` executes the cab on the chosen backend and returns its result.
-
-.. code-block:: python
-
-    @step(wsclean, backend="native")
-    def image(ctx):
-        """Image the visibilities. A near-empty body auto-runs the cab."""
-        return ctx.run()
-
-Save the file as ``myrecipe.py`` and run it straight from the command line --
-the cab's input schema becomes the CLI options:
+You can run a cab directly; a function that only calls ``ctx.run()`` is not
+needed. For example, install ``dosho`` and inspect its ready-made WSClean cab:
 
 .. code-block:: console
 
-    $ ninja run myrecipe.py:image --ms data.ms --prefix out
+    $ pip install dosho
+    $ ninja run dosho.cabs:wsclean --help
+
+``ninja run`` accepts ``module:attribute`` targets and derives the command's
+options from the cab's input schema. The hand-defined ``wsclean`` above is
+used in the recipe below to illustrate cab declaration and step wiring.
 
 Compose a recipe
 ----------------
@@ -104,7 +104,7 @@ proxy attribute is a reference that the engine resolves at run time.
     selfcal = Recipe(
         name="selfcal",
         inputs_model=PipelineInputs,
-        outputs_model=build_model("Out", {"mask": ("File", False, None)}),
+        outputs_model=build_model("Out", {"mask": ("FITSImage", False, None)}),
     )
     selfcal.add_step("image", wsclean, ms=selfcal.inputs.ms, prefix=selfcal.inputs.prefix)
     selfcal.add_step(
@@ -118,6 +118,7 @@ proxy attribute is a reference that the engine resolves at run time.
 Here ``selfcal.outputs.image.restored`` is the ``restored`` output of the step
 named ``image`` -- wiring it into the ``mask`` step's ``restored_image`` input
 creates the dependency edge between the two.
+Save the code as ``myrecipe.py`` to run the recipe from the command line.
 
 Preview the graph
 -----------------

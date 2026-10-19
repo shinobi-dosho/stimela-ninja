@@ -1,37 +1,8 @@
-"""Ninja selfcal -- a shinobi Recipe for the self-calibration pipeline
-originally at sphemakh/ninja @ 319cc37 (`ninja-recipe.py`, stimela classic).
-That repository is private, so the reference is provenance rather than a
-link you can follow.
+"""Two rounds of image, mask, and calibration in a declared Recipe.
 
-This is a condensed reimplementation on the step model (`Cab`/`Recipe`/
-`@recipe.step`, `ninja run`). A selfcal pipeline is a *declared DAG*: each
-round is image -> mask -> calibrate, with the calibrated MS / model /
-mask threaded between steps as typed `InputRef`/`OutputRef` wiring rather
-than imperative `call()` bookkeeping. `ninja run examples/ninja_selfcal.py:selfcal
---dryrun` renders the graph for free (see shinobi.dag).
-
-Cabs describe *tasks*, not a specific run, so none bake in a run-specific
-MS name -- every step is wired one from the recipe's inputs or a previous
-step's output.
-
-* `wsclean` loads from a real cult-cargo cab definition
-  (examples/cultcargo/wsclean.yml, vendored) via `shinobi.loaders.yaml_cab`
-  -- its ~170 real parameters, not a hand-declared subset.
-* The CASA tasks and `msutils` load from real stimela-classic
-  `parameters.json` definitions (examples/stimela_classic/, vendored) via
-  `shinobi.loaders.stimela_classic`. The CASA-task cabs load with
-  `flavour="casa-task"` (not `"binary"`), so they're schema-complete but
-  raise `UnsupportedFlavourError` if actually executed -- see SECURITY.md's
-  "Never eval()/exec() a cab's `command`". `msutils` is a real binary.
-* `breizorro`/`cubical` are hand-declared here. cubical's per-Jones-term
-  parameters (`g1-solvable`, `g-time-int`, ...) use `input_patterns=
-  [ParamPattern(...)]` -- the term names are chosen per call, not fixed by
-  the tool, so no static field set could enumerate them (see ParamPattern).
-
-Run it:
-
-    ninja run examples/ninja_selfcal.py:selfcal --dryrun
-    ninja run examples/ninja_selfcal.py:selfcal --ms line.ms
+This standalone loader example uses vendored cult-cargo and Stimela classic
+schemas, plus hand-declared Breizorro and CubiCal cabs. The WSClean output is
+a stub, so use ``ninja run examples/ninja_selfcal.py:selfcal --dryrun``.
 """
 
 from __future__ import annotations
@@ -73,11 +44,7 @@ def cab_from_defaults(
     extra: dict[str, tuple[str, bool, Any]] | None = None,
     outputs: dict[str, tuple[str, bool, Any]] | None = None,
 ) -> Cab:
-    """Build a Cab whose inputs_model comes from a `defaults` dict (the
-    shared *_opts dicts the original recipe used), instead of typing every
-    parameter by hand. Hyphenated tool parameter names are sanitised to
-    valid pydantic field names, with the original kept as a nom_de_guerre.
-    """
+    """Build a cab from defaults, preserving hyphenated CLI names."""
     fields: dict[str, tuple[str, bool, Any]] = {}
     field_meta: dict[str, ParamMeta] = {}
     seen: dict[str, str] = {}
@@ -102,7 +69,7 @@ def cab_from_defaults(
     )
 
 
-# Real stimela-classic schemas (examples/stimela_classic/, vendored).
+# Vendored Stimela classic schemas.
 casa_mstransform = load_classic_cab(_STIMELA_CLASSIC_DIR / "casa_mstransform" / "parameters.json")
 casa_listobs = load_classic_cab(_STIMELA_CLASSIC_DIR / "casa_listobs" / "parameters.json")
 casa_flagdata = load_classic_cab(_STIMELA_CLASSIC_DIR / "casa_flagdata" / "parameters.json")
@@ -128,7 +95,7 @@ breizorro = Cab(
 )
 
 
-# Shared cubical/wsclean parameters, straight from the original recipe.
+# Calibration and imaging defaults from the original recipe.
 cal_opts: dict[str, Any] = {
     "data-column": "DATA",
     "out-mode": "sc",
@@ -156,12 +123,11 @@ cubical = cab_from_defaults(
     "quay.io/stimela2/cubical:latest",
     cal_opts,
     input_patterns=[
-        # one family per solvable Jones term (g1-*, g-*, ...); the term
-        # names are chosen per call, not fixed by the tool.
+        # Jones term names are selected per call.
         ParamPattern(
             separator="-",
             segments=[
-                ParamSegment(regex=r".+?"),  # term name, e.g. "g1"/"g" -- not enumerable
+                ParamSegment(regex=r".+?"),
                 ParamSegment(
                     attrs={
                         "solvable": ParamMeta(),
@@ -182,20 +148,13 @@ cubical = cab_from_defaults(
     outputs={"corrected_ms": ("MS", False, None)},
 )
 
-# Real cult-cargo schema. Its real names: `ms` (a List[MS]), `prefix`
-# (not `name`), `nchan` (not `channels-out`). wsclean.yml resolves its
-# real schema via `dynamic_schema` (a code reference shinobi deliberately
-# does not import/run), so it loads with an empty schema; for this example
-# we give it the one input/output the recipe actually wires.
+# WSClean's dynamic schema is not loaded; declare only the wired fields here.
 wsclean = load_file(_CULTCARGO_DIR / "wsclean.yml")["wsclean"].model_copy(
     update={
         "inputs_model": build_model("wsclean_Inputs", {"ms": ("MS", True, None), "prefix": ("str", False, None)}),
         "outputs_model": build_model("wsclean_Outputs", {"restored": ("File", False, None)}),
     }
 )
-
-
-# ---------------------------------------------------------------- recipe ---
 
 
 class SelfcalInputs(BaseModel):
@@ -209,9 +168,7 @@ class SelfcalOutputs(BaseModel):
 
 
 def build_selfcal(rounds: int = 2) -> Recipe:
-    """Construct a selfcal Recipe: `rounds` iterations of
-    image -> mask -> calibrate, each round's calibrated MS feeding the next.
-    """
+    """Build an image, mask, calibrate chain for each round."""
     recipe = Recipe(name="selfcal", inputs_model=SelfcalInputs, outputs_model=SelfcalOutputs)
 
     prev_ms: InputRef | OutputRef = recipe.inputs.ms
@@ -234,7 +191,6 @@ def build_selfcal(rounds: int = 2) -> Recipe:
     return recipe
 
 
-# The default target `ninja run` resolves: a 2-round selfcal.
 selfcal = build_selfcal(rounds=2)
 
 

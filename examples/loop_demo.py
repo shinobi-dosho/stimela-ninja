@@ -1,24 +1,7 @@
-"""Declared loops -- a runnable `Recipe.add_loop` demo using only `sh`.
+"""Show a bounded ``Recipe.add_loop`` using shell commands.
 
-The shape is self-calibration's: repeat a cycle until the result is good
-enough, but expressed so the graph is still declared and inspectable before
-anything runs. `add_loop` unrolls the body `max_iter` times into the parent
-recipe, so `--dryrun` draws every iteration -- and once a cycle writes the
-sentinel file, the remaining ones pass its outputs through without running.
-
-Each cycle appends a line to a work file and then "assesses" it: the assessor
-writes the sentinel once the file has reached `target` lines. That stands in
-for a real fidelity check (caracal's `aimfast` JSON) while keeping the example
-runnable anywhere.
-
-Run it::
-
-    ninja run examples/loop_demo.py:pipeline --dryrun   # all 5 cycles, declared
-    ninja run examples/loop_demo.py:pipeline
-
-Three cycles run and two are skipped, since the work file reaches 3 lines on
-the third pass. The `prepare` step clears any sentinel from a previous run, so
-it is repeatable.
+Each cycle appends a line; a sentinel ends work after three cycles. Inspect
+all five declared cycles with ``ninja run examples/loop_demo.py:pipeline --dryrun``.
 """
 
 from pathlib import Path
@@ -84,12 +67,7 @@ class PipelineOut(BaseModel):
 
 
 def _sh(name: str, script: str, inputs, outputs) -> Cab:
-    """A cab that runs `sh -c <script> <args...>`.
-
-    The script is a `positional_head` implicit, so it lands immediately after
-    `-c`; the remaining fields follow as positionals, which `sh` exposes as
-    `$0`, `$1`, ... in declaration order.
-    """
+    """Run ``sh -c`` with the script first and inputs as positional args."""
     return Cab(
         name=name,
         command="sh -c",
@@ -103,18 +81,13 @@ def _sh(name: str, script: str, inputs, outputs) -> Cab:
     )
 
 
-# Start from a clean slate so the example is repeatable: truncate the work
-# file and remove any sentinel left by an earlier run.
+# Clear the work file and sentinel before each run.
 prepare = _sh("prepare", 'rm -f "$1"; : > "$0"', PrepareIn, PrepareOut)
 
-# `work` is both an input and an output, so its path passes through unchanged
-# -- exactly the "fixed point" a loop body must be for `carry` to work.
+# Pass the work path through each cycle.
 refine = _sh("refine", 'printf "refined on cycle %s\\n" "$1" >> "$0"', RefineIn, RefineOut)
 
-# Writes the sentinel only once the work file is long enough. Its *existence*
-# is the convergence signal -- which is why `until` names a path rather than a
-# bool: the identical test works in-process and as a shell guard in an
-# offloaded sbatch script. Always exits 0; "not converged yet" is not a failure.
+# The sentinel path signals convergence.
 assess = _sh("assess", 'if [ "$(wc -l < "$0")" -ge "$2" ]; then touch "$1"; fi', AssessIn, AssessOut)
 
 cycle = Recipe(name="cycle", inputs_model=CycleIn, outputs_model=CycleOut)
@@ -130,8 +103,7 @@ loop = pipeline.add_loop(
     cycle,
     max_iter=MAX_CYCLES,
     until="converged",
-    # This cycle's work file becomes the next cycle's input: the loop-carried
-    # dependency, and the real graph edge between iterations.
+    # Carry the work path into the next cycle.
     carry={"work": "work"},
     index_input="cycle",
     work=pipeline.outputs.prepare.work,

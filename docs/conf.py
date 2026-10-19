@@ -88,8 +88,16 @@ nitpick_ignore = [
     # alias documented as data, and annotated-types has no public inventory.
     ("py:class", "strict=True"),
     ("py:class", "ge=0"),
+    ("py:class", "ge=1"),
+    ("py:class", "min_length=1"),
     ("py:class", "annotated_types.Ge"),
+    ("py:class", "annotated_types.MinLen"),
+    ("py:class", "StrictInt"),
     ("py:class", "Coordinate"),
+    # FITS record bases are private; generated type references to them have
+    # no public API target.
+    ("py:class", "shinobi.fits._Record"),
+    ("py:class", "shinobi.fits_lifecycle._Record"),
     # The generic type parameter is a data declaration, not a Python class.
     ("py:class", "shinobi.products.T"),
     # Private contained-execution reservation record, not a public API.
@@ -143,6 +151,16 @@ myst_enable_extensions = ["colon_fence", "deflist"]
 # -- Cross-reference resolution ----------------------------------------------
 
 
+def _qualify_ambiguous_xrefs(app, doctree):
+    """Select implementation targets when top-level re-exports also exist."""
+    from sphinx import addnodes
+
+    targets = {"DatasetMode": "shinobi.dataset_access.DatasetMode", "FITSHDU": "shinobi.fits.FITSHDU"}
+    for node in doctree.findall(addnodes.pending_xref):
+        if node.get("refdomain") == "py" and node.get("reftype") == "class" and node.get("reftarget") in targets:
+            node["reftarget"] = targets[node["reftarget"]]
+
+
 def _qualify_bare_xref(app, env, node, contnode):
     """Rewrite an unqualified third-party reference to its qualified name.
 
@@ -158,4 +176,5 @@ def _qualify_bare_xref(app, env, node, contnode):
 
 
 def setup(app):
+    app.connect("doctree-read", _qualify_ambiguous_xrefs)
     app.connect("missing-reference", _qualify_bare_xref, priority=400)
