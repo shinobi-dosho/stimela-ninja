@@ -23,7 +23,7 @@ from shinobi.dataset_lifecycle import (
     _MissingDatasetAttempt,
     _claimed_for,
 )
-from shinobi.dataset_backends import DatasetBackendStatus, DatasetNamespaceMode
+from shinobi.dataset_backends import DatasetBackendStatus, DatasetNamespaceMode, DatasetBackendMount
 from shinobi.exceptions import DatasetLifecycleUnavailableError, DatasetLifecycleViolationError
 from shinobi.fits import FITSDescriptor, inspect_fits
 from shinobi.fits_commit import FITSCachePublication, FITSCommitReference, FITSParticipant
@@ -49,13 +49,69 @@ class FITSBackendCapability(_Record):
 
 
 def fits_backend_capability(backend, *, mutation=False):
-    supported = backend in ("native", "venv")
+    from shinobi.dataset_backends import namespace_backend_capability
+
+    route = namespace_backend_capability(backend, mutation=mutation)
     return FITSBackendCapability(
         backend=backend,
         lifecycle="contained-fits-mutation/v1" if mutation else "contained-fits-read/v1",
-        status=DatasetBackendStatus.TESTED if supported else DatasetBackendStatus.UNSUPPORTED,
-        namespace_mode=DatasetNamespaceMode.LOCAL if supported else DatasetNamespaceMode.UNPROVEN,
-        reason="controller and native/venv executor share local namespace" if supported else "FITS containers and detached/offloaded routes are not qualified",
+        status=route.status,
+        namespace_mode=route.namespace_mode,
+        reason=route.reason,
+    )
+
+
+def worker_fits_backend_capability(*, mutation=False, qualification=None):
+    from shinobi.dataset_backends import worker_dataset_backend_capability
+
+    route = worker_dataset_backend_capability(mutation=mutation, qualification=qualification)
+    return FITSBackendCapability(
+        backend=route.backend,
+        lifecycle="contained-fits-mutation/v1" if mutation else "contained-fits-read/v1",
+        status=route.status,
+        namespace_mode=route.namespace_mode,
+        reason=route.reason,
+    )
+
+
+class FITSBackendPlan(_Record):
+    capability: FITSBackendCapability
+    storage_namespace: Path
+    mounts: tuple["DatasetBackendMount", ...] = ()
+
+
+def plan_fits_backend(backend, accesses, *, workspace, mutation, leaf_accesses=None):
+    """Identity mounts preserving file replacement and nonowned sibling roots."""
+    capability = fits_backend_capability(backend, mutation=mutation)
+    if capability.status is not DatasetBackendStatus.TESTED or capability.namespace_mode is DatasetNamespaceMode.REMOTE_DELEGATED:
+        raise DatasetLifecycleUnavailableError(f"FITS backend {backend!r} is unqualified: {capability.reason}")
+    if capability.namespace_mode is not DatasetNamespaceMode.IDENTITY_BIND:
+        return FITSBackendPlan(capability=capability, storage_namespace=workspace.resolve())
+    roots = {access.root.resolve() for access in accesses}
+    leaves = accesses if leaf_accesses is None else leaf_accesses
+    writable = {access.root.resolve() for access in leaves if access.writes}
+    if not writable <= roots:
+        raise DatasetLifecycleUnavailableError("FITS leaf roots are outside the workflow plan")
+    mounts = {}
+    for root in writable:
+        parent = root.parent
+        if parent.parent == parent or not parent.is_dir():
+            raise DatasetLifecycleUnavailableError(f"FITS replacement target {root} needs an existing non-root parent")
+        mounts[parent] = True
+    for root in roots - writable:
+        if root.exists():
+            if root in mounts:
+                raise DatasetLifecycleUnavailableError(f"FITS read-only root conflicts with writable parent {root}")
+            mounts[root] = False
+        elif any(root.is_relative_to(parent) for parent in mounts):
+            raise DatasetLifecycleUnavailableError(f"cannot protect absent nonowned FITS root {root} below writable parent")
+    return FITSBackendPlan(
+        capability=capability,
+        storage_namespace=workspace.resolve(),
+        mounts=tuple(
+            DatasetBackendMount(source=root, target=root, writable=mode, reason="FITS leaf replacement parent" if mode else "FITS nonowned workflow root")
+            for root, mode in sorted(mounts.items(), key=lambda item: (len(item[0].parts), str(item[0])))
+        ),
     )
 
 
@@ -163,7 +219,7 @@ class FITSLifecycle(DatasetLifecycle):
         return self.record.capability == "contained-fits-mutation/v1"
 
     @classmethod
-    def start(cls, *, workspace, attempt_id, scope, backends, mutation=False):
+    def start(cls, *, workspace, attempt_id, scope, backends, mutation=False, store_path=None):
         reason = "strict FITS lifecycle planning started"
         record = FITSLifecycleAttempt(
             attempt_id=attempt_id,
@@ -176,7 +232,7 @@ class FITSLifecycle(DatasetLifecycle):
             capability_supported=False,
             reason=reason,
         )
-        store = FITSLifecycleStore(workspace / ".shinobi" / "fits-attempts" / f"{attempt_id}.json")
+        store = FITSLifecycleStore(store_path or workspace / ".shinobi" / "fits-attempts" / f"{attempt_id}.json")
         store.create(record)
         return cls(store, record, workspace=workspace)
 
@@ -265,17 +321,27 @@ def committed_generation(generation, root, *, workspace):
         or own.fingerprint != generation.content_fingerprint
         or own.signature != generation.structural_signature
         or generation.identity_profile != FITS_BYTE_PROFILE
-        or reference.oracle != workspace / ".shinobi" / "fits-attempts" / f"{reference.attempt_id}.json"
+        or (reference.worker_identity is None and reference.oracle != workspace / ".shinobi" / "fits-attempts" / f"{reference.attempt_id}.json")
     ):
         raise DatasetLifecycleUnavailableError("FITS commit reference contradicts generation or intended oracle path")
     try:
-        record = FITSLifecycleStore(reference.oracle).attempt()
+        if reference.worker_identity is None:
+            record = FITSLifecycleStore(reference.oracle).attempt()
+        else:
+            from shinobi.fits_commit import read_worker_oracle
+
+            worker = read_worker_oracle(reference.oracle, identity=reference.worker_identity, attempt_id=reference.attempt_id, step_path=reference.step_path)
+            if worker.cache_key != reference.cache_key:
+                raise ValueError("FITS worker oracle cache key mismatch")
+            record = worker.fits_lifecycle
     except (OSError, ValueError, SharedStorageError, DatasetLifecycleUnavailableError) as exc:
         raise DatasetLifecycleUnavailableError("FITS exact commit oracle is unreadable or malformed") from exc
     if record.attempt_id != reference.attempt_id or record.workspace != workspace:
         raise DatasetLifecycleUnavailableError("FITS commit reference contradicts durable attempt identity")
     leaves = [
-        leaf for leaf in record.leaves if leaf.step_path == reference.step_path and leaf.outcome == "committed" and leaf.cache and leaf.cache.cache_key == reference.cache_key
+        leaf
+        for leaf in record.leaves
+        if leaf.step_path == (reference.lifecycle_step_path or reference.step_path) and leaf.outcome == "committed" and leaf.cache and leaf.cache.cache_key == reference.cache_key
     ]
     for leaf in leaves:
         participants = tuple(
@@ -334,7 +400,7 @@ def observe_current_accesses(accesses, lifecycle, cache_dir):
     return tuple(observations), tuple(absent)
 
 
-def resolve_lifecycle_snapshot(scope, values, *, workspace, validated_steps=None, mutation=False, cache_dir=None):
+def resolve_lifecycle_snapshot(scope, values, *, workspace, validated_steps=None, mutation=False, cache_dir=None, producer_step_path=None):
     from shinobi.ownership import _resolved_leaf_inputs
 
     accesses = []
@@ -342,6 +408,8 @@ def resolve_lifecycle_snapshot(scope, values, *, workspace, validated_steps=None
     for leaf, known, _ in _resolved_leaf_inputs(scope, values, step_inputs={}, validated_steps=validated_steps):
         resolved = resolve_scope_fits_accesses(leaf, known, workspace=workspace)
         step_names = {scope.name + "." + ref.name for ref in getattr(scope, "steps", ()) if ref.step is leaf} or {scope.name}
+        if producer_step_path is not None:
+            step_names = {producer_step_path}
         for one in resolved:
             if one.mode is DatasetMode.CREATE:
                 creators[one.root] = (one, step_names)
@@ -372,7 +440,7 @@ def resolve_lifecycle_snapshot(scope, values, *, workspace, validated_steps=None
                         continue
                     reference, leaf = committed_generation(generation, root, workspace=workspace)
                     if (
-                        reference.step_path in names
+                        (reference.lifecycle_step_path or reference.step_path) in names
                         and reference.participant.field == access.declaration.field
                         and reference.participant.mode == "create"
                         and strict_reuse_issue(get_journal(cache_dir), root, generation.name, fits_file_identity(root)) is None
@@ -542,7 +610,7 @@ class StrictFITSLeaf:
             if strict_reuse_issue(journal, root, name, fits_file_identity(root)):
                 return
             reference, leaf = committed_generation(generation, root, workspace=self.lifecycle.workspace)
-            if reference.cache_key != cache_key or reference.step_path != self.step_path or leaf.publication is None:
+            if reference.cache_key != cache_key or (reference.lifecycle_step_path or reference.step_path) != self.step_path or leaf.publication is None:
                 return
             payloads.append(leaf.publication.model_dump(mode="json"))
         if not payloads or any(payload != payloads[0] for payload in payloads):

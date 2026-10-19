@@ -303,3 +303,19 @@ setups are single-node. They do not establish multi-node scheduling or
 cross-node shared-storage qualification. Detached worker qualification is
 recorded separately for the exact shared tree (:doc:`../offloading`); it does
 not qualify the blocking step backend.
+
+FITS contract routes
+--------------------
+
+Strict FITS access qualifies the same local namespace routes as MSv2: native,
+venv, Docker, Podman, Apptainer and Singularity. Container WRITE/CREATE binds
+the existing parent directory read-write to support replacement by rename;
+existing sibling inputs retain nested read-only mounts. A non-owned absent
+target exposed by that parent cannot be protected and causes a prelaunch
+refusal. See :doc:`datasets` for the complete FITS boundary.
+
+Slurm support uses detached compute workers with a pinned shared-storage
+qualification, independently of the tool backend selected inside each
+allocation. The blocking ``slurm`` tool backend and remote container daemons
+remain unqualified. Install ``fits-contract`` in every environment performing
+inspection; the tool image's packages are independent of that requirement.

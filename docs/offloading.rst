@@ -790,9 +790,35 @@ member table. The legacy argv compiler refuses families and selections because
 it cannot preserve post-execution membership/evidence. Remote stores and
 store-relative subresources remain gated. See :doc:`concepts/products`.
 
-Strict FITS declarations currently qualify only local native and venv routes.
-Both legacy compilation and detached worker preparation refuse FITS accesses
-and typed FITS products before submission, including table/image families.
-They do not downgrade those declarations to generic paths. FITS mutation
-recovery remains in the qualified controller namespace until a separate
-shared-storage/backend acceptance gate is provided.
+FITS worker contracts
+---------------------
+
+Strict FITS scalar/list accesses and typed FITS output products use detached
+Slurm compute workers on qualified shared storage. Install ``fits-contract``
+in the preparation, worker and finalization environments that inspect files.
+The tool's container or venv supplies its own dependencies independently.
+The same persisted shared-storage qualification used for MSv2 pins the mount,
+namespace and metadata guarantees; a scheduler ``COMPLETED`` state alone is
+never evidence of a valid FITS result.
+
+FITS worker plans freeze access modes and HDU selectors. Replacement-safe
+container mounts expose writable parents while retaining nested read-only
+inputs. READ/WRITE hazards feed the existing dependency planner. Immutable
+worker attempts carry the FITS observations and exact commit evidence used by
+finalization and recovery, including whole-file byte identities and complete
+joint-write participant sets. Pre-oracle failure restores predecessor bytes or
+CREATE absence; a committed immutable result preserves its successors.
+
+The legacy argv compiler remains unable to enforce these contracts. Whole-family
+FITS inputs, authoritative mixed MS/FITS workflows, FITS reusable states,
+nested/scattered authoritative FITS execution and unqualified namespaces remain
+unsupported. Typed FITS output families are validation-only and do not grant
+whole-family mutation authority. See :doc:`concepts/datasets` for container
+mount refusals and :doc:`concepts/products` for member selection.
+
+``tests/slurm_physical/run_fits.py`` exercises the physical cluster after a
+fresh M2 storage qualification: creation, an Apptainer rename replacement and
+reading across three nodes, then exact rollback after an injected S2 failure
+and a successful retry. Post-oracle exit and a real Slurm requeue exercise
+committed-result preservation and restart recovery. A fresh checker validates
+durable worker records.

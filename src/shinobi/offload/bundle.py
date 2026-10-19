@@ -26,6 +26,7 @@ from shinobi import __version__
 from shinobi.backends.venv import resolve_venv
 from shinobi.config import AppConfig
 from shinobi.dataset_access import scope_tree_has_dataset_contract
+from shinobi.fits_access import scope_tree_has_fits_contract
 from shinobi.graph import check_offloadable
 from shinobi.offload._codec import BundleError, ModelSpec, WireModel, pack, unpack
 from shinobi.offload.code import CodeBundle, capture_code
@@ -175,7 +176,7 @@ class RecipeBundle(WireModel):
         family_features = uses_products(recipe)
         if self.schema_version != (2 if family_features else 1):
             raise BundleError("family declarations/selections require bundle schema version 2; ordinary bundles retain version 1")
-        has_datasets = scope_tree_has_dataset_contract(recipe)
+        has_datasets = scope_tree_has_dataset_contract(recipe) or scope_tree_has_fits_contract(recipe)
         if has_datasets != (self.execution_blocked_reason is not None):
             raise BundleError("dataset-bearing bundles must carry their compute-lifecycle preparation marker")
         for value in self.config.values():
@@ -321,7 +322,11 @@ def freeze_recipe(
                 pystep_wants_ctx=pystep.wants_ctx if pystep else None,
             )
         )
-    blocked = "MSv2 dataset contracts require compute-side lifecycle preparation before submission" if scope_tree_has_dataset_contract(recipe) else None
+    blocked = (
+        "MSv2 dataset contracts require compute-side lifecycle preparation before submission"
+        if scope_tree_has_dataset_contract(recipe) or scope_tree_has_fits_contract(recipe)
+        else None
+    )
     family_features = uses_products(recipe)
     return RecipeBundle(
         schema_version=2 if family_features else 1,

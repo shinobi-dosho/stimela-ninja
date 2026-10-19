@@ -640,6 +640,7 @@ def test_planned_create_identity_flows_to_reader_and_all_planners(monkeypatch, t
 
 
 def test_worker_dataset_planning_becomes_an_executable_lifecycle_plan(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "registry.json"))
     target = tmp_path / "future.ms"
     recipe = _create_then_read_recipe()
     monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda *args, **kwargs: pytest.fail("planned dataset was inspected before creation"))
@@ -663,6 +664,8 @@ def test_worker_dataset_planning_becomes_an_executable_lifecycle_plan(monkeypatc
 
 
 def test_worker_preserves_wired_optional_none_as_a_known_absence(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "registry.json"))
+
     class OptionalMS(BaseModel):
         ms: MeasurementSetV2 | None = None
 

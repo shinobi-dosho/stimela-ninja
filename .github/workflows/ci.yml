@@ -127,10 +127,10 @@ jobs:
       # FITS is optional in the ordinary matrix. Qualify its real scanner,
       # lifecycle and MS product gates here with both optional stacks present.
       - name: Verify optional FITS installation
-        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set --group fits python -c "import astropy.io.fits, astropy.wcs, numpy; print(astropy.__version__)"
+        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set --extra fits-contract python -c "import astropy.io.fits, astropy.wcs, numpy; print(astropy.__version__)"
 
       - name: Run FITS structure, lifecycle, and product tests
-        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set --group fits pytest -q tests/test_fits.py tests/test_fits_lifecycle.py tests/test_fits_products.py
+        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set --extra fits-contract pytest -q tests/test_fits.py tests/test_fits_lifecycle.py tests/test_fits_products.py
 
       - name: Run real state export, materialization and process-death recovery
         run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set pytest -q tests/test_dataset_state.py tests/test_dataset_state_live.py tests/test_state_precision.py tests/test_state_metadata.py tests/test_state_qualification.py tests/test_state_replay_structure.py

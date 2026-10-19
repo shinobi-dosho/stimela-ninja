@@ -74,7 +74,7 @@ You can hand-write the pydantic models, or build them from a compact
 :func:`shinobi.loaders.build_model` (the same helper the YAML loaders use).
 ``FITSImage`` declares the restored image read by Breizorro and the mask it
 creates. These direct input and output paths infer read and create access.
-Running the FITS contract requires ``stimela-ninja[fits]`` and native WSClean
+Running the FITS contract requires ``stimela-ninja[fits-contract]`` and native WSClean
 and Breizorro executables.
 
 Run a single cab

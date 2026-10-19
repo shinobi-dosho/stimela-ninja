@@ -24,7 +24,7 @@ and ``ninja`` is the command-line tool.
     from dosho.cabs import breizorro
     from pydantic import BaseModel
 
-    from shinobi import Cab, FITSAccess, FITSImage, Recipe
+    from shinobi import Cab, FITSImage, Recipe
     from shinobi.steps import ParamMeta
 
 
@@ -58,24 +58,7 @@ and ``ninja`` is the command-line tool.
     )
 
 
-    class MaskInputs(breizorro.inputs_model):
-        restored_image: FITSImage | None = None
-
-
-    class MaskOutputs(breizorro.outputs_model):
-        outfile: FITSImage | None = None
-
-
-    breizorro = breizorro.model_copy(update={
-        "inputs_model": MaskInputs,
-        "outputs_model": MaskOutputs,
-        "fits_accesses": [
-            FITSAccess(field="restored_image", mode="read"),
-            FITSAccess(field="outfile", mode="create"),
-        ],
-        "backend": "native",
-    })
-
+    breizorro = breizorro.model_copy(update={"backend": "native"})
 
     pipeline = Recipe(
         name="pipeline",
@@ -92,12 +75,16 @@ and ``ninja`` is the command-line tool.
     pipeline.set_output("mask", pipeline.outputs.mask.outfile)
 
 The WSClean cab is defined above, while ``breizorro`` comes from ``dosho``.
-Its two FITS fields are specialized for this recipe without redefining the cab.
+Its FITS annotations and read/create declarations come from dosho.
 Passing ``pipeline.outputs.image.restored`` to ``restored_image`` wires the
 masking step after imaging and makes the image available to it.
-``FITSImage`` declares the image contract; ``FITSAccess`` marks Breizorro's
-read and create paths. Install ``dosho`` and ``stimela-ninja[fits]`` and use
-native WSClean and Breizorro executables to run this example.
+This example currently requires a dosho source checkout containing the
+Breizorro FITS declarations, which are not yet released. The combined example
+is pending execution validation with that cab update; graph construction and
+access planning have been checked. Install that checkout
+with ``pip install -e /path/to/dosho`` and install
+``stimela-ninja[fits-contract]`` in the environment performing inspection.
+Use native WSClean and Breizorro executables to run the example.
 
 .. code-block:: console
 

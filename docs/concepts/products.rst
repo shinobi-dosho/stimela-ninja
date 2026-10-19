@@ -310,11 +310,12 @@ validation selection and grants no file mutation authority. Selectors and FITS
 profiles participate in product contracts and cache identity. Missing declared
 WCS and image/WCS dimension mismatch invalidate strict image products.
 
-Typed FITS outputs in an existing local MS lifecycle are validation-only
+Typed FITS outputs in an existing local or detached MS lifecycle are validation-only
 products: an invalid member prevents the MS writer's commit and restores its
 exact predecessor. Families have no mutation-recovery guarantee. Select members
 into direct scalar/list FITS inputs to request file authority; whole-family FITS
-inputs and detached typed FITS products are deferred. The dosho WSClean image,
+inputs remain deferred. Detached workers validate typed FITS output products
+before publishing fresh or cached results. The dosho WSClean image,
 dirty, residual, model and PSF families use this validation boundary.
 
 A FITS validation selector applies only to an actual canonical FITS-typed

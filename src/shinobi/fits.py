@@ -341,7 +341,10 @@ def inspect_fits(
 
         parser_version = astropy.__version__
     except (ImportError, OSError) as exc:
-        return result(FITSStatus.INSPECTOR_UNAVAILABLE, f"Astropy FITS parser unavailable: {exc}")
+        return result(
+            FITSStatus.INSPECTOR_UNAVAILABLE,
+            f"Astropy FITS parser unavailable: {exc}; install stimela-ninja[fits-contract] in the inspection environment",
+        )
     try:
         total_header = 0
         with candidate.open("rb") as stream:

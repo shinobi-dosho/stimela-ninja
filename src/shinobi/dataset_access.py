@@ -457,7 +457,7 @@ def _access_label(access: ResolvedDatasetAccess) -> str:
 
 
 def _declaration_label(dataset: str, declaration: DatasetAccess) -> str:
-    columns = declaration.columns
+    columns = getattr(declaration, "columns", None)
     if columns is None:
         return dataset
     names = (*columns.write, *columns.create, *columns.remove) if declaration.mode is not DatasetMode.READ else columns.read
@@ -730,6 +730,7 @@ class ResolvedAccessPlanner:
         unresolved_inputs: set[str] | frozenset[str] = frozenset(),
         resolved_path_accesses: list[tuple[Path, bool]] | None = None,
         allow_existing_create: bool = False,
+        resolve_fits_contract: bool = True,
     ) -> AccessDecision:
         from shinobi.steps.schema import path_accesses, paths_overlap
 
@@ -742,6 +743,10 @@ class ResolvedAccessPlanner:
             unresolved_inputs=unresolved_inputs,
             allow_existing_create=allow_existing_create,
         )
+        from shinobi.fits_access import resolve_scope_fits_accesses
+
+        if resolve_fits_contract:
+            datasets = (*datasets, *resolve_scope_fits_accesses(scope, values, workspace=self._workspace))
         generic = resolved_path_accesses if resolved_path_accesses is not None else path_accesses(scope, values, workspace=self._workspace)
         from shinobi.steps.schema import _resolved_product_patterns, product_pattern_issue
 
@@ -994,6 +999,11 @@ def plan_recipe_accesses(
                 {**known, **outputs_for_step},
                 unresolved_inputs=unresolved_fields,
                 allow_existing_create=ref.name in overwrite_steps,
+                # Unsupported FITS scatter/nested recipe boundaries remain
+                # graph-plannable through their already flattened generic
+                # paths. A scalar annotation's scatter list is not one
+                # authoritative FITS access; execution still refuses it.
+                resolve_fits_contract=ref.scatter is None and not isinstance(ref.step, Recipe),
                 resolved_path_accesses=resolved_generic,
             )
         accesses[ref.name] = decision.datasets

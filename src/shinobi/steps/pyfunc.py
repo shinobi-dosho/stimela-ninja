@@ -665,7 +665,7 @@ def _run_pystep_subprocess(
     if dataset_resources or any(meta.family for meta in scope.field_meta.values()):
         from shinobi.ownership import validate_contained_execution
 
-        validate_contained_execution(scope, run_prepared, workspace=run_cwd, dataset_resources=dataset_resources, planned_inputs=run_planned)
+        validate_contained_execution(scope, run_prepared, workspace=run_cwd, dataset_workspace=Path(workspace), dataset_resources=dataset_resources, planned_inputs=run_planned)
     validate_declared_writes(scope, run_prepared, run_cwd, error_type=BackendError if isinstance(launcher, _ContainerLauncher) else ParameterError)
     if ctx._clear_outputs:
         clear_stale_outputs(scope, run_prepared, Path(workspace), sandboxed=sandbox_dir is not None)

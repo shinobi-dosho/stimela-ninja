@@ -119,14 +119,14 @@ def _recipe(workspace: Path, *, fail: bool = False, read: bool = False) -> Recip
     )
 
 
-def _prepared(workspace: Path, recipe: Recipe, root: Path):
+def _prepared(workspace: Path, recipe: Recipe, root: Path, *, qualification_root: Path | None = None):
     config = AppConfig.load(config_file=workspace / "missing-config.yml")
     bundle = freeze_recipe(recipe, {"ms": root}, config=config, workspace=workspace)
     workflow = prepare_worker_slurm(
         bundle,
         submission_root=workspace / "runs",
         worker_python=Path(sys.executable),
-        dataset_storage_qualification=qualified_storage(workspace),
+        dataset_storage_qualification=qualified_storage(workspace, storage_root=qualification_root),
     )
     plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
     assert workflow.execution_blocked_reason is None

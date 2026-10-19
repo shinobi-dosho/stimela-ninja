@@ -35,11 +35,13 @@ from shinobi.dataset_backends import (
     load_shared_storage_qualification,
     worker_dataset_backend_capability,
 )
+from shinobi.fits_access import ResolvedFITSAccess
+from shinobi.fits_lifecycle import FITSBackendCapability, FITSSnapshot, worker_fits_backend_capability
 from shinobi.dataset_lifecycle import DatasetLifecycleSnapshot
 from shinobi.offload._codec import BundleError, WireModel, unpack
 from shinobi.offload.bundle import RecipeBundle, Submission, write_new
 from shinobi.offload.code import source_tree_digest
-from shinobi.offload.records import AttemptRecord, attempt_record_version
+from shinobi.offload.records import AttemptRecord, attempt_record_version, lifecycle_fields
 from shinobi.ownership import WorkspaceAccess
 from shinobi.provenance import RunManifest, build_manifest
 from shinobi.results import StepResult
@@ -118,12 +120,15 @@ class DatasetWorkerPlan(WireModel):
                 raise BundleError(f"dataset worker {label} {path} is outside qualified shared-storage root {root}")
         if len(self.qualification_digest) != 64 or any(character not in "0123456789abcdef" for character in self.qualification_digest):
             raise BundleError("dataset worker qualification digest is not a lowercase sha256")
-        expected = "contained-native-msv2-mutation/v1" if self.mutation else "contained-native-msv2-read/v1"
-        expected_capability = worker_dataset_backend_capability(mutation=self.mutation, qualification=self.qualification)
+        capability_fn = worker_fits_backend_capability if isinstance(self, FITSWorkerPlan) else worker_dataset_backend_capability
+        expected_capability = capability_fn(mutation=self.mutation, qualification=self.qualification)
+        expected = expected_capability.lifecycle
         if self.capability != expected_capability or self.capability.lifecycle != expected:
             raise BundleError("dataset worker plan has no tested compute-side lifecycle capability")
         if any(capability.lifecycle != expected or capability.status is not DatasetBackendStatus.TESTED for capability in self.tool_capabilities):
             raise BundleError("dataset worker plan contains an untested tool-backend route")
+        if len(self.tool_capabilities) != len(self.steps):
+            raise BundleError("worker needs one tool capability per frozen step")
         names = [step.step_path for step in self.steps]
         if len(names) != len(set(names)):
             raise BundleError("dataset worker plan repeats a logical step")
@@ -150,8 +155,22 @@ class DatasetWorkerPlan(WireModel):
             raise BundleError(f"step {step_path!r} is not in the dataset worker plan") from exc
 
 
+class FITSStepPlan(WireModel):
+    step_path: str
+    accesses: tuple[ResolvedFITSAccess, ...]
+
+
+class FITSWorkerPlan(DatasetWorkerPlan):
+    """FITS-specific transport sharing qualification and identity checks."""
+
+    capability: FITSBackendCapability
+    tool_capabilities: tuple[FITSBackendCapability, ...]
+    initial_snapshot: FITSSnapshot
+    steps: tuple[FITSStepPlan, ...]
+
+
 class ExecutionPlan(WireModel):
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[1, 2, 3] = 1
     workflow_id: UUID
     bundle_digest: str
     worker: WorkerEnvironment
@@ -162,25 +181,39 @@ class ExecutionPlan(WireModel):
     accesses: tuple[WorkspaceAccess, ...] = ()
     execution_blocked_reason: str | None = None
     dataset_lifecycle: DatasetWorkerPlan | None = None
+    fits_lifecycle: FITSWorkerPlan | None = None
     product_candidates: dict[str, dict[str, tuple[str, ...]]] = Field(default_factory=dict)
 
     @model_serializer(mode="wrap")
     def _omit_empty_product_candidates(self, serializer):
         data = serializer(self)
+        if self.fits_lifecycle is None:
+            data.pop("fits_lifecycle", None)
         if not self.product_candidates:
             data.pop("product_candidates", None)
         return data
 
     @model_validator(mode="after")
     def _dataset_contract(self) -> "ExecutionPlan":
-        if (self.schema_version == 1) != (self.dataset_lifecycle is None):
-            raise BundleError("dataset worker lifecycle requires execution-plan schema version 2")
-        if self.dataset_lifecycle is not None:
+        if self.dataset_lifecycle is not None and self.fits_lifecycle is not None:
+            raise BundleError("MS and FITS authoritative lifecycles are mutually exclusive")
+        expected = 3 if self.fits_lifecycle is not None else 2 if self.dataset_lifecycle is not None else 1
+        if self.schema_version != expected:
+            raise BundleError("lifecycle evidence requires matching execution-plan version")
+        if self.lifecycle is not None:
             if self.execution_blocked_reason is not None:
                 raise BundleError("an executable dataset worker plan cannot also be marked blocked")
             if not self.ownership_required:
                 raise BundleError("dataset worker lifecycle requires durable workflow ownership")
+            root = self.lifecycle.qualification.storage_root.resolve()
+            paths = [self.ownership_workspace, self.ownership_registry, *(access.path for access in self.accesses)]
+            if any(raw is None or not Path(raw).is_absolute() or not Path(raw).resolve().is_relative_to(root) for raw in paths):
+                raise BundleError("worker ownership/access paths are outside qualified storage")
         return self
+
+    @property
+    def lifecycle(self):
+        return self.fits_lifecycle or self.dataset_lifecycle
 
     def attempt(self, step_path: str) -> PlannedAttempt:
         try:
@@ -352,6 +385,8 @@ def _require_exact_owner(submission_dir: Path, plan: ExecutionPlan):
 def _planned_access_matches(planned: ResolvedDatasetAccess, actual: ResolvedDatasetAccess) -> bool:
     """Allow provisional closures and whole-dataset column reservations to refine."""
 
+    if isinstance(planned, ResolvedFITSAccess):
+        return planned == actual
     if planned.fallback is DatasetFallback.UNKNOWN_COLUMNS and actual.columns_known and actual.fallback is None:
         # A producer may supply this step's column input only at execution.
         # Narrowing its whole-dataset reservation keeps the same claims;
@@ -543,10 +578,10 @@ class _WorkerDatasetLifecycle:
         attempt_id: UUID,
         step_path: str,
         backend: str,
+        cache_step_path: str,
     ) -> None:
-        from shinobi.dataset_lifecycle import DatasetLifecycle
 
-        contract = plan.dataset_lifecycle
+        contract = plan.lifecycle
         assert contract is not None
         qualification, digest = load_shared_storage_qualification(Path(contract.qualification_path))
         if qualification != contract.qualification or digest != contract.qualification_digest:
@@ -554,10 +589,14 @@ class _WorkerDatasetLifecycle:
         qualified_root = qualification.storage_root.resolve()
         if submission_dir != qualified_root and not submission_dir.is_relative_to(qualified_root):
             raise BundleError(f"submission directory {submission_dir} is outside qualified shared-storage root {qualified_root}")
+        from shinobi.offload.lifecycle import LifecycleOperations
+
+        self.ops = LifecycleOperations(isinstance(contract, FITSWorkerPlan))
         self.contract = contract
         self.workspace = Path(contract.storage_namespace)
         self.cache_dir = contract.cache_dir
         self.step_path = step_path
+        self.cache_step_path = cache_step_path
         self.backend = backend
         self.expected = contract.step(step_path).accesses
         # Observe this leaf's own roots and those no leaf in the workflow
@@ -569,7 +608,7 @@ class _WorkerDatasetLifecycle:
         every = {access.root for access in contract.initial_snapshot.accesses if access.root is not None}
         self.roots = tuple(sorted(own | (every - workflow_written), key=str))
         self.written_roots: set[Path] = set()
-        self.lifecycle = DatasetLifecycle.start(
+        self.lifecycle = self.ops.lifecycle.start(
             workspace=self.workspace,
             attempt_id=str(attempt_id),
             scope=step_path,
@@ -577,30 +616,28 @@ class _WorkerDatasetLifecycle:
             mutation=contract.mutation,
             store_path=_dataset_record_path(submission_dir, attempt_id),
         )
+        if self.ops.fits:
+            self.lifecycle.worker_identity = {"workflow_id": str(plan.workflow_id), "bundle_digest": plan.bundle_digest, "workspace": str(self.workspace)}
 
     def establish(self, *, scope: Scope, prepared: dict, owner) -> None:
-        from shinobi.dataset_backends import dataset_backend_capability
         from shinobi.dataset_lifecycle import (
             DatasetLifecyclePhase,
-            DatasetLifecycleSnapshot,
             claim_covers_accesses,
-            dataset_snapshot_matches,
             pending_dataset_recovery,
-            resolve_lifecycle_snapshot,
         )
 
         contract = self.contract
         step_path = self.step_path
-        actual_tool = dataset_backend_capability(self.backend, mutation=contract.mutation)
+        actual_tool = self.ops.capability(self.backend, mutation=contract.mutation)
         expected_tool = contract.tool_capabilities[next(i for i, item in enumerate(contract.steps) if item.step_path == step_path)]
         if actual_tool != expected_tool:
             raise BundleError(f"step {step_path!r}: compute-node tool-backend capability differs from the frozen submission plan")
 
         values = scope.inputs_model(**prepared)
         self.leaf_snapshot = (
-            resolve_lifecycle_snapshot(scope, values, workspace=self.workspace, mutation=contract.mutation)
+            self.ops.resolve(scope, values, workspace=self.workspace, mutation=contract.mutation, cache_dir=self.cache_dir, producer_step_path=self.cache_step_path)
             if self.expected
-            else DatasetLifecycleSnapshot(accesses=(), observations=())
+            else self.ops.snapshot(accesses=(), observations=())
         )
         if len(self.expected) != len(self.leaf_snapshot.accesses) or any(
             not _planned_access_matches(expected, actual) for expected, actual in zip(self.expected, self.leaf_snapshot.accesses)
@@ -610,7 +647,7 @@ class _WorkerDatasetLifecycle:
         if uncovered:
             raise BundleError(f"step {step_path!r}: live workflow claim does not cover dataset resources: {', '.join(map(str, uncovered))}")
 
-        self.baseline = self._observe()
+        self.baseline = self._observe(skip_pending=True)
         self.lifecycle.transition(
             DatasetLifecyclePhase.PLANNED,
             "compute worker re-resolved the frozen shared-storage dataset plan",
@@ -629,8 +666,14 @@ class _WorkerDatasetLifecycle:
 
         # Re-resolve after reading the claim.  The first observation never
         # authorizes execution by itself.
-        second_leaf = resolve_lifecycle_snapshot(scope, values, workspace=self.workspace, mutation=contract.mutation) if self.expected else self.leaf_snapshot
-        if not dataset_snapshot_matches(self.leaf_snapshot, second_leaf) or not dataset_snapshot_matches(self.baseline, self._observe()):
+        second_leaf = (
+            self.ops.resolve(scope, values, workspace=self.workspace, mutation=contract.mutation, cache_dir=self.cache_dir, producer_step_path=self.cache_step_path)
+            if self.expected
+            else self.leaf_snapshot
+        )
+        if not self.ops.module.dataset_snapshot_matches(self.leaf_snapshot, second_leaf) or not self.ops.module.dataset_snapshot_matches(
+            self.baseline, self._observe(skip_pending=True)
+        ):
             raise BundleError(f"step {step_path!r}: dataset plan or observation changed while establishing the compute-side lifecycle")
 
         self.written_roots = {access.root for access in self.leaf_snapshot.accesses if access.writes and access.root is not None}
@@ -663,18 +706,24 @@ class _WorkerDatasetLifecycle:
     def evidence(self):
         return self.lifecycle.record
 
-    def _observe(self):
-        from shinobi.dataset_lifecycle import DatasetLifecycleSnapshot, observe_roots
+    def _observe(self, *, skip_pending=False):
 
-        observations, absent = observe_roots(self.roots, self.workspace)
-        return DatasetLifecycleSnapshot(
+        own_roots = {access.root for access in self.expected}
+        accesses = (*self.expected, *(access for access in self.contract.initial_snapshot.accesses if access.root not in own_roots))
+        roots = self.roots
+        if self.ops.fits and skip_pending:
+            from shinobi.dataset_lifecycle import pending_dataset_recovery
+
+            pending = set(pending_dataset_recovery(self.cache_dir, self.leaf_snapshot))
+            roots = tuple(root for root in roots if root not in pending)
+        observations, absent = self.ops.observe(accesses, roots, self.workspace)
+        return self.ops.snapshot(
             accesses=self.contract.initial_snapshot.accesses,
             observations=observations,
             absent_roots=absent,
         )
 
     def _read_only_changed(self, post) -> tuple[Path, ...]:
-        from shinobi.dataset_lifecycle import dataset_observation_matches
 
         written = self.written_roots
         before = {item.root: item for item in self.baseline.observations}
@@ -682,7 +731,8 @@ class _WorkerDatasetLifecycle:
         return tuple(
             root
             for root in self.roots
-            if root not in written and (not dataset_observation_matches(before.get(root), after.get(root)) or (root in self.baseline.absent_roots) != (root in post.absent_roots))
+            if root not in written
+            and (not self.ops.module.dataset_observation_matches(before.get(root), after.get(root)) or (root in self.baseline.absent_roots) != (root in post.absent_roots))
         )
 
     def validate(self):
@@ -697,7 +747,7 @@ class _WorkerDatasetLifecycle:
         post = self._observe()
         changed = self._read_only_changed(post)
         if changed:
-            raise DatasetLifecycleViolationError("detached MSv2 worker changed a read-only dataset: " + ", ".join(map(str, changed)))
+            raise DatasetLifecycleViolationError(f"detached {'FITS' if self.ops.fits else 'MSv2'} worker changed a read-only dataset: " + ", ".join(map(str, changed)))
         return post
 
     def finish(self, result: StepResult):
@@ -768,7 +818,7 @@ def execute_step(submission_dir: Path, step_path: str, attempt_id: UUID) -> int:
     if planned.attempt_id != attempt_id:
         raise BundleError(f"attempt id for {step_path!r} does not match the execution plan")
     attempt_id = _invocation_attempt(submission_dir, planned)
-    if plan.dataset_lifecycle is None:
+    if plan.lifecycle is None:
         return _execute_step_invocation(submission_dir, step_path, attempt_id, submission, bundle, plan, planned)
     # A requeue publishes its newer identity before waiting here.  The old
     # invocation will then fail its publication fence and roll itself back
@@ -820,7 +870,7 @@ def _execute_step_invocation(
             error=str(exc),
             stderr=diagnostic,
             sandbox=retained_sandbox(),
-            dataset_lifecycle=lifecycle,
+            **lifecycle_fields(lifecycle),
             **common,
         )
         try:
@@ -952,7 +1002,7 @@ def _execute_step_invocation(
             ref = frozen.declaration()
             prepared = _prepare_inputs(scope, kwargs)
             planned_inputs = None
-            if plan.dataset_lifecycle is not None or any(meta.family for meta in scope.field_meta.values()):
+            if plan.lifecycle is not None or any(meta.family for meta in scope.field_meta.values()):
                 from shinobi.ownership import planned_leaf_inputs
 
                 declaration = bundle.declaration()
@@ -978,11 +1028,11 @@ def _execute_step_invocation(
             )
             cache_dir = bundle.cache_dir_override or scope.cache_dir or recipe.cache_dir or config.cache.dir
             snapshots_active = config.cache.snapshots.mode != "off" and (cache_enabled or bool(recipe.cache) or config.cache.enabled)
-            if plan.dataset_lifecycle is not None:
+            if plan.lifecycle is not None:
                 resolved_cache_dir = Path(cache_dir)
                 if not resolved_cache_dir.is_absolute():
                     resolved_cache_dir = Path(bundle.workspace) / resolved_cache_dir
-                if resolved_cache_dir.resolve() != Path(plan.dataset_lifecycle.cache_dir):
+                if resolved_cache_dir.resolve() != Path(plan.lifecycle.cache_dir):
                     raise BundleError("worker cache directory differs from the frozen strict-dataset recovery store")
                 dataset_runtime = _WorkerDatasetLifecycle(
                     submission_dir=submission_dir,
@@ -990,9 +1040,10 @@ def _execute_step_invocation(
                     attempt_id=attempt_id,
                     step_path=step_path,
                     backend=frozen.backend,
+                    cache_step_path=f"{recipe.name}.{step_path}",
                 )
                 dataset_runtime.establish(scope=scope, prepared=prepared, owner=owner)
-            if snapshots_active and plan.dataset_lifecycle is None:
+            if snapshots_active and plan.lifecycle is None:
                 paths = {path for values in mutation_paths(scope, prepared).values() for path in values}
                 if paths:
                     # Slurm's inferred mutation dependencies ensure no live
@@ -1139,7 +1190,7 @@ def _settle_dataset_submission(
     terminal lifecycle evidence or provably never entered the lifecycle.
     """
 
-    contract = plan.dataset_lifecycle
+    contract = plan.lifecycle
     if contract is None:
         return True
     settlement_path = submission_dir / "dataset-settlement.json"
@@ -1161,14 +1212,13 @@ def _settle_dataset_submission(
         return False
 
     from shinobi.dataset_lifecycle import (
-        DatasetLifecycle,
         DatasetLifecyclePhase,
-        DatasetLifecycleStore,
-        member_fingerprint,
-        observe_roots,
-        structural_signature,
     )
     from shinobi.snapshots import HeadStatus, chain_id, get_journal
+
+    from shinobi.offload.lifecycle import LifecycleOperations
+
+    ops = LifecycleOperations(isinstance(contract, FITSWorkerPlan))
 
     written_roots = {access.root for access in contract.initial_snapshot.accesses if access.writes and access.root is not None}
     try:
@@ -1205,18 +1255,18 @@ def _settle_dataset_submission(
                 safe = False
                 continue
             if record.committed:
-                if record.dataset_lifecycle is None or record.dataset_lifecycle.outcome != "committed":
+                if record.lifecycle is None or record.lifecycle.outcome != "committed":
                     safe = False
                 continue
 
         lifecycle = None
         if lifecycle_path.exists():
             try:
-                store = DatasetLifecycleStore(lifecycle_path)
-                lifecycle = DatasetLifecycle(store, store.attempt(), workspace=Path(contract.storage_namespace))
+                store = ops.store(lifecycle_path)
+                lifecycle = ops.lifecycle(store, store.attempt(), workspace=Path(contract.storage_namespace))
                 record = lifecycle.record
                 relevant_roots = {access.root for access in contract.step(planned.step_path).accesses if access.root is not None}
-                observations, absent = observe_roots(tuple(sorted(relevant_roots, key=str)), Path(contract.storage_namespace))
+                observations, absent = ops.observe(contract.step(planned.step_path).accesses, tuple(sorted(relevant_roots, key=str)), Path(contract.storage_namespace))
                 before = {item.root: item for item in record.pre_observations if item.root in relevant_roots}
                 after = {item.root: item for item in observations}
                 expected_absent = set(record.absent_roots) & relevant_roots
@@ -1226,7 +1276,7 @@ def _settle_dataset_submission(
                     if left is None or right is None:
                         return left is right
                     if root in written_roots:
-                        return structural_signature(left) == structural_signature(right) and member_fingerprint(left) == member_fingerprint(right)
+                        return ops.recovery_matches(left, right)
                     return left == right
 
                 # An attempt refused before EXECUTING never launched its tool,
@@ -1275,7 +1325,7 @@ def _settle_dataset_submission(
             job_id=job.job_id if job is not None else None,
             code_digest=frozen.code.digest if frozen.code else None,
             worker_digest=plan.worker.source_digest,
-            dataset_lifecycle=lifecycle_evidence,
+            **lifecycle_fields(lifecycle_evidence),
         )
         try:
             failure.write(submission_dir.parent)

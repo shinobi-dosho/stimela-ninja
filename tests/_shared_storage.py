@@ -7,13 +7,17 @@ from uuid import uuid4
 from shinobi.dataset_backends import SharedStorageQualification
 
 
-def qualified_storage(root: Path) -> Path:
-    """Create test-only persisted evidence for one temporary storage root."""
+def qualified_storage(root: Path, *, storage_root: Path | None = None) -> Path:
+    """Attest a test storage root, retaining an isolated qualification file.
+
+    Broad product reservations can put the ownership record in a parent of
+    the workflow workspace; callers explicitly include that parent.
+    """
 
     path = root / "shared-storage-qualification.json"
     record = SharedStorageQualification(
         qualification_id=uuid4(),
-        storage_root=root.resolve(),
+        storage_root=(storage_root or root).resolve(),
         verified_at=time.time(),
         workers=("test-worker-a", "test-worker-b"),
         evidence="pytest fixture standing in for a completed physical M2 probe",
