@@ -252,3 +252,153 @@ def test_mis_wired_nested_recipe_fails_the_dryrun_graph():
     recipe = Recipe(name="r", inputs_model=In, outputs_model=OkOut, steps=[StepRef(name="sub", step=inner)])
     with pytest.raises(RecipeGraphError, match="invalid nested recipe"):
         graph_nodes(recipe)
+
+
+class ScatterInputs(BaseModel):
+    weight: str
+    prefix: str = "image"
+    temp_dir: str = "tmp"
+
+
+class ScatterBoundary(BaseModel):
+    weights: list[str] = []
+
+
+def _scatter_recipe(**params):
+    recipe = Recipe(name="scatter", inputs_model=ScatterBoundary, outputs_model=OkOut)
+    recipe.add_step("image", _cab("image", ScatterInputs, OkOut), scatter=["weight"], **params)
+    return recipe
+
+
+def test_scatter_constants_preview_retains_one_node_and_dependencies():
+    recipe = _scatter_recipe(weight=["briggs -1.0", "briggs -0.5", "briggs 0.0", "briggs 0.5", "briggs 1.0"])
+    recipe.add_step("consume", _cab("consume", In, OkOut))
+    recipe.steps[-1].after = ["image"]
+    nodes = graph_nodes(recipe)
+    assert [(node.name, node.depends_on) for node in nodes] == [("image", set()), ("consume", {0})]
+    assert render_dag(nodes).splitlines() == [
+        "image: weight = ['briggs -1.0', 'briggs -0.5', 'briggs 0.0', 'briggs 0.5', 'briggs 1.0'] [scatter; 5 slices]",
+        "└── consume",
+    ]
+
+
+def test_scatter_inputref_is_resolved_only_from_supplied_boundary_values():
+    recipe = _scatter_recipe(weight=InputRef(field="weights"))
+    assert "InputRef(field='weights') [scatter]" in render_dag(graph_nodes(recipe))
+    assert render_dag(graph_nodes(recipe, {"weights": ["natural", "uniform"]})) == "image: weight = ['natural', 'uniform'] [scatter; 2 slices]"
+
+
+def test_scatter_outputref_stays_symbolic_even_with_static_output_defaults():
+    class Weights(BaseModel):
+        weights: list[str] = ["natural", "uniform"]
+
+    recipe = Recipe(name="scatter", inputs_model=In, outputs_model=OkOut)
+    recipe.add_step("produce", _cab("produce", In, Weights))
+    recipe.add_step("image", _cab("image", ScatterInputs, OkOut), scatter=["weight"], weight=recipe.outputs.produce.weights)
+    nodes = graph_nodes(recipe, {})
+    assert nodes[1].depends_on == {0}
+    assert render_dag(nodes).splitlines() == ["produce", "└── image: weight = OutputRef(step='produce', field='weights') [scatter]"]
+
+
+def test_scatter_outputref_selection_is_visible():
+    from pathlib import Path
+
+    from shinobi import FamilySpec, MemberRule, ProductFamily
+    from shinobi.steps.schema import ParamMeta
+
+    class Families(BaseModel):
+        files: ProductFamily[Path]
+
+    recipe = Recipe(name="scatter", inputs_model=In, outputs_model=OkOut)
+    recipe.add_step(
+        "produce",
+        Cab(
+            name="produce",
+            command="x",
+            inputs_model=In,
+            outputs_model=Families,
+            field_meta={"files": ParamMeta(family=FamilySpec(coordinates={"band": "int"}, rules=(MemberRule(path="output", coordinates={"band": 1}),)))},
+        ),
+    )
+    recipe.add_step("image", _cab("image", ScatterInputs, OkOut), scatter=["weight"], weight=recipe.outputs.produce.files.select(band=1))
+    assert "OutputRef(step='produce', field='files', selection={'band': 1}) [scatter]" in render_dag(graph_nodes(recipe))
+
+
+def test_zip_scatter_details_preserve_tree_connectors_resources_and_reasons():
+    recipe = Recipe(name="zip", inputs_model=In, outputs_model=OkOut)
+    recipe.add_step("start", _cab("start", In, OkOut))
+    cab = _cab("image", ScatterInputs, OkOut)
+    cab.resources = Resources(cpus=2)
+    recipe.add_step(
+        "image",
+        cab,
+        scatter=["weight", "prefix", "temp_dir"],
+        weight=["briggs -1.0", "briggs -0.5", "briggs 0.0", "briggs 0.5", "briggs 1.0"],
+        prefix=["w0", "w1", "w2", "w3", "w4"],
+        temp_dir=["t0", "t1", "t2", "t3", "t4"],
+    )
+    recipe.steps[-1].after = ["start"]
+    recipe.add_step("consume", _cab("consume", In, OkOut))
+    recipe.steps[-1].after = ["image"]
+    recipe.add_step("peer", _cab("peer", In, OkOut))
+    recipe.steps[-1].after = ["start"]
+    nodes = graph_nodes(recipe)
+    nodes[1].access_reasons = ("read-after-write: observation.ms",)
+    assert render_dag(nodes).splitlines() == [
+        "start",
+        "├── image [scatter zip(weight, prefix, temp_dir); 5 slices]  (cpus=2; read-after-write: observation.ms)",
+        "│   weight = ['briggs -1.0', 'briggs -0.5', 'briggs 0.0', 'briggs 0.5', 'briggs 1.0']",
+        "│   prefix = ['w0', 'w1', 'w2', 'w3', 'w4']",
+        "│   temp_dir = ['t0', 't1', 't2', 't3', 't4']",
+        "│   └── consume",
+        "└── peer",
+    ]
+
+
+@pytest.mark.parametrize("weights,count,preview", [([], 0, "[]"), ([str(i) for i in range(8)], 8, "['0', '1', '2', '3', '4', ...]")])
+def test_scatter_empty_and_truncated_previews_show_full_known_count(weights, count, preview):
+    assert render_dag(graph_nodes(_scatter_recipe(weight=weights))) == f"image: weight = {preview} [scatter; {count} slices]"
+
+
+def test_zip_unknown_or_unequal_lengths_never_fabricates_a_count():
+    recipe = Recipe(name="zip", inputs_model=ScatterBoundary, outputs_model=OkOut)
+    recipe.add_step("image", _cab("image", ScatterInputs, OkOut), scatter=["weight", "prefix"], weight=InputRef(field="weights"), prefix=["one"])
+    assert "slices" not in render_dag(graph_nodes(recipe))
+    # The display does not execute or validate aggregate scatter inputs.
+    recipe.steps[0].wiring.clear()
+    recipe.steps[0].params["weight"] = ["a", "b"]
+    assert "slices" not in render_dag(graph_nodes(recipe))
+
+
+def test_nested_scatter_labels_use_parent_inputs_without_evaluating_factories():
+    from pydantic import Field
+
+    def forbidden():
+        pytest.fail("rendering evaluated a default factory")
+
+    class Boundary(BaseModel):
+        weights: list[str] = Field(default_factory=forbidden)
+
+    inner = Recipe(name="inner", inputs_model=Boundary, outputs_model=OkOut)
+    inner.add_step("image", _cab("image", ScatterInputs, OkOut), scatter=["weight"], weight=InputRef(field="weights"))
+    outer = Recipe(name="outer", inputs_model=Boundary, outputs_model=OkOut)
+    outer.add_step("sub", inner, weights=["natural", "uniform"])
+    assert render_dag(graph_nodes(outer)).splitlines() == ["sub  (recipe)", "└╌╌ image: weight = ['natural', 'uniform'] [scatter; 2 slices]"]
+
+
+def test_nested_recipe_scatter_does_not_treat_whole_lists_as_slice_inputs():
+    inner = _scatter_recipe(weight=InputRef(field="weights"))
+    outer = Recipe(name="outer", inputs_model=In, outputs_model=OkOut)
+    outer.add_step("sub", inner, scatter=["weights"], weights=[["a"], ["b"]])
+    assert render_dag(graph_nodes(outer)).splitlines() == [
+        "sub: weights = [['a'], ['b']] [scatter; 2 slices]  (recipe)",
+        "└╌╌ image: weight = InputRef(field='weights') [scatter]",
+    ]
+
+
+def test_scatter_preview_bounds_long_values_and_escapes_newlines():
+    rendered = render_dag(graph_nodes(_scatter_recipe(weight=["first\nsecond", "x" * 1000])))
+    assert len(rendered.splitlines()) == 1
+    assert "first\\nsecond" in rendered
+    assert "..." in rendered
+    assert len(rendered) < 200

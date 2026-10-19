@@ -69,9 +69,10 @@ preserving their original canonical representation digests. The evidence does
 not enter the frozen structural-signature v1 inputs or scientific logical IDs.
 
 Manifests reject unknown fields/contracts. Reopening requires the exact
-recorded runtime stack and exact installed msutils Git commit, not only its
-nominal version. The development group tracks upstream ``main``; the lockfile
-resolves it to a commit, and provenance records that installed commit. There
+recorded runtime stack and the same recorded msutils value. A release install
+of msutils records its version; a Git install of the upstream repository
+records the exact commit. The record key is ``msutils_commit`` in both cases.
+The development group requires a release and the lockfile pins one. There
 is no implicit migration: recovery of a published-but-uncommitted attempt also
 needs its original stack, so settle attempts before upgrading.
 The MSv4 adapter contract identifies
@@ -139,7 +140,8 @@ Closed cache, materialization, replay and transformation decisions distinguish
 ``store-requested`` from ``selected-representation``, requested work from
 validated reconstruction, and explicit ``not-requested`` behavior.  Producer
 and replay-runtime stacks remain separate and each complete stack contains the
-exact qualified package-key set plus the installed msutils Git commit. Actual
+exact qualified package-key set plus the recorded msutils value (the release
+version, or the commit of an upstream Git install). Actual
 fidelity is absent until reconstruction validates. A refusal before validation cannot
 claim successful exact replay; a later publication failure may retain the
 validated staged-reconstruction evidence while its attempt remains failed. Legacy

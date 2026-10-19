@@ -53,21 +53,23 @@ runs ordinary test and audit jobs with `--locked`, so their versions match
 the committed lock. When a build goes red, that keeps "this branch broke it"
 and "a dependency broke it" as separate, answerable questions.
 
-The Measurement Set integration job refreshes `msutils[exact-native]` from
-upstream `main` with `uv lock --upgrade-package msutils` before its locked
-installs on every run. It also runs hourly after the workflow is merged to
+The Measurement Set integration job refreshes `msutils[exact-native]` to the
+latest release with `uv lock --upgrade-package msutils` before its locked
+installs on every run. It also runs daily after the workflow is merged to
 `main`; ordinary tests and audits skip scheduled runs. Its installation log
-records the resolved runtime, including the exact installed msutils Git SHA,
-so upstream failures can be attributed. To check current upstream locally:
+records the resolved runtime, including the installed msutils version, so
+failures from a new release can be attributed. To check the latest release
+locally:
 
 ```bash
 uv lock --upgrade-package msutils
 uv sync --locked --group dev --group measurement-set
 ```
 
-Review and commit the resulting lock diff to make that revision the new local
-baseline. State provenance records the installed SHA, and verification and
-materialization require the original exact runtime even if `main` has moved.
+Review and commit the resulting lock diff to make that release the new local
+baseline. State provenance records the installed msutils version (or the
+commit, for a Git install of upstream), and verification and materialization
+require the original exact runtime even if a newer release exists.
 
 The floors in `pyproject.toml` still define what a downstream `pip install`
 resolves. The lock binds only this repo's checkouts and CI.
@@ -179,10 +181,9 @@ group in `pyproject.toml` (Read the Docs installs from the former).
 3. Push and open a PR against `main`. Reference any related issue
    (e.g. "Closes #12").
 4. **CI must be green.** The `test` job runs the suite, lint and the format
-   check across Python 3.11 and 3.12 — that's the merge gate. If an automated `review` job
-   posts an AI code-review comment, treat it as **advisory, not a gate**, and
-   weigh its findings with judgement: check the tree, not just the diff; verify any "this doesn't exist / is
-   unused" claim against the actual tree before acting on it.
+   check across Python 3.11 to 3.14 — that's the merge gate. If an automated
+   `review` job posts an AI code-review comment, treat it as advisory. Check
+   the tree before acting on a "this doesn't exist / is unused" claim.
 
 ### Commit messages
 

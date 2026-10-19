@@ -236,6 +236,18 @@ receives the element at the same index from every scattered field. The step's
 own ``inputs_model``/``outputs_model`` describe a single slice; downstream
 steps see the scattered step's outputs gathered into lists.
 
+``--dryrun`` labels scatter nodes with their declared fields and up to five
+static values per field. It shows a slice count only when all zip lists are
+known and equally sized; unresolved wiring stays an explicit reference.
+Scatter previews preserve the declared nodes and dependency edges.
+
+Strict MSv2 readers may scatter atomic steps in a flat recipe when every slice
+input resolves before dispatch. Dataset WRITE/CREATE, authoritative FITS and
+nested dataset scatter remain refused. Shared reads are permitted; cross-slice
+filesystem overlap involving a write is rejected before launch. See
+:doc:`datasets` for the contained lifecycle contract. Offload compilation still
+refuses scatter.
+
 Use the ``scatter=`` argument of ``add_step`` or the decorators:
 
 .. code-block:: python

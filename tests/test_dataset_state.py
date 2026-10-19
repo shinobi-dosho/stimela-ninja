@@ -239,7 +239,21 @@ def test_adapter_runtime_qualifies_upstream_git(qualified_adapter, commit, url, 
     assert set(qualified) == {*adapter.PACKAGES, "msutils_commit"}
 
 
-@pytest.mark.parametrize("direct", [None, "{", "[]", "null", '"text"', "{}", '{"vcs_info": []}', '{"vcs_info": null}'])
+@pytest.mark.parametrize("version", ["3.1.0", "3.2.0"])
+def test_adapter_runtime_records_index_install_version(qualified_adapter, monkeypatch, version):
+    from types import SimpleNamespace
+
+    versions, _, _ = qualified_adapter
+    versions["msutils"] = version
+    # An ordinary index install ships no direct_url.json at all.
+    monkeypatch.setattr(adapter.metadata, "distribution", lambda _: SimpleNamespace(read_text=lambda _: None))
+    qualified = adapter.runtime()
+    assert qualified["msutils"] == version
+    assert qualified["msutils_commit"] == version
+    assert set(qualified) == {*adapter.PACKAGES, "msutils_commit"}
+
+
+@pytest.mark.parametrize("direct", ["", "{", "[]", "null", '"text"', "{}", '{"vcs_info": []}', '{"vcs_info": null}'])
 def test_adapter_runtime_refuses_invalid_provenance(qualified_adapter, monkeypatch, direct):
     from types import SimpleNamespace
 

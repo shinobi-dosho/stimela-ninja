@@ -39,20 +39,23 @@ For development
 ---------------
 
 Explicit MSv2 state operations currently require a source checkout and
-``uv sync --group measurement-set``. The group tracks
-``msutils[exact-native]`` from the upstream Git ``main`` branch, while
-``uv.lock`` records the resolved commit and complete stack for reproducible
-local installs. Refresh upstream with ``uv lock --upgrade-package msutils``
-then ``uv sync --locked --group measurement-set``. The direct Git reference
-lives in the unpublished development group because PyPI rejects it in wheel
-metadata. Nominal msutils versions alone do not establish preservation v2
-capability; state operations require its public APIs and upstream Git
-provenance and record the exact installed commit.
+``uv sync --group measurement-set``. The group requires
+``msutils[exact-native]>=3.1.0``, the first release with the preservation v2
+public APIs, while ``uv.lock`` records the resolved release and complete stack
+for reproducible local installs. Refresh it with
+``uv lock --upgrade-package msutils`` then
+``uv sync --locked --group measurement-set``. The group is unpublished, so
+the optional Measurement Set stack stays out of a plain install. State
+operations check that msutils supplies the preservation v2 public APIs and
+accept two provenances: an ordinary release install, which records the msutils
+version, or a Git install of the upstream repository, which records the exact
+commit. Local paths, editable installs and other repositories are refused.
 
 The other qualified packages remain pinned: xarray-ms, xarray, arcae,
 numcodecs, and Zarr (3.1.6 on Python 3.11 and 3.3.0 on newer Python).
-Measurement Set CI refreshes msutils main on every integration run and hourly
-after this workflow is merged, making upstream regressions visible promptly.
+Measurement Set CI refreshes to the latest msutils release on every
+integration run and daily, making regressions in a new release visible
+promptly.
 See :doc:`concepts/states` for the profile and local Linux requirement.
 
 The project uses `uv <https://docs.astral.sh/uv/>`_:

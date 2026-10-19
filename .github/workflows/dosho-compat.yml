@@ -1,0 +1,39 @@
+name: dosho compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "31 22 * * *"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      lane:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    name: dosho ${{ matrix.lane }} (Python 3.12)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: ${{ fromJSON(inputs.lane && format('["{0}"]', inputs.lane) || '["released","main"]') }}
+    steps:
+      - name: Checkout shinobi
+        uses: actions/checkout@v7
+
+      - name: Install uv and Python 3.12
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Test installed dosho against this checkout
+        run: bash .github/scripts/test-dosho-compat.sh "${{ matrix.lane }}"

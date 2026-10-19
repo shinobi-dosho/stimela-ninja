@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stimela-ninja"
-version = "0.1.0b7"
+version = "0.1.0"
 description = "Stimela 3.0 -- A robust, flexible and simple framework for reproducible radio astronomy pipelines"
 readme = "README.rst"
 license = "Apache-2.0"
@@ -37,12 +37,13 @@ dev = [
 # Real Measurement Set development and acceptance coverage. Keep this separate
 # from `dev` so ordinary contributors and unsupported platforms retain a light
 # environment, while MS work has one reproducible group that must not silently
-# skip its real-table tests. Track upstream msutils main here rather than
-# in project metadata: PyPI rejects direct references in Requires-Dist.
+# skip its real-table tests. msutils 3.1.0 is the first release with the
+# preservation v2 public APIs, so the group floors it here rather than in
+# project metadata, which keeps the optional MS stack out of a plain install.
 fits = ["astropy>=7.2,<9"]
 measurement-set = [
     "python-casacore>=3.7,<4",
-    "msutils[exact-native] @ git+https://github.com/shinobi-dosho/msutils.git@main",
+    "msutils[exact-native]>=3.1.0",
     "xarray-ms==0.5.8",
     "xarray==2026.7.0",
     "dask[array]==2026.8.0",

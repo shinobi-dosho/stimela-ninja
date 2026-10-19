@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -78,9 +78,16 @@ jobs:
       - name: Build documentation
         run: uv run --python 3.12 --locked --group docs sphinx-build -E -n -W --keep-going -b html docs docs/_build/html
 
+  dosho-compatibility:
+    name: Verify released dosho compatibility
+    needs: preflight
+    uses: ./.github/workflows/dosho-compat.yml
+    with:
+      lane: released
+
   build:
     name: Build distribution
-    needs: [test, docs]
+    needs: [test, docs, dosho-compatibility]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -98,18 +105,66 @@ jobs:
         run: uvx twine check dist/*
 
       - name: Upload distribution
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
 
-  publish:
-    name: Publish to PyPI
+  distribution-smoke:
+    name: Install wheel with released dosho
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout for locked dosho version
+        uses: actions/checkout@v7
+
       - name: Download distribution
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Install uv and Python 3.12
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install wheel and exercise dosho provider
+        run: |
+          dosho_version=$(python3 - <<'PY'
+          import tomllib
+
+          with open("uv.lock", "rb") as stream:
+              packages = tomllib.load(stream)["package"]
+          print(next(package["version"] for package in packages if package["name"] == "dosho"))
+          PY
+          )
+          uv venv --python 3.12 "$RUNNER_TEMP/wheel-smoke"
+          uv pip install --python "$RUNNER_TEMP/wheel-smoke/bin/python" dist/*.whl "dosho==$dosho_version"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-smoke/bin/python" - <<'PY'
+          import sys
+          from pathlib import Path
+
+          import dosho
+          import shinobi
+          from shinobi import cabs
+
+          assert Path(shinobi.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
+          assert "wsclean" in dosho.list_cabs()
+          assert cabs.get("wsclean").name == "wsclean"
+          print(f"wheel: {shinobi.__file__}; dosho: {dosho.__file__}")
+          PY
+          "$RUNNER_TEMP/wheel-smoke/bin/ninja" cabs list > "$RUNNER_TEMP/ninja-cabs.txt"
+          grep -q dosho "$RUNNER_TEMP/ninja-cabs.txt"
+
+  publish:
+    name: Publish to PyPI
+    needs: [build, distribution-smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download distribution
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/

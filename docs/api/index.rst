@@ -140,6 +140,7 @@ Datasets
 
 .. autoclass:: shinobi.dataset_access.DatasetMode
    :members:
+   :no-index:
 
 .. autoclass:: shinobi.dataset_access.DatasetFallback
    :members:
@@ -171,9 +172,11 @@ Datasets
 
 .. autoclass:: shinobi.dataset_backends.DatasetBackendStatus
    :members:
+   :no-index:
 
 .. autoclass:: shinobi.dataset_backends.DatasetNamespaceMode
    :members:
+   :no-index:
 
 .. autofunction:: shinobi.dataset_backends.dataset_backend_capability
 
@@ -312,13 +315,15 @@ FITS contracts
 .. autodata:: shinobi.datasets.FITSTable
 .. autoclass:: shinobi.fits.FITSHDU
    :members:
+   :no-index:
 .. autoclass:: shinobi.fits_access.FITSAccess
    :members:
 .. autoclass:: shinobi.fits.FITSDescriptor
    :members:
-.. py:class:: shinobi.fits.FITSHDUDescriptor
-
-   Structural metadata for one physical FITS HDU.
+   :no-index:
+.. autoclass:: shinobi.fits.FITSHDUDescriptor
+.. autoclass:: shinobi.fits.FITSColumn
+.. autoclass:: shinobi.fits.FITSWCS
 .. autoclass:: shinobi.fits.FITSInspectionLimits
 .. autoclass:: shinobi.fits.FITSStatus
    :members:
@@ -327,15 +332,9 @@ FITS contracts
 .. autofunction:: shinobi.fits.inspect_fits_table
 .. autoclass:: shinobi.fits_lifecycle.FITSLifecycleAttempt
    :members:
-.. py:class:: shinobi.fits_access.ResolvedFITSAccess
-
-   One resolved FITS path, profile, HDU selector and access mode.
-.. py:class:: shinobi.fits_lifecycle.FITSBackendCapability
-
-   Recorded backend support for a strict FITS attempt.
-.. py:class:: shinobi.fits_lifecycle.FITSObservation
-
-   Structural and byte observations of one FITS file.
-.. py:class:: shinobi.fits_lifecycle.FITSLeafAttempt
-
-   Per-step evidence recorded by a strict FITS attempt.
+.. autoclass:: shinobi.fits_lifecycle.FITSBackendCapability
+.. autoclass:: shinobi.fits_lifecycle.FITSObservation
+.. autoclass:: shinobi.fits_lifecycle.FITSMutationRecord
+.. autoclass:: shinobi.fits_commit.FITSCachePublication
+.. autoclass:: shinobi.fits_lifecycle.FITSLeafAttempt
+.. autoclass:: shinobi.fits_access.ResolvedFITSAccess

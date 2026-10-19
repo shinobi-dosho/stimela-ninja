@@ -3,7 +3,7 @@ name: CI
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 * * * *"
+    - cron: "17 3 * * *"
   push:
     branches:
       - main
@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Checkout
@@ -53,6 +53,29 @@ jobs:
       - name: Run tests
         run: uv run --python ${{ matrix.python-version }} --locked --group dev pytest -q
 
+  docs:
+    if: github.event_name != 'schedule'
+    name: Strict documentation build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      # The same command as the release workflow's docs job, which gates
+      # publishing. Building it here too means a dangling cross-reference fails
+      # the pull request that introduced it, not the release tag.
+      - name: Build documentation
+        run: uv run --python 3.12 --locked --group docs sphinx-build -E -n -W --keep-going -b html docs docs/_build/html
+
   casacore:
     name: Measurement Set integration (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -73,19 +96,17 @@ jobs:
       - name: Install Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
-      # Refresh upstream main on every integration run, including hourly checks.
-      - name: Resolve current msutils main
+      # Refresh to the latest msutils release on every integration run,
+      # including the daily scheduled check.
+      - name: Resolve latest msutils release
         run: uv lock --upgrade-package msutils
 
       - name: Verify optional inspector installation
         run: |
           uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set python - <<'PY'
           import importlib.metadata as metadata
-          import json
 
-          installed = metadata.distribution("msutils")
-          direct = json.loads(installed.read_text("direct_url.json") or "{}")
-          print({"msutils": installed.version, "msutils_commit": direct.get("vcs_info", {}).get("commit_id")}, flush=True)
+          print({"msutils": metadata.version("msutils")}, flush=True)
 
           import casacore.tables, xarray_ms, zarr, msutils
           from shinobi._state_adapter import runtime

@@ -361,7 +361,8 @@ New-dataset CREATE may include opaque members in its initial product.
 ``field`` names a direct path/MS-compatible field or an MSv2 list
 input. ``root_field`` remains scalar-only and is not supported on list accesses.
 Other containers, nested models and non-path scalar fields are rejected at definition time;
-scatter and nested dataset recipes have their separate bounded refusals below.
+read-only atomic MS scatter has the bounded execution contract below; nested
+dataset recipes remain refused.
 An explicit ``read`` declaration must also agree with the ordinary filesystem
 schema.  A same-named input/output, ``MUTABLE`` path or ``write_path`` marker
 on the same resolved dataset is a write and makes a contradictory ``read``
@@ -407,10 +408,25 @@ though read/read workflows remain compatible.  The contained execution route
 described below holds that claim across backend execution; unsupported routes
 are refused and never dispatch an unclaimed reader.
 
-The first planner is deliberately bounded: dataset-bearing scatter and nested
-recipes are refused with a diagnostic rather than partially planned.  Flatten
-those steps (including bounded loop expansions) so every access has one
-declared graph node.
+The planner accepts bounded, read-only MSv2 scatter on atomic steps in a flat
+recipe. Each validated slice is planned under the same declared graph node;
+its access dependencies and reasons are combined before dispatch. Exactly equal
+resolved accesses are retained once in the node's plan, while each executing
+leaf keeps its own attempt attribution. Closure discovery is memoized by
+canonical root within one planning pass; revalidation uses a fresh planner.
+Scatter lists and all slice inputs must resolve at the claim boundary, including
+non-path inputs. Concrete MS paths may themselves be scattered. Shared dataset
+and generic reads are allowed. Before any slice is queued, the actual batch must
+retain its frozen cardinality and each slice's own canonical filesystem accesses;
+another slice's reservation cannot cover redirected I/O. Scalar refinements
+that preserve these accesses are allowed. Any cross-slice overlap involving a write
+is refused before any task launches. This includes duplicate outputs, parent
+and descendant paths, canonical symlink aliases, and external closure members.
+Explicit or inferred dataset WRITE/CREATE scatter and nested MS dataset
+recipes remain refused by access planning. Execution also refuses authoritative
+FITS scatter and nested FITS recipes; their existing planning and dry-run
+routes remain available. Flatten unsupported steps (including bounded loop
+expansions) so every access has one declared graph node.
 
 Contained read execution
 ------------------------
@@ -420,7 +436,11 @@ capability.  It accepts one or more pairwise-disjoint ordinary, directory-backed
 direct atomic ``Cab`` or ``@pystep``, or by atomic leaves in one flat recipe,
 through a backend route proven by the separate ``msv2-backend-route/v1``
 capability profile. Recipe boundary models may carry the same annotation;
-access declarations still belong on their leaves.
+access declarations still belong on their leaves. Atomic read-only scatter
+uses the existing zip scheduler and reuses each frozen, validated slice model.
+Every slice retains the same backend qualification, workflow claim, strict
+preconditions and postconditions, and attempt provenance as an ordinary leaf.
+An empty-only strict scatter with no concrete dataset access is refused.
 
 Before dispatch, Shinobi resolves the complete access plan and structural
 closure observation, acquires a shared read claim for every canonical closure
@@ -732,7 +752,7 @@ subtable path rather than its MS root, several fields writing one root in one
 step, replacing an existing ``create`` target without ``--overwrite``,
 external closure members (one
 directory rename cannot restore a closure spanning several roots),
-unsupported/opaque closure shapes, nested dataset recipes, dataset scatter,
+unsupported/opaque closure shapes, nested dataset recipes, mutating dataset scatter,
 orchestration functions, manual ``Scope`` routes, and unproven storage
 namespaces remain strict refusals.  Dry-run and both compilers may still plan
 dataset-bearing workflows.  The legacy compiler retains its planning-only
@@ -741,7 +761,7 @@ the complete compute-side lifecycle plan.  Use ``Path`` or the legacy loader
 dtype ``MS`` when one of the unsupported routes is required.
 
 FITS image and table contracts
--------------------------------
+------------------------------
 
 ``FITSImage`` and ``FITSTable`` are ordinary ``Path`` values with versioned
 ``fits-image/v1`` and ``fits-table/v1`` declarations. Model construction,
@@ -818,7 +838,7 @@ Optional direct scalars and concrete nonempty direct input lists are supported.
 Lists require explicit READ or WRITE; list CREATE and inferred list writes
 refuse. Same-name list WRITE outputs must return the exact ordered canonical
 input roots. All-None invocations, aliases, hardlinks, symlinks, overlapping
-roots, nested containers, element None, scatter, nested recipes, dynamic paths,
+roots, nested containers, element None, authoritative FITS scatter, nested recipes, dynamic paths,
 opaque orchestration, container/detached/offloaded routes and mixed strict FITS
 and MS access workflows refuse before launch. FITS reusable states are deferred.
 

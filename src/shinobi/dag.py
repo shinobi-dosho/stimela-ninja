@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import reprlib
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -69,6 +70,8 @@ class TraceStep:
     access_reasons: tuple[str, ...] = ()
     recipe: bool = False
     group: int | None = None
+    scatter_label: str = ""
+    scatter_details: tuple[str, ...] = ()
 
 
 def graph_nodes(recipe: "Recipe", inputs: dict[str, Any] | None = None, *, workspace: Path | None = None) -> list[TraceStep]:
@@ -87,11 +90,11 @@ def graph_nodes(recipe: "Recipe", inputs: dict[str, Any] | None = None, *, works
     plan = plan_recipe_accesses(recipe, inputs, workspace=workspace) if inputs is not None else None
     graph = plan.graph if plan is not None else build_graph(recipe)
     nodes: list[TraceStep] = []
-    _place(recipe, graph, None, nodes, plan)
+    _place(recipe, graph, None, nodes, plan, inputs=inputs)
     return nodes
 
 
-def _place(recipe: "Recipe", graph, group: int | None, nodes: list[TraceStep], plan=None) -> None:
+def _place(recipe: "Recipe", graph, group: int | None, nodes: list[TraceStep], plan=None, *, inputs: dict[str, Any] | None = None) -> None:
     """Append `recipe`'s steps to `nodes` in declaration order, each nested
     recipe followed by its own steps, then add the edges between them.
 
@@ -99,11 +102,14 @@ def _place(recipe: "Recipe", graph, group: int | None, nodes: list[TraceStep], p
     resolves.
     """
     from shinobi.graph import build_graph
-    from shinobi.steps.schema import Recipe
+    from shinobi.steps.schema import Recipe, static_wiring_values
 
     ids: list[int] = []
     for i, name in enumerate(graph.names):
-        scope = recipe.steps[i].step
+        ref = recipe.steps[i]
+        scope = ref.step
+        known, _unresolved = static_wiring_values(ref, inputs or {}, {})
+        scatter_label, scatter_details = _scatter_display(ref, known)
         access_reasons: tuple[str, ...] = ()
         if plan is not None:
             access_reasons = tuple(
@@ -117,13 +123,45 @@ def _place(recipe: "Recipe", graph, group: int | None, nodes: list[TraceStep], p
             access_reasons=access_reasons,
             recipe=isinstance(scope, Recipe),
             group=group,
+            scatter_label=scatter_label,
+            scatter_details=scatter_details,
         )
         nodes.append(node)
         ids.append(node.id)
         if node.recipe and scope.steps:
-            _place(scope, build_graph(scope), node.id, nodes)
+            _place(scope, build_graph(scope), node.id, nodes, inputs=known if ref.scatter is None else None)
     for i, deps in enumerate(graph.deps):
         nodes[ids[i]].depends_on = {ids[dep] for dep in deps}
+
+
+def _display_value(value: Any) -> str:
+    """Bound static previews without instantiating an input model."""
+    from shinobi.steps.schema import InputRef, OutputRef
+
+    if isinstance(value, InputRef):
+        return f"InputRef(field={_display_value(value.field)})"
+    if isinstance(value, OutputRef):
+        selection = f", selection={_display_value(value.selection)}" if value.selection is not None else ""
+        return f"OutputRef(step={_display_value(value.step)}, field={_display_value(value.field)}{selection})"
+    preview = reprlib.Repr()
+    preview.maxlist = 5
+    preview.maxtuple = 5
+    preview.maxstring = 80
+    preview.maxother = 80
+    return preview.repr(value).replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+
+def _scatter_display(ref, known: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
+    """Display declarations only; outputs stay symbolic and nodes stay atomic."""
+    if ref.scatter is None:
+        return "", ()
+    fields = ref.scatter.fields
+    lengths = [len(known[name]) for name in fields if isinstance(known.get(name), list)]
+    count = f"; {lengths[0]} slices" if len(lengths) == len(fields) and len(set(lengths)) == 1 else ""
+    values = tuple(f"{name} = {_display_value(known[name] if name in known else ref.wiring.get(name, '<unresolved>'))}" for name in fields)
+    if len(fields) == 1:
+        return f": {values[0]} [scatter{count}]", ()
+    return f" [scatter zip({', '.join(fields)}){count}]", values
 
 
 def _label(step: TraceStep, by_id: dict[int, TraceStep], parent: int | None) -> str:
@@ -135,7 +173,8 @@ def _label(step: TraceStep, by_id: dict[int, TraceStep], parent: int | None) -> 
         *step.access_reasons,
         *([f"also waits on: {', '.join(by_id[dep].name for dep in others)}"] if others else []),
     ]
-    return step.name if not details else f"{step.name}  ({'; '.join(details)})"
+    label = step.name + step.scatter_label
+    return label if not details else f"{label}  ({'; '.join(details)})"
 
 
 def render_dag(steps: list[TraceStep]) -> str:
@@ -173,9 +212,12 @@ def render_dag(steps: list[TraceStep]) -> str:
             # Dashed: `kid` is one of `step`'s own steps. Solid: it waits on `step`.
             line = "╌╌" if kid.group == step.id and not kid.depends_on else "──"
             lines.append(f"{indent}{'└' if last else '├'}{line} {_label(kid, by_id, step.id)}")
-            draw(kid, indent + ("    " if last else "│   "))
+            child_indent = indent + ("    " if last else "│   ")
+            lines.extend(f"{child_indent}{detail}" for detail in kid.scatter_details)
+            draw(kid, child_indent)
 
     for root in roots:
         lines.append(_label(root, by_id, None))
+        lines.extend(f"    {detail}" for detail in root.scatter_details)
         draw(root, "")
     return "\n".join(lines)

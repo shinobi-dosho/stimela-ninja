@@ -634,3 +634,19 @@ def test_run_without_log_file_writes_nothing(tmp_path, _detach_file_logging):
     )
     assert result.exit_code == 0, result.output
     assert list(tmp_path.iterdir()) == []
+
+
+def test_dryrun_shows_scatter_values_and_count_without_running_tool(tmp_path):
+    target = tmp_path / "scatter_target.py"
+    target.write_text(
+        "from pydantic import BaseModel\n"
+        "from shinobi import Cab, Recipe\n"
+        "class Empty(BaseModel): pass\n"
+        "class Input(BaseModel): weight: str\n"
+        "image = Cab(name='image', command='/bin/false', inputs_model=Input, outputs_model=Empty)\n"
+        "recipe = Recipe(name='scatter', inputs_model=Empty, outputs_model=Empty)\n"
+        "recipe.add_step('image', image, scatter=['weight'], weight=['natural', 'uniform'])\n"
+    )
+    result = CliRunner().invoke(main, ["run", f"{target}:recipe", "--dryrun"])
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == ["image: weight = ['natural', 'uniform'] [scatter; 2 slices]"]

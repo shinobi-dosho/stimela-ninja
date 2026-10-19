@@ -8,7 +8,7 @@ import pytest
 from pydantic import BaseModel, Field, create_model
 
 from shinobi import pystep
-from shinobi.cache import CacheManifest, compute_cache_key, get_cache_manifest, product_contract
+from shinobi.cache import CacheManifest, compute_cache_key, get_cache_manifest, path_exists, product_contract
 from shinobi.results import StepResult
 from shinobi.sandbox import ProductCapture
 from shinobi.steps.dispatch import _dispatch
@@ -604,5 +604,28 @@ def test_literal_harvest_without_search_permission_is_unknown_not_empty(tmp_path
         assert entry["products"] is None
         tree.chmod(0o700)
         assert known.read_text() == "scientific success 2"
+    finally:
+        tree.chmod(0o700)
+
+
+def test_path_exists_raises_when_a_parent_cannot_be_searched(tmp_path):
+    """Python 3.14's `Path.exists()` turns EACCES into False; `path_exists` must not."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    known = tree / "known.fits"
+    known.write_text("probe")
+    assert path_exists(known)
+    assert not path_exists(tree / "missing.fits")
+    assert not path_exists(known / "child")  # parent is a file: ENOTDIR is absent
+    tree.chmod(0o600)
+    try:
+        try:
+            known.stat()
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("Effective privileges bypass directory search permissions")
+        with pytest.raises(PermissionError):
+            path_exists(known)
     finally:
         tree.chmod(0o700)
