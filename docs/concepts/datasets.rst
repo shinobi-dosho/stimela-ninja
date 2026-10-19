@@ -50,11 +50,13 @@ Inspection is a separate operation:
    if observed.status is not DatasetStatus.VALID:
        raise RuntimeError(observed.message)
 
-Install the optional inspector in the environment which performs inspection:
+The annotation describes the Measurement Set format and its versioned profile;
+``python-casacore`` supplies the current inspector. Install the optional
+``ms-contract`` extra in the environment which performs inspection:
 
 .. code-block:: console
 
-   pip install "stimela-ninja[casacore]"
+   pip install "stimela-ninja[ms-contract]"
 
 For a source checkout managed by uv, use
 ``uv sync --group dev --group measurement-set``.  The development group is
@@ -766,12 +768,14 @@ FITS image and table contracts
 ``FITSImage`` and ``FITSTable`` are ordinary ``Path`` values with versioned
 ``fits-image/v1`` and ``fits-table/v1`` declarations. Model construction,
 serialization and JSON Schema generation perform no filesystem inspection and
-import no Astropy. Install ``stimela-ninja[fits]`` in the controller environment,
-or use ``uv sync --group dev --group fits`` for FITS acceptance tests.
+import no Astropy. These contracts describe FITS formats; Astropy supplies the
+current parser and WCS validation. Install ``stimela-ninja[fits-contract]`` in
+the environment performing lifecycle inspection,
+or use ``uv sync --group dev --extra fits-contract`` for FITS acceptance tests.
 The ordinary CI matrix keeps these dependencies optional and skips the FITS
-modules when Astropy is absent. The measurement-set CI matrix installs both
-``measurement-set`` and ``fits`` groups and runs the FITS modules, including
-real MS/FITS product-gate integration tests, on Python 3.11 and 3.12.
+modules when Astropy is absent. The measurement-set CI matrix installs the
+``measurement-set`` group and ``fits-contract`` extra and runs the FITS modules,
+including real MS/FITS product-gate integration tests, on Python 3.11 and 3.12.
 
 ``FITSImage`` selects a primary image or ordinary IMAGE extension of any
 physical rank: there is no cube subtype or minimum-rank taxonomy. Zero-length
@@ -832,15 +836,18 @@ All physical header/data/padding extents must fit the file; payload and padding
 contents are not interpreted. Optional ``include_wcs=True`` also inventories
 WCS diagnostics on ancillary images without making them selected products.
 
-The initial execution boundary is native or pre-provisioned venv atomic cabs
-and pysteps, and flat recipes in the same controller filesystem namespace.
+Atomic cabs and pysteps, and flat recipes, support native, pre-provisioned
+venv and local Docker, Podman, Apptainer and Singularity routes. Detached Slurm
+compute workers use the same contracts on qualified shared storage; see
+:doc:`../offloading`. Remote container daemons and the blocking ``slurm`` tool
+backend remain unqualified, as they do for MSv2.
 Optional direct scalars and concrete nonempty direct input lists are supported.
 Lists require explicit READ or WRITE; list CREATE and inferred list writes
 refuse. Same-name list WRITE outputs must return the exact ordered canonical
 input roots. All-None invocations, aliases, hardlinks, symlinks, overlapping
 roots, nested containers, element None, authoritative FITS scatter, nested recipes, dynamic paths,
-opaque orchestration, container/detached/offloaded routes and mixed strict FITS
-and MS access workflows refuse before launch. FITS reusable states are deferred.
+opaque orchestration and mixed authoritative FITS and MS access workflows
+refuse before launch. FITS reusable states are deferred.
 
 Access mode grants authority over the whole physical file, regardless of HDU
 selection. READ protects every byte even when a tool fails. WRITE and CREATE
@@ -851,3 +858,10 @@ header-card or column mutation promises. CREATE restores absence on failure
 and refuses unrelated existing targets. The byte identity ``fits-file-bytes/v1``
 is a full streaming SHA256 over the entire physical file, distinct from the
 structural descriptor, skip-cache key, journal state name and attempt ID.
+
+Container writers bind the file's existing parent directory read-write so a
+tool can replace the file with a temporary file and rename. Existing sibling
+inputs and other workflow FITS roots retain nested read-only mounts unless the
+current leaf owns their writes. Contradictory declarations, missing parents,
+filesystem-root mounts and absent non-owned targets exposed through a writable
+parent refuse before launch. The planner never creates placeholder inputs.

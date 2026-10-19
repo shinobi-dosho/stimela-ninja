@@ -214,7 +214,7 @@ def test_worker_bounded_products_keep_broad_claim_and_publish_success(tmp_path, 
     leaf.params["script"] = (
         leaf.params["script"].rstrip(";") + ";Path('out-image.fits').write_text('image');Path('out-model.fits').write_text('model');Path('out-junk').write_text('scratch')"
     )
-    workflow, plan, lease = _prepared(tmp_path, recipe, root)
+    workflow, plan, lease = _prepared(tmp_path, recipe, root, qualification_root=tmp_path.parent)
     assert any(Path(access.path) == tmp_path and access.writes for access in plan.accesses)
     try:
         attempt = plan.attempt("tool")
@@ -437,7 +437,7 @@ def test_runtime_worker_product_parent_change_refuses_before_launch(tmp_path, mo
     (root / "table.dat").write_text("raw")
     _install_dataset(monkeypatch, tmp_path, root)
     recipe = _runtime_product_recipe(tmp_path, actual=actual)
-    workflow, plan, lease = _prepared(tmp_path, recipe, root)
+    workflow, plan, lease = _prepared(tmp_path, recipe, root, qualification_root=tmp_path.parent)
     try:
         for name in ("read", "select"):
             attempt = plan.attempt(name)
@@ -972,7 +972,7 @@ def test_static_product_worker_reconstructs_partial_reservation(tmp_path, monkey
     (root / "table.dat").write_text("raw")
     _install_dataset(monkeypatch, tmp_path, root)
     recipe = _partial_product_recipe(tmp_path, pattern="{prefix}-*")
-    workflow, plan, lease = _prepared(tmp_path, recipe, root)
+    workflow, plan, lease = _prepared(tmp_path, recipe, root, qualification_root=tmp_path.parent)
     try:
         for name in ("read", "select", "produce"):
             attempt = plan.attempt(name)
@@ -1033,7 +1033,7 @@ def test_dynamic_product_input_extra_keeps_frozen_reservation(tmp_path, monkeypa
     recipe = _dynamic_product_recipe(tmp_path, partial=partial, scalar_default=scalar_default)
     assert contained_access_issues(recipe, {"ms": root}, workspace=tmp_path, dataset_resources={root}) == ()
     if worker:
-        workflow, plan, lease = _prepared(tmp_path, recipe, root)
+        workflow, plan, lease = _prepared(tmp_path, recipe, root, qualification_root=tmp_path.parent)
         try:
             for name in ("read", "select", "produce"):
                 attempt = plan.attempt(name)
@@ -1106,7 +1106,7 @@ def test_runtime_family_count_refinement_respects_original_parents(tmp_path, mon
         (tmp_path / "dir0").mkdir()
         (tmp_path / "dir0/out").write_text("old product")
     if worker:
-        workflow, plan, lease = _prepared(tmp_path, recipe, root)
+        workflow, plan, lease = _prepared(tmp_path, recipe, root, qualification_root=tmp_path.parent)
         try:
             for name in ("read", "select"):
                 attempt = plan.attempt(name)

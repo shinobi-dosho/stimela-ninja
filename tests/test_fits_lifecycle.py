@@ -153,7 +153,8 @@ def test_alias_refusal(tmp_path, alias):
         run(joint, tmp_path, files=[path, other])
 
 
-def test_container_refuses_before_write(tmp_path):
+def test_remote_container_refuses_before_write(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOCKER_HOST", "ssh://remote.example")
     path = image(tmp_path / "x.fits")
     before = path.read_bytes()
     with pytest.raises(DatasetLifecycleUnavailableError):

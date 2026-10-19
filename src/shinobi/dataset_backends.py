@@ -246,7 +246,7 @@ class DatasetBackendPlan(BaseModel):
     mounts: tuple[DatasetBackendMount, ...] = ()
 
 
-def dataset_backend_capability(backend: str, *, mutation: bool) -> DatasetBackendCapability:
+def namespace_backend_capability(backend: str, *, mutation: bool) -> DatasetBackendCapability:
     """Return the explicit capability decision for ``backend``.
 
     Local processes and virtualenvs share the lifecycle controller's
@@ -328,6 +328,11 @@ def dataset_backend_capability(backend: str, *, mutation: bool) -> DatasetBacken
         recovery_location="unknown",
         reason="the backend has no strict dataset namespace/lifecycle adapter",
     )
+
+
+def dataset_backend_capability(backend: str, *, mutation: bool) -> DatasetBackendCapability:
+    """MS wire wrapper around the shared namespace qualification decision."""
+    return namespace_backend_capability(backend, mutation=mutation)
 
 
 def worker_dataset_backend_capability(*, mutation: bool, qualification: SharedStorageQualification | None = None) -> DatasetBackendCapability:

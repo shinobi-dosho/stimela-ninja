@@ -1680,11 +1680,11 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-casacore = [
-    { name = "python-casacore" },
-]
-fits = [
+fits-contract = [
     { name = "astropy" },
+]
+ms-contract = [
+    { name = "python-casacore" },
 ]
 
 [package.dev-dependencies]
@@ -1705,9 +1705,6 @@ docs = [
 examples = [
     { name = "dosho" },
 ]
-fits = [
-    { name = "astropy" },
-]
 measurement-set = [
     { name = "arcae" },
     { name = "dask", extra = ["array"] },
@@ -1722,16 +1719,16 @@ measurement-set = [
 
 [package.metadata]
 requires-dist = [
-    { name = "astropy", marker = "extra == 'fits'", specifier = ">=7.2,<9" },
+    { name = "astropy", marker = "extra == 'fits-contract'", specifier = ">=7.2,<9" },
     { name = "click", specifier = ">=8.1" },
     { name = "packaging", specifier = ">=23" },
     { name = "pydantic", specifier = ">=2.12" },
     { name = "pydantic-settings", specifier = ">=2.2" },
-    { name = "python-casacore", marker = "extra == 'casacore'", specifier = ">=3.7,<4" },
+    { name = "python-casacore", marker = "extra == 'ms-contract'", specifier = ">=3.7,<4" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.7" },
 ]
-provides-extras = ["casacore", "fits"]
+provides-extras = ["ms-contract", "fits-contract"]
 
 [package.metadata.requires-dev]
 audit = [{ name = "pip-audit", specifier = ">=2.7" }]
@@ -1746,7 +1743,6 @@ docs = [
     { name = "sphinx-copybutton", specifier = ">=0.5" },
 ]
 examples = [{ name = "dosho" }]
-fits = [{ name = "astropy", specifier = ">=7.2,<9" }]
 measurement-set = [
     { name = "arcae", specifier = "==0.5.4" },
     { name = "dask", extras = ["array"], specifier = "==2026.8.0" },

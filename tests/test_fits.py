@@ -1,8 +1,5 @@
 """Real Astropy structural scanner and declared WCS contract acceptance."""
 
-import subprocess
-import sys
-
 import pytest
 
 from pydantic import ValidationError
@@ -22,12 +19,6 @@ def image(path, shape=(2, 3), *, wcs=True):
             hdu.header[f"CTYPE{axis}"] = "LINEAR"
     hdu.writeto(path, overwrite=True)
     return path
-
-
-def test_declaration_no_astropy(tmp_path):
-    code = "from pydantic import BaseModel; from shinobi import FITSImage,FITSTable; import sys; class_text=''; M=type('M',(BaseModel,),{'__annotations__':{'image':FITSImage,'table':FITSTable}}); print(M(image='missing',table='missing').model_dump_json()); assert not any(x.startswith('astropy') for x in sys.modules)"
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize(

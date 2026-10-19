@@ -702,10 +702,16 @@ class ExecContext:
         if self._dataset_lifecycle is None or isinstance(self.scope, Recipe):
             return None
         if getattr(self._dataset_lifecycle, "kind", None) == "fits":
-            self._dataset_lifecycle.resolve_claimed_leaf_accesses(self.scope, prepared if prepared is not None else self.prepare_inputs())
-            if backend_name not in ("native", "venv"):
-                raise DatasetLifecycleUnavailableError("strict FITS supports native/venv controller namespace only")
-            return None
+            from shinobi.fits_lifecycle import plan_fits_backend
+
+            accesses = self._dataset_lifecycle.resolve_claimed_leaf_accesses(self.scope, prepared if prepared is not None else self.prepare_inputs())
+            return plan_fits_backend(
+                backend_name,
+                self._dataset_lifecycle.record.planned_accesses,
+                workspace=self._dataset_lifecycle.workspace,
+                mutation=self._dataset_lifecycle.mutation,
+                leaf_accesses=accesses,
+            )
         from shinobi.dataset_backends import plan_dataset_backend
         from shinobi.dataset_lifecycle import resolve_claimed_leaf_accesses
 
@@ -1020,6 +1026,7 @@ def _strict_snapshot_guard(
         success_step_path=success_step_path or cache_path,
         strict=leaf.policy(),
         success_kind=None if detached_oracle else getattr(leaf.lifecycle, "success_kind", "dataset-lifecycle"),
+        worker_identity=getattr(leaf.lifecycle, "worker_identity", None),
     )
 
 
@@ -2128,7 +2135,7 @@ def _run_cab(
     if dataset_resources or any(meta.family for meta in cab.field_meta.values()):
         from shinobi.ownership import validate_contained_execution
 
-        validate_contained_execution(cab, run_inputs, workspace=run_cwd, dataset_resources=dataset_resources or set(), planned_inputs=run_planned)
+        validate_contained_execution(cab, run_inputs, workspace=run_cwd, dataset_workspace=workspace, dataset_resources=dataset_resources or set(), planned_inputs=run_planned)
     validate_declared_writes(cab, run_inputs, run_cwd, error_type=BackendError if uses_mounts else ParameterError)
     from shinobi.derived import derived_reads, read_fingerprint, stage_derived_reads
 

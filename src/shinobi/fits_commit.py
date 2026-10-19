@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
 
 
 class _Closed(BaseModel):
@@ -30,7 +30,7 @@ class FITSParticipant(_Closed):
 
 
 class FITSCommitReference(_Closed):
-    profile: Literal["fits-commit-reference/v1"] = "fits-commit-reference/v1"
+    profile: Literal["fits-commit-reference/v1", "fits-commit-reference/v2"] = "fits-commit-reference/v1"
     attempt_id: str
     oracle: Path
     step_path: str
@@ -38,8 +38,25 @@ class FITSCommitReference(_Closed):
     participant: FITSParticipant
     participants: tuple[FITSParticipant, ...]
 
+    worker_identity: dict[str, str] | None = None
+    lifecycle_step_path: str | None = None
+
+    @model_serializer(mode="wrap")
+    def old_shape(self, handler):
+        data = handler(self)
+        if self.worker_identity is None:
+            data.pop("worker_identity", None)
+            data.pop("lifecycle_step_path", None)
+        return data
+
     @model_validator(mode="after")
     def complete(self):
+        if (self.profile == "fits-commit-reference/v2") != (self.worker_identity is not None):
+            raise ValueError("FITS worker reference requires v2 identity")
+        if (self.worker_identity is None) != (self.lifecycle_step_path is None):
+            raise ValueError("FITS worker reference requires exact lifecycle leaf address")
+        if self.worker_identity is not None:
+            validate_worker_identity(self.worker_identity, self.oracle, self.attempt_id)
         from shinobi.snapshots import state_name
 
         if any(one.successor != state_name(self.cache_key, one.field, one.element_index) for one in self.participants):
@@ -87,6 +104,9 @@ def make_commit_reference(guard, plan):
     )
     own = next(one for one in participants if one.root == plan.path)
     return FITSCommitReference(
+        profile="fits-commit-reference/v2" if guard.worker_identity else "fits-commit-reference/v1",
+        worker_identity=guard.worker_identity,
+        lifecycle_step_path=guard.step_path if guard.worker_identity else None,
         attempt_id=guard.run_id,
         oracle=guard.success_record,
         step_path=guard.success_step_path or guard.step_path,
@@ -94,3 +114,28 @@ def make_commit_reference(guard, plan):
         participant=own,
         participants=participants,
     ).model_dump(mode="json")
+
+
+def validate_worker_identity(identity, oracle, attempt_id):
+    from uuid import UUID
+
+    if set(identity) != {"workflow_id", "bundle_digest", "workspace"}:
+        raise ValueError("FITS worker identity has an invalid field set")
+    UUID(identity["workflow_id"])
+    UUID(attempt_id)
+    digest = identity["bundle_digest"]
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest) or not Path(identity["workspace"]).is_absolute():
+        raise ValueError("FITS worker identity lacks bundle/workspace")
+    if oracle.name != "final.json" or oracle.parent.name != attempt_id or oracle.parent.parent.name != "attempts" or oracle.parents[2].name != identity["workflow_id"]:
+        raise ValueError("FITS worker oracle path contradicts invocation/workflow")
+
+
+def read_worker_oracle(path, *, identity, attempt_id, step_path):
+    from shinobi.offload.records import AttemptRecord
+    from uuid import UUID
+
+    validate_worker_identity(identity, path, attempt_id)
+    record = AttemptRecord.read(path, workflow_id=UUID(identity["workflow_id"]), attempt_id=UUID(attempt_id), step_path=step_path, bundle_digest=identity["bundle_digest"])
+    if not record.committed or record.fits_lifecycle is None or record.fits_lifecycle.workspace != Path(identity["workspace"]):
+        raise ValueError("FITS worker oracle lacks exact committed lifecycle evidence")
+    return record

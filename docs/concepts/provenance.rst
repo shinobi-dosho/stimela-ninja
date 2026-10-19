@@ -325,7 +325,8 @@ rather than imposing an ancestor selector on a later file generation. Each
 executing leaf validates its own selector after predecessor restoration and
 before successor publication. Missing or malformed historical evidence refuses.
 
-The transaction log is authoritative for success evidence. An existing empty or
+For local lifecycle attempts, the transaction log is authoritative for success
+evidence. An existing empty or
 malformed attempt store retains recovery fences even when its materialized JSON
 view is absent. A genuinely absent pre-success oracle permits exact rollback.
 
@@ -350,3 +351,12 @@ head legitimately descends from that producer; incompatible entries are not blin
 replaced. Internal mutation passthroughs retain legitimate ancestor reuse, while
 exposed atomic outputs and recipe reexports satisfy their actual live FITS
 contracts before publication.
+
+Detached FITS workers retain the same byte and participant guarantees. Their
+``fits-commit-reference/v2`` points to an exact immutable worker attempt and
+binds its workflow, bundle and workspace identity. Worker attempt-record
+version 5 carries FITS lifecycle evidence; execution-plan version 3 freezes
+the FITS worker contract. Existing local v1 references and older MS/ordinary
+worker records retain their supported wire shapes. Finalization verifies the
+committed worker evidence before releasing ownership; a mutable lifecycle side
+record or successful scheduler exit cannot substitute for the immutable result.

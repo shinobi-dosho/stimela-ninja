@@ -17,6 +17,7 @@ from pydantic import model_serializer, ConfigDict, Field, JsonValue, model_valid
 
 from shinobi.cache import ProvenanceKey
 from shinobi.dataset_lifecycle import DatasetLifecycleAttempt
+from shinobi.fits_lifecycle import FITSLifecycleAttempt
 from shinobi.offload._codec import BundleError, WireModel, pack_model, unpack
 from shinobi.offload.bundle import write_new
 from shinobi.provenance import StepRecord, _record
@@ -39,6 +40,8 @@ class IndexedProducedState(ProducedState):
 
 def attempt_record_version(lifecycle=None, keys=()):
     """Choose indexed transport only where the new contract requires it."""
+    if isinstance(lifecycle, FITSLifecycleAttempt):
+        return 5
     keys = tuple(keys)
     if any(isinstance(value, CoordinateProducedState) or isinstance(value, list) and any(isinstance(item, CoordinateProducedState) for item in value) for value in keys):
         return 4
@@ -65,7 +68,7 @@ class Observation(StepRecord):
 
 
 class AttemptRecord(WireModel):
-    schema_version: Literal[1, 2, 3, 4] = 1
+    schema_version: Literal[1, 2, 3, 4, 5] = 1
     workflow_id: UUID
     attempt_id: UUID
     step_path: str
@@ -85,27 +88,34 @@ class AttemptRecord(WireModel):
     code_digest: str | None = None
     worker_digest: str | None = None
     dataset_lifecycle: DatasetLifecycleAttempt | None = None
+    fits_lifecycle: FITSLifecycleAttempt | None = None
     bundle_inventories: list[dict[str, JsonValue]] | None = None
 
     @model_serializer(mode="wrap")
     def _old_shape(self, handler):
         values = handler(self)
+        if self.fits_lifecycle is None:
+            values.pop("fits_lifecycle", None)
         if self.bundle_inventories is None:
             values.pop("bundle_inventories", None)
         return values
 
     @model_validator(mode="after")
     def _check_outcome(self) -> AttemptRecord:
-        lifecycle = self.dataset_lifecycle
-        if self.bundle_inventories is not None and self.schema_version != 4:
+        lifecycle = self.lifecycle
+        if self.dataset_lifecycle is not None and self.fits_lifecycle is not None:
+            raise BundleError("MS and FITS authoritative evidence are mutually exclusive")
+        if (self.fits_lifecycle is not None) != (self.schema_version == 5):
+            raise BundleError("FITS evidence requires attempt-record schema version 5")
+        if self.bundle_inventories is not None and self.schema_version not in (4, 5):
             raise BundleError("bundle inventories require attempt-record schema version 4")
         required_version = attempt_record_version(lifecycle, self.output_keys.values())
-        if required_version == 4 and self.schema_version != 4:
+        if required_version == 4 and self.schema_version not in (4, 5):
             raise BundleError("coordinate producer identities require attempt-record schema version 4")
         indexed = required_version == 3
-        if indexed and self.schema_version not in (3, 4):
+        if indexed and self.schema_version not in (3, 4, 5):
             raise BundleError("indexed producer identities require attempt-record schema version 3")
-        if self.schema_version not in (3, 4) and (self.schema_version == 1) != (lifecycle is None):
+        if self.schema_version not in (3, 4, 5) and (self.schema_version == 1) != (lifecycle is None):
             raise BundleError("dataset lifecycle evidence requires attempt-record schema version 2")
         if lifecycle is not None:
             if lifecycle.attempt_id != str(self.attempt_id):
@@ -133,6 +143,10 @@ class AttemptRecord(WireModel):
             if self.state == "failed" and (self.cache_key is not None or self.output_keys):
                 raise BundleError("a failed attempt cannot publish reusable produced state")
         return self
+
+    @property
+    def lifecycle(self):
+        return self.fits_lifecycle or self.dataset_lifecycle
 
     @property
     def committed(self) -> bool:
@@ -175,7 +189,7 @@ class AttemptRecord(WireModel):
                     keys[field] = [produced(one) for one in key] if isinstance(key, list) else produced(key)
         state = "failed" if not result.success else "skipped" if result.skipped else "cached" if result.cached else "succeeded"
         return cls(
-            schema_version=4 if result.bundle_inventories else attempt_record_version(dataset_lifecycle, keys.values()),
+            schema_version=max(4 if result.bundle_inventories else 1, attempt_record_version(dataset_lifecycle, keys.values())),
             bundle_inventories=result.bundle_inventories or None,
             workflow_id=workflow_id,
             attempt_id=attempt_id,
@@ -191,7 +205,7 @@ class AttemptRecord(WireModel):
             code_digest=code_digest,
             worker_digest=worker_digest,
             sandbox=sandbox,
-            dataset_lifecycle=dataset_lifecycle,
+            **lifecycle_fields(dataset_lifecycle),
         )
 
     def result(self, scope: Scope) -> StepResult:
@@ -234,3 +248,8 @@ class AttemptRecord(WireModel):
         if (record.workflow_id, record.attempt_id, record.step_path, record.bundle_digest) != expected:
             raise BundleError("attempt record does not belong to the requested workflow, attempt, step and bundle")
         return record
+
+
+def lifecycle_fields(record):
+    """Select the independently closed authoritative evidence field."""
+    return {"fits_lifecycle" if isinstance(record, FITSLifecycleAttempt) else "dataset_lifecycle": record}

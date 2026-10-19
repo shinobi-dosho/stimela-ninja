@@ -297,6 +297,7 @@ class Marker:
     # names a strict MSv2 attempt whose committed mutation entry is the
     # oracle (see `dataset_lifecycle.mutation_committed`).
     success_kind: str | None = None
+    worker_identity: dict[str, str] | None = None
     # Strict lifecycles must recover without reconstructing the original
     # SnapshotGuard (notably in a detached finalizer). This is the exact
     # named state a failed/interrupted mutation must put back.
@@ -319,6 +320,8 @@ class Marker:
             "success_step_path": self.success_step_path,
             "path_was_absent": self.path_was_absent,
         }
+        if self.worker_identity is not None:
+            data["worker_identity"] = self.worker_identity
         if self.identity_profile is not None:
             data["identity_profile"] = self.identity_profile
         if self.success_kind is not None:
@@ -781,6 +784,7 @@ class SnapshotGuard:
         strict: StrictMutation | None = None,
         success_kind: str | None = None,
         addresses: dict[str, Any] | None = None,
+        worker_identity: dict[str, str] | None = None,
     ):
         if strict is not None and (cache_key is None or tainting):
             # Both are "no name for a write" -- the exact shapes strict
@@ -789,6 +793,7 @@ class SnapshotGuard:
             raise DatasetLifecycleUnavailableError("strict MSv2 mutation requires a cache key and no unprotected mutated fields")
         self.strict = strict
         self.success_kind = success_kind
+        self.worker_identity = worker_identity
         # Set by the lifecycle after postcondition validation, before S1.
         self.successor_identities: dict[str, StateIdentity] = {}
         self.journal = journal
@@ -1331,6 +1336,7 @@ class SnapshotGuard:
             success_step_path=self.success_step_path,
             path_was_absent=plan.path_was_absent,
             success_kind=self.success_kind,
+            worker_identity=self.worker_identity,
             strict_rollback_state=plan.rollback_state if self.strict is not None else None,
             strict_predecessor_state=plan.required if self.strict is not None else None,
             strict_group=getattr(self, "group", None),
@@ -1594,7 +1600,7 @@ class SnapshotGuard:
         consumed_name = plan.required
         successor = self.successor_identities.get(plan.field)
         reference = None
-        if self.success_kind == "fits-lifecycle" and self.strict.profiles.get(plan.field) == "fits-file-bytes/v1":
+        if self.strict is not None and self.strict.profiles.get(plan.field) == "fits-file-bytes/v1":
             from shinobi.fits_commit import make_commit_reference
 
             reference = make_commit_reference(self, plan)
@@ -2164,12 +2170,21 @@ def _marker_completed(marker: Marker, manifest, *, strict: bool = False) -> bool
         if strict:
             raise DatasetLifecycleUnavailableError("strict success oracle is unreadable or malformed") from exc
         return False
+    if marker.worker_identity is not None:
+        from shinobi.fits_commit import read_worker_oracle
+
+        try:
+            record = read_worker_oracle(
+                Path(marker.success_record), identity=marker.worker_identity, attempt_id=marker.run_id, step_path=marker.success_step_path or marker.step_path
+            )
+        except (OSError, ValueError) as exc:
+            raise DatasetLifecycleUnavailableError("FITS detached oracle identity is invalid") from exc
     expected_step_path = marker.success_step_path or marker.step_path
     committed = record.committed and str(record.attempt_id) == marker.run_id and record.step_path == expected_step_path and record.cache_key == marker.cache_key
     if strict and record.committed and not committed and marker.strict_group is not None:
         raise DatasetLifecycleUnavailableError("strict group success oracle lacks complete matching participant evidence")
     if committed and marker.strict_group is not None:
-        lifecycle = record.dataset_lifecycle
+        lifecycle = record.lifecycle
         leaf = next((leaf for leaf in lifecycle.leaves if leaf.step_path == marker.step_path), None) if lifecycle is not None else None
         complete = leaf is not None and _validate_group_evidence(leaf, marker.strict_group)
         if strict and not complete:
@@ -2281,7 +2296,7 @@ def _reconcile_group(journal, manifest, chains, group, selected, exact):
         marker = chain.marker if chain is not None else None
         if chain is None or marker is None or chain.path != item["path"] or marker.strict_group != group:
             raise DatasetLifecycleUnavailableError(f"strict mutation group participant {path} has missing or contradictory marker evidence")
-        frozen = (marker.run_id, marker.step_path, marker.cache_key, marker.success_record, marker.success_kind, marker.success_step_path)
+        frozen = (marker.run_id, marker.step_path, marker.cache_key, marker.success_record, marker.success_kind, marker.success_step_path, marker.worker_identity)
         if oracle is not None and frozen != oracle:
             raise DatasetLifecycleUnavailableError("strict mutation group has contradictory invocation/oracle identities")
         oracle = frozen
@@ -2313,11 +2328,13 @@ def _reconcile_group(journal, manifest, chains, group, selected, exact):
             if item.get("identity_profile") == "fits-file-bytes/v1":
                 from shinobi.fits_lifecycle import committed_generation, committed_oracle_requires_reference
 
-                requires_reference = "rollback_fits_commit" in item or committed_oracle_requires_reference(marker)
+                requires_reference = marker.worker_identity is not None or "rollback_fits_commit" in item or committed_oracle_requires_reference(marker)
                 if (generation is None or generation.fits_commit is None) and requires_reference:
                     raise DatasetLifecycleUnavailableError("committed FITS successor is missing its required exact generation reference")
             if item.get("identity_profile") == "fits-file-bytes/v1" and generation is not None and generation.fits_commit is not None:
-                reference, _ = committed_generation(generation, Path(chain.path), workspace=Path(marker.success_record).parents[2])
+                reference, _ = committed_generation(
+                    generation, Path(chain.path), workspace=Path(marker.worker_identity["workspace"]) if marker.worker_identity else Path(marker.success_record).parents[2]
+                )
                 expected = {(one["path"], one["label"], one["element_index"], one["successor"]) for one in group}
                 actual = {(str(one.root), one.label, one.element_index, one.successor) for one in reference.participants}
                 if (

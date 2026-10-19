@@ -35,6 +35,41 @@ Either way, this installs:
    The distribution is named ``stimela-ninja`` on PyPI, the command is
    ``ninja``, and the import name is ``shinobi``.
 
+Optional format contracts
+-------------------------
+
+``MSv2``, ``FITSImage`` and ``FITSTable`` annotations are available in the base
+package. Declaring them does not import an inspector or inspect files. To
+execute their strict contracts, install the corresponding extra in the
+environment performing lifecycle inspection:
+
+.. code-block:: console
+
+    $ pip install "stimela-ninja[ms-contract]"
+    $ pip install "stimela-ninja[fits-contract]"
+    $ pip install "stimela-ninja[ms-contract,fits-contract]"
+
+The extras name the supported formats. Their current implementations use
+``python-casacore`` for Measurement Sets and Astropy for FITS; those packages
+are implementation dependencies, while the annotations specify versioned
+format profiles. A declared strict contract refuses execution if its inspector
+is unavailable. See :doc:`concepts/datasets` for the supported profiles and
+execution routes. A strict annotation opts a field into enforcement; installing
+an extra alone does not make ordinary ``Path`` fields strict.
+
+For Slurm compute workers, provision the extra in the shared worker interpreter
+and in preparation/finalization environments that inspect files. Installing it
+only in a tool image does not provide the controller or worker inspector.
+Tool containers remain free to use other FITS libraries.
+
+From a source checkout, use ``uv sync --extra ms-contract`` or
+``uv sync --extra fits-contract``. The broader ``measurement-set`` development
+group below also supplies the MS state export and reconstruction stack.
+
+When upgrading an existing installation, replace the old ``casacore`` extra
+with ``ms-contract`` and the old ``fits`` extra with ``fits-contract``.
+For source checkouts, replace ``--group fits`` with ``--extra fits-contract``.
+
 For development
 ---------------
 

@@ -640,11 +640,22 @@ def _dataset_worker_plan(
     from shinobi.ownership import contained_access_issues
     from shinobi.steps.dispatch import _scope_tree_writes_datasets, _strict_mutation_cache_issues
 
+    from shinobi.fits_access import scope_tree_has_fits_contract
+
+    fits_route = scope_tree_has_fits_contract(recipe)
+    format_name = "FITS" if fits_route else "MSv2"
+    if fits_route:
+        if scope_tree_has_dataset_contract(recipe):
+            raise DatasetLifecycleUnavailableError("mixed authoritative MS and FITS worker lifecycles are unsupported")
+        from shinobi.fits_lifecycle import FITSSnapshot as DatasetLifecycleSnapshot, resolve_lifecycle_snapshot
+        from shinobi.fits_lifecycle import fits_backend_capability as dataset_backend_capability, worker_fits_backend_capability as worker_dataset_backend_capability
+        from shinobi.offload.worker import FITSStepPlan as DatasetStepPlan, FITSWorkerPlan as DatasetWorkerPlan
+
     workspace = Path(pinned.workspace).resolve()
     unavailable = worker_dataset_backend_capability(mutation=_scope_tree_writes_datasets(recipe))
     if storage_qualification is None:
         raise DatasetLifecycleUnavailableError(
-            f"detached MSv2 lifecycle refused by worker capability {unavailable.profile}: {unavailable.reason}; "
+            f"detached {format_name} lifecycle refused by worker capability {unavailable.profile}: {unavailable.reason}; "
             "supply a site-issued --dataset-storage-qualification from the exact shared tree"
         )
     qualification_path = storage_qualification.resolve()
@@ -652,7 +663,7 @@ def _dataset_worker_plan(
     qualified_root = qualification.storage_root.resolve()
     for label, path in (("workspace", workspace), ("submission directory", submission_dir.resolve())):
         if path != qualified_root and not path.is_relative_to(qualified_root):
-            raise DatasetLifecycleUnavailableError(f"detached MSv2 lifecycle refused: {label} {path} is outside qualified shared-storage root {qualified_root}")
+            raise DatasetLifecycleUnavailableError(f"detached {format_name} lifecycle refused: {label} {path} is outside qualified shared-storage root {qualified_root}")
     config = AppConfig.model_validate({name: unpack(value) for name, value in pinned.config.items()})
     values = recipe.inputs_model(**recipe_inputs)
     mutation = _scope_tree_writes_datasets(recipe)
@@ -661,7 +672,9 @@ def _dataset_worker_plan(
         cache_dir = str(workspace / cache_dir)
     resolved_cache_dir = Path(cache_dir).resolve()
     if resolved_cache_dir != qualified_root and not resolved_cache_dir.is_relative_to(qualified_root):
-        raise DatasetLifecycleUnavailableError(f"detached MSv2 lifecycle refused: cache directory {resolved_cache_dir} is outside qualified shared-storage root {qualified_root}")
+        raise DatasetLifecycleUnavailableError(
+            f"detached {format_name} lifecycle refused: cache directory {resolved_cache_dir} is outside qualified shared-storage root {qualified_root}"
+        )
     if mutation:
         issues = _strict_mutation_cache_issues(
             recipe,
@@ -672,16 +685,16 @@ def _dataset_worker_plan(
             config,
         )
         if issues:
-            raise DatasetLifecycleUnavailableError("detached MSv2 mutation refused: " + "; ".join(issues))
+            raise DatasetLifecycleUnavailableError(f"detached {format_name} mutation refused: " + "; ".join(issues))
 
     steps = tuple(DatasetStepPlan(step_path=step.name, accesses=tuple(per_step.get(step.name, ()))) for step in pinned.steps)
     snapshot = (
-        resolve_lifecycle_snapshot(recipe, values, workspace=workspace, mutation=mutation)
+        resolve_lifecycle_snapshot(recipe, values, workspace=workspace, mutation=mutation, **({"cache_dir": str(resolved_cache_dir)} if fits_route else {}))
         if any(step.accesses for step in steps)
         else DatasetLifecycleSnapshot(accesses=(), observations=())
     )
     if tuple(access for step in steps for access in step.accesses) != snapshot.accesses:
-        raise DatasetLifecycleUnavailableError("detached MSv2 preparation produced inconsistent workflow and per-step access plans")
+        raise DatasetLifecycleUnavailableError(f"detached {format_name} preparation produced inconsistent workflow and per-step access plans")
 
     resources = {resource for access in snapshot.accesses for resource in access.resources}
     access_issues = contained_access_issues(
@@ -691,14 +704,14 @@ def _dataset_worker_plan(
         dataset_resources=resources,
     )
     if access_issues:
-        raise DatasetLifecycleUnavailableError("detached MSv2 lifecycle refused: " + "; ".join(access_issues))
+        raise DatasetLifecycleUnavailableError(f"detached {format_name} lifecycle refused: " + "; ".join(access_issues))
     tool_capabilities = tuple(dataset_backend_capability(step.backend, mutation=mutation) for step in pinned.steps)
     unavailable = tuple(
         capability for capability in tool_capabilities if capability.status is not DatasetBackendStatus.TESTED or capability.namespace_mode is DatasetNamespaceMode.REMOTE_DELEGATED
     )
     if unavailable:
         raise DatasetLifecycleUnavailableError(
-            "detached MSv2 lifecycle refused by tool-backend capability: "
+            f"detached {format_name} lifecycle refused by tool-backend capability: "
             + "; ".join(f"{capability.backend} is {capability.status.value}: {capability.reason}" for capability in unavailable)
         )
     return DatasetWorkerPlan(
@@ -751,6 +764,13 @@ def _prepare_worker_slurm(
                 raise ValueError("auxiliary mutation offload requires resolved declarations and is unsupported in v1")
             if any(read.mutable for read in derived_reads(leaf, known, Path(pinned.workspace), best_effort=True)):
                 raise ValueError("strict auxiliary mutation workflows cannot be offloaded in v1")
+    from shinobi.fits_access import scope_tree_has_fits_contract
+    from shinobi.fits_products import fits_product_contract
+
+    if scope_tree_has_fits_contract(recipe) or any(fits_product_contract(ref.step) for ref in recipe.steps):
+        probe = subprocess.run([worker.python, "-c", "from astropy.io import fits"], capture_output=True, text=True)
+        if probe.returncode:
+            raise DatasetLifecycleUnavailableError("FITS inspecting worker requires stimela-ninja[fits-contract] (astropy): " + probe.stderr.strip())
     graph = build_graph(recipe)
     step_index = {name: i for i, name in enumerate(graph.names)}
     recipe_inputs = unpack(pinned.inputs)
@@ -790,6 +810,11 @@ def _prepare_worker_slurm(
                 for item in (source if isinstance(source, list) else [source])
             )
         }
+        from shinobi.fits_access import fits_fields
+
+        unresolved_fits = set(fits_fields(scope.inputs_model)) & unresolved_inputs
+        if unresolved_fits:
+            raise DatasetLifecycleUnavailableError(f"step {frozen.name!r}: FITS worker accesses require statically resolved paths: {sorted(unresolved_fits)}")
         _require_static_write_declarations(frozen.name, scope, known)
         generic_accesses = path_accesses(scope, known, workspace=Path(pinned.workspace))
         if any(meta.family for meta in scope.field_meta.values()):
@@ -851,7 +876,10 @@ def _prepare_worker_slurm(
         owner_root = ownership_workspace(Path(pinned.workspace), writes)
     dataset_lifecycle = None
     execution_blocked_reason = pinned.execution_blocked_reason
-    if scope_tree_has_dataset_contract(recipe):
+    from shinobi.fits_access import scope_tree_has_fits_contract
+
+    fits_route = scope_tree_has_fits_contract(recipe)
+    if scope_tree_has_dataset_contract(recipe) or fits_route:
         dataset_lifecycle = _dataset_worker_plan(
             pinned,
             recipe,
@@ -862,8 +890,14 @@ def _prepare_worker_slurm(
             storage_qualification=dataset_storage_qualification,
         )
         execution_blocked_reason = None
+    if dataset_lifecycle is not None:
+        root = dataset_lifecycle.qualification.storage_root.resolve()
+        checked = [owner_root, ownership_registry(), *(path for path in workflow_accesses)]
+        outside = [path for path in checked if path.resolve() != root and not path.resolve().is_relative_to(root)]
+        if outside:
+            raise DatasetLifecycleUnavailableError("worker ownership/access paths outside qualified storage: " + ", ".join(map(str, outside)))
     plan = ExecutionPlan(
-        schema_version=2 if dataset_lifecycle is not None else 1,
+        schema_version=3 if fits_route else 2 if dataset_lifecycle is not None else 1,
         workflow_id=submission["workflow_id"],
         bundle_digest=pinned.digest,
         worker=worker,
@@ -873,7 +907,8 @@ def _prepare_worker_slurm(
         ownership_registry=str(ownership_registry()),
         accesses=tuple(WorkspaceAccess(path=str(path), writes=writes) for path, writes in sorted(workflow_accesses.items(), key=lambda item: str(item[0]))),
         execution_blocked_reason=execution_blocked_reason,
-        dataset_lifecycle=dataset_lifecycle,
+        dataset_lifecycle=None if fits_route else dataset_lifecycle,
+        fits_lifecycle=dataset_lifecycle if fits_route else None,
         product_candidates=product_candidates,
     )
     write_new(submission_dir / "execution.json", plan)

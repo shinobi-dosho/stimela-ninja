@@ -327,3 +327,58 @@ after the scientific runs. The final WSClean gate used all 506 channels;
 the separate DDFacet 1.0.0.0 qualification above used 32 channels. Local
 fake-predictor smoke checks validate the adapter contract only; the physical
 qualification used the actual scientific executables.
+
+## Physical FITS lifecycle probe
+
+`run_fits.py` requires a fresh successful M2 qualification on the exact shared
+mount, a shared worker interpreter with `fits-contract`, and a Python Apptainer
+image. It submits each phase from a short-lived process. Native creation runs
+on `k1`, an Apptainer writer replaces the file by rename on `n1`, and a native
+reader validates its pixels on `n2`. The image writer needs only standard
+Python; the compute worker owns FITS inspection.
+
+A writer killed at S2 must restore every predecessor byte before the finalizer
+releases ownership. A retry commits on `n2`; a W_RESULT crash then verifies
+that an already published immutable success remains committed. A real Slurm
+requeue interrupts an Apptainer writer after a partial replacement; its new
+invocation must restore the exact predecessor before committing. A separate
+checker verifies versioned FITS evidence, workflow/bundle/attempt identities,
+actual node placement, image provenance and final pixel values.
+
+Run from the controller with an isolated root and the current staged source:
+
+```sh
+python tests/slurm_physical/run_fits.py run \
+  --root /data/fits-acceptance/run \
+  --worker-python /data/fits-acceptance/venv/bin/python \
+  --fits-python /data/fits-acceptance/venv/bin/python \
+  --storage-qualification /data/fits-acceptance/metadata/qualification.json
+python tests/slurm_physical/run_fits.py check \
+  --root /data/fits-acceptance/run \
+  --worker-python /data/fits-acceptance/venv/bin/python \
+  --fits-python /data/fits-acceptance/venv/bin/python \
+  --storage-qualification /data/fits-acceptance/metadata/qualification.json
+```
+
+Use `--nodes`, `--partition` and `--image` for other qualified sites. This probe
+uses only its own files and does not reconfigure the cluster.
+
+The gate passed on Kudu/Nyala on 2026-10-19 using the isolated
+`/data/fits-contract-20261019-b5fb` environment. Fresh M2 jobs 613–615 proved
+all three lock exclusions and preservation of 60 metadata updates. Final
+FITS jobs 632 (`k1`, create), 633 (`n1`, Apptainer replacement), and 634
+(`n2`, read) completed, with finalizer 635. The S2 writer 636 exited 86;
+finalizer 637 settled the failure after exact rollback. Retry 638 and
+finalizer 639 completed. Writer 640 exited 86 after W_RESULT, while finalizer
+641 retained the immutable success. Job 642 was requeued once on `n1`; its
+new invocation verified the restored predecessor and committed 15 in every
+pixel, followed by finalizer 643. A fresh `check` process verified every
+record, node placement, image identity and final pixels. Records remain under
+`/data/fits-contract-20261019-b5fb/run3`.
+
+The optional `tests/test_fits_containers_live.py` gate also passed three tests
+per runtime on 2026-10-19 for Docker, Podman, Apptainer and Singularity:
+replacement with sibling overwrite/rename denial, failed WRITE restoring
+exact bytes, and failed CREATE restoring absence. Runtime/image selection is
+controlled by `SHINOBI_FITS_TEST_RUNTIME` and `SHINOBI_FITS_TEST_IMAGE`; the
+test itself never pulls images.

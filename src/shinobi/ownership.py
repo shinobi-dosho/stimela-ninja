@@ -65,7 +65,9 @@ def scope_requires_ownership(scope: Scope) -> bool:
         return any(scope_requires_ownership(step.step) for step in scope.steps)
     from shinobi.dataset_access import scope_has_dataset_contract
 
-    return declares_path_writes(scope) or scope_has_dataset_contract(scope) or bool(scope.derived_reads)
+    from shinobi.fits_access import scope_has_fits_contract
+
+    return declares_path_writes(scope) or scope_has_dataset_contract(scope) or scope_has_fits_contract(scope) or bool(scope.derived_reads)
 
 
 def _workspace(path: Path) -> Path:
@@ -291,6 +293,7 @@ def contained_access_issues(
     values: dict[str, Any] | BaseModel,
     *,
     workspace: Path,
+    dataset_workspace: Path | None = None,
     dataset_resources: set[Path],
     validated_steps: dict[int | tuple[int, ...], tuple[BaseModel, bool]] | None = None,
 ) -> tuple[str, ...]:
@@ -353,7 +356,7 @@ def contained_access_issues(
                     for access in resolver(
                         leaf,
                         known,
-                        workspace=root,
+                        workspace=dataset_workspace or root,
                         unresolved_inputs=unresolved,
                     )
                     if access.mode is DatasetMode.CREATE and access.root is not None
@@ -439,6 +442,7 @@ def validate_contained_execution(
     prepared: dict[str, Any],
     *,
     workspace: Path,
+    dataset_workspace: Path | None = None,
     dataset_resources: set[Path],
     planned_inputs: _ProductReservations | None = None,
 ) -> None:
@@ -464,7 +468,9 @@ def validate_contained_execution(
             raise DatasetLifecycleUnavailableError("derived read paths changed since planning")
     if planned_inputs is not None and (tuple(scope.harvest), tuple(scope.scratch)) != (planned_inputs.harvest, planned_inputs.scratch):
         raise DatasetLifecycleUnavailableError(f"scope {scope.name!r} changed its planned harvest/scratch declarations")
-    issues = list(contained_access_issues(scope, prepared, workspace=workspace, dataset_resources=dataset_resources)) if dataset_resources else []
+    issues = (
+        list(contained_access_issues(scope, prepared, workspace=workspace, dataset_workspace=dataset_workspace, dataset_resources=dataset_resources)) if dataset_resources else []
+    )
     families = {name: meta.family for name, meta in scope.field_meta.items() if meta.family}
     if planned_inputs is not None and families != (planned_inputs.families or {}):
         issues.append(f"scope {scope.name!r} changed its planned family declarations")

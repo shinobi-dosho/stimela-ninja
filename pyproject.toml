@@ -23,10 +23,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Structural CASA/MS inspection is explicit and lazy; keep its comparatively
-# specialised binary dependency out of default workflow installations.
-casacore = ["python-casacore>=3.7,<4"]
-fits = ["astropy>=7.2,<9"]
+# Format contracts are opt-in. These packages provide the current inspectors;
+# the annotations and versioned profiles describe formats independently of them.
+ms-contract = ["python-casacore>=3.7,<4"]
+fits-contract = ["astropy>=7.2,<9"]
 
 [dependency-groups]
 dev = [
@@ -40,7 +40,6 @@ dev = [
 # skip its real-table tests. msutils 3.1.0 is the first release with the
 # preservation v2 public APIs, so the group floors it here rather than in
 # project metadata, which keeps the optional MS stack out of a plain install.
-fits = ["astropy>=7.2,<9"]
 measurement-set = [
     "python-casacore>=3.7,<4",
     "msutils[exact-native]>=3.1.0",
