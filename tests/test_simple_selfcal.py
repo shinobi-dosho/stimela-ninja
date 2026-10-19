@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from shinobi.graph import build_graph
+from shinobi.fits_access import resolve_scope_fits_accesses
 from shinobi.policies import build_argv
 from shinobi.steps import Recipe
 
@@ -47,3 +48,19 @@ def test_quickstart_cabs_declare_real_output_values_and_tool_names():
         "mask.fits",
     ]
     assert module.breizorro.field_meta["mask"].implicit == "{outfile}"
+
+
+def test_quickstart_fits_contract_plans_implicit_outputs(tmp_path):
+    module = _load_example()
+    image_accesses = resolve_scope_fits_accesses(module.wsclean, {"ms": tmp_path / "obs.ms", "prefix": "img"}, workspace=tmp_path)
+    mask_accesses = resolve_scope_fits_accesses(
+        module.breizorro,
+        {"restored_image": tmp_path / "img-MFS-image.fits", "outfile": tmp_path / "mask.fits"},
+        workspace=tmp_path,
+    )
+
+    assert [(access.field, access.mode.value, access.root) for access in image_accesses] == [("restored", "create", tmp_path / "img-MFS-image.fits")]
+    assert [(access.field, access.mode.value, access.root) for access in mask_accesses] == [
+        ("restored_image", "read", tmp_path / "img-MFS-image.fits"),
+        ("mask", "create", tmp_path / "mask.fits"),
+    ]

@@ -186,6 +186,11 @@ def resolve_scope_fits_accesses(scope, values: dict[str, Any], *, workspace: Pat
         if not members:
             raise DatasetLifecycleUnavailableError(f"FITS list {name!r} must be nonempty")
         for index, member in enumerate(members):
+            # An implicit output template resolves to a string before the
+            # outputs model parses it. Preserve typed input validation while
+            # accepting that declared output path at planning time.
+            if name in outputs and name not in inputs and isinstance(member, str):
+                member = Path(member)
             if not isinstance(member, Path):
                 raise DatasetLifecycleUnavailableError(f"FITS field {name!r} needs a concrete Path")
             lexical = member if member.is_absolute() else workspace / member
