@@ -23,10 +23,11 @@ from pathlib import Path
 from string import Formatter
 from typing import Any, Callable, Iterator, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_serializer, field_validator, model_validator
 from pydantic_core import PydanticUndefined
 
 from shinobi._annotations import walk_annotation
+from shinobi._input_schema import validate_input_model
 from shinobi.dataset_access import DatasetAccess, validate_scope_dataset_accesses
 from shinobi.fits_access import FITSAccess, validate_scope_fits_accesses
 from shinobi.exceptions import ParameterError
@@ -1072,6 +1073,12 @@ class Scope(BaseModel):
     # since a recipe is not a unit of execution and reserving for both it
     # and its leaves would double-count.
     resources: Resources | None = None
+
+    @field_validator("inputs_model")
+    @classmethod
+    def _input_schema_is_not_import_resolving(cls, model: type[BaseModel]) -> type[BaseModel]:
+        validate_input_model(model)
+        return model
 
     @model_validator(mode="after")
     def _families(self):

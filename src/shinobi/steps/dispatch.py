@@ -27,6 +27,7 @@ from types import ModuleType
 from typing import Any, Callable, Sequence
 
 from pydantic import BaseModel, Field, ValidationError, create_model
+from shinobi._input_schema import validate_input_model
 from shinobi.backends._stream import display_label, terminate_all
 from shinobi.cache import (
     ExecutionIdentity,
@@ -416,8 +417,11 @@ def _prepare_inputs(scope: Scope, kwargs: dict[str, Any], *, validated: Any = No
 def _validate_inputs(scope: Scope, kwargs: dict[str, Any]) -> BaseModel:
     """Validate one raw input mapping with dispatch's public error contract."""
     try:
+        # Scope definitions are checked too, but trusted construction can
+        # replace a model via assignment or model_copy before execution.
+        validate_input_model(scope.inputs_model)
         validated = scope.inputs_model(**kwargs)
-    except ValidationError as exc:
+    except ValueError as exc:
         raise ParameterError(f"{scope.name}: parameter validation failed:\n{exc}") from exc
     from shinobi.derived import validate_derived_read_scope
 

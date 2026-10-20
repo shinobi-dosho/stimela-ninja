@@ -66,6 +66,27 @@ you build a recipe programmatically:
   ``output_wiring``) sourced from another step's output. This is the edge the
   execution graph is built from.
 
+Run inputs and imports
+----------------------
+
+Input models bind run values; they must not use Pydantic's ``ImportString``
+to resolve a caller-supplied string to a Python object. ``Scope``, ``Cab``,
+``Recipe``, and ``@shinobi.pystep`` reject such input schemas before input
+validation, and generated CLI options apply the same check. This includes
+bare ``ImportString``, ``ImportString[Callable]``, and imports nested in
+models, containers, mapping keys, or type aliases. Importing a non-callable
+is refused too: importing its module can already execute code.
+
+Bind implementations in recipe source. If a run needs to choose among known
+algorithms, expose a ``Literal`` or enum and select from implementations
+already bound by that source. A plain string such as ``"math.sqrt"`` stays
+a string; shinobi does not interpret dotted strings as imports.
+
+Python validators, custom types, default factories, and recipe bodies remain
+trusted code. Rejecting ``ImportString`` does not sandbox arbitrary Python
+or prove that a custom validator only processes data. Do not implement
+input-selected imports in a validator to bypass this rule.
+
 The dependency graph
 --------------------
 

@@ -39,6 +39,7 @@ from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
+from shinobi._input_schema import validate_input_model
 from shinobi.steps.schema import ParamMeta, _unwrap_annotation
 
 
@@ -260,6 +261,7 @@ def build_options(model: type[BaseModel]) -> list[click.Option]:
         click always derives the callback kwarg name from the long flag, so
         the short alias never affects the round-trip to `flat_name`.
     """
+    validate_input_model(model)
     options = []
     for flat_name, _path, field in iter_leaf_fields(model):
         required = field.is_required()

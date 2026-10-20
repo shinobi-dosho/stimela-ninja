@@ -50,6 +50,22 @@ from. The guarantees in this document are about what a *cab definition* can
 make shinobi do; none of them constrain what a recipe can do, because a
 recipe is code by design.
 
+### Run input schemas must not resolve imports
+
+Pydantic's ``ImportString`` imports the module named by an input value
+during validation, before the imported value is used or checked for
+callability. Workflow input schemas reject this facility at definition
+time, including imports nested in models, containers, and type aliases.
+The same check runs before dispatch validation and CLI option generation.
+Plain dotted strings remain data. Bind implementations in recipe source
+and expose declared choices when a run selects among known algorithms.
+
+This is a restriction on a supported schema facility, not isolation of
+Python validators or recipe code. Custom validators, types, and default
+factories are trusted source and must not resolve input-selected imports
+to bypass this restriction. An author can still write arbitrary Python;
+the framework does not sandbox it.
+
 ### Never eval()/exec() a cab's `command`
 
 shinobi never treats a non-`"binary"` cab's `command` as code to run: every
