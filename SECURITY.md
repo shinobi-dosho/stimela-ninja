@@ -56,7 +56,9 @@ Pydantic's ``ImportString`` imports the module named by an input value
 during validation, before the imported value is used or checked for
 callability. Workflow input schemas reject this facility at definition
 time, including imports nested in models, containers, and type aliases.
-The same check runs before dispatch validation and CLI option generation.
+The complete scope tree is checked before dispatch and ownership planning,
+including paths that reuse validated inputs. CLI option generation also
+applies the schema check.
 Plain dotted strings remain data. Bind implementations in recipe source
 and expose declared choices when a run selects among known algorithms.
 

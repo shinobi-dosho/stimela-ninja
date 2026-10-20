@@ -8,9 +8,12 @@ rule instead of maintaining another annotation walker.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ImportString, TypeAdapter
+
+if TYPE_CHECKING:
+    from shinobi.steps.schema import Scope
 
 # Obtain the validator through Pydantic's public schema API rather than
 # importing its private implementation or comparing function names.
@@ -47,7 +50,32 @@ def validate_input_model(model: type[BaseModel]) -> None:
                     continue
                 if key == "fields" and isinstance(child, dict):
                     pending.extend((f"{path}.{name}", field) for name, field in child.items())
+                elif key == "choices" and isinstance(child, dict):
+                    # Discriminator tags are user data, not schema keys:
+                    # tags such as "default" must not hit the filter above.
+                    pending.extend((f"{path}[{tag!r}]", branch) for tag, branch in child.items())
                 else:
                     pending.append((path, child))
         else:
             pending.extend((path, child) for child in node)
+
+
+def validate_scope_input_models(scope: Scope) -> None:
+    """Check a declared scope tree without instantiating its input models.
+
+    Construction may have replaced a descendant model after its definition
+    was checked. Inspect every descendant before planning or reusing any
+    validated inputs, preserving the planner's single validation of values.
+    """
+    from shinobi.steps.schema import Recipe
+
+    pending = [scope]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        validate_input_model(current.inputs_model)
+        if isinstance(current, Recipe):
+            pending.extend(ref.step for ref in current.steps)

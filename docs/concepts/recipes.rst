@@ -77,6 +77,11 @@ bare ``ImportString``, ``ImportString[Callable]``, and imports nested in
 models, containers, mapping keys, or type aliases. Importing a non-callable
 is refused too: importing its module can already execute code.
 
+The complete declared scope tree is checked again before dispatch and
+ownership planning, including when validated input instances are reused.
+This catches child models replaced after construction without evaluating
+their defaults or validators a second time.
+
 Bind implementations in recipe source. If a run needs to choose among known
 algorithms, expose a ``Literal`` or enum and select from implementations
 already bound by that source. A plain string such as ``"math.sqrt"`` stays

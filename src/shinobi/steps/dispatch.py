@@ -27,7 +27,7 @@ from types import ModuleType
 from typing import Any, Callable, Sequence
 
 from pydantic import BaseModel, Field, ValidationError, create_model
-from shinobi._input_schema import validate_input_model
+from shinobi._input_schema import validate_input_model, validate_scope_input_models
 from shinobi.backends._stream import display_label, terminate_all
 from shinobi.cache import (
     ExecutionIdentity,
@@ -1076,6 +1076,10 @@ def _dispatch(
     overwrite_steps: Sequence[str] = (),
     **kwargs: Any,
 ) -> StepResult:
+    try:
+        validate_scope_input_models(scope)
+    except ValueError as exc:
+        raise ParameterError(f"{scope.name}: parameter validation failed:\n{exc}") from exc
     from shinobi.derived import validate_derived_read_scope
 
     validate_derived_read_scope(scope)
