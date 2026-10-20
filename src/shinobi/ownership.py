@@ -21,6 +21,7 @@ from typing import Any, Iterable, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from shinobi._input_schema import validate_scope_input_models
 from shinobi.exceptions import ShinobiError
 from shinobi.storage import JsonFileStore, SharedStorageError, ofd_lock
 from shinobi.steps.schema import (
@@ -152,6 +153,13 @@ def _resolved_leaf_inputs(
     ``known_steps`` separately retains partial values with unresolved fields
     excluded, even when an unrelated required scalar prevents model validation.
     """
+    # This planner can be called directly, without entering dispatch. Check
+    # descendants before constructing or reusing any claim-time models;
+    # schema refusals must not be swallowed as deferred input failures.
+    try:
+        validate_scope_input_models(scope)
+    except ValueError as exc:
+        raise WorkspaceOwnershipError(f"{scope.name}: {exc}") from exc
     unresolved_inputs = set(unresolved_inputs or ())
     if not isinstance(scope, Recipe):
         # Top-level dispatch passes its already-validated model so defaults

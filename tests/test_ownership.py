@@ -704,6 +704,7 @@ def test_nested_recipe_leaf_reuses_default_factory_from_claim(tmp_path, monkeypa
     defaulted = tmp_path / "default.ms"
     calls = 0
     validations = 0
+    validated_instances = []
 
     def default_target() -> Path:
         nonlocal calls
@@ -718,6 +719,7 @@ def test_nested_recipe_leaf_reuses_default_factory_from_claim(tmp_path, monkeypa
         def count_validation(self):
             nonlocal validations
             validations += 1
+            validated_instances.append(self)
             return self
 
     class RecipeInputs(BaseModel):
@@ -737,6 +739,7 @@ def test_nested_recipe_leaf_reuses_default_factory_from_claim(tmp_path, monkeypa
 
     def body(ctx):
         seen["owner"] = inspect_workspace(tmp_path)
+        seen["inputs"] = ctx.inputs
         return StepResult(name=scope.name, returncode=0, outputs=Empty(), inputs=ctx.inputs)
 
     inner = Recipe(
@@ -757,5 +760,6 @@ def test_nested_recipe_leaf_reuses_default_factory_from_claim(tmp_path, monkeypa
     assert result.success
     assert calls == 1
     assert validations == 1
+    assert seen["inputs"] is validated_instances[0]
     assert WorkspaceAccess(path=str(explicit.resolve()), writes=True) in seen["owner"].accesses
     assert WorkspaceAccess(path=str(defaulted.resolve()), writes=True) in seen["owner"].accesses

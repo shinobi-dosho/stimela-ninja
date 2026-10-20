@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 import click
+from pydantic import ValidationError
 
 import shinobi
 from shinobi._state_cli import state
@@ -230,18 +231,21 @@ def _resolve_target(target: str):
         raise click.ClickException(f"target must be 'path:name', got {target!r}")
     location, attr = target.rsplit(":", 1)
 
-    if os.path.isfile(location):
-        name = Path(location).stem
-        spec = importlib.util.spec_from_file_location(name, location)
-        module = importlib.util.module_from_spec(spec)
-        # Register before exec so pydantic can resolve the module's own
-        # forward-ref annotations (every module here uses `from __future__
-        # import annotations`, so model field types are strings that pydantic
-        # resolves lazily against sys.modules[__module__]).
-        sys.modules[name] = module
-        spec.loader.exec_module(module)
-    else:
-        module = importlib.import_module(location)
+    try:
+        if os.path.isfile(location):
+            name = Path(location).stem
+            spec = importlib.util.spec_from_file_location(name, location)
+            module = importlib.util.module_from_spec(spec)
+            # Register before exec so pydantic can resolve the module's own
+            # forward-ref annotations (every module here uses `from __future__
+            # import annotations`, so model field types are strings that pydantic
+            # resolves lazily against sys.modules[__module__]).
+            sys.modules[name] = module
+            spec.loader.exec_module(module)
+        else:
+            module = importlib.import_module(location)
+    except ValidationError as exc:
+        raise click.ClickException(f"invalid target definition {target!r}:\n{exc}") from None
 
     try:
         return getattr(module, attr)
