@@ -9,6 +9,10 @@ Requirements
   (for example ``wsclean``, or a container runtime such as ``docker`` /
   ``podman`` / ``apptainer``, or a ``slurm`` cluster).
 
+Apptainer is the default backend. Install its ``apptainer`` executable on
+``PATH`` for containerized cabs, or select another backend with
+``ninja --backend NAME`` or ``backend.default`` in :doc:`concepts/config`.
+
 From PyPI
 ---------
 

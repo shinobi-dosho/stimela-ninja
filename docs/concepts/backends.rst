@@ -130,6 +130,11 @@ job starts. See :doc:`datasets` for the lifecycle and closure guarantees.
 Choosing a backend
 ------------------
 
+The built-in default is ``apptainer``. Install Apptainer on ``PATH`` and
+declare an ``image`` for containerized cabs. To run a cab using host-installed
+tools, select ``native`` explicitly, for example with ``ninja --backend native
+run ...``, or set ``backend.default: native`` in :doc:`config`.
+
 A backend can be selected in several places, in increasing order of specificity:
 
 * the global default in configuration (see :doc:`config`);
