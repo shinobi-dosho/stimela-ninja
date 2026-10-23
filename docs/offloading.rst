@@ -791,6 +791,9 @@ a finite cab file candidate and excludes discovery matches. The consumer still
 receives an observed member at execution; a missing product fails the selection.
 Local ownership and worker preparation use the same selection proof. Unknown,
 ambiguous, discovered and whole-family references remain runtime-dependent.
+As in local planning, a validated unset optional path contributes no scratch
+destination. An unknown path or an unset string template still refuses
+preparation; the worker does not infer an implicit destination.
 The legacy argv compiler refuses families and selections because
 it cannot preserve post-execution membership/evidence. Remote stores and
 store-relative subresources remain gated. See :doc:`concepts/products`.

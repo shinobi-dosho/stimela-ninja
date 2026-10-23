@@ -753,6 +753,11 @@ def validate_family_scatter_inputs(ref: StepRef, known: dict[str, Any], unresolv
             raise error_type(f"step {ref.name!r}: finite-family scatter requires statically resolved slice inputs before dispatch: {', '.join(sorted(unknown))}")
 
 
+def unset_optional_path(scope: Scope, prepared: dict[str, Any], field: str) -> bool:
+    """A validated absent optional path declares no destination to write."""
+    return field in prepared and prepared[field] is None and field in path_fields(scope.inputs_model) and not scope.inputs_model.model_fields[field].is_required()
+
+
 def _resolved_product_patterns(
     scope: Scope,
     prepared: dict[str, Any],
@@ -788,11 +793,7 @@ def _resolved_product_patterns(
             yield f"family {name!r} pattern", pattern
     for kind, patterns in declarations if declarations is not None else (("harvest", scope.harvest), ("scratch", scope.scratch)):
         for pattern in patterns:
-            if kind == "scratch" and any(
-                field in prepared and prepared[field] is None and field in path_fields(scope.inputs_model) and not scope.inputs_model.model_fields[field].is_required()
-                for _, field, _, _ in formatter.parse(pattern)
-                if field is not None
-            ):
+            if kind == "scratch" and any(unset_optional_path(scope, prepared, field) for _, field, _, _ in formatter.parse(pattern) if field is not None):
                 continue  # a validated unset optional scratch destination has no write
             source = f"{kind} pattern {pattern!r}"
             try:

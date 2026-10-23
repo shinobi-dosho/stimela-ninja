@@ -10,6 +10,7 @@ from shinobi import Cab, FamilySpec, FITSImage, MemberRule, ProductFamily
 from shinobi.dataset_access import plan_recipe_accesses
 from shinobi.exceptions import StepError
 from shinobi.offload.records import AttemptRecord
+from shinobi.offload.slurm import _require_static_write_declarations, OffloadCompileError
 from shinobi.offload.worker import execute_step
 from shinobi.ownership import contained_access_issues, scope_path_accesses
 from shinobi.products import FamilyPlan, UnresolvedProductReference, resolve_planned_reference
@@ -22,7 +23,7 @@ class Empty(BaseModel):
 
 
 def producer():
-    inputs = create_model("ImageInputs", script=(str, ...), prefix=(str, "image"))
+    inputs = create_model("ImageInputs", script=(str, ...), prefix=(str, "image"), temp_dir=(Path | None, None))
     outputs = create_model("ImageOutputs", image=(ProductFamily[FITSImage], ...))
     spec = FamilySpec(
         coordinates={"kind": "str", "cycle": ("str", "int")},
@@ -37,7 +38,8 @@ def producer():
         command=f"{sys.executable} -c",
         inputs_model=inputs,
         outputs_model=outputs,
-        field_meta={"script": ParamMeta(positional_head=True), "image": ParamMeta(family=spec)},
+        field_meta={"script": ParamMeta(positional_head=True), "image": ParamMeta(family=spec), "temp_dir": ParamMeta(write_path=True)},
+        scratch=["{temp_dir}/*"],
     )
 
 
@@ -142,6 +144,20 @@ def test_unknown_producer_inputs_do_not_use_family_defaults(tmp_path):
     cab = producer()
     outputs = planned_output_values(cab, {"script": "pass", "prefix": "default"}, workspace=tmp_path, unresolved_inputs={"prefix"})
     assert "image" not in outputs
+
+
+@pytest.mark.parametrize("annotation,prepared", [(str | None, {"temp_dir": None}), (Path | None, {})])
+def test_worker_does_not_exempt_unknown_or_untyped_scratch(annotation, prepared):
+    cab = Cab(
+        name="scratch",
+        command="true",
+        inputs_model=create_model("ScratchInputs", temp_dir=(annotation, None)),
+        outputs_model=Empty,
+        field_meta={"temp_dir": ParamMeta(write_path=True)},
+        scratch=["{temp_dir}/*"],
+    )
+    with pytest.raises(OffloadCompileError, match="temp_dir"):
+        _require_static_write_declarations("scratch", cab, prepared)
 
 
 @pytest.mark.parametrize("worker", [False, True])
