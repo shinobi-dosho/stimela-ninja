@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stimela-ninja"
-version = "0.1.0"
+version = "0.2.0b1"
 description = "Stimela 3.0 -- A robust, flexible and simple framework for reproducible radio astronomy pipelines"
 readme = "README.rst"
 license = "Apache-2.0"
@@ -14,7 +14,8 @@ authors = [
     { name = "Sphesihle Makhathini", email = "sphemakh@gmail.com" },
 ]
 dependencies = [
-    "pydantic>=2.12",
+    "dosho[validation]>=0.2.0b1,<0.3",
+    "pydantic>=2.14",
     "pydantic-settings>=2.2",
     "pyyaml>=6.0",
     "click>=8.1",

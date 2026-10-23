@@ -1,560 +1,102 @@
-"""Shared helpers for turning a loader's flat parameter specs into a
-pydantic model class (the `inputs_model`/`outputs_model` a `Cab` needs),
-plus the generic YAML-composition primitives (`_include`/`_use` deep-merge)
-every loader dialect builds its own resolution order on top of.
-
-Cab dtypes are strings (cult-cargo/stimela-classic convention): scalar
-names (`str`/`int`/`float`/`bool`), file-like names (`File`/`MS`/
-`Directory`/`URI`, all mapped to `pathlib.Path` so `path_fields` picks
-them up for bind-mounting), strict dataset names (`MSv2`/`CasaTab`, plus the
-compatibility spellings `MeasurementSetV2`/`CasaTable`, preserving their
-versioned annotation metadata), `list:<inner>` (cult-cargo/classic colon
-syntax) and `List[<inner>]` (newer bracket syntax seen in both newer
-cult-cargo cabs and caracal2's scabha-dialect config schemas) for lists,
-and `Tuple[<a>, <b>, ...]`/`Union[<a>, <b>, ...]` (both bracket syntax,
-nestable inside each other and inside `List[...]`) for tuples and unions.
-"""
+"""Dosho model generation with explicit trusted Shinobi dtype bindings."""
 
 from __future__ import annotations
-
-import functools
-import keyword
-import operator
-import re
-import types
-from collections.abc import Hashable, Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
 from pathlib import Path
-from typing import Annotated, Any, Callable, Literal, Union, get_args, get_origin
+from typing import Any
+from dosho.validation import modelgen as _shared
+from dosho.validation.modelgen import (
+    COMMON_LEAF_KEYS,
+    ResolutionCycleGuard,
+    TypeBinding,
+    sanitize,
+    sanitize_unique,
+    validate_choices,
+    constrain_string,
+    validate_nullable,
+    required_field_spec,
+    deep_merge,
+    merge_param_meta,
+    merge_field_meta,
+    get_path,
+    resolve_use,
+    resolve_directive,
+    resolve_package_root,
+    contain_include,
+)
+from shinobi.datasets import FITSImage, FITSTable, CasaTab, DatasetDeclarationError, MSv2
+from shinobi.products import DirectoryBundle, ProductFamily
 
-from pydantic import ConfigDict, Field, StringConstraints, create_model
-
-from shinobi.datasets import FITSImage, FITSTable, CasaTab, DatasetDeclarationError, MSv2, annotation_has_dataset
-
-
-class ResolutionCycleGuard:
-    """Detect recursion through one composition directive.
-
-    ``_use`` and ``_include`` resolve different kinds of addresses, but a
-    cycle has the same shape in both cases: entering an address already on
-    the active resolution path. Keep that rule here so the two loader
-    dialects report cycles consistently instead of eventually leaking a raw
-    :class:`RecursionError`.
-
-    A :class:`~contextvars.ContextVar` keeps one reusable guard safe across
-    concurrent loader calls while still carrying the active path through the
-    cached include loaders' recursive callbacks.
-    """
-
-    def __init__(self, directive: str):
-        self.directive = directive
-        self._active: ContextVar[tuple[Hashable, ...]] = ContextVar(
-            f"shinobi_{directive.strip('_')}_resolution_stack",
-            default=(),
-        )
-
-    @contextmanager
-    def enter(
-        self,
-        address: Hashable,
-        *,
-        error: type[Exception],
-        label: Callable[[Hashable], str] = str,
-    ) -> Iterator[None]:
-        """Enter ``address`` or raise ``error`` naming the closed cycle."""
-
-        active = self._active.get()
-        if address in active:
-            start = active.index(address)
-            cycle = (*active[start:], address)
-            rendered = " -> ".join(label(item) for item in cycle)
-            raise error(f"{self.directive} cycle detected: {rendered}")
-        token = self._active.set((*active, address))
-        try:
-            yield
-        finally:
-            self._active.reset(token)
-
-
-def sanitize(name: str) -> str:
-    """Turn a cab parameter name into a valid Python identifier (pydantic
-    field names must be identifiers). Non-identifier characters -- hyphens,
-    dots, etc. common in cult-cargo/classic param names -- become
-    underscores; a leading digit or a keyword is prefixed. The loader keeps
-    the original name as a ``nom_de_guerre`` so the built argv still uses it.
-    """
-    cleaned = re.sub(r"\W", "_", name)
-    if cleaned and cleaned[0].isdigit():
-        cleaned = f"_{cleaned}"
-    if keyword.iskeyword(cleaned):
-        cleaned = f"{cleaned}_"
-    return cleaned
-
-
-def sanitize_unique(name: str, seen: dict[str, str]) -> str:
-    """Like `sanitize`, but raises if two distinct raw names collide on the
-    same sanitized identifier. `seen` maps a sanitized field name to the
-    first raw name that produced it -- share one `seen` dict across a
-    single cab's parameter list.
-    """
-    field = sanitize(name)
-    if field in seen and seen[field] != name:
-        raise ValueError(f"parameter names {seen[field]!r} and {name!r} both sanitize to {field!r} -- rename one to avoid a silent collision")
-    seen[field] = name
-    return field
-
-
-_SCALAR_TYPES: dict[str, type] = {
-    "str": str,
-    "string": str,
-    "int": int,
-    "integer": int,
-    "float": float,
-    "double": float,
-    "bool": bool,
-    "boolean": bool,
+TYPE_BINDINGS = {
+    name: TypeBinding(annotation, protect_choices=name in {"msv2", "measurementsetv2", "casatab", "casatable", "fitsimage", "fitstable"})
+    for name, annotation in {
+        "msv2": MSv2,
+        "measurementsetv2": MSv2,
+        "casatab": CasaTab,
+        "casatable": CasaTab,
+        "fitsimage": FITSImage,
+        "fitstable": FITSTable,
+        "directorybundle": DirectoryBundle,
+        "productfamily[file]": ProductFamily[Path],
+        "productfamily[fitsimage]": ProductFamily[FITSImage],
+        "productfamily[fitstable]": ProductFamily[FITSTable],
+        "productfamily[directorybundle]": ProductFamily[DirectoryBundle],
+    }.items()
 }
-
-_FILE_TYPES: dict[str, Any] = dict.fromkeys(("file", "ms", "directory", "dir", "uri", "url"), Path)
-_FILE_TYPES.update(fitsimage=FITSImage, fitstable=FITSTable, msv2=MSv2, measurementsetv2=MSv2, casatab=CasaTab, casatable=CasaTab)
+TYPE_BINDINGS["msv4"] = TypeBinding(None, error="MSv4 is reserved and unsupported as a dataset dtype")
 
 
-def is_file_dtype(dtype: str) -> bool:
-    """Whether a cab dtype string (e.g. from `ParamMeta.dtype`) is
-    file-like. The single source of truth for that classification, shared
-    with `dtype_to_type` below and with backends that need to recognise a
-    dynamically pattern-matched param (no declared field/type annotation
-    for `path_fields` to inspect) as needing a bind mount.
-    """
-    return str(dtype).strip().lower() in _FILE_TYPES
-
-
-_BRACKET_LIST_RE = re.compile(r"^list\[(?P<inner>.+)\]$", re.IGNORECASE)
-_TUPLE_RE = re.compile(r"^tuple\[(?P<inner>.+)\]$", re.IGNORECASE)
-_UNION_RE = re.compile(r"^union\[(?P<inner>.+)\]$", re.IGNORECASE)
-
-
-def _split_top_level(spec: str) -> list[str]:
-    """Split a bracket-inner spec (`"int, int"`, `"str, List[int]"`) on
-    top-level commas only -- commas nested inside a `[...]` (e.g. inside a
-    `List[...]`/`Tuple[...]`/`Union[...]` argument) don't split.
-    """
-    parts = []
-    depth = 0
-    current: list[str] = []
-    for ch in spec:
-        if ch == "[":
-            depth += 1
-        elif ch == "]":
-            depth -= 1
-        if ch == "," and depth == 0:
-            parts.append("".join(current).strip())
-            current = []
-        else:
-            current.append(ch)
-    if current:
-        parts.append("".join(current).strip())
-    return parts
+def _call(function, *args, **kwargs):
+    try:
+        return function(*args, type_bindings=TYPE_BINDINGS, **kwargs)
+    except _shared.DtypeError as exc:
+        raise DatasetDeclarationError(str(exc)) from exc
 
 
 def dtype_to_type(dtype: str) -> Any:
-    """Map a cab dtype string to a Python type. File-like dtypes become
-    `pathlib.Path`, except the `MSv2`/`CasaTab` concise and compatibility
-    spellings which preserve strict metadata.
-    Reserved `MSv4` raises a dataset declaration error at any depth.
-    `list:<inner>` or `List[<inner>]` becomes
-    `list[<inner>]`; `Tuple[<a>, <b>, ...]` becomes `tuple[<a>, <b>, ...]`;
-    `Union[<a>, <b>, ...]` becomes `<a> | <b> | ...`; anything unrecognised
-    falls back to `str`.
-    """
-    dtype = str(dtype).strip()
-    lower = dtype.lower()
-    if lower == "directorybundle":
-        from shinobi.products import DirectoryBundle
-
-        return DirectoryBundle
-    if lower.startswith("productfamily["):
-        from shinobi.products import DirectoryBundle, ProductFamily
-
-        if lower == "productfamily[file]":
-            return ProductFamily[Path]
-        if lower == "productfamily[fitsimage]":
-            return ProductFamily[FITSImage]
-        if lower == "productfamily[fitstable]":
-            return ProductFamily[FITSTable]
-        if lower == "productfamily[directorybundle]":
-            return ProductFamily[DirectoryBundle]
-        raise ValueError("ProductFamily supports only File, FITSImage, FITSTable and DirectoryBundle")
-    if lower == "msv4":
-        raise DatasetDeclarationError("MSv4 is reserved and unsupported as a dataset dtype")
-    if lower.startswith("list:"):
-        return list[dtype_to_type(dtype[5:])]
-    if m := _BRACKET_LIST_RE.match(dtype):
-        return list[dtype_to_type(m.group("inner"))]
-    if m := _TUPLE_RE.match(dtype):
-        items = tuple(dtype_to_type(p) for p in _split_top_level(m.group("inner")))
-        return tuple[items] if items else tuple
-    if m := _UNION_RE.match(dtype):
-        items = [dtype_to_type(p) for p in _split_top_level(m.group("inner"))]
-        if items:
-            return functools.reduce(operator.or_, items)
-        return str
-    if lower in _FILE_TYPES:
-        return _FILE_TYPES[lower]
-    return _SCALAR_TYPES.get(lower, str)
+    return _call(_shared.dtype_to_type, dtype)
 
 
-def validate_choices(choices: Any, *, error: type[Exception]) -> list[Any] | None:
-    """Normalise a raw `choices:` value to a plain list, or `None` if it
-    wasn't given -- the one place both `cultcargo._collect` and
-    `worker_schema._leaf_field` check the "must be a list" shape, so the
-    error message and the shape rule can't drift between the two scabha-
-    dialect loaders.
-    """
-    if not choices:
-        return None
-    if not isinstance(choices, (list, tuple)):
-        raise error(f"'choices' must be a list, got {choices!r}")
-    return list(choices)
+def narrow_choices(py_type, choices):
+    from shinobi.datasets import annotation_has_dataset
 
-
-def narrow_choices(py_type: Any, choices: list[Any] | None) -> Any:
-    """Narrow `py_type` to `typing.Literal[*choices]` when `choices` is a
-    non-empty list -- shinobi's one enum-like schema mechanism (shared by
-    `build_model` below and `worker_schema._leaf_field`), so an out-of-set
-    value fails real pydantic validation instead of only being documented
-    in a field's `info` text.
-    """
-    if not choices:
-        return py_type
-    if annotation_has_dataset(py_type):
+    if choices and annotation_has_dataset(py_type):
         raise DatasetDeclarationError("strict dataset choices are unsupported; choices would erase dataset metadata")
-    return Literal[tuple(choices)]
+    return _call(_shared.narrow_choices, py_type, choices)
 
 
-def constrain_string(py_type: Any, pattern: Any, *, dtype: str, error: type[Exception]) -> Any:
-    """Apply a literal field's declarative regex through pydantic's model.
-
-    A compiled Python regex supports the same expressions as existing schema
-    key/name patterns. Non-string dtypes are rejected rather than losing path
-    metadata or creating an ineffective constraint.
-    """
-    if pattern is None:
-        return py_type
-    if not isinstance(pattern, str) or not isinstance(dtype, str) or dtype.strip().lower() not in {"str", "string"}:
-        raise error("string_pattern requires a string regex and a scalar str dtype")
-    if get_origin(py_type) is Literal and any(not isinstance(item, str) for item in get_args(py_type)):
-        raise error("string_pattern choices must all be strings")
-    try:
-        compiled = re.compile(pattern)
-    except re.error as exc:
-        raise error(f"invalid string_pattern: {exc}") from exc
-    return Annotated[py_type, StringConstraints(pattern=compiled)]
+def build_model(name, fields, **kwargs):
+    return _call(_shared.build_model, name, fields, **kwargs)
 
 
-def validate_nullable(spec: dict[str, Any], *, error: type[Exception]) -> bool | None:
-    """Read the explicit nullability contract without coercing schema data.
+def is_file_dtype(dtype: str) -> bool:
+    """Classify atomic dynamic path dtypes through the same trusted bindings."""
+    from typing import Annotated, get_args, get_origin
 
-    Omission preserves the legacy required/default rule. Contradictory
-    nullable dtypes and explicit null defaults are declaration errors.
-    """
-    if "nullable" not in spec:
-        return None
-    nullable = spec["nullable"]
-    if not isinstance(nullable, bool):
-        raise error("nullable must be a boolean")
-    if not nullable:
-        dtype = str(spec.get("dtype", "str")).strip()
-        optional = re.match(r"^optional\[", dtype, re.IGNORECASE)
-        null_union = _UNION_RE.match(dtype)
-        if optional or (null_union and any(item.strip().lower() in {"none", "nonetype", "null"} for item in _split_top_level(null_union.group("inner")))):
-            raise error("nullable: false conflicts with an explicitly nullable dtype")
-        if "default" in spec and spec["default"] is None:
-            raise error("nullable: false cannot have a null default")
-    return nullable
+    annotation = dtype_to_type(dtype)
+    while get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    return isinstance(annotation, type) and issubclass(annotation, Path)
 
 
-def required_field_spec(py_type: Any, required: bool, default: Any, *, nullable: bool | None = None, error: type[Exception] = ValueError) -> tuple[Any, Any]:
-    """Shared annotation/default rule for both YAML schema loaders.
-
-    An absent ``nullable`` preserves legacy Optional annotations for defaulted
-    or non-required fields. Explicit false keeps the type non-nullable, and
-    needs either a default or ``required: true``. Explicit true permits null
-    even when the caller must supply the field.
-    """
-    if nullable is False:
-        base_type = py_type
-        while get_origin(base_type) is Annotated:
-            base_type = get_args(base_type)[0]
-        origin = get_origin(base_type)
-        if base_type is type(None) or (origin in (Union, types.UnionType) and type(None) in get_args(base_type)) or (origin is Literal and None in get_args(base_type)):
-            raise error("nullable: false conflicts with an annotation accepting null")
-        if default is None and not required:
-            raise error("nullable: false without a default requires required: true")
-        return (py_type, ... if default is None else default)
-    if required and default is None:
-        return (py_type | None if nullable is True else py_type, ...)
-    return (py_type | None, default)
-
-
-def build_model(
-    name: str,
-    fields: dict[str, tuple[str, bool, Any]],
-    *,
-    allow_extra: bool = False,
-    choices: dict[str, list[Any]] | None = None,
-    extras: dict[str, dict[str, Any]] | None = None,
-    string_patterns: dict[str, str] | None = None,
-    nullable: dict[str, bool] | None = None,
-    error: type[Exception] = ValueError,
-) -> type:
-    """Create a pydantic model class named `name`.
-
-    `fields` maps a field name to `(dtype, required, default)`. See
-    `required_field_spec` for the required/default rule applied to each.
-    `choices` maps a field name to its allowed values (see
-    `narrow_choices`) -- omitted or absent for a field means its plain
-    `dtype`-derived type applies unchanged. `extras` maps a field name to a
-    `json_schema_extra` dict carried onto that field (e.g. `abbreviation`
-    for the CLI); a field absent from `extras` gets none. Mirrors what
-    `worker_schema._leaf_field` builds per field, so both scabha-dialect
-    loaders attach field-level hints the same way. ``string_patterns`` adds
-    pydantic regex constraints to literal scalar string fields; constrained
-    defaults are validated when the model is instantiated.
-    ``nullable`` supplies explicit nullability independently of omission;
-    non-nullable defaults also receive Pydantic default validation.
-    """
-    choices = choices or {}
-    extras = extras or {}
-    string_patterns = string_patterns or {}
-    nullable = nullable or {}
-
-    def _spec(field_name: str, dtype: str, required: bool, default: Any) -> tuple[Any, Any]:
-        py_type = constrain_string(narrow_choices(dtype_to_type(dtype), choices.get(field_name)), string_patterns.get(field_name), dtype=dtype, error=ValueError)
-        annotation, field_default = required_field_spec(py_type, required, default, nullable=nullable.get(field_name), error=error)
-        extra = extras.get(field_name)
-        if extra or field_name in string_patterns or nullable.get(field_name) is False:
-            return (annotation, Field(field_default, json_schema_extra=extra, validate_default=field_name in string_patterns or nullable.get(field_name) is False))
-        return (annotation, field_default)
-
-    definitions: dict[str, tuple[Any, Any]] = {field_name: _spec(field_name, dtype, required, default) for field_name, (dtype, required, default) in fields.items()}
-    config = ConfigDict(extra="allow") if allow_extra else None
-    return create_model(name, __config__=config, **definitions)
-
-
-def deep_merge(base: Any, override: Any) -> Any:
-    """Recursively merge two YAML-parsed values: dict keys are merged
-    key-by-key (recursing into nested dicts), with `override`'s value
-    winning on any key present in both; any other type just takes
-    `override` outright. Shared by every loader's `_include`/`_use`
-    composition (cult-cargo's "including/using file's own keys win"
-    convention).
-    """
-    if isinstance(base, dict) and isinstance(override, dict):
-        merged = dict(base)
-        for key, value in override.items():
-            merged[key] = deep_merge(merged[key], value) if key in merged else value
-        return merged
-    return override
-
-
-def merge_param_meta(base: Any, override: Any) -> Any:
-    """Merge two `ParamMeta`s describing one field name, attribute by
-    attribute: `override` wins wherever it says something, and `base`
-    survives wherever `override` left the default.
-
-    This exists for the *dual declaration* -- one name on `inputs` and on
-    `outputs`, the echo-the-input-back idiom every MS-producing cab uses.
-    Each side declares what it knows: the output side carries `implicit`
-    (how the product's path is derived), the input side carries
-    `write_path` (whether the tool creates that path or rewrites the
-    caller's data). Replacing the whole object, as the loaders used to,
-    keeps only the last one collected -- so the input's `write_path` was
-    silently dropped for precisely the fields it exists to mark, and
-    `sandbox.clear_stale_outputs` then read every such cab as "the caller's
-    data, leave it alone". Silent, and on the half of the schema that
-    decides whether a re-run works at all.
-
-    Attribute-wise rather than "the input wins" so the output's `implicit`
-    still overrides -- that is what the whole-object merge got right, and
-    what every loaded cab already depends on.
-    """
-    from shinobi.steps.schema import ParamMeta
-
-    default = ParamMeta()
-    values: dict[str, Any] = {}
-    for field in ParamMeta.model_fields:
-        chosen = getattr(override, field)
-        if chosen == getattr(default, field):
-            chosen = getattr(base, field)
-        values[field] = chosen
-    return ParamMeta(**values)
-
-
-def merge_field_meta(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """`base` updated with `override`, merging (not replacing) the entry of
-    any field name both declare -- see `merge_param_meta`. The one way a
-    loader is allowed to compose a cab's input-side and output-side metas,
-    so a cab built from a document and the same cab built in Python cannot
-    disagree about what its fields declare.
-    """
-    merged = dict(base)
-    for field, meta in override.items():
-        merged[field] = merge_param_meta(merged[field], meta) if field in merged else meta
-    return merged
-
-
-def get_path(root: dict[str, Any], dotted: str, *, error: type[Exception]) -> Any:
-    """Look up a dotted path (`a.b.c`) in a nested dict, raising `error`
-    with a clear message if any segment is missing.
-    """
-    node: Any = root
-    for part in dotted.split("."):
-        if not isinstance(node, dict) or part not in node:
-            raise error(f"path '{dotted}' not found (stuck at '{part}')")
-        node = node[part]
-    return node
-
-
-def resolve_use(node: Any, root: dict[str, Any], *, error: type[Exception]) -> Any:
-    """Resolve every `_use: dotted.path` directive in `node` (a `_use`
-    target that itself has a `_use` resolves too, recursively) by dotted
-    lookup against `root` (the fully `_include`-resolved document) --
-    `cultcargo`'s and `worker_schema`'s dialects agree on this directive
-    (deep-merge the target in, with the dict's own sibling keys winning),
-    differing only in which exception type reports a bad dotted path.
-    """
-
-    cycles = ResolutionCycleGuard("_use")
-
-    def entry_to_dict(dotted: str) -> Any:
-        """Resolve the `_use` target at `dotted`, recursing into its own `_use`.
-
-        Args:
-            dotted: Dotted path into `root` naming the `_use` target.
-
-        Returns:
-            The target node with its own `_use` directives resolved.
-        """
-        with cycles.enter(dotted, error=error):
-            return resolve_directive(get_path(root, dotted, error=error), "_use", entry_to_dict)
-
-    return resolve_directive(node, "_use", entry_to_dict)
-
-
-# Leaf-descriptor keys both scabha-dialect loaders (`cultcargo`, a *cab*
-# schema, and `worker_schema`, a *config* schema) agree mean "this is a
-# leaf parameter, not a nested group" -- a loader that recognises extra
-# keys of its own (e.g. cultcargo's `nom_de_guerre`/`mkdir`) extends this
-# set rather than re-listing the shared ones.
-COMMON_LEAF_KEYS = {
-    "info",
-    "dtype",
-    "default",
-    "required",
-    "nullable",
-    "implicit",
-    "choices",
-    "string_pattern",
-    "abbreviation",
-    "policies",
-    "writable",
-    "must_exist",
-    "path_policies",
-}
-
-
-def resolve_directive(node: Any, key: str, entry_to_dict: Callable[[Any], Any]) -> Any:
-    """Walk a nested dict/list structure. Wherever a dict has `key`, pop it
-    (a single entry, or a list of entries), turn each entry into a fully
-    resolved dict via `entry_to_dict`, `deep_merge` them together in order,
-    then `deep_merge` the result under the dict's own remaining keys (which
-    win on any conflict). This is the shared "resolve a composition
-    directive" shape behind both `_include` and `_use` in every loader
-    dialect -- `entry_to_dict` is responsible for whatever an entry means
-    (a dotted lookup, a file path, ...) and for any further recursion its
-    own result needs; this walker only handles the tree traversal and merge.
-    """
-    if isinstance(node, list):
-        return [resolve_directive(item, key, entry_to_dict) for item in node]
-    if not isinstance(node, dict):
-        return node
-
-    node = {k: resolve_directive(v, key, entry_to_dict) for k, v in node.items()}
-    if key in node:
-        spec = node.pop(key)
-        entries = spec if isinstance(spec, list) else [spec]
-        merged: dict[str, Any] = {}
-        for entry in entries:
-            merged = deep_merge(merged, entry_to_dict(entry))
-        node = deep_merge(merged, node)
-    return node
-
-
-def resolve_package_root(dotted: str, package_roots: dict[str, Path], *, error: type[Exception]) -> Path:
-    """`dotted` (e.g. `cultcargo.genesis.cubical`) -> filesystem directory,
-    resolved against the *longest* registered prefix in `package_roots`
-    (descending the remainder as subdirectories) -- **never** via
-    `importlib`.
-
-    Both loader dialects have a package-scoped `_include` form naming a
-    dotted package rather than a path. Resolving one by importing the
-    package would execute an arbitrary `__init__.py` at schema-load time,
-    from a name read out of a YAML file -- so shinobi never imports a
-    package for any reason, and callers supply an explicit
-    `package_roots={"cultcargo": Path(...)}` mapping instead (see
-    SECURITY.md's "never import a cab package", and `loaders.yaml_cab`'s
-    module docstring for the longer rationale). Shared here so both
-    dialects resolve it the same way, and neither can drift back to
-    `importlib`.
-    """
-    parts = dotted.split(".")
-    for i in range(len(parts), 0, -1):
-        prefix = ".".join(parts[:i])
-        if prefix in package_roots:
-            return package_roots[prefix].joinpath(*parts[i:])
-    raise error(
-        f"package-scoped _include references package {dotted!r}, but no filesystem "
-        f"root was supplied for it (or a parent package of it) -- pass "
-        f"package_roots={{{parts[0]!r}: Path(...)}} to the loader "
-        "(shinobi never imports a package to resolve this -- see SECURITY.md)"
-    )
-
-
-def contain_include(candidate: Path, root: Path, *, entry: Any, error: type[Exception]) -> Path:
-    """Resolve `candidate` and require it to stay under `root`, which is the
-    `package_roots` directory the enclosing `_include` chain entered through.
-
-    `resolve_package_root` constrains only the *dotted* part of a
-    package-scoped include (`[\\w.]+` cannot contain `..`); the file part is
-    free-form and was previously joined unguarded, so
-    `_include: (cultcargo)../../../etc/anything.yaml` read straight out of the
-    package root. Both dialects share that join, and cult-cargo's
-    `{"(pkg)": [file, ...]}` dict form takes its filenames from a YAML list
-    that never passes through the include regex at all -- so the check belongs
-    at the join, not in the pattern.
-
-    Enforced **transitively**: the root is threaded down the whole recursion,
-    so a legitimately-included package file cannot re-escape with a plain
-    relative `_include: ../../../etc/anything.yaml` of its own (which resolves
-    against its own directory, by then inside the root). A nested
-    *package-scoped* include re-enters through `package_roots` and so replaces
-    the root with its own -- that hop is explicitly authorised by the caller.
-
-    Both sides are resolved before comparing, so a symlink inside the package
-    pointing out of it is caught too -- which a textual `..` check would miss.
-
-    Plain relative includes below no package root at all stay unconstrained:
-    `../common/base.yaml` is real, widely-used schema layout, and only
-    `package_roots` ever promised containment.
-    """
-    resolved = candidate.resolve()
-    root = root.resolve()
-    if not resolved.is_relative_to(root):
-        raise error(
-            f"_include entry {entry!r} resolves to '{resolved}', outside the package "
-            f"root '{root}' it was reached through -- a package-scoped _include may "
-            "only read files within its own package_roots directory (see SECURITY.md)"
-        )
-    return resolved
+__all__ = [
+    "COMMON_LEAF_KEYS",
+    "ResolutionCycleGuard",
+    "sanitize",
+    "sanitize_unique",
+    "validate_choices",
+    "constrain_string",
+    "validate_nullable",
+    "required_field_spec",
+    "deep_merge",
+    "merge_param_meta",
+    "merge_field_meta",
+    "get_path",
+    "resolve_use",
+    "resolve_directive",
+    "resolve_package_root",
+    "contain_include",
+    "build_model",
+    "dtype_to_type",
+    "narrow_choices",
+    "is_file_dtype",
+]

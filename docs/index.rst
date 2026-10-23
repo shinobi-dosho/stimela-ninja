@@ -135,6 +135,7 @@ Use native WSClean and Breizorro executables to run the example.
 
    security
    contributing
+   design_cab_boundary
 
 
 Indices

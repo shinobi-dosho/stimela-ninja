@@ -521,9 +521,10 @@ def test_missing_worker_result_is_unknown_not_success(tmp_path, monkeypatch):
     assert not (workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "unknown.json").exists()
 
 
-def test_staged_worker_source_is_checked_before_execution(tmp_path):
+@pytest.mark.parametrize("package", ["shinobi", "dosho"])
+def test_staged_worker_source_is_checked_before_execution(tmp_path, package):
     workflow, bundle, plan = _prepared(tmp_path)
-    source = workflow.submission_dir / "worker-src" / "shinobi" / "__init__.py"
+    source = workflow.submission_dir / "worker-src" / package / "__init__.py"
     source.write_text(source.read_text() + "\n# changed\n")
     attempt = plan.attempts[0]
     assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
@@ -846,6 +847,35 @@ def test_changed_bundled_pystep_and_helper_invalidate_only_their_branch(make_ven
     second = prepare()
     second_plan = ExecutionPlan.model_validate_json((second.submission_dir / "execution.json").read_text())
     assert [record.state for record in _execute_all(second, second_plan)] == ["succeeded", "cached"]
+
+
+def test_frozen_venv_pystep_restores_module_decorator(make_venv, tmp_path):
+    from tests import _venv_pystep_funcs as funcs
+
+    class NumberIn(BaseModel):
+        n: int
+
+    venv = make_venv()
+    original = funcs.decorated_plus_one
+    ref = original.model_copy(update={"step": original.step.model_copy(update={"backend": "venv", "venv": str(venv)}), "wiring": {"n": InputRef(field="n")}})
+    recipe = Recipe(
+        name="decorated-venv",
+        inputs_model=NumberIn,
+        outputs_model=funcs.MagicOut,
+        steps=[ref],
+        output_wiring={"value": OutputRef(step=ref.name, field="value")},
+    )
+    workflow = prepare_worker_slurm(
+        freeze_recipe(recipe, {"n": 8}, config=AppConfig(), workspace=tmp_path, code_roots=(Path.cwd(),)),
+        submission_root=tmp_path / "runs",
+        worker_python=Path(sys.executable),
+    )
+    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    [record] = _execute_all(workflow, plan)
+    bundle = RecipeBundle.read(workflow.submission_dir / "bundle.json")
+    assert record.state == "succeeded"
+    assert record.result(bundle.steps[0].scope.restore()).outputs.value == 9
+    assert original.step.backend is None  # importing did not replace the frozen deployment scope
 
 
 def test_frozen_venv_pystep_imports_bundled_helper(make_venv, tmp_path):

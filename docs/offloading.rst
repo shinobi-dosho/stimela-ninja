@@ -68,6 +68,8 @@ compute-node compatibility. They are separate from the version-pinned worker
 environment and remain **unpinned**, even with a package-version digest.
 
 For pysteps, supply explicit ``code_roots=(Path(...),)`` Python import roots.
+Module-level ``@pystep`` definitions are restored from their original function;
+the frozen bundle supplies their execution scope, backend and schemas.
 The bundle captures the source module, package initializers and local helpers
 reachable through literal imports, without importing those modules. Use
 ``include_modules=("package.helper",)`` for dynamically selected local helpers.
@@ -786,7 +788,15 @@ subclasses. Coordinate-bearing produced states and recursive bundle inventories
 use attempt-record version 4. Old scalar and indexed-MS records remain readable.
 
 Selections resolve after the producing dependency commits, against its saved
-member table. The legacy argv compiler refuses families and selections because
+member table. Planning reserves the exact path when a selector uniquely fixes
+a finite cab file candidate and excludes discovery matches. The consumer still
+receives an observed member at execution; a missing product fails the selection.
+Local ownership and worker preparation use the same selection proof. Unknown,
+ambiguous, discovered and whole-family references remain runtime-dependent.
+As in local planning, a validated unset optional path contributes no scratch
+destination. An unknown path or an unset string template still refuses
+preparation; the worker does not infer an implicit destination.
+The legacy argv compiler refuses families and selections because
 it cannot preserve post-execution membership/evidence. Remote stores and
 store-relative subresources remain gated. See :doc:`concepts/products`.
 
@@ -822,3 +832,14 @@ reading across three nodes, then exact rollback after an injected S2 failure
 and a successful retry. Post-oracle exit and a real Slurm requeue exercise
 committed-result preservation and restart recovery. A fresh checker validates
 durable worker records.
+
+Cab semantics in worker bundles
+-------------------------------
+
+New bundles containing cabs use schema version 3. Each cab freezes its ordered
+argument declarations, metadata, patterns, policies and Dosho schema/formatter
+contract versions; restoration verifies that identity. Historical versions 1
+and 2 remain readable. Non-cab bundles retain their existing version rules.
+Workers stage both installed Shinobi and Dosho packages, with one source digest
+covering the combined tree. Locked provisioning exports include Dosho's active
+validation extra through Shinobi's mandatory dependency.

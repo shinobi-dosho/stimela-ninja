@@ -49,6 +49,11 @@ class ResolvedFITSAccess(BaseModel):
     def writes(self):
         return self.mode is not DatasetMode.READ
 
+    @property
+    def requires_exclusive(self) -> bool:
+        """FITS reservations are exclusive exactly when the access writes."""
+        return self.writes
+
 
 def _fits_product_shape(annotation):
     """Check every annotation branch, never merely filtered product nodes."""

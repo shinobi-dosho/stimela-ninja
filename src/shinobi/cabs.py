@@ -59,7 +59,7 @@ def _provider_entry_points() -> list[EntryPoint]:
 # and not a new parsing layer. The tags name *dialects*, not the projects that
 # publish files in them -- `yaml_cab` is scabha's cab dialect, of which
 # cult-cargo is the largest published library.
-_DIALECTS = ("yaml_cab", "stimela-classic")
+_DIALECTS = ("yaml_cab", "stimela-classic", "dosho-cab-v1")
 
 
 def build_document(dialect: str, text: str, name: str | None = None, **options: Any) -> "Cab | StepRef":
@@ -84,7 +84,7 @@ def build_document(dialect: str, text: str, name: str | None = None, **options: 
         CabLoadError: On an unknown dialect, or when `name` does not name a cab
             the document defines.
     """
-    if dialect == "yaml_cab":
+    if dialect in ("yaml_cab", "dosho-cab-v1"):
         from shinobi.loaders import yaml_cab
 
         cabs = yaml_cab.loads(text, **options)

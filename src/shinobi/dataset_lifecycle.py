@@ -806,7 +806,7 @@ def _claimed_for(owner: WorkspaceOwner, resource: Path, writes: bool) -> bool:
 def claim_covers_accesses(owner: WorkspaceOwner, accesses: tuple[ResolvedDatasetAccess, ...]) -> tuple[Path, ...]:
     """Resources ``accesses`` need that ``owner`` does not cover (empty = covered)."""
 
-    return tuple(sorted({resource for access in accesses for resource in access.resources if not _claimed_for(owner, resource, access.writes)}, key=str))
+    return tuple(sorted({resource for access in accesses for resource in access.resources if not _claimed_for(owner, resource, access.requires_exclusive)}, key=str))
 
 
 def resolve_claimed_leaf_accesses(
@@ -1520,10 +1520,9 @@ def overwrite_created_datasets(
 
 
 def claim_covers_snapshot(owner: WorkspaceOwner, snapshot: DatasetLifecycleSnapshot) -> bool:
-    """Whether the existing shared claim covers every closure resource read-only."""
+    """Whether the claim covers every resource at the required strength."""
 
-    claimed = {(Path(access.path), access.writes) for access in owner.accesses}
-    return all((resource, False) in claimed for access in snapshot.accesses for resource in access.resources)
+    return not claim_covers_accesses(owner, snapshot.accesses)
 
 
 def pending_dataset_recovery(cache_dir: str, snapshot: DatasetLifecycleSnapshot) -> tuple[Path, ...]:

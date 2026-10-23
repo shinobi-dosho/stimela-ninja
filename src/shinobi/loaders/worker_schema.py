@@ -351,6 +351,9 @@ def _mapping_field(model_name: str, value: dict[str, Any]) -> tuple[Any, Any]:
 
 
 def _leaf_field(value: dict[str, Any]) -> tuple[Any, Any]:
+    from dosho.validation.modelgen import length_constraints
+
+    lengths = length_constraints(value, error=ConfigLoadError)
     try:
         py_type = dtype_to_type(value.get("dtype", "str"))
         py_type = narrow_choices(py_type, validate_choices(value.get("choices"), error=ConfigLoadError))
@@ -378,5 +381,11 @@ def _leaf_field(value: dict[str, Any]) -> tuple[Any, Any]:
     annotation, field_default = required_field_spec(py_type, required, default, nullable=nullable, error=ConfigLoadError)
     return (
         annotation,
-        Field(field_default, description=value.get("info"), json_schema_extra=extra or None, validate_default=value.get("string_pattern") is not None or nullable is False),
+        Field(
+            field_default,
+            description=value.get("info"),
+            json_schema_extra=extra or None,
+            **lengths,
+            validate_default=bool(lengths) or bool(value.get("choices")) or value.get("string_pattern") is not None or nullable is False,
+        ),
     )

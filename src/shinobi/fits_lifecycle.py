@@ -405,7 +405,7 @@ def resolve_lifecycle_snapshot(scope, values, *, workspace, validated_steps=None
 
     accesses = []
     creators = {}
-    for leaf, known, _ in _resolved_leaf_inputs(scope, values, step_inputs={}, validated_steps=validated_steps):
+    for leaf, known, _ in _resolved_leaf_inputs(scope, values, step_inputs={}, validated_steps=validated_steps, workspace=workspace):
         resolved = resolve_scope_fits_accesses(leaf, known, workspace=workspace)
         step_names = {scope.name + "." + ref.name for ref in getattr(scope, "steps", ()) if ref.step is leaf} or {scope.name}
         if producer_step_path is not None:

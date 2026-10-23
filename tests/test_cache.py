@@ -73,7 +73,9 @@ def test_second_run_result_is_marked_cached(tmp_path):
 
 def test_local_pinned_image_digest_controls_cache_identity(tmp_path, monkeypatch):
     recorder = RecordingBackend()
-    register_step_backend("docker", recorder)
+    from shinobi.steps.dispatch import _STEP_BACKENDS
+
+    monkeypatch.setitem(_STEP_BACKENDS, "docker", recorder)
     cab = Cab(
         name="tool",
         command="tool",
@@ -624,14 +626,9 @@ def test_compute_cache_key_differs_for_different_params():
 
 
 def test_venvless_cache_key_is_unchanged_by_the_venv_field():
-    # Regression: a scope with no venv must key exactly as before the venv
-    # field existed, so existing cache entries survive the upgrade. The venv
-    # part is *conditionally appended* only when scope.venv is set, so a
-    # venv-less scope's `parts` list is byte-identical to the pre-venv code.
-    # This pins the resulting hash; if the append ever becomes unconditional,
-    # this fails.
+    # Cab-v2 identity includes Dosho argument semantics; absent venv adds no component.
     key = compute_cache_key(Cab(name="c", command="c", inputs_model=Inputs, outputs_model=Outputs), None, {"x": 1})
-    assert key == "f340d7de89951576429745e8ce95234d282934e42a577a54fce71084c9a87f08"
+    assert key == "7a794c59d08454e339d95383e57a96f17cc0b4983169edd87a52ba3c4cc85ca9"
 
 
 def test_venv_changes_cache_key():
@@ -1265,16 +1262,7 @@ def test_as_provenance_key_does_not_rename_an_already_named_state():
 
 
 def test_cache_key_digests_are_frozen():
-    """Golden test. Both digests were produced by the tree as it stood
-    *before* `ProvenanceKey` existed. Every entry in every existing user
-    workspace is named by one of these, so this pins the key scheme itself:
-    any change that moves a digest orphans all of them, and must be a
-    deliberate `key_version` bump rather than a side effect.
-
-    Deliberately built from fixed literals rather than a `tmp_path`
-    pipeline -- a boundary path contributes its own string to the key, so a
-    pipeline's digests move with the temp directory and cannot be frozen.
-    """
+    """Golden cab-v2 digests, deliberately changed for Dosho argument semantics."""
 
     class GoldenIn(BaseModel):
         x: int = 1
@@ -1282,8 +1270,8 @@ def test_cache_key_digests_are_frozen():
 
     cab = Cab(name="tool", command="tool", inputs_model=GoldenIn, outputs_model=Outputs, backend="record")
     prepared = {"x": 1, "name": "field"}
-    assert compute_cache_key(cab, None, prepared) == "0dbb77c832de0bf2a0b7357b7190c75466fc03c90ae18495a66579ef347261f6"
-    assert compute_cache_key(cab, None, prepared, {"x": "deadbeef"}) == "5c08eefff35469b8ec76f0c4bcb702ef7908a38fbfda91ce3bdd3c7ed31606b2"
+    assert compute_cache_key(cab, None, prepared) == "6c11c7c091273c66e73f565d3871b75b71151b8a38ff58ccb4185f8790c0fca7"
+    assert compute_cache_key(cab, None, prepared, {"x": "deadbeef"}) == "305d9bc7416f1d2706f0d9f6910f731d6ae4777f510cd22daf74fbd907df17a4"
 
 
 def test_producer_field_threads_across_a_nested_recipe_boundary(tmp_path):
@@ -1481,7 +1469,7 @@ def test_call_level_cache_off_outranks_a_steps_own_cache_true(tmp_path, monkeypa
     assert calls == [1, 1, 1]
 
 
-def test_subtable_writer_contract_migration_preserves_other_keys(tmp_path, monkeypatch):
+def test_subtable_writer_contract_migration_preserves_non_cab_keys(tmp_path, monkeypatch):
     from shinobi import DatasetAccess, DatasetColumns, MSv2
     from shinobi.dataset_access import DatasetTable
 
@@ -1490,14 +1478,19 @@ def test_subtable_writer_contract_migration_preserves_other_keys(tmp_path, monke
         column: str = "CUSTOM"
 
     def cab(accesses):
-        return Cab(name="columns", command="columns", inputs_model=DatasetInputs, outputs_model=Outputs, dataset_accesses=accesses)
+        from shinobi import Scope
+
+        return Scope(name="columns", inputs_model=DatasetInputs, outputs_model=Outputs, dataset_accesses=accesses)
+
+    def operation():
+        pass
 
     prepared = {"ms": tmp_path / "absent.ms", "column": "CUSTOM"}
-    legacy = compute_cache_key(cab([]), None, prepared)
+    legacy = compute_cache_key(cab([]), operation, prepared)
     main = DatasetAccess(field="ms", mode="read", columns=DatasetColumns(read=("DATA",)))
-    assert compute_cache_key(cab([main]), None, prepared) == legacy
+    assert compute_cache_key(cab([main]), operation, prepared) == legacy
     antenna_read = main.model_copy(update={"table": DatasetTable.ANTENNA})
-    assert compute_cache_key(cab([antenna_read]), None, prepared) == legacy
+    assert compute_cache_key(cab([antenna_read]), operation, prepared) == legacy
     writer = DatasetAccess(field="ms", table="ANTENNA", mode="write", columns=DatasetColumns(create=("{column}",)), allow_schema_change=True)
     # Capture the actual parts and reconstruct the exact historical key by
     # omitting only the newly conditional component.
@@ -1512,14 +1505,14 @@ def test_subtable_writer_contract_migration_preserves_other_keys(tmp_path, monke
         return dumps(parts, **kwargs)
 
     monkeypatch.setattr(cache.json, "dumps", capture)
-    key = compute_cache_key(cab([writer]), None, prepared)
+    key = compute_cache_key(cab([writer]), operation, prepared)
     parts = captured[-1]
     old_parts = [part for part in parts if not (isinstance(part, list) and part and part[0] == "__msv2_subtable_columns_v1__")]
     old_key = hashlib.sha256(dumps(old_parts, default=str, sort_keys=True).encode()).hexdigest()
     assert key != old_key
     # Contract changes and resolved runtime parameters both affect the new key.
-    assert key != compute_cache_key(cab([writer.model_copy(update={"columns": DatasetColumns(create=("OTHER",))})]), None, prepared)
-    assert key != compute_cache_key(cab([writer]), None, {**prepared, "column": "OTHER"})
+    assert key != compute_cache_key(cab([writer.model_copy(update={"columns": DatasetColumns(create=("OTHER",))})]), operation, prepared)
+    assert key != compute_cache_key(cab([writer]), operation, {**prepared, "column": "OTHER"})
 
 
 def test_subtable_writer_cache_key_retains_indexed_producer_identity(tmp_path):
@@ -1540,7 +1533,7 @@ def test_subtable_writer_cache_key_retains_indexed_producer_identity(tmp_path):
     assert key != compute_cache_key(changed_contract, None, prepared, {"ms": [ProvenanceKey("producer", "ms", 0)]})
 
 
-def test_present_subtable_rewrite_keys_complete_contract_and_preserves_false_vectors(tmp_path, monkeypatch):
+def test_present_subtable_rewrite_keys_complete_contract_and_preserves_non_cab_false_vectors(tmp_path, monkeypatch):
     import hashlib
     import json
 
@@ -1550,7 +1543,12 @@ def test_present_subtable_rewrite_keys_complete_contract_and_preserves_false_vec
         ms: MSv2
 
     def cab(accesses):
-        return Cab(name="rewrite", command="rewrite", inputs_model=DatasetInputs, outputs_model=Outputs, dataset_accesses=accesses)
+        from shinobi import Scope
+
+        return Scope(name="rewrite", inputs_model=DatasetInputs, outputs_model=Outputs, dataset_accesses=accesses)
+
+    def operation():
+        pass
 
     prepared = {"ms": tmp_path / "absent.ms"}
     main = DatasetAccess(field="ms", mode="write")
@@ -1564,13 +1562,13 @@ def test_present_subtable_rewrite_keys_complete_contract_and_preserves_false_vec
 
     monkeypatch.setattr(cache.json, "dumps", capture)
     for accesses in ([main], [main, subtable]):
-        key = compute_cache_key(cab(accesses), None, prepared)
+        key = compute_cache_key(cab(accesses), operation, prepared)
         parts = captured[-1]
         assert "allow_present_subtable_rewrite" not in dumps(parts, default=str)
         assert "__msv2_present_subtable_rewrite_v1__" not in dumps(parts, default=str)
         assert key == hashlib.sha256(dumps(parts, default=str, sort_keys=True).encode()).hexdigest()
         granted = main.model_copy(update={"allow_present_subtable_rewrite": True})
-        grant_key = compute_cache_key(cab([granted, *accesses[1:]]), None, prepared)
+        grant_key = compute_cache_key(cab([granted, *accesses[1:]]), operation, prepared)
         assert grant_key != key
         grant_parts = captured[-1]
         old = [part for part in grant_parts if not (isinstance(part, list) and part and part[0] == "__msv2_present_subtable_rewrite_v1__")]
@@ -1581,6 +1579,6 @@ def test_present_subtable_rewrite_keys_complete_contract_and_preserves_false_vec
                     declaration.pop("allow_present_subtable_rewrite", None)
         assert key == hashlib.sha256(dumps(old, default=str, sort_keys=True).encode()).hexdigest()
     granted = main.model_copy(update={"allow_present_subtable_rewrite": True})
-    key = compute_cache_key(cab([granted, subtable]), None, prepared)
-    assert key != compute_cache_key(cab([granted, subtable.model_copy(update={"columns": DatasetColumns(write=("POSITION",))})]), None, prepared)
-    assert key != compute_cache_key(cab([granted.model_copy(update={"allow_keyword_change": True}), subtable]), None, prepared)
+    key = compute_cache_key(cab([granted, subtable]), operation, prepared)
+    assert key != compute_cache_key(cab([granted, subtable.model_copy(update={"columns": DatasetColumns(write=("POSITION",))})]), operation, prepared)
+    assert key != compute_cache_key(cab([granted.model_copy(update={"allow_keyword_change": True}), subtable]), operation, prepared)

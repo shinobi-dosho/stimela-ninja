@@ -13,11 +13,11 @@ cd "$repo"
 uv sync --locked --python 3.12 --group dev --group examples
 
 if [[ "$lane" == main ]]; then
-    checkout=${RUNNER_TEMP:-/tmp}/dosho-compat-main
+    mkdir -p .work-cache
+    checkout=$repo/.work-cache/dosho-compat-main
     git clone --filter=blob:none https://github.com/shinobi-dosho/dosho "$checkout"
     echo "dosho main: $(git -C "$checkout" rev-parse HEAD)"
-    # --no-deps prevents dosho's optional shinobi requirement (and its dev
-    # source redirect) from replacing the editable checkout under test.
+    # Install the explicit candidate without re-resolving the locked environment.
     uv pip install --no-deps "$checkout"
     export DOSHO_COMPAT_CHECKOUT="$checkout"
 fi

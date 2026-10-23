@@ -428,8 +428,14 @@ def test_discover_lock_passes_over_a_uv_lock_with_no_pyproject(tmp_path):
     assert source.pyproject is None
 
 
-def test_discover_lock_finds_nothing_without_erroring(tmp_path):
-    """The normal state for `use` mode, and not a failure."""
+def test_discover_lock_finds_nothing_without_erroring(tmp_path, monkeypatch):
+    """The normal state for `use` mode, independent of the runner's ancestors."""
+    from pathlib import Path
+
+    is_file = Path.is_file
+    # --basetemp may be inside a checkout with its own lock. This test models
+    # a directory tree with no ancestor project, not the runner's real tree.
+    monkeypatch.setattr(Path, "is_file", lambda path: is_file(path) if path.is_relative_to(tmp_path) else False)
     assert discover_lock(tmp_path / "nothing-here.py") is None
 
 

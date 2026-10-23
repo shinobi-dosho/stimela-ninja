@@ -1,154 +1,19 @@
-"""Turn a cab's schema + resolved parameter values into a command line.
-
-Operates on the step-model `Cab`: the parameter *values* come from an
-already-validated `inputs_model` instance (or the prepared dict dispatch
-builds from it), while per-field naming/implicit metadata comes from the
-cab's `field_meta`, dynamically-named params from `input_patterns`, and
-arg formatting from `policies`.
-"""
+"""Compatibility adapter: normalize framework products, then format in Dosho."""
 
 from __future__ import annotations
-
-from typing import Any
-
+from dosho.validation.policies import build_argv as _build_argv, EXECUTABLE_FLAVOURS
+from dosho.validation.exceptions import UnsupportedFlavourError as DoshoFlavourError
 from shinobi.exceptions import UnsupportedFlavourError
-from shinobi.steps.schema import Cab
-
-# Flavours whose `command` is a real executable name, safe to hand to
-# subprocess as argv[0]. Everything else (cult-cargo's "python-code",
-# "casa-task", ...) has a `command` that is inline source or a dotted
-# function reference -- not something to run, let alone eval()/exec().
-EXECUTABLE_FLAVOURS = {"binary"}
+from shinobi.products import product_argv_value
 
 
-def _scalar_token(value: Any, policies) -> str:
-    """One scalar's argv spelling: a bool is the cab's `true_token`/
-    `false_token`, anything else is `str()`.
-
-    Every path that turns a value into a token goes through here, so a cab's
-    boolean policy holds wherever the value sits -- a list element, a
-    positional, one occurrence of a repeated flag -- and not only where a
-    scalar bool happened to be handled. Python's own `str(True)` is
-    `"True"`, which is neither the tool's spelling nor this module's
-    previous lowercase convention.
-    """
-    if isinstance(value, bool):
-        return policies.true_token if value else policies.false_token
-    return str(value)
+def build_argv(cab, resolved):
+    implicit = {name: meta.model_copy(update={"implicit": product_argv_value(meta.implicit)}) for name, meta in cab.field_meta.items()}
+    cab = cab.model_copy(update={"field_meta": implicit})
+    try:
+        return _build_argv(cab, {name: product_argv_value(value) for name, value in resolved.items()})
+    except DoshoFlavourError as exc:
+        raise UnsupportedFlavourError(str(exc)) from exc
 
 
-def _format_value(value: Any, policies) -> str:
-    if isinstance(value, (list, tuple)):
-        if policies.repeat == "[]":
-            return "[" + ",".join(_scalar_token(v, policies) for v in value) + "]"
-        return policies.list_sep.join(_scalar_token(v, policies) for v in value)
-    return _scalar_token(value, policies)
-
-
-def _emit_arg(argv: list[str], policies, arg_name: str, value: Any) -> None:
-    if policies.key_value:
-        # hydra-style single token, e.g. "input_ms.data_column=DATA" or
-        # "solver.terms=[K,G]" -- never a bare flag, even for a bool.
-        argv.append(f"{arg_name}={_format_value(value, policies)}")
-        return
-
-    if isinstance(value, bool):
-        # `explicit_*` decides whether a value token follows the flag at all;
-        # `true_token`/`false_token` decide what it says -- "true"/"false" for
-        # CubiCal, "0"/"1" for DDFacet/killMS, whose parser reads an
-        # unrecognised "false" as a (truthy) string. See `Policies`.
-        if value:
-            argv.append(arg_name)
-            if policies.explicit_true:
-                argv.append(policies.true_token)
-        elif policies.explicit_false:
-            argv.append(arg_name)
-            argv.append(policies.false_token)
-        return
-
-    if isinstance(value, (list, tuple)) and policies.repeat_list:
-        for item in value:
-            argv.append(arg_name)
-            argv.append(_scalar_token(item, policies))
-        return
-
-    argv.append(arg_name)
-    argv.append(_format_value(value, policies))
-
-
-def build_argv(cab: Cab, resolved: dict[str, Any]) -> list[str]:
-    """Build a full argv (starting with the cab's command) from a resolved
-    parameter dict, according to the cab's policies and field metadata.
-
-    Rejects any non-"binary" flavour before building argv -- so a
-    non-executable `command` can never reach subprocess as argv[0] (see
-    SECURITY.md).
-    """
-    if cab.flavour not in EXECUTABLE_FLAVOURS:
-        raise UnsupportedFlavourError(
-            f"cab '{cab.name}' has flavour '{cab.flavour}', which shinobi doesn't "
-            f"execute (only {sorted(EXECUTABLE_FLAVOURS)} today) -- its `command` "
-            f"is not an executable name and must not be run as one"
-        )
-
-    # A subcommand-style command (e.g. "simms telsim") is more than one
-    # argv token -- split it so subprocess execs the real binary, not a
-    # literal (and nonexistent) file named "simms telsim".
-    argv: list[str] = cab.command.split()
-    policies = cab.policies
-    declared = set(cab.inputs_model.model_fields)
-    positionals_head: list[str] = []
-    positionals_tail: list[str] = []
-    flags: list[str] = []
-
-    for name in cab.inputs_model.model_fields:
-        meta = cab.field_meta.get(name)
-        if meta is not None and meta.implicit is not None:
-            value: Any = meta.implicit
-        elif name in resolved:
-            value = resolved[name]
-        else:
-            continue
-        if value is None:
-            continue
-        from shinobi.products import product_argv_value
-
-        value = product_argv_value(value)
-        repeat_as_tokens = meta is not None and meta.repeat_as_tokens and isinstance(value, (list, tuple))
-        if meta is not None and (meta.positional or meta.positional_head):
-            positionals = positionals_head if meta.positional_head else positionals_tail
-            if repeat_as_tokens:
-                positionals.extend(_scalar_token(item, policies) for item in value)
-            else:
-                positionals.append(_format_value(value, policies))
-            continue
-        if repeat_as_tokens:
-            # One flag occurrence, then each item as its own bare token --
-            # e.g. wsclean's "-size 4096 4096"/"-weight briggs 0", not
-            # "-size 4096,4096" (one token, which the tool can't parse).
-            flags.append(policies.arg_name(cab.param_name(name)))
-            flags.extend(_scalar_token(item, policies) for item in value)
-            continue
-        _emit_arg(flags, policies, policies.arg_name(cab.param_name(name)), value)
-
-    # pattern-matched (dynamically-named) params, e.g. K.type/G.type
-    for name, value in resolved.items():
-        if name in declared or value is None:
-            continue
-        meta = cab.match_pattern(name)
-        if meta is None:
-            continue
-        arg = meta.nom_de_guerre or name
-        _emit_arg(flags, policies, policies.arg_name(arg), value)
-
-    # Head positionals (e.g. CubiCal/killMS's `parset`, real
-    # `policies: {positional_head: true}` in cult-cargo's own cubical.yml)
-    # come before every flag -- some tools only recognise a positional as
-    # their argv[1], not just any leftover non-flag token. Tail positionals
-    # (e.g. simms' "ms") come last, in field-declaration order -- matches
-    # how tools that mix flags with one positional arg are actually
-    # invoked (flags first, bare value last).
-    argv.extend(positionals_head)
-    argv.extend(flags)
-    argv.extend(positionals_tail)
-    return argv
+__all__ = ["build_argv", "EXECUTABLE_FLAVOURS"]

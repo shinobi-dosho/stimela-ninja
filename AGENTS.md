@@ -72,8 +72,8 @@ and `SECURITY.md`.
 - `Mutability.IMMUTABLE` protects Python objects, not files. Filesystem access
   is governed by `writable`, declared outputs, `write_path`, and dataset-access
   declarations.
-- Backend `run()` calls are blocking and return `BackendRun`. Keep argv
-  construction in `shinobi.policies`; backends receive ready-made argv.
+- Backend `run()` calls are blocking and return `BackendRun`. Keep framework normalization in `shinobi.policies` and argv
+  formatting in Dosho; backends receive ready-made argv.
 - The skip cache, mutation snapshots, reusable dataset states, ownership, and
   worker attempt records are distinct systems with distinct identities. Read
   `docs/concepts/provenance.rst`, `docs/concepts/states.rst`, and
@@ -128,3 +128,13 @@ Do not use an assistant `Co-authored-by:` trailer or email address. Pull
 request descriptions carry no assistant trailer; the commit already records
 provenance. The trailer never substitutes for a commit message explaining the
 decision and its consequences.
+
+## Cab ownership (v0.2.0b1)
+
+Dosho owns parameter schemas/validation, argument metadata, policies, patterns
+and validated-parameter-to-argv formatting. Shinobi depends on dosho[validation]
+and owns the declared framework types, DAG/wiring, scheduling, execution,
+filesystem enforcement, dataset lifecycle/recovery and caches. Generic schema
+algorithms belong in Dosho; Shinobi adapters supply trusted dtype bindings and
+validate inert framework declarations. Dosho validation must never import
+Shinobi. Base catalogue access needs neither Pydantic nor Shinobi.

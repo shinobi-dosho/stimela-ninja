@@ -320,3 +320,30 @@ Static outputs may use ``ProductFamily[File]`` or
 tables. Unknown family keys and unsupported member types are errors. A family
 output cannot also declare ``implicit`` or act as a same-named argv input.
 Loading these declarations never executes a tool or external schema function.
+
+Shared Dosho validation
+-----------------------
+
+From v0.2.0b1, Dosho owns the static compiler and argv formatter. Shinobi's
+public loaders adapt the resulting records into its existing ``Cab`` type.
+The approved ownership, security and release contract is recorded in
+:doc:`../design_cab_boundary`.
+
+Shinobi and Dosho's validation extra require Pydantic 2.14 or newer, including
+for threaded product-family handoffs. The currently tested Python 3.11–3.14 range is unchanged.
+
+The mandatory validation dependency also supplies reusable recipe input
+structures without introducing a recipe language:
+
+.. code-block:: python
+
+    from dosho.validation import build_model
+    from shinobi import Recipe
+
+    Inputs = build_model("Inputs", {"iterations": ("int", True, None)})
+    # Use Inputs as a Recipe's inputs_model; declare its DAG in Python.
+
+Use ``shinobi.loaders.build_model`` when the dtype names include framework
+contracts such as ``MSv2`` or ``ProductFamily[FITSImage]``; that adapter supplies
+the trusted type bindings. The bare Dosho compiler refuses unbound framework
+dtypes instead of silently weakening them.

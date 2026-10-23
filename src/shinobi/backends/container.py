@@ -22,7 +22,8 @@ The cab's *output* side is read the same way, because a tool's output stem is
 conventionally declared as a string-typed input (wsclean's ``prefix``) that
 contributes no path field of its own: the directories a path-typed output, a
 ``harvest`` pattern or a ``scratch`` pattern resolves to
-(``schema.declared_output_dirs``) are mounted read-write when absolute, so a
+(``schema.declared_output_dirs``) are anchored at the workdir when relative
+and mounted read-write even beneath a more-specific read-only parent, so a
 product written outside the workdir still reaches the host instead of dying
 with the container. ``scratch`` covers the same need for a write target that
 is not a product (a cache tree, a logfile): mounted identically, never
@@ -525,7 +526,7 @@ def _nearest_existing_dir(path: Path) -> Path | None:
 
 def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[tuple[str, bool]]:
     """`(path, writable)` for every bind mount: the parent directory of
-    each File/MS-valued input, plus every absolute directory the scope is
+    each File/MS-valued input, plus every directory the scope is
     *declared* to write into, plus the working directory itself (always
     writable). Order-preserving, de-duplicated.
 
@@ -553,7 +554,7 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
     already cover and, without the second source below, the tool would write
     into the container's own filesystem -- discarded silently on `docker run
     --rm`, and a hard failure on apptainer's read-only image. So every
-    absolute `schema.declared_output_dirs` entry (a path-typed output's
+    `schema.declared_output_dirs` entry (a path-typed output's
     resolved value or ``implicit`` template, a ``harvest`` pattern's literal
     prefix) is mounted read-write too. Dispatch prepares these directories
     before constructing mounts. Direct backend callers with an absent directory
@@ -633,9 +634,11 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
     scope_name = getattr(scope, "name", "<scope>")
 
     for outdir, source in declared_output_dirs(scope, inputs):
-        # Relative outputs land under the always-mounted workdir.
+        # A more-specific read-only input-parent mount can shadow workdir.
+        # Relative declarations need the same writer treatment as absolute ones.
         if not outdir.is_absolute():
-            continue
+            outdir = Path(workdir) / outdir
+        outdir = outdir.resolve()
         if str(outdir) in modes:
             modes[str(outdir)] = True  # writable wins, same as for inputs
             continue
@@ -643,7 +646,8 @@ def bind_dir_modes(scope: Scope, inputs: dict[str, Any], workdir: str) -> list[t
         # whether or not it exists yet. A read-only one is not skipped --
         # falling through mounts the write target itself (nested inside the
         # read-only parent, which keeps its own classification).
-        if any(outdir.is_relative_to(Path(d)) and w for d, w in modes.items()):
+        ancestors = [(Path(d), writable) for d, writable in modes.items() if outdir.is_relative_to(Path(d))]
+        if ancestors and max(ancestors, key=lambda item: len(item[0].parts))[1]:
             continue
         target = _nearest_existing_dir(outdir)
         if target is None:

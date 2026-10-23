@@ -169,3 +169,17 @@ recipe gets the same guarantee as a locally-run one.
 
 If you find a way around any of these guarantees, it's a security issue — please
 report it as above.
+
+## Static compiler ownership
+
+From v0.2.0b1 Dosho owns static cab parsing, parameter model generation and
+argv formatting. Its validation extra never imports Shinobi. Caller-supplied
+trusted dtype bindings preserve strict framework annotations; known framework
+dtypes without bindings are refused. Framework declaration fragments are inert
+JSON until the Shinobi adapter validates its authoritative models.
+
+Composition never imports packages or evaluates commands or schema hooks.
+Package-root containment, cycle detection, unsupported-flavour refusal and
+explicit output/write declarations remain enforced. Detached Shinobi workers
+stage and digest both packages and validate frozen cab semantics. That source
+digest does not replace scientific cache, dataset or attempt identities.
