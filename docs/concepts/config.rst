@@ -19,7 +19,7 @@ Settings
 
     # ~/.shinobi/config.yml
     backend:
-      default: native            # default backend when none is specified
+      default: apptainer         # default backend when none is specified
       run_as_host_user: true     # docker/podman: run as host uid:gid, not root
       venv:                      # settings for the `venv` backend
         default: null            #   venv used when a step declares none (path or a name below)

@@ -4,6 +4,13 @@ from shinobi.backends.native import NativeBackend
 
 
 @pytest.fixture(autouse=True)
+def _native_test_backend(monkeypatch):
+    # Host-only tools and in-process Python fixtures should not require a
+    # container runtime. Tests of the production default clear this override.
+    monkeypatch.setenv("SHINOBI_BACKEND__DEFAULT", "native")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_run_manifests(tmp_path_factory, monkeypatch):
     # Run-manifest emission is on by default; point it at a throwaway dir so
     # the suite still exercises the path without writing into the repo.

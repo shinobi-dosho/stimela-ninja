@@ -548,18 +548,16 @@ def test_explicit_backend_arg_wins_over_everything():
 
 
 def test_falls_through_to_appconfig_default(tmp_path, monkeypatch):
+    from shinobi.steps.dispatch import _STEP_BACKENDS
+
     monkeypatch.delenv("SHINOBI_BACKEND__DEFAULT", raising=False)
     fallback = RecordingBackend()
-    register_step_backend("native", fallback)  # temporarily shadow "native"
-    try:
-        cab = Cab(name="tool", command="tool", inputs_model=Inputs, outputs_model=Outputs)
-        assert AppConfig.load(config_file=tmp_path / "missing.yml").backend.default == "native"
-        _dispatch(cab, None, x=1)
-        assert len(fallback.calls) == 1
-    finally:
-        from shinobi.steps.dispatch import _STEP_BACKENDS
-
-        _STEP_BACKENDS.pop("native", None)
+    monkeypatch.setitem(_STEP_BACKENDS, "apptainer", fallback)
+    monkeypatch.setattr(AppConfig, "_config_file", tmp_path / "missing.yml")
+    cab = Cab(name="tool", command="tool", inputs_model=Inputs, outputs_model=Outputs)
+    assert AppConfig.load().backend.default == "apptainer"
+    _dispatch(cab, None, x=1)
+    assert len(fallback.calls) == 1
 
 
 def test_two_decorated_functions_share_one_scope_run_independently():

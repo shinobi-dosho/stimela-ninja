@@ -7,7 +7,7 @@ from shinobi.config import AppConfig
 def test_defaults_when_no_file_or_env(tmp_path, monkeypatch):
     monkeypatch.delenv("SHINOBI_BACKEND__DEFAULT", raising=False)
     cfg = AppConfig.load(config_file=tmp_path / "missing.yml")
-    assert cfg.backend.default == "native"
+    assert cfg.backend.default == "apptainer"
     # Opt-out, not opt-in: root-by-default is Docker's own footgun.
     assert cfg.backend.run_as_host_user is True
 
@@ -20,12 +20,13 @@ def test_run_as_host_user_can_be_disabled(tmp_path, monkeypatch):
     assert cfg.backend.run_as_host_user is False
 
 
-def test_config_file_overrides_defaults(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend", ["docker", "native"])
+def test_config_file_overrides_defaults(tmp_path, monkeypatch, backend):
     monkeypatch.delenv("SHINOBI_BACKEND__DEFAULT", raising=False)
     config_file = tmp_path / "config.yml"
-    config_file.write_text("backend:\n  default: docker\n")
+    config_file.write_text(f"backend:\n  default: {backend}\n")
     cfg = AppConfig.load(config_file=config_file)
-    assert cfg.backend.default == "docker"
+    assert cfg.backend.default == backend
 
 
 def test_env_overrides_config_file(tmp_path, monkeypatch):

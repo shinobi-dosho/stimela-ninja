@@ -37,7 +37,7 @@ class VenvConfig(BaseModel):
 class BackendConfig(BaseModel):
     """Settings controlling which execution backend cabs run under."""
 
-    default: str = "native"
+    default: str = "apptainer"
     # Run docker/podman containers as the host UID/GID (`--user uid:gid`,
     # HOME=workdir) instead of root, so bind-mounted outputs come out
     # host-owned. Defaults to True -- unlike this file's other options,
@@ -107,8 +107,7 @@ class CacheConfig(BaseModel):
     """Settings controlling step-level skip-if-unchanged caching."""
 
     # Step-level skip-if-unchanged caching (shinobi.cache). Disabled by
-    # default -- same "opt-in, zero cost for existing users" shape as
-    # `backend.default`/`execution.max_workers`.
+    # default -- caching is opt-in, like parallel execution.
     enabled: bool = False
     dir: str = ".shinobi/cache"
     snapshots: SnapshotConfig = Field(default_factory=SnapshotConfig)

@@ -533,6 +533,32 @@ def test_log_level_rejects_unknown_name():
 # -- ninja --backend (main group) --
 
 
+@pytest.mark.parametrize("override", [None, "native"])
+def test_run_uses_apptainer_by_default_and_allows_native_override(tmp_path, monkeypatch, override):
+    from shinobi.backends.recording import RecordingBackend
+    from shinobi.steps.dispatch import _STEP_BACKENDS
+
+    monkeypatch.delenv("SHINOBI_BACKEND__DEFAULT", raising=False)
+    apptainer = RecordingBackend()
+    native = RecordingBackend()
+    monkeypatch.setitem(_STEP_BACKENDS, "apptainer", apptainer)
+    monkeypatch.setitem(_STEP_BACKENDS, "native", native)
+    target = tmp_path / "target.py"
+    target.write_text(
+        "from pydantic import BaseModel\n"
+        "from shinobi import Cab\n"
+        "class Empty(BaseModel): pass\n"
+        "tool = Cab(name='tool', command='tool', image='tool:1', inputs_model=Empty, outputs_model=Empty)\n"
+    )
+    args = ["--config", str(tmp_path / "missing.yml")]
+    if override:
+        args += ["--backend", override]
+    result = CliRunner().invoke(main, [*args, "run", f"{target}:tool"])
+    assert result.exit_code == 0, result.output
+    assert len(apptainer.calls) == (0 if override else 1)
+    assert len(native.calls) == (1 if override else 0)
+
+
 def test_backend_rejects_unknown_name_naming_the_alternatives():
     result = CliRunner().invoke(main, ["--backend", "quagga", "version"])
     assert result.exit_code != 0
