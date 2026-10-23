@@ -253,13 +253,13 @@ def _static_inputs(
     return kwargs
 
 
-def _require_static_write_declarations(name: str, scope: Scope, prepared: dict[str, Any]) -> None:
+def _require_static_write_declarations(name: str, scope: Scope, prepared: dict[str, Any], *, workspace: Path | None = None) -> None:
     """Refuse write targets absent from the frozen ownership/access plan."""
     from shinobi.steps.schema import _resolved_product_patterns, unset_optional_path
 
     missing = sorted(field for field in mutated_path_fields(scope) | write_path_fields(scope) if prepared.get(field) is None and not unset_optional_path(scope, prepared, field))
-    missing.extend(f"output {field!r}" for field in sorted(unresolved_output_path_fields(scope, prepared)))
-    missing.extend(source for source, pattern in _resolved_product_patterns(scope, prepared) if pattern is None)
+    missing.extend(f"output {field!r}" for field in sorted(unresolved_output_path_fields(scope, prepared, workspace=workspace)))
+    missing.extend(source for source, pattern in _resolved_product_patterns(scope, prepared, workspace=workspace) if pattern is None)
 
     if missing:
         raise OffloadCompileError(f"step '{name}' has a filesystem write declaration that isn't statically known at compile time: {', '.join(missing)}")
@@ -814,7 +814,7 @@ def _prepare_worker_slurm(
         unresolved_fits = set(fits_fields(scope.inputs_model)) & unresolved_inputs
         if unresolved_fits:
             raise DatasetLifecycleUnavailableError(f"step {frozen.name!r}: FITS worker accesses require statically resolved paths: {sorted(unresolved_fits)}")
-        _require_static_write_declarations(frozen.name, scope, known)
+        _require_static_write_declarations(frozen.name, scope, known, workspace=Path(pinned.workspace))
         generic_accesses = path_accesses(scope, known, workspace=Path(pinned.workspace))
         if any(meta.family for meta in scope.field_meta.values()):
             from shinobi.steps.dispatch import _snapshot_product_inputs

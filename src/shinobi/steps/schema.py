@@ -645,13 +645,13 @@ def _resolved_output_path_values(scope: Scope, prepared: dict[str, Any]) -> Iter
         yield name, values.get(name), name in values
 
 
-def unresolved_output_path_fields(scope: Scope, prepared: dict[str, Any]) -> set[str]:
+def unresolved_output_path_fields(scope: Scope, prepared: dict[str, Any], *, workspace: Path | None = None) -> set[str]:
     """Path-output fields whose declaration cannot be resolved pre-run.
 
     A resolved ``None`` or empty collection is deliberately not unresolved:
     those are valid declarations of no product for optional/list outputs.
     """
-    planned = family_plans(scope, prepared, Path.cwd(), best_effort=True)
+    planned = family_plans(scope, prepared, workspace or Path.cwd(), best_effort=True)
     return {name for name, _value, resolved in _resolved_output_path_values(scope, prepared) if not resolved and name not in planned}
 
 

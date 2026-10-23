@@ -405,7 +405,7 @@ def contained_access_issues(
                 issues.append(f"scope {leaf.name!r} {qualifier} the MSv2 closure: " + ", ".join(map(str, overlaps)))
 
         output_paths = path_fields(leaf.outputs_model) - dataset_outputs
-        unresolved_outputs = sorted(unresolved_output_path_fields(leaf, known) - dataset_outputs)
+        unresolved_outputs = sorted(unresolved_output_path_fields(leaf, known, workspace=root) - dataset_outputs)
         if unresolved_outputs:
             issues.append(f"scope {leaf.name!r} has unresolved generic path output(s): {', '.join(unresolved_outputs)}")
         for name in sorted(output_paths):

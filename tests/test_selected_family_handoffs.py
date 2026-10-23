@@ -94,6 +94,8 @@ def test_unknown_discovered_ambiguous_or_invalid_selection_stays_unresolved(tmp_
 
 
 def test_selected_paths_join_ownership_and_access_planning(tmp_path, monkeypatch):
+    (tmp_path / "caller").mkdir()
+    monkeypatch.chdir(tmp_path / "caller")
     root = tmp_path / "obs.ms"
     root.mkdir()
     (root / "table.dat").write_text("raw")
@@ -131,6 +133,8 @@ def test_capture_can_make_a_finite_selection_ambiguous(tmp_path):
 
 
 def test_selected_output_inside_the_ms_is_still_refused(tmp_path, monkeypatch):
+    (tmp_path / "caller").mkdir()
+    monkeypatch.chdir(tmp_path / "caller")
     root = tmp_path / "obs.ms"
     root.mkdir()
     (root / "table.dat").write_text("raw")
