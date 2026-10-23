@@ -13,13 +13,15 @@ shinobi's cab schema uses the scabha dialect, also used by Stimela 2.0.
 It supports the same vocabulary --
 ``inputs``/``outputs`` with ``dtype``/``required``/``default``/``info``/
 ``choices``, plus ``policies``, ``management.wranglers``, ``image``,
-``flavour`` and ``command``. The loader translates static cab definitions into
-shinobi objects; recipes are declared separately in Python.
+``flavour`` and ``command``. Dosho parses and compiles the static schema;
+Shinobi validates framework declarations and adapts the result into a ``Cab``.
+Recipes are declared separately in Python.
 
 `cult-cargo <https://github.com/caracal-pipeline/cult-cargo>`_ is the largest
-published library of cabs written in this dialect, and is what the loader is
-usually pointed at -- but the dialect is scabha's, and nothing in the loader is
-specific to that project.
+published library of cabs written in this dialect. Dosho supplies maintained
+static ports, including tools whose cult-cargo definitions depend on executable
+schema generation. The dialect is scabha's, and the compatibility loader is
+not specific to either catalogue.
 
 :func:`shinobi.loaders.yaml_cab.load_file` reads a YAML file and returns a
 ``{name: Cab}`` mapping:
@@ -216,6 +218,17 @@ not change string fields into filesystem paths. Invalid regexes, non-string
 dtypes and dynamic parameter attrs with this key are rejected at load time.
 Python-authored models use ordinary pydantic constrained fields.
 
+Length constraints
+------------------
+
+Static cab and worker/config fields accept ``min_length`` and ``max_length``
+for strings and containers using ordinary Pydantic constraints. Bounds must
+be nonnegative integers, with minimum no greater than maximum. Defaults are
+validated too. For example, ``dtype: List[str]``, ``default: []``,
+``nullable: false`` and ``max_length: 0`` permit only an empty list. Length
+constraints are retained when freezing worker schemas. Dynamic parameter attrs
+cannot declare these constraints.
+
 Stimela classic parameter files
 --------------------------------
 
@@ -326,7 +339,7 @@ Shared Dosho validation
 
 From v0.2.0b1, Dosho owns the static compiler and argv formatter. Shinobi's
 public loaders adapt the resulting records into its existing ``Cab`` type.
-The approved ownership, security and release contract is recorded in
+The current ownership, security and compatibility contract is recorded in
 :doc:`../design_cab_boundary`.
 
 Shinobi and Dosho's validation extra require Pydantic 2.14 or newer, including
@@ -347,3 +360,8 @@ Use ``shinobi.loaders.build_model`` when the dtype names include framework
 contracts such as ``MSv2`` or ``ProductFamily[FITSImage]``; that adapter supplies
 the trusted type bindings. The bare Dosho compiler refuses unbound framework
 dtypes instead of silently weakening them.
+
+The ``dosho-cab-v1`` provider dialect requires the 0.2 Shinobi adapter. Legacy
+third-party ``yaml_cab`` and ``stimela-classic`` documents remain supported.
+Dosho's ``get`` and ``define_cab`` bridges construct runnable objects lazily;
+the old ``dosho[run]`` installation extra is retired.

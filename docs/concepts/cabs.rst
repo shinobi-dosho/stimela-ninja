@@ -6,6 +6,14 @@ task -- a single command with an inputs/outputs schema and *policies* for
 turning parameters into a CLI invocation. It is the fundamental unit of work: a
 recipe is just cabs (and other steps) wired together.
 
+Dosho owns parameter schema generation, the common policy and metadata models,
+and validated-parameter-to-argv formatting. Shinobi supplies framework types
+and validates their declarations before constructing the executable ``Cab``.
+The existing ``shinobi.steps`` metadata imports remain supported: ``Policies``
+is shared with Dosho, while ``ParamMeta``, ``ParamPattern`` and ``ParamSegment``
+extend Dosho models with typed framework contracts. Continue to use these
+Shinobi types when declaring product families. See :doc:`../design_cab_boundary`.
+
 Defining a cab in Python
 -------------------------
 
@@ -60,8 +68,14 @@ loaders use, :func:`shinobi.loaders.build_model`, builds one from a
     inputs = build_model("MaskInputs", {"restored_image": ("File", True, None)})
     outputs = build_model("MaskOutputs", {"mask": ("File", False, None)})
 
-``File`` and ``MS`` dtypes are meaningful beyond typing: the container and
-cluster backends inspect them to decide which paths to bind-mount.
+This Shinobi adapter delegates model generation to Dosho and supplies trusted
+framework dtype bindings. For plain configuration schemas,
+``dosho.validation.build_model`` is available without importing Shinobi.
+Use the Shinobi helper for ``MSv2``, ``FITSImage`` and product-family dtypes.
+
+``File`` and legacy ``MS`` map to path annotations, which container and cluster
+backends inspect to decide which paths to bind-mount. ``MSv2`` additionally
+declares a strict dataset contract; ``MS`` remains path-only.
 
 .. _declaring-where-a-tool-writes:
 
@@ -254,9 +268,11 @@ See :doc:`results` for a complete example and the
 Loading cabs from YAML
 ----------------------
 
-You do not have to define cabs in Python. Existing `cult-cargo
-<https://github.com/caracal-pipeline/cult-cargo>`_ YAML is loaded as-is -- see
-:doc:`loaders`.
+You do not have to define cabs in Python. Static `cult-cargo
+<https://github.com/caracal-pipeline/cult-cargo>`_ YAML can use the compatibility
+loader, subject to its documented limits: ``dynamic_schema`` is never executed
+and only binary flavours run. Prefer Dosho's maintained definitions for tools
+with dynamic upstream schemas. See :doc:`loaders`.
 
 Inspecting a cab
 ----------------

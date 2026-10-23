@@ -165,12 +165,29 @@ locally with:
 
 ```bash
 uv sync --group docs
-uv run sphinx-build -b html docs docs/_build/html
+uv run sphinx-build -E -n -W --keep-going -b html docs docs/_build/html
 ```
 
 Please update the docs when you change public API. If you add a documentation
 dependency, keep `docs/requirements.txt` in sync with the `docs` dependency
 group in `pyproject.toml` (Read the Docs installs from the former).
+
+### Cab ownership and paired changes
+
+From 0.2.0b1, Dosho owns generic parameter schemas/validation, policies,
+patterns and argv formatting. Shinobi owns framework types, DAG wiring,
+execution, filesystem enforcement, dataset lifecycle and caches. Put shared
+schema algorithms in Dosho; Shinobi adapters supply trusted dtype bindings
+and validate inert framework declarations.
+
+Shinobi requires `dosho[validation]>=0.2.0b1,<0.3` and Pydantic >=2.14.
+Its compatibility CI checks both the locked Dosho release and fresh Dosho main.
+For coordinated changes, dispatch `.github/workflows/cab-candidate-pair.yml`
+with an exact `dosho-ref`; it builds explicit wheels for both projects and
+checks their installed origins before testing. Dosho also runs its full
+integration suite and docs against Ninja main automatically, with an optional
+`ninja-ref` override for candidate testing. See the maintained
+[cab ownership contract](https://stimela-ninja.readthedocs.io/en/latest/design_cab_boundary.html).
 
 ## Pull requests
 

@@ -25,15 +25,16 @@ Installation
 
 Requires Python 3.11 or newer::
 
-    pip install stimela-ninja
+    pip install git+https://github.com/shinobi-dosho/stimela-ninja.git
 
-This installs the ``ninja`` command and the importable ``shinobi`` package.
-For the companion task library::
+This installs the ``ninja`` command, the importable ``shinobi`` package, and
+``dosho[validation]>=0.2.0b1,<0.3`` for task schemas and argument formatting.
+Shinobi and Dosho validation require Pydantic 2.14 or newer. These docs describe the 0.2
+source tree; the latest published Shinobi release is still 0.1.0. Dosho
+0.2.0b1 is published and installed by the source requirement.
 
-    pip install dosho
-
-External tools must be installed locally or available through the container
-or cluster backend you use. See the `installation guide
+Apptainer is the default execution backend. External tools must be installed
+locally or available through the container or cluster backend you use. See the `installation guide
 <https://stimela-ninja.readthedocs.io/en/latest/installation.html>`_.
 
 Quick start
@@ -52,8 +53,10 @@ Save this minimal Python step as ``myrecipe.py``:
 
 Run it from the command line; the function parameters become CLI options::
 
-    ninja run myrecipe.py:greet --name astronomer
+    ninja --backend native run myrecipe.py:greet --name astronomer
 
+The ``native`` override runs this Python function on the host. Containerized
+cabs use Apptainer by default and require an image and the runtime on ``PATH``.
 For an imaging workflow that combines multiple tools, follow the
 `pipeline tutorial <https://stimela-ninja.readthedocs.io/en/latest/quickstart.html>`_.
 
