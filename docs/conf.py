@@ -71,6 +71,11 @@ _QUALIFY_XREFS = {
 # Second, names with nothing to link to anywhere -- which is why these are
 # ignored rather than documented or qualified.
 nitpick_ignore = [
+    # Dosho 0.2 validation types are external; their inventory is not published yet.
+    ("py:class", "dosho.validation.schema.ParamMeta"),
+    ("py:class", "dosho.validation.schema.ParamPattern[ParamMeta]"),
+    ("py:class", "dosho.validation.schema.ParamSegment[ParamMeta]"),
+    ("py:class", "dosho.validation.compiled.CompiledCab"),
     # pydantic-settings' internal type aliases. They appear in the settings
     # source signatures shinobi.config overrides, but are absent from every
     # published inventory.

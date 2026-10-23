@@ -150,6 +150,8 @@ class DatasetAccess(BaseModel):
     be inferred from its path (notably an externally stored subtable).
     ``reservation`` is a canonicalizable path envelope used when the dataset
     path is produced dynamically and is therefore unknown during planning.
+    ``exclusive`` reserves a READ closure against every concurrent access.
+    It does not grant writes, writable mounts or mutation recovery.
     ``allow_present_subtable_rewrite`` grants an explicit MAIN writer backing-
     file rewrites of supported subtables present before execution and still
     linked at the same path afterward; table schema authority stays explicit.
@@ -160,6 +162,7 @@ class DatasetAccess(BaseModel):
     field: str
     mode: DatasetMode
     table: DatasetTable = DatasetTable.MAIN
+    exclusive: bool = Field(default=False, strict=True, exclude_if=lambda value: not value)
     columns: DatasetColumns | None = None
     selection: DatasetSelection | None = None
     allow_row_count_change: bool = False
@@ -173,6 +176,8 @@ class DatasetAccess(BaseModel):
     @model_validator(mode="after")
     def _consistent(self) -> "DatasetAccess":
         columns = self.columns
+        if self.exclusive and self.mode is not DatasetMode.READ:
+            raise ValueError("exclusive is only meaningful for READ access; writers already require exclusivity")
         if self.allow_present_subtable_rewrite and (self.mode is not DatasetMode.WRITE or self.table is not DatasetTable.MAIN):
             raise ValueError("allow_present_subtable_rewrite requires a MAIN write access")
         if self.mode is DatasetMode.READ:
@@ -277,6 +282,11 @@ class ResolvedDatasetAccess(BaseModel):
     @property
     def writes(self) -> bool:
         return self.mode is not DatasetMode.READ
+
+    @property
+    def requires_exclusive(self) -> bool:
+        """Ownership strength, independently of permission to mutate bytes."""
+        return self.writes or self.declaration.exclusive
 
 
 def scope_has_dataset_contract(scope: Any) -> bool:
@@ -770,7 +780,7 @@ class ResolvedAccessPlanner:
         accesses: list[tuple[Path, bool, str]] = []
         for access in datasets:
             label = _access_label(access)
-            accesses.extend((resource, access.writes, label) for resource in access.resources)
+            accesses.extend((resource, access.requires_exclusive, label) for resource in access.resources)
         for path, writes in generic:
             # The dataset declaration is authoritative for its closure and
             # descendants.  A generic access to a parent, however, covers
@@ -879,7 +889,7 @@ def plan_recipe_accesses(
 
     from shinobi.graph import RecipeGraph, build_graph
     from shinobi.ownership import _model_values
-    from shinobi.steps.schema import Recipe, static_output_values, static_wiring_values
+    from shinobi.steps.schema import Recipe, planned_output_values, static_wiring_values
 
     if recipe.dataset_accesses:
         raise DatasetAccessError(f"recipe {recipe.name!r} declares dataset access metadata; attach access to the atomic steps that touch the dataset")
@@ -947,7 +957,9 @@ def plan_recipe_accesses(
 
             return [
                 access
-                for leaf, leaf_inputs, _unresolved in _resolved_leaf_inputs(ref.step, inputs, step_inputs={}, validated_steps=snapshots, unresolved_inputs=unresolved_fields)
+                for leaf, leaf_inputs, _unresolved in _resolved_leaf_inputs(
+                    ref.step, inputs, step_inputs={}, validated_steps=snapshots, unresolved_inputs=unresolved_fields, workspace=root
+                )
                 for access in path_accesses(leaf, leaf_inputs, workspace=root)
             ]
 
@@ -983,7 +995,7 @@ def plan_recipe_accesses(
                     resources = [*generic, *dataset_workspace_accesses(decision.datasets)]
                     resources_by_slice.append(resources)
                     slice_plans.append(decision)
-        outputs_for_step = {} if ref.scatter is not None else static_output_values(ref.step, known, unresolved_inputs=unresolved_fields)
+        outputs_for_step = {} if ref.scatter is not None else planned_output_values(ref.step, known, workspace=root, unresolved_inputs=unresolved_fields)
         if strict_scatter:
             _validate_scatter_collisions(ref.name, resources_by_slice)
             parents = {parent for one in slice_plans for parent in one.dependencies}
@@ -1029,7 +1041,7 @@ def dataset_workspace_accesses(accesses: Iterable[ResolvedDatasetAccess]) -> lis
     merged: dict[Path, bool] = {}
     for access in accesses:
         for resource in access.resources:
-            merged[resource] = merged.get(resource, False) or access.writes
+            merged[resource] = merged.get(resource, False) or access.requires_exclusive
     return list(merged.items())
 
 

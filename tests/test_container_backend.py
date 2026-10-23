@@ -885,3 +885,35 @@ def test_cgroup_failure_hint_names_cause_and_remedy(stderr, delegate):
 def test_cgroup_failure_hint_stays_out_of_unrelated_failures():
     assert container.cgroup_failure_hint("Segmentation fault (core dumped)", "apptainer") is None
     assert container.cgroup_failure_hint("wsclean: error: no such file or directory", "apptainer") is None
+
+
+@pytest.mark.parametrize("backend", [DockerBackend, ApptainerBackend])
+@pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("exists", [False, True])
+def test_declared_sibling_writes_under_shadowed_workdir(backend, relative, exists, tmp_path):
+    products = tmp_path / "products"
+    products.mkdir()
+    ms = products / "obs.ms"
+    ms.mkdir()
+    output = products / "images"
+    scratch = products / "scratch"
+    if exists:
+        output.mkdir()
+        scratch.mkdir()
+    cab = make_readonly_input_cab().model_copy(update={"scratch": ["{prefix}-scratch/*"]})
+    prefix = output / "image"
+    value = str(prefix.relative_to(tmp_path) if relative else prefix)
+    inputs = {"ms": str(ms), "prefix": value}
+    mounts = bind_dir_modes(cab, inputs, str(tmp_path))
+
+    def effective(path):
+        applicable = [(Path(root), writable) for root, writable in mounts if path.is_relative_to(Path(root))]
+        return max(applicable, key=lambda item: len(item[0].parts))[1]
+
+    assert effective(ms) is False
+    assert effective(output) is True
+    assert effective(Path(str(prefix) + "-scratch")) is True
+    argv, _ = backend(workdir=str(tmp_path))._wrap(cab, ["tool"], inputs)
+    flag = "-v" if backend is DockerBackend else "--bind"
+    bindings = [argv[i + 1] for i, token in enumerate(argv) if token == flag]
+    assert all(f"{root}:{root}" + ("" if writable else ":ro") in bindings for root, writable in mounts)

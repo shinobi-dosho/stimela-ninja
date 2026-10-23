@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import model_serializer, JsonValue, ValidationError, model_validator
+from pydantic import Field, model_serializer, JsonValue, ValidationError, model_validator
 
 from shinobi import __version__
 from shinobi.backends.venv import resolve_venv
@@ -70,6 +70,7 @@ class ScopeSpec(WireModel):
     inputs: ModelSpec
     outputs: ModelSpec
     settings: dict[str, JsonValue]
+    cab_semantics: JsonValue = Field(default=None, exclude_if=lambda value: value is None)
 
     @classmethod
     def capture(cls, scope: Scope) -> ScopeSpec:
@@ -88,7 +89,10 @@ class ScopeSpec(WireModel):
         settings.pop("fits_accesses", None)
         if scope.fits_accesses:
             settings["fits_accesses"] = scope.fits_accesses
+        from shinobi.cache import cab_semantic_identity
+
         return cls(
+            cab_semantics=cab_semantic_identity(scope) if type(scope) is Cab else None,
             kind=kinds[type(scope)],
             inputs=ModelSpec.capture(scope.inputs_model),
             outputs=ModelSpec.capture(scope.outputs_model),
@@ -101,7 +105,13 @@ class ScopeSpec(WireModel):
         unknown = self.settings.keys() - (constructor.model_fields.keys() - forbidden)
         if unknown:
             raise BundleError(f"unsupported scope settings: {sorted(unknown)}")
-        return constructor(inputs_model=self.inputs.restore(), outputs_model=self.outputs.restore(), **{k: unpack(v) for k, v in self.settings.items()})
+        scope = constructor(inputs_model=self.inputs.restore(), outputs_model=self.outputs.restore(), **{k: unpack(v) for k, v in self.settings.items()})
+        if self.kind == "cab" and self.cab_semantics is not None:
+            from shinobi.cache import cab_semantic_identity
+
+            if cab_semantic_identity(scope) != self.cab_semantics:
+                raise BundleError("cab schema/formatter semantics differ from the frozen bundle")
+        return scope
 
 
 class Binding(WireModel):
@@ -154,7 +164,7 @@ class FrozenStep(WireModel):
 
 
 class RecipeBundle(WireModel):
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[1, 2, 3] = 1
     worker_protocol: Literal[1] = 1
     shinobi_version: str = __version__
     workspace: str
@@ -174,8 +184,14 @@ class RecipeBundle(WireModel):
             raise BundleError("a bundle needs an absolute shared workspace and a recipe root")
         recipe = self.declaration()
         family_features = uses_products(recipe)
-        if self.schema_version != (2 if family_features else 1):
-            raise BundleError("family declarations/selections require bundle schema version 2; ordinary bundles retain version 1")
+        cab_scopes = [step.scope for step in self.steps if step.scope.kind == "cab"]
+        if self.schema_version == 3:
+            if not cab_scopes or any(scope.cab_semantics is None for scope in cab_scopes):
+                raise BundleError("bundle schema version 3 requires frozen semantics for every cab")
+        elif any(scope.cab_semantics is not None for scope in cab_scopes):
+            raise BundleError("frozen cab semantics require bundle schema version 3")
+        elif self.schema_version != (2 if family_features else 1):
+            raise BundleError("family declarations/selections require bundle schema version 2; ordinary historical bundles retain version 1")
         has_datasets = scope_tree_has_dataset_contract(recipe) or scope_tree_has_fits_contract(recipe)
         if has_datasets != (self.execution_blocked_reason is not None):
             raise BundleError("dataset-bearing bundles must carry their compute-lifecycle preparation marker")
@@ -329,7 +345,7 @@ def freeze_recipe(
     )
     family_features = uses_products(recipe)
     return RecipeBundle(
-        schema_version=2 if family_features else 1,
+        schema_version=3 if any(scope.kind == "cab" for scope in scopes) else 2 if family_features else 1,
         workspace=str(workspace.resolve()),
         recipe=root,
         inputs=pack(prepared),

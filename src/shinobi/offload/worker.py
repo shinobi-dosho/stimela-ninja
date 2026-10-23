@@ -49,8 +49,8 @@ from shinobi.snapshots import faults, mutation_paths, reconcile
 from shinobi.storage import SharedFileLock
 from shinobi.steps.dispatch import _dispatch, _prepare_inputs
 from shinobi.steps.loops import passthrough_result, should_skip
-from shinobi.steps.pyfunc import _make_adapter
-from shinobi.steps.schema import InputRef, OutputRef, Scope, declared_output_dirs
+from shinobi.steps.pyfunc import PystepCallable, _make_adapter
+from shinobi.steps.schema import InputRef, OutputRef, Scope, StepRef, declared_output_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -511,6 +511,13 @@ def _callable(submission_dir: Path, index: int, bundle: RecipeBundle):
     obj = module
     for part in frozen.code.qualname.split("."):
         obj = getattr(obj, part)
+    if isinstance(obj, StepRef):
+        if not isinstance(obj.func, PystepCallable):
+            raise BundleError(f"staged pystep {frozen.code.module}.{frozen.code.qualname} is not a declared Python computation")
+        # Importing a module-level @pystep binds a StepRef, while the bundle
+        # captures its original function. Rebuild only the runtime adapter;
+        # the frozen scope remains authoritative for backend and schemas.
+        obj = obj.func.__wrapped__
     if not callable(obj):
         raise BundleError(f"staged pystep {frozen.code.module}.{frozen.code.qualname} is not callable")
     setattr(obj, "__shinobi_staged_code_root__", str(source_root))
@@ -1006,7 +1013,7 @@ def _execute_step_invocation(
                 from shinobi.ownership import planned_leaf_inputs
 
                 declaration = bundle.declaration()
-                snapshots = planned_leaf_inputs(declaration, unpack(bundle.inputs))
+                snapshots = planned_leaf_inputs(declaration, unpack(bundle.inputs), workspace=Path(bundle.workspace))
                 planned_inputs = snapshots.get(id(declaration.steps[index]))
                 if planned_inputs is not None and any(meta.family for meta in scope.field_meta.values()):
                     from shinobi.steps.dispatch import _snapshot_product_inputs

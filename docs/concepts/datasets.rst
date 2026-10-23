@@ -865,3 +865,24 @@ inputs and other workflow FITS roots retain nested read-only mounts unless the
 current leaf owns their writes. Contradictory declarations, missing parents,
 filesystem-root mounts and absent non-owned targets exposed through a writable
 parent refuse before launch. The planner never creates placeholder inputs.
+
+Exclusive read reservations
+---------------------------
+
+``DatasetAccess(mode="read", exclusive=True, ...)`` reserves the complete
+canonical MS closure against every concurrent access, including linked
+external subtables. It grants no write permission: backend mounts remain
+read-only, mutation-cache gates and scientific snapshots remain inactive.
+The default false field is omitted from serialized records, preserving ordinary
+read contracts. WRITE and CREATE already require exclusivity and reject this
+redundant option. Unknown paths still require a bounded reservation.
+
+Workspace claims must be at least as strong as the resolved access. An
+exclusive claim covers an ordinary read; a shared claim never covers an
+exclusive read. Access planner hazard labels describe reservation conflicts,
+so a write-labelled hazard for an exclusive read does not imply byte mutation.
+
+Flagversions backup and delete use this contract with separately owned history
+bundles and ``cache: false``. Partial sidecar updates are not scientifically
+rolled back by MS snapshots; failed operations have no committed result, and
+the sidecar may require inspection or manual repair.

@@ -198,6 +198,18 @@ cannot be selected twice. Selection supplies no runtime graph nodes or array
 slicing. Whole-family argv inputs emit member paths using ordinary cab list
 policies; bundle inputs emit their physical roots.
 
+For a non-scattered cab, planning can fix the canonical path of a uniquely
+selected finite file candidate when the family inputs are known. This lets
+an MS workflow wire selected imaging products into ordinary ``Path`` readers
+without a mixed authoritative MS/FITS lifecycle. It does not fabricate a
+resolved family or promise the candidate will be emitted: execution still
+selects from the producer's observed members and fails if the product is absent.
+Discovery rules must be excluded by the selector's constant coordinates or
+coordinate types. A selection that could match a discovered member, an
+ambiguous selection, unknown family inputs, whole families, bundles and
+Python-returned families remain runtime-dependent. Gathered scatter families
+retain their existing restrictions.
+
 Cache and worker boundaries
 ---------------------------
 

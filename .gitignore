@@ -247,3 +247,6 @@ examples/*.qc/
 
 # shinobi run-time output (cache, run manifests)
 .shinobi/
+
+# Disposable task artifacts
+.work-cache/

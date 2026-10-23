@@ -185,7 +185,12 @@ def _static_output_ref_value(source: OutputRef, resolved_outputs: dict[str, dict
     outputs = resolved_outputs.get(source.step)
     if outputs is None or source.field not in outputs:
         return _UNRESOLVED_OUTPUT
-    return outputs[source.field]
+    from shinobi.products import UnresolvedProductReference, resolve_planned_reference
+
+    try:
+        return resolve_planned_reference(outputs[source.field], source.selection)
+    except UnresolvedProductReference:
+        return _UNRESOLVED_OUTPUT
 
 
 def _static_inputs(
@@ -248,19 +253,13 @@ def _static_inputs(
     return kwargs
 
 
-def _require_static_write_declarations(name: str, scope: Scope, prepared: dict[str, Any]) -> None:
+def _require_static_write_declarations(name: str, scope: Scope, prepared: dict[str, Any], *, workspace: Path | None = None) -> None:
     """Refuse write targets absent from the frozen ownership/access plan."""
+    from shinobi.steps.schema import _resolved_product_patterns, unset_optional_path
 
-    missing = sorted(field for field in mutated_path_fields(scope) | write_path_fields(scope) if prepared.get(field) is None)
-    missing.extend(f"output {field!r}" for field in sorted(unresolved_output_path_fields(scope, prepared)))
-
-    present = {field: value for field, value in prepared.items() if value is not None}
-    for kind, patterns in (("harvest", scope.harvest), ("scratch", scope.scratch)):
-        for pattern in patterns:
-            try:
-                pattern.format(**present)
-            except Exception:  # noqa: BLE001 -- the authoritative error names the declaration below
-                missing.append(f"{kind} pattern {pattern!r}")
+    missing = sorted(field for field in mutated_path_fields(scope) | write_path_fields(scope) if prepared.get(field) is None and not unset_optional_path(scope, prepared, field))
+    missing.extend(f"output {field!r}" for field in sorted(unresolved_output_path_fields(scope, prepared, workspace=workspace)))
+    missing.extend(source for source, pattern in _resolved_product_patterns(scope, prepared, workspace=workspace) if pattern is None)
 
     if missing:
         raise OffloadCompileError(f"step '{name}' has a filesystem write declaration that isn't statically known at compile time: {', '.join(missing)}")
@@ -493,6 +492,7 @@ class WorkerSubmissionError(BackendError):
 def _stage_worker(submission_dir: Path, worker_python: Path):
     """Freeze the installed Shinobi package that prepares this submission."""
     import shinobi
+    import dosho
 
     from shinobi.backends.venv import digest_of_dists, freeze_dists
     from shinobi.offload.code import source_tree_digest
@@ -503,6 +503,7 @@ def _stage_worker(submission_dir: Path, worker_python: Path):
     package = Path(shinobi.__file__).resolve().parent
     source_root = submission_dir / "worker-src"
     shutil.copytree(package, source_root / "shinobi", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copytree(Path(dosho.__file__).resolve().parent, source_root / "dosho", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     distributions = freeze_dists(worker_python)
     python_version, platform_tag = _worker_python_identity(worker_python)
     return WorkerEnvironment(
@@ -758,7 +759,7 @@ def _prepare_worker_slurm(
     from shinobi.dataset_access import scope_has_dataset_contract
     from shinobi.ownership import _resolved_leaf_inputs
 
-    for leaf, known, unresolved in _resolved_leaf_inputs(recipe, unpack(pinned.inputs), step_inputs={}):
+    for leaf, known, unresolved in _resolved_leaf_inputs(recipe, unpack(pinned.inputs), step_inputs={}, workspace=Path(pinned.workspace)):
         if scope_has_dataset_contract(leaf):
             if unresolved and leaf.derived_reads:
                 raise ValueError("auxiliary mutation offload requires resolved declarations and is unsupported in v1")
@@ -815,7 +816,7 @@ def _prepare_worker_slurm(
         unresolved_fits = set(fits_fields(scope.inputs_model)) & unresolved_inputs
         if unresolved_fits:
             raise DatasetLifecycleUnavailableError(f"step {frozen.name!r}: FITS worker accesses require statically resolved paths: {sorted(unresolved_fits)}")
-        _require_static_write_declarations(frozen.name, scope, known)
+        _require_static_write_declarations(frozen.name, scope, known, workspace=Path(pinned.workspace))
         generic_accesses = path_accesses(scope, known, workspace=Path(pinned.workspace))
         if any(meta.family for meta in scope.field_meta.values()):
             from shinobi.steps.dispatch import _snapshot_product_inputs
@@ -864,7 +865,9 @@ def _prepare_worker_slurm(
             error=OffloadCompileError,
         )
         jobs.append(SlurmJob(name=frozen.name, script=script, depends_on=depends_on, access_reasons=access_reasons))
-        resolved_outputs[frozen.name] = static_output_values(scope, known, unresolved_inputs=unresolved_inputs)
+        from shinobi.steps.schema import planned_output_values
+
+        resolved_outputs[frozen.name] = planned_output_values(scope, known, workspace=Path(pinned.workspace), unresolved_inputs=unresolved_inputs)
 
     ownership_required = scope_requires_ownership(recipe)
     declares_writes = scope_declares_writes(recipe)

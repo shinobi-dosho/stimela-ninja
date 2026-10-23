@@ -1302,7 +1302,9 @@ def _dispatch(
                 from shinobi.ownership import _resolved_leaf_inputs
                 from shinobi.dataset_lifecycle import _claimed_for
 
-                for leaf, values, _ in _resolved_leaf_inputs(scope, validated_inputs, step_inputs={}, validated_steps=leaf_inputs, known_steps=known_steps):
+                for leaf, values, _ in _resolved_leaf_inputs(
+                    scope, validated_inputs, step_inputs={}, validated_steps=leaf_inputs, known_steps=known_steps, workspace=launch_workspace
+                ):
                     for read in derived_reads(leaf, values, launch_workspace):
                         if read.mutable and read.member == "file":
                             if not _claimed_for(lease.owner, read.path, True):

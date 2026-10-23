@@ -1,0 +1,47 @@
+name: Cab candidate pair
+on:
+  workflow_dispatch:
+    inputs:
+      dosho-ref:
+        description: Exact compatible Dosho candidate ref
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  pair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/checkout@v7
+        with:
+          repository: shinobi-dosho/dosho
+          ref: ${{ inputs.dosho-ref }}
+          path: .work-cache/dosho-candidate
+      - name: Build and install explicit wheel pair
+        run: |
+          mkdir -p .work-cache/pair/tmp
+          export TMPDIR="$PWD/.work-cache/pair/tmp"
+          export UV_CACHE_DIR="$PWD/.work-cache/pair/cache"
+          pair_wheels=$(mktemp -d "$PWD/.work-cache/pair/wheels.XXXXXXXX")
+          uv venv
+          uv build --wheel --out-dir "$pair_wheels"
+          uv build --wheel --directory .work-cache/dosho-candidate --out-dir "$pair_wheels"
+          uv pip install "$pair_wheels"/*.whl pytest astropy
+          uv run --no-sync python - <<'PY'
+          import importlib.metadata as metadata
+          import tomllib
+          import shinobi, dosho
+          assert "site-packages" in shinobi.__file__ and "site-packages" in dosho.__file__
+          from pathlib import Path
+          for package, source in (("stimela-ninja", Path.cwd()), ("dosho", Path(".work-cache/dosho-candidate"))):
+              expected = tomllib.loads((source / "pyproject.toml").read_text())["project"]["version"]
+              assert metadata.version(package) == expected
+          PY
+      - name: Verify candidate contracts
+        run: |
+          uv run --no-sync pytest -q -o pythonpath= tests/test_dosho_boundary.py tests/test_dosho_compat.py tests/test_yaml_cab_loader.py tests/test_policies.py tests/test_offload_bundle.py tests/test_offload_worker.py
+          uv run --no-sync pytest -q -o pythonpath= .work-cache/dosho-candidate/tests

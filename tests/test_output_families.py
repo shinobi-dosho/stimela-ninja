@@ -267,7 +267,7 @@ def test_worker_freeze_restore_and_legacy_gate(tmp_path):
     from shinobi.config import AppConfig
 
     bundle = freeze_recipe(recipe, {}, workspace=tmp_path, config=AppConfig())
-    assert bundle.schema_version == 2
+    assert bundle.schema_version == 3
     restored = RecipeBundle.model_validate_json(bundle.model_dump_json()).declaration()
     assert restored.steps[0].step.outputs_model.model_fields["image"].annotation is ProductFamily[Path]
     assert restored.output_wiring["image"].selection == recipe.output_wiring["image"].selection

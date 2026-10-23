@@ -368,14 +368,106 @@ def _hash_path(path: Path) -> Any:
     return result
 
 
+def cab_semantic_identity(cab: Cab) -> Any:
+    """Versioned command/schema/formatter identity for executable cabs only."""
+    from dosho.validation import SCHEMA_CONTRACT_VERSION, FORMATTER_CONTRACT_VERSION
+
+    argument_fields = {"nom_de_guerre", "positional", "positional_head", "repeat_as_tokens"}
+
+    def argument_meta(meta, *, declared=False):
+        data = meta.model_dump(mode="python", include=argument_fields, exclude_defaults=True)
+        if declared and meta.implicit is not None:
+            # Presence overrides caller values even when the formatter emits no
+            # tokens (for example an implicit false flag or empty repeated list).
+            data["implicit"] = True
+        return data
+
+    from shinobi.policies import build_argv
+
+    input_meta = {name: meta for name, meta in cab.field_meta.items() if name in cab.inputs_model.model_fields}
+    # Ask the real formatter for each implicit field's tokens, rather than serializing
+    # Python values whose mapping order/types can affect their argv spelling.
+    # This is static identity data, not executable argv: omit the command and
+    # use binary formatting even for unsupported flavours. The original flavour
+    # remains in the identity; dispatch still refuses it through build_argv.
+    # Keep field boundaries: resolved positional inputs may be interleaved
+    # between implicit fields, even when concatenated implicit tokens coincide.
+    implicit_argv = [
+        [name, build_argv(cab.model_copy(update={"command": "", "flavour": "binary", "field_meta": {name: input_meta[name]}}), {})]
+        for name in cab.inputs_model.model_fields
+        if name in input_meta and input_meta[name].implicit is not None
+    ]
+
+    patterns = []
+    for pattern in cab.input_patterns:
+        segments = [
+            {"regex": segment.regex, "attrs": None if segment.attrs is None else {name: argument_meta(meta) for name, meta in segment.attrs.items()}}
+            for segment in pattern.segments
+        ]
+        patterns.append({"separator": pattern.separator, "segments": segments})
+
+    policies = cab.policies.model_dump(mode="python")
+    if policies["replace"]:
+        # Replacement order changes the resulting flag spelling.
+        policies["replace"] = list(cab.policies.replace.items())
+    declaration = [
+        "cab-v2",
+        SCHEMA_CONTRACT_VERSION,
+        FORMATTER_CONTRACT_VERSION,
+        cab.command,
+        cab.flavour,
+        policies,
+        {name: argument_meta(meta, declared=True) for name, meta in input_meta.items() if argument_meta(meta, declared=True)},
+        implicit_argv,
+        patterns,
+        list(cab.inputs_model.model_fields),
+    ]
+
+    # Access semantics are independent of argv, but determine whether a cached
+    # executable may run concurrently and which inputs the backend protects.
+    # Keep ordinary no-contract identities and output-only product declarations
+    # unchanged. Pattern order matters because the first matching attr wins.
+    from shinobi.steps.schema import readonly_path_fields
+    from shinobi.loaders._modelgen import is_file_dtype
+
+    readonly = sorted(readonly_path_fields(cab.inputs_model, cab.field_meta))
+    access_patterns = []
+    has_readonly_pattern = False
+    for pattern in cab.input_patterns:
+        segments = []
+        for segment in pattern.segments:
+            attrs = None
+            if segment.attrs is not None:
+                attrs = {}
+                for name, meta in segment.attrs.items():
+                    path_like = meta.dtype is not None and is_file_dtype(meta.dtype)
+                    protected = path_like and meta.writable is False
+                    has_readonly_pattern |= protected
+                    attrs[name] = {"path": path_like, "readonly": protected}
+            segments.append({"regex": segment.regex, "attrs": attrs})
+        access_patterns.append({"separator": pattern.separator, "segments": segments})
+    if cab.dataset_accesses or cab.fits_accesses or readonly or has_readonly_pattern:
+        declaration.append(
+            [
+                "cab-access-v1",
+                [access.model_dump(mode="json") for access in cab.dataset_accesses],
+                [access.model_dump(mode="json") for access in cab.fits_accesses],
+                readonly,
+                access_patterns if has_readonly_pattern else [],
+            ]
+        )
+
+    return json.loads(json.dumps(declaration, sort_keys=True, default=str))
+
+
 def _identity(scope: Scope, func: Callable | None) -> Any:
     """The non-parameter part of a step's cache key: what tool/code is
     actually being run. A step with its own orchestration function
     (a `@shinobi.pystep`'s bare `Scope`, or any `@shinobi.step`-wrapped
     scope with a custom `func`) is keyed by that function's own source --
     editing the function's implementation correctly invalidates every
-    cache entry that used it. A plain `Cab` (`func is None`) is keyed by
-    its `command`/`flavour`.
+    cache entry that used it. A `Cab` also includes its command and argument
+    semantics, whether dispatched directly or through that function.
 
     `@shinobi.pystep`'s own `func` is a generic adapter closure (defined
     once in `steps/pyfunc.py`) wrapping the actual decorated function --
@@ -390,9 +482,10 @@ def _identity(scope: Scope, func: Callable | None) -> Any:
             source = inspect.getsource(real_func)
         except (OSError, TypeError):
             source = repr(real_func)
-        return ["func", source]
+        identity = ["func", source]
+        return [*identity, cab_semantic_identity(scope)] if isinstance(scope, Cab) else identity
     if isinstance(scope, Cab):
-        return ["cab", scope.command, scope.flavour]
+        return cab_semantic_identity(scope)
     raise TypeError(f"no cacheable identity for a bare Scope with no func ({scope.name!r})")
 
 
@@ -591,6 +684,8 @@ def compute_cache_key(
     execution = execution or ExecutionIdentity()
     image_identity = execution.image_digest or scope.image
     code_identity = ["code", execution.code_digest] if execution.code_digest else _identity(scope, func)
+    if execution.code_digest and isinstance(scope, Cab):
+        code_identity.append(cab_semantic_identity(scope))
     parts: list[Any] = [image_identity, code_identity]
     # Appended conditionally rather than seeded into `parts`: a venv-less
     # scope keys byte-identically to before this field existed, so its cache
