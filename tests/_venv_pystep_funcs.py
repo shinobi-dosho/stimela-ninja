@@ -10,10 +10,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from pydantic import BaseModel
+from shinobi import pystep
 
 
 class MagicOut(BaseModel):
     value: int
+
+
+@pystep()
+def decorated_plus_one(n: int) -> MagicOut:
+    return MagicOut(value=n + 1)
 
 
 def use_venv_only_pkg(n: int) -> MagicOut:

@@ -68,6 +68,8 @@ compute-node compatibility. They are separate from the version-pinned worker
 environment and remain **unpinned**, even with a package-version digest.
 
 For pysteps, supply explicit ``code_roots=(Path(...),)`` Python import roots.
+Module-level ``@pystep`` definitions are restored from their original function;
+the frozen bundle supplies their execution scope, backend and schemas.
 The bundle captures the source module, package initializers and local helpers
 reachable through literal imports, without importing those modules. Use
 ``include_modules=("package.helper",)`` for dynamically selected local helpers.
