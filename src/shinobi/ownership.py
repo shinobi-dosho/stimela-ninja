@@ -39,7 +39,7 @@ from shinobi.steps.schema import (
     path_accesses,
     path_fields,
     paths_overlap,
-    static_output_values,
+    planned_output_values,
     static_wiring_values,
     unresolved_output_path_fields,
     write_path_fields,
@@ -139,6 +139,7 @@ def _resolved_leaf_inputs(
     unresolved_inputs: set[str] | None = None,
     validated_steps: dict[int | tuple[int, ...], tuple[BaseModel, bool]] | None = None,
     known_steps: dict[int | tuple[int, ...], dict[str, Any]] | None = None,
+    workspace: Path | None = None,
 ) -> Iterable[tuple[Scope, dict[str, Any], set[str]]]:
     """Yield each leaf with the inputs knowable at a workflow boundary.
 
@@ -222,6 +223,7 @@ def _resolved_leaf_inputs(
                     unresolved_inputs=unresolved_fields,
                     known_steps=nested_known,
                     validated_steps=_slice_descendants(validated_steps, id(ref), slice_index),
+                    workspace=workspace,
                 )
                 step_inputs.update({(*key, *(nested_key if isinstance(nested_key, tuple) else (nested_key,))): value for nested_key, value in nested_steps.items()})
                 if known_steps is not None:
@@ -241,7 +243,7 @@ def _resolved_leaf_inputs(
         if known_steps is not None:
             known_steps[id(ref)] = {name: value for name, value in known.items() if name not in unresolved_fields}
         if not isinstance(ref.step, Recipe) and ref.scatter is None:
-            outputs[ref.name] = static_output_values(ref.step, known, unresolved_inputs=unresolved_fields)
+            outputs[ref.name] = planned_output_values(ref.step, known, workspace=workspace or Path.cwd(), unresolved_inputs=unresolved_fields)
         yield from _resolved_leaf_inputs(
             ref.step,
             validated if validated is not None and not runtime_dependent else known,
@@ -250,6 +252,7 @@ def _resolved_leaf_inputs(
             unresolved_inputs=unresolved_fields,
             validated_steps=validated_steps,
             known_steps=known_steps,
+            workspace=workspace,
         )
 
 
@@ -273,7 +276,7 @@ def scope_path_accesses(
     from shinobi.dataset_access import ResolvedAccessPlanner, dataset_workspace_accesses
 
     planner = ResolvedAccessPlanner(workspace)
-    for index, (leaf, known, unresolved) in enumerate(_resolved_leaf_inputs(scope, values, step_inputs=step_inputs, known_steps=known_steps)):
+    for index, (leaf, known, unresolved) in enumerate(_resolved_leaf_inputs(scope, values, step_inputs=step_inputs, known_steps=known_steps, workspace=workspace)):
         if leaf.derived_reads:
             from shinobi.derived import derived_reads
 
@@ -346,6 +349,7 @@ def contained_access_issues(
         values,
         step_inputs=step_inputs,
         validated_steps=validated_steps,
+        workspace=root,
     ):
         dataset_inputs = set(executable_dataset_fields(leaf.inputs_model))
         dataset_outputs = set(executable_dataset_fields(leaf.outputs_model))
@@ -429,7 +433,7 @@ def contained_access_issues(
     return tuple(dict.fromkeys(issues))
 
 
-def planned_leaf_inputs(scope: Scope, values: dict[str, Any] | BaseModel) -> dict[int | tuple[int, ...], dict[str, Any]]:
+def planned_leaf_inputs(scope: Scope, values: dict[str, Any] | BaseModel, *, workspace: Path | None = None) -> dict[int | tuple[int, ...], dict[str, Any]]:
     """Reconstruct claim-time input snapshots from immutable declaration data.
 
     Unlike ownership discovery, this does not inspect datasets or plan access
@@ -440,7 +444,7 @@ def planned_leaf_inputs(scope: Scope, values: dict[str, Any] | BaseModel) -> dic
     as validated execution models.
     """
     snapshots: dict[int | tuple[int, ...], dict[str, Any]] = {}
-    for _leaf in _resolved_leaf_inputs(scope, values, step_inputs={}, known_steps=snapshots):
+    for _leaf in _resolved_leaf_inputs(scope, values, step_inputs={}, known_steps=snapshots, workspace=workspace):
         pass
     return snapshots
 

@@ -484,6 +484,50 @@ def family_plans(scope, inputs, cwd, *, best_effort=False):
     return plans
 
 
+class UnresolvedProductReference(ValueError):
+    """A declaration cannot fix the selected path before membership is observed."""
+
+
+def resolve_planned_reference(value, selection):
+    """Resolve a reference without fabricating an observed product family.
+
+    Finite cab candidates can fix a selected file path even when that file
+    has not been emitted. Discovery rules must be provably excluded by the
+    selector; whole families, bundles and ambiguous selections stay unknown.
+    Runtime wiring still selects from the producer's observed members.
+    """
+    if not isinstance(value, FamilyPlan):
+        return resolve_reference(value, selection)
+    if selection is None or value.member_type is DirectoryBundle:
+        raise UnresolvedProductReference("family membership is runtime-dependent")
+    for name, coordinate in selection.items():
+        if name not in value.spec.coordinates:
+            raise UnresolvedProductReference("unknown coordinate")
+        try:
+            value.spec.validate_coordinate(name, coordinate)
+        except ValueError as exc:
+            raise UnresolvedProductReference(str(exc)) from exc
+
+    def matches(coordinates):
+        return all(name in coordinates and type(coordinates[name]) is type(coordinate) and coordinates[name] == coordinate for name, coordinate in selection.items())
+
+    for rule in value.active_rules:
+        if not rule.captures:
+            continue
+        # A discovery rule is excluded only by a missing coordinate, a
+        # conflicting constant or a capture of a different declared type.
+        if all(
+            (name in rule.coordinates and type(rule.coordinates[name]) is type(coordinate) and rule.coordinates[name] == coordinate)
+            or (name in rule.captures and rule.captures[name] == type(coordinate).__name__)
+            for name, coordinate in selection.items()
+        ):
+            raise UnresolvedProductReference("selection may match discovered members")
+    candidates = [candidate for candidate in value.candidates if matches(candidate.coordinates)]
+    if len(candidates) != 1:
+        raise UnresolvedProductReference("selection is unavailable or ambiguous")
+    return candidates[0].path.resolve()
+
+
 def family_annotation(annotation):
     from typing import get_args, get_origin, Annotated, Union
     import types

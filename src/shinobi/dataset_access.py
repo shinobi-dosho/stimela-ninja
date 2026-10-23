@@ -879,7 +879,7 @@ def plan_recipe_accesses(
 
     from shinobi.graph import RecipeGraph, build_graph
     from shinobi.ownership import _model_values
-    from shinobi.steps.schema import Recipe, static_output_values, static_wiring_values
+    from shinobi.steps.schema import Recipe, planned_output_values, static_wiring_values
 
     if recipe.dataset_accesses:
         raise DatasetAccessError(f"recipe {recipe.name!r} declares dataset access metadata; attach access to the atomic steps that touch the dataset")
@@ -983,7 +983,7 @@ def plan_recipe_accesses(
                     resources = [*generic, *dataset_workspace_accesses(decision.datasets)]
                     resources_by_slice.append(resources)
                     slice_plans.append(decision)
-        outputs_for_step = {} if ref.scatter is not None else static_output_values(ref.step, known, unresolved_inputs=unresolved_fields)
+        outputs_for_step = {} if ref.scatter is not None else planned_output_values(ref.step, known, workspace=root, unresolved_inputs=unresolved_fields)
         if strict_scatter:
             _validate_scatter_collisions(ref.name, resources_by_slice)
             parents = {parent for one in slice_plans for parent in one.dependencies}

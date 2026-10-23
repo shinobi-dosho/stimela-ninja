@@ -1006,7 +1006,7 @@ def _execute_step_invocation(
                 from shinobi.ownership import planned_leaf_inputs
 
                 declaration = bundle.declaration()
-                snapshots = planned_leaf_inputs(declaration, unpack(bundle.inputs))
+                snapshots = planned_leaf_inputs(declaration, unpack(bundle.inputs), workspace=Path(bundle.workspace))
                 planned_inputs = snapshots.get(id(declaration.steps[index]))
                 if planned_inputs is not None and any(meta.family for meta in scope.field_meta.values()):
                     from shinobi.steps.dispatch import _snapshot_product_inputs

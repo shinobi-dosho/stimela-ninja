@@ -185,7 +185,12 @@ def _static_output_ref_value(source: OutputRef, resolved_outputs: dict[str, dict
     outputs = resolved_outputs.get(source.step)
     if outputs is None or source.field not in outputs:
         return _UNRESOLVED_OUTPUT
-    return outputs[source.field]
+    from shinobi.products import UnresolvedProductReference, resolve_planned_reference
+
+    try:
+        return resolve_planned_reference(outputs[source.field], source.selection)
+    except UnresolvedProductReference:
+        return _UNRESOLVED_OUTPUT
 
 
 def _static_inputs(
@@ -864,7 +869,9 @@ def _prepare_worker_slurm(
             error=OffloadCompileError,
         )
         jobs.append(SlurmJob(name=frozen.name, script=script, depends_on=depends_on, access_reasons=access_reasons))
-        resolved_outputs[frozen.name] = static_output_values(scope, known, unresolved_inputs=unresolved_inputs)
+        from shinobi.steps.schema import planned_output_values
+
+        resolved_outputs[frozen.name] = planned_output_values(scope, known, workspace=Path(pinned.workspace), unresolved_inputs=unresolved_inputs)
 
     ownership_required = scope_requires_ownership(recipe)
     declares_writes = scope_declares_writes(recipe)

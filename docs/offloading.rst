@@ -786,7 +786,12 @@ subclasses. Coordinate-bearing produced states and recursive bundle inventories
 use attempt-record version 4. Old scalar and indexed-MS records remain readable.
 
 Selections resolve after the producing dependency commits, against its saved
-member table. The legacy argv compiler refuses families and selections because
+member table. Planning reserves the exact path when a selector uniquely fixes
+a finite cab file candidate and excludes discovery matches. The consumer still
+receives an observed member at execution; a missing product fails the selection.
+Local ownership and worker preparation use the same selection proof. Unknown,
+ambiguous, discovered and whole-family references remain runtime-dependent.
+The legacy argv compiler refuses families and selections because
 it cannot preserve post-execution membership/evidence. Remote stores and
 store-relative subresources remain gated. See :doc:`concepts/products`.
 

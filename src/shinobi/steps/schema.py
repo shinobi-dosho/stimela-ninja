@@ -33,7 +33,7 @@ from shinobi.fits_access import FITSAccess, validate_scope_fits_accesses
 from shinobi.exceptions import ParameterError
 from shinobi.derived import DerivedRead, derived_reads, validate_derived_read_scope
 from shinobi.resources import Resources
-from shinobi.products import _family_declaration_is_relative, Coordinate, FamilySpec, family_annotation, family_plans, framework_type, iter_product_paths, resolve_reference
+from shinobi.products import _family_declaration_is_relative, Coordinate, FamilySpec, family_annotation, family_plans, framework_type, iter_product_paths
 
 
 class Mutability(str, Enum):
@@ -559,7 +559,12 @@ def static_wiring_values(
             if isinstance(item, InputRef) and item.field in recipe_inputs and item.field not in unresolved_inputs:
                 found.append(recipe_inputs[item.field])
             elif isinstance(item, OutputRef) and item.field in outputs.get(item.step, {}):
-                found.append(resolve_reference(outputs[item.step][item.field], item.selection))
+                from shinobi.products import UnresolvedProductReference, resolve_planned_reference
+
+                try:
+                    found.append(resolve_planned_reference(outputs[item.step][item.field], item.selection))
+                except UnresolvedProductReference:
+                    break
             else:
                 break
         if len(found) == len(sources):
@@ -609,6 +614,19 @@ def static_output_values(
             values[name] = model_field.default
         elif call_default_factories and model_field.default_factory is not None:
             values[name] = model_field.get_default(call_default_factory=True)
+    return values
+
+
+def planned_output_values(scope: Scope, prepared: dict[str, Any], *, workspace: Path, unresolved_inputs: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:
+    """Static outputs plus private cab plans usable only for finite selection.
+
+    A plan is not a ProductFamily and carries no observed membership. Python
+    steps and gathered scatter families retain runtime-only output values.
+    """
+    values = static_output_values(scope, prepared, unresolved_inputs=unresolved_inputs)
+    if isinstance(scope, Cab):
+        known = {name: value for name, value in prepared.items() if name not in unresolved_inputs}
+        values.update(family_plans(scope, known, workspace, best_effort=True))
     return values
 
 
