@@ -2,6 +2,16 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      dosho-ref:
+        description: Compatible Dosho source ref (use an exact candidate SHA before merge)
+        type: string
+        default: main
+  workflow_call:
+    inputs:
+      dosho-ref:
+        type: string
+        default: main
   schedule:
     - cron: "17 3 * * *"
   push:
@@ -25,6 +35,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Checkout explicit Dosho candidate
+        uses: actions/checkout@v7
+        with:
+          repository: shinobi-dosho/dosho
+          ref: ${{ inputs.dosho-ref || 'main' }}
+          path: .work-cache/dosho-candidate
+
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
@@ -44,14 +61,19 @@ jobs:
       # examples/ were never checked, so nobody could trust the bare command.
       # The formatter is checked for the same reason: it was never enforced,
       # and two files had quietly drifted out of formatted shape.
+      - name: Install locked dependencies and candidate wheels
+        run: |
+          uv sync --python ${{ matrix.python-version }} --locked --group dev
+          bash .github/scripts/install-candidate-pair.sh .work-cache/dosho-candidate
+
       - name: Lint (ruff)
-        run: uv run --python ${{ matrix.python-version }} --locked --group dev ruff check .
+        run: uv run --no-sync ruff check .
 
       - name: Format (ruff)
-        run: uv run --python ${{ matrix.python-version }} --locked --group dev ruff format --check .
+        run: uv run --no-sync ruff format --check .
 
       - name: Run tests
-        run: uv run --python ${{ matrix.python-version }} --locked --group dev pytest -q
+        run: uv run --no-sync pytest -q -o pythonpath=
 
   docs:
     if: github.event_name != 'schedule'
@@ -62,6 +84,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Checkout explicit Dosho candidate
+        uses: actions/checkout@v7
+        with:
+          repository: shinobi-dosho/dosho
+          ref: ${{ inputs.dosho-ref || 'main' }}
+          path: .work-cache/dosho-candidate
+
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
@@ -70,11 +99,15 @@ jobs:
       - name: Install Python 3.12
         run: uv python install 3.12
 
-      # The same command as the release workflow's docs job, which gates
-      # publishing. Building it here too means a dangling cross-reference fails
-      # the pull request that introduced it, not the release tag.
+      # Source CI tests explicit candidate wheels. Release docs keep the
+      # published dependency gate and do not use this overlay.
+      - name: Install locked documentation dependencies and candidate wheels
+        run: |
+          uv sync --python 3.12 --locked --group docs
+          bash .github/scripts/install-candidate-pair.sh .work-cache/dosho-candidate
+
       - name: Build documentation
-        run: uv run --python 3.12 --locked --group docs sphinx-build -E -n -W --keep-going -b html docs docs/_build/html
+        run: uv run --no-sync sphinx-build -E -n -W --keep-going -b html docs docs/_build/html
 
   casacore:
     name: Measurement Set integration (Python ${{ matrix.python-version }})
@@ -87,6 +120,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Checkout explicit Dosho candidate
+        uses: actions/checkout@v7
+        with:
+          repository: shinobi-dosho/dosho
+          ref: ${{ inputs.dosho-ref || 'main' }}
+          path: .work-cache/dosho-candidate
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -101,9 +141,14 @@ jobs:
       - name: Resolve latest msutils release
         run: uv lock --upgrade-package msutils
 
+      - name: Install all locked inspectors and candidate wheels
+        run: |
+          uv sync --python ${{ matrix.python-version }} --locked --group dev --group measurement-set --extra fits-contract
+          bash .github/scripts/install-candidate-pair.sh .work-cache/dosho-candidate
+
       - name: Verify optional inspector installation
         run: |
-          uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set python - <<'PY'
+          uv run --no-sync python - <<'PY'
           import importlib.metadata as metadata
 
           print({"msutils": metadata.version("msutils")}, flush=True)
@@ -117,23 +162,23 @@ jobs:
       # one fixture test and leaving the closure/access cases silently skipped
       # in the ordinary matrix.
       - name: Run real CASA-table model, closure, and access tests
-        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set pytest -q tests/test_datasets.py tests/test_dataset_closure.py tests/test_dataset_access.py
+        run: uv run --no-sync pytest -q -o pythonpath= tests/test_datasets.py tests/test_dataset_closure.py tests/test_dataset_access.py
 
       # The mutation lifecycle's observations, signatures and rollbacks are
       # only meaningful against real tables; the main job skips this file.
       - name: Run strict MSv2 lifecycle tests against real tables
-        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set pytest -q tests/test_dataset_mutation.py tests/test_dataset_lifecycle.py::test_real_casacore_contained_read_when_available tests/test_dataset_lists.py tests/test_dataset_list_writes.py tests/test_offload_dataset_lifecycle.py tests/test_contained_products.py tests/test_yaml_datasets.py tests/test_derived_mutations_live.py tests/test_derived_restart_live.py
+        run: uv run --no-sync pytest -q -o pythonpath= tests/test_dataset_mutation.py tests/test_dataset_lifecycle.py::test_real_casacore_contained_read_when_available tests/test_dataset_lists.py tests/test_dataset_list_writes.py tests/test_offload_dataset_lifecycle.py tests/test_contained_products.py tests/test_yaml_datasets.py tests/test_derived_mutations_live.py tests/test_derived_restart_live.py
 
       # FITS is optional in the ordinary matrix. Qualify its real scanner,
       # lifecycle and MS product gates here with both optional stacks present.
       - name: Verify optional FITS installation
-        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set --extra fits-contract python -c "import astropy.io.fits, astropy.wcs, numpy; print(astropy.__version__)"
+        run: uv run --no-sync python -c "import astropy.io.fits, astropy.wcs, numpy; print(astropy.__version__)"
 
       - name: Run FITS structure, lifecycle, and product tests
-        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set --extra fits-contract pytest -q tests/test_fits.py tests/test_fits_lifecycle.py tests/test_fits_products.py
+        run: uv run --no-sync pytest -q -o pythonpath= tests/test_fits.py tests/test_fits_lifecycle.py tests/test_fits_products.py
 
       - name: Run real state export, materialization and process-death recovery
-        run: uv run --python ${{ matrix.python-version }} --locked --group dev --group measurement-set pytest -q tests/test_dataset_state.py tests/test_dataset_state_live.py tests/test_state_precision.py tests/test_state_metadata.py tests/test_state_qualification.py tests/test_state_replay_structure.py
+        run: uv run --no-sync pytest -q -o pythonpath= tests/test_dataset_state.py tests/test_dataset_state_live.py tests/test_state_precision.py tests/test_state_metadata.py tests/test_state_qualification.py tests/test_state_replay_structure.py
 
   audit:
     if: github.event_name != 'schedule'

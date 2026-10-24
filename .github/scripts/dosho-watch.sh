@@ -18,6 +18,12 @@ REPO=shinobi-dosho/stimela-ninja
 DOSHO=shinobi-dosho/dosho
 
 ROOT=$PWD
+watch_cache="$ROOT/stimela-ninja/.work-cache/dosho-watch"
+mkdir -p "$watch_cache/tmp"
+export TMPDIR="$watch_cache/tmp"
+export UV_CACHE_DIR="$watch_cache/cache"
+ninja_sha=$(git -C "$ROOT/stimela-ninja" rev-parse HEAD)
+dosho_sha=$(git -C "$ROOT/dosho" rev-parse HEAD)
 cd dosho
 
 last_sha=$(gh issue list --repo "$REPO" --label dosho-watch --state all --limit 1 --json body \
@@ -55,83 +61,47 @@ if [[ -z "$subjects" && -z "$releases" && -z "$tags" ]]; then
     exit 0
 fi
 
-# New activity: run stimela-ninja's CI tests (same invocation as ci.yml,
-# --group dev) with dosho installed from today's main on top of the synced
-# environment. --no-sync on the pytest run keeps uv from reverting dosho
-# to the locked commit.
+# New activity: locked setup first, optional tool second, candidate wheels last.
+# Guard every setup failure so the existing issue-reporting path still runs.
 ci_status=skip
 ci_detail="uv not on PATH; tests not run"
 simms_note=""
 if command -v uv >/dev/null; then
     cd "$ROOT/stimela-ninja"
-    # Guarded, because `set -e` is in force and this script's whole job is to
-    # report. An unguarded failure here would abort before the issue is
-    # written, so the watch would go *silent* on exactly the days something
-    # was wrong -- the failure mode this script exists to prevent.
-    if ! { uv sync --quiet --python 3.12 --group dev \
-        && uv pip install --quiet "$ROOT/dosho"; } 2>"$RUNNER_TEMP/setup.err"; then
+    if ! uv sync --quiet --locked --python 3.12 --group dev 2>"$watch_cache/setup.err"; then
         ci_status=fail
         ci_detail="environment setup failed before tests ran:
-$(cat "$RUNNER_TEMP/setup.err")"
-        cd "$ROOT/dosho"
+$(cat "$watch_cache/setup.err")"
+    else
+        # A best-effort external tool, constrained by the locked dependency set.
+        # Failure is reported separately; no locked package is upgraded for it.
+        if uv export --locked --no-emit-project --no-hashes --group dev \
+            --format requirements-txt -o "$watch_cache/constraints.txt" \
+            && uv pip install --quiet --constraint "$watch_cache/constraints.txt" "simms>=3.0.2" 2>/dev/null; then
+            simms_note="simms installed from PyPI -- the native skysim/telsim example dispatch ran."
+        else
+            simms_note="⚠️ simms could not be installed, so native skysim/telsim dispatch was **skipped**; only schema/graph coverage ran."
+        fi
+        if ! bash .github/scripts/install-candidate-pair.sh "$ROOT/dosho" >"$watch_cache/pair.log" 2>&1; then
+            ci_status=fail
+            ci_detail="candidate wheel-pair setup failed before tests ran:
+$(cat "$watch_cache/pair.log")"
+        else
+            ci_status=pass
+            ci_detail=$(uv run --no-sync pytest -q -o pythonpath= 2>&1) || ci_status=fail
+        fi
     fi
+    cd "$ROOT/dosho"
 fi
 
-if [[ "$ci_status" == skip ]] && command -v uv >/dev/null; then
-    cd "$ROOT/stimela-ninja"
-
-    # Install the current released simms separately and tolerantly. The normal
-    # dosho wrappers import simms inside their execution container, but this
-    # repository's example-simulation test deliberately clones skysim/telsim
-    # onto the native backend to exercise their real dispatch/API contract.
-    # Without simms that test skips and only schema/graph coverage remains.
-    #
-    # Failure here is reported, never fatal. simms is a separately released
-    # dependency; an upstream packaging breakage there is not stimela-ninja
-    # breaking, and folding it into ci_status would say it was.
-    if uv pip install --quiet "simms>=3.0.2" 2>/dev/null; then
-        simms_note="simms installed from PyPI -- the native skysim/telsim example dispatch ran."
-    else
-        simms_note="⚠️ simms could not be installed, so native skysim/telsim dispatch was **skipped**; only schema/graph coverage ran."
-    fi
-
-    # Installing simms or dosho can resolve its stimela-ninja dependency and
-    # drag a PyPI *wheel* over the editable checkout -- silently switching the
-    # whole run to testing a released stimela-ninja against dosho tip, which is
-    # not what this job is for. Re-assert the checkout; --no-deps so nothing
-    # else is re-resolved on the way past.
-    uv pip install --quiet --no-deps -e . 2>/dev/null || true
-
-    # Then verify it, because that failure is invisible on its own: the suite
-    # still runs, still passes or fails plausibly, and reports on a tree nobody
-    # is looking at. One import is cheap; a week of confident results about the
-    # wrong code is not.
-    want=$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$PWD/src/shinobi")
-    got=$(uv run --no-sync python -c \
-        'import shinobi,os;print(os.path.realpath(os.path.dirname(shinobi.__file__)))' 2>/dev/null || true)
-    if [[ "$got" != "$want" ]]; then
-        ci_status=fail
-        ci_detail="environment is not testing this checkout: shinobi imports from
-${got:-<unimportable>}
-expected
-$want
-Something in the install chain replaced the editable project (simms and dosho
-both depend on stimela-ninja). Tests were not run."
-        cd "$ROOT/dosho"
-    else
-        ci_status=pass
-        ci_detail=$(uv run --no-sync pytest -q 2>&1) || ci_status=fail
-        cd "$ROOT/dosho"
-    fi
-fi
-
-body="$RUNNER_TEMP/dosho-watch-body.md"
+body="$watch_cache/dosho-watch-body.md"
 {
     echo "Automated digest of new activity on shinobi-dosho/dosho main," \
          "classified by conventional-commit markers. Review the commits" \
          "below alongside the CI result."
     echo
-    echo "## CI tests (\`--group dev\` + dosho@main)"
+    echo "## CI tests (locked dependencies + candidate wheel pair)"
+    echo "Tested source HEADs: stimela-ninja=$ninja_sha; dosho=$dosho_sha"
     case "$ci_status" in
         pass) echo "✅ Passed — \`$(printf '%s\n' "$ci_detail" | tail -n1)\`" ;;
         fail)

@@ -1500,6 +1500,9 @@ class Recipe(Scope):
                 since `**kwargs` here is split into wiring and step params
                 and would otherwise swallow it as a constant input value.
         """
+        from shinobi.cabs import adapt_definition
+
+        scope = adapt_definition(scope)
         scatter_spec = ScatterSpec(fields=scatter) if isinstance(scatter, list) else scatter
         wiring, params = self._split_kwargs(kwargs)
         if isinstance(scope, StepRef):
@@ -1571,6 +1574,9 @@ class Recipe(Scope):
         Returns:
             A `LoopRef` whose `outputs` proxy resolves to the final iteration.
         """
+        from shinobi.cabs import adapt_definition
+
+        body = adapt_definition(body)
         if max_iter < 1:
             raise ValueError(f"loop '{name}' declares max_iter={max_iter}; it must be at least 1")
 
@@ -1747,7 +1753,14 @@ class Recipe(Scope):
             resulting `StepRef` to `self.steps`, and returns it.
         """
 
+        from shinobi.cabs import adapt_definition
+
+        definition = adapt_definition(scope)
+        base_ref = definition if isinstance(definition, StepRef) else None
+        scope = base_ref.step if base_ref is not None else definition
         scatter_spec = ScatterSpec(fields=scatter) if isinstance(scatter, list) else scatter
+        if scatter_spec is None and base_ref is not None:
+            scatter_spec = base_ref.scatter
 
         def decorator(func: Callable) -> StepRef:
             """Bind `func` as this step's orchestration function.
@@ -1760,6 +1773,9 @@ class Recipe(Scope):
             """
             bound = scope.with_backend(backend).with_resources(resources)
             wiring, params = self._split_kwargs(kwargs)
+            if base_ref is not None:
+                wiring = {**base_ref.wiring, **wiring}
+                params = {**base_ref.params, **params}
             ref = StepRef(
                 name=func.__name__,
                 step=bound,

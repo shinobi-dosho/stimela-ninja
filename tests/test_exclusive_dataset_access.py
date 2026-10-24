@@ -108,7 +108,7 @@ def test_native_flaghistory_repeated_dispatch_and_worker_preparation(tmp_path, m
     tables = pytest.importorskip("casacore.tables", reason="requires real MS tools")
     pytest.importorskip("msutils", reason="requires real MS tools")
     import numpy as np
-    import dosho
+    from shinobi.cabs import get
     from tests._dataset_fixtures import make_ms
     from tests.test_offload_dataset_lifecycle import _prepared
     from shinobi.steps.dispatch import _dispatch
@@ -120,8 +120,8 @@ def test_native_flaghistory_repeated_dispatch_and_worker_preparation(tmp_path, m
         table.putcol("FLAG_ROW", np.zeros(table.nrows(), dtype=bool))
     # Use the environment's native entry point, without a container dependency.
     executable = Path(sys.executable).with_name("msutils")
-    backup = dosho.get("msutils-flags-backup").model_copy(update={"backend": "native", "command": f"{executable} flags backup"})
-    delete = dosho.get("msutils-flags-delete").model_copy(update={"backend": "native", "command": f"{executable} flags delete"})
+    backup = get("msutils-flags-backup").model_copy(update={"backend": "native", "command": f"{executable} flags backup"})
+    delete = get("msutils-flags-delete").model_copy(update={"backend": "native", "command": f"{executable} flags delete"})
     for _ in range(2):
         assert not _dispatch(backup, None, ms=root, name="roundtrip").cached
         assert (Path(str(root) + ".flagversions") / "flags.roundtrip").exists()
@@ -145,12 +145,12 @@ def test_native_flaghistory_repeated_dispatch_and_worker_preparation(tmp_path, m
 
 
 def test_flaghistory_exclusive_read_keeps_ms_mount_readonly(tmp_path):
-    import dosho
+    from shinobi.cabs import get
     from shinobi.backends.container import bind_dir_modes
 
     root = tmp_path / "obs.ms"
     root.mkdir()
-    cab = dosho.get("msutils-flags-backup")
+    cab = get("msutils-flags-backup")
     mounts = bind_dir_modes(cab, {"ms": root, "name": "version"}, str(tmp_path))
     assert (str(root), False) in mounts
     assert (str(tmp_path), True) in mounts  # the separately owned sibling history
@@ -159,7 +159,7 @@ def test_flaghistory_exclusive_read_keeps_ms_mount_readonly(tmp_path):
 
 @pytest.mark.parametrize("name", ["msutils-info", "msutils-summary", "msutils-flagstats", "msutils-flags-list"])
 def test_existing_msutils_readers_respect_exclusive_owner_before_backend(name, tmp_path, monkeypatch):
-    import dosho
+    from shinobi.cabs import get
     from shinobi.backends.recording import RecordingBackend
     from shinobi.ownership import acquire_workspace, WorkspaceOwnershipError, scope_requires_ownership
     from shinobi.steps.dispatch import _STEP_BACKENDS, _dispatch
@@ -169,7 +169,7 @@ def test_existing_msutils_readers_respect_exclusive_owner_before_backend(name, t
     monkeypatch.chdir(tmp_path)
     backend = RecordingBackend()
     monkeypatch.setitem(_STEP_BACKENDS, "readonly-probe", backend)
-    cab = dosho.get(name).model_copy(update={"backend": "readonly-probe"})
+    cab = get(name).model_copy(update={"backend": "readonly-probe"})
     assert scope_requires_ownership(cab)
     lease = acquire_workspace(tmp_path, "exclusive-owner", kind="local", accesses=[(root, True)])
     try:

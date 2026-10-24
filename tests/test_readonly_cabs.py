@@ -10,7 +10,7 @@ from pydantic import BaseModel, ValidationError
 
 from shinobi.exceptions import ParameterError
 from shinobi.cache import cab_semantic_identity, compute_cache_key
-from shinobi.cabs import get, build_document
+from shinobi.cabs import get, build_document, adapt_definition
 from shinobi.dataset_access import DatasetMode, plan_recipe_accesses
 from shinobi.offload._codec import BundleError, pack
 from shinobi.offload.bundle import ScopeSpec
@@ -35,8 +35,9 @@ def arguments(name, root):
 
 @pytest.mark.parametrize("name", ["wsclean-readonly", "ddfacet-readonly", "quartical-readonly"])
 def test_readonly_routes_constraints_and_transport(name, tmp_path):
-    cab = dosho.get(name)
-    assert getattr(dosho.cabs, name.replace("-", "_")) is cab
+    definition = dosho.get(name)
+    assert getattr(dosho.cabs, name.replace("-", "_")) is definition
+    cab = adapt_definition(definition)
     assert cab_semantic_identity(get(name)) == cab_semantic_identity(cab)
     dialect, text = dosho.registry.get_document(name)
     direct = build_document(dialect, text, name=name, **dosho.registry.loader_options())
@@ -79,7 +80,7 @@ def test_readonly_routes_constraints_and_transport(name, tmp_path):
     "key", ["output.flags=true.G.type", "output.flags=true\\.type", "output.type", "input_ms.type", "G X.type", "G\n.type", "G.type\n", "output.flags", "output.products"]
 )
 def test_quartical_dynamic_keys_cannot_override_native_roots(key):
-    cab = dosho.get("quartical-readonly")
+    cab = get("quartical-readonly")
     assert cab.match_pattern(key) is None
     argv = build_argv(cab, {key: "danger", "G.type": "complex", "K.time_interval": 10})
     assert "G.type=complex" in argv and "K.time_interval=10" in argv
@@ -94,7 +95,7 @@ def test_readonly_rejects_symlinked_output_or_scratch_into_ms(name, tmp_path, de
     root.mkdir()
     alias = tmp_path / "alias"
     alias.symlink_to(root, target_is_directory=True)
-    cab = dosho.get(name)
+    cab = get(name)
     values = arguments(name, tmp_path)
     key = {"wsclean-readonly": "temp_dir", "ddfacet-readonly": "data_cache_dir", "quartical-readonly": "output_log_directory"}[name]
     if destination == "output":
@@ -127,12 +128,12 @@ def test_imaging_readers_can_overlap_but_flaghistory_mutations_exclude_every_rea
     for action in ["backup", "delete"]:
         from shinobi.steps.schema import StepRef
 
-        recipe.steps.append(StepRef(name=action, step=dosho.get("msutils-flags-" + action), params={"ms": root, "name": "version"}))
+        recipe.steps.append(StepRef(name=action, step=get("msutils-flags-" + action), params={"ms": root, "name": "version"}))
     plan = plan_recipe_accesses(recipe, {}, workspace=tmp_path)
     assert set(range(1, 4)) <= plan.graph.deps[4]
     assert 4 in plan.graph.deps[5]
     for action in ["backup", "delete"]:
-        cab = dosho.get("msutils-flags-" + action)
+        cab = get("msutils-flags-" + action)
         assert cab.cache is False and cab.dataset_accesses[0].mode is DatasetMode.READ
         assert cab.dataset_accesses[0].exclusive
         assert not cab.dataset_accesses[0].columns.write
@@ -142,7 +143,7 @@ def test_imaging_readers_can_overlap_but_flaghistory_mutations_exclude_every_rea
 @pytest.mark.parametrize("name", ["", ".", "..", ".hidden", "../bad", "a/b", "a\\b"])
 def test_flag_delete_refuses_unsafe_name(name):
     with pytest.raises(ValidationError):
-        dosho.get("msutils-flags-delete").inputs_model(ms="obs.ms", name=name)
+        get("msutils-flags-delete").inputs_model(ms="obs.ms", name=name)
 
 
 def test_execution_access_identity_and_frozen_tampering(tmp_path):
@@ -188,7 +189,7 @@ def test_readonly_input_metadata_and_fits_contract_are_cache_semantics():
 def test_readonly_quartical_log_destination_does_not_invalidate_its_own_key(tmp_path):
     from shinobi.cache import invalidate_path_hashes
 
-    cab = dosho.get("quartical-readonly")
+    cab = get("quartical-readonly")
     values = cab.inputs_model(**arguments("quartical-readonly", tmp_path)).model_dump()
     before = compute_cache_key(cab, None, values)
     logs = Path(values["output_log_directory"])
@@ -221,7 +222,7 @@ def test_quartical_readonly_dispatch_captures_gains_and_caches(tmp_path, monkeyp
     script.write_text(
         "from pathlib import Path\nimport sys\nv=dict(arg.split('=',1) for arg in sys.argv[1:])\ng=Path(v['output.gain_directory']);g.mkdir(parents=True,exist_ok=True);(g/'gain.bin').write_bytes(b'gain')\nl=Path(v['output.log_directory']);l.mkdir(parents=True,exist_ok=True);(l/'run.log').write_text('logged')\n"
     )
-    cab = dosho.get("quartical-readonly").model_copy(update={"command": f"{sys.executable} {script}", "backend": "native", "cache": True, "cache_dir": str(tmp_path / "cache")})
+    cab = get("quartical-readonly").model_copy(update={"command": f"{sys.executable} {script}", "backend": "native", "cache": True, "cache_dir": str(tmp_path / "cache")})
     first = _dispatch(cab, None, **arguments("quartical-readonly", tmp_path))
     assert first.outputs.gain_directory.select().path.is_dir()
     assert _dispatch(cab, None, **arguments("quartical-readonly", tmp_path)).cached
@@ -229,7 +230,7 @@ def test_quartical_readonly_dispatch_captures_gains_and_caches(tmp_path, monkeyp
 
 
 def test_quartical_load_from_is_readonly_and_cannot_alias_gain_output(tmp_path):
-    cab = dosho.get("quartical-readonly")
+    cab = get("quartical-readonly")
     source = tmp_path / "source-gains"
     source.mkdir()
     alias = tmp_path / "alias"

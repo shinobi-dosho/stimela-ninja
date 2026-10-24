@@ -62,6 +62,18 @@ implicit wrapping of a bare scalar into an invented field name.
    module globals, so any ``BaseModel`` used in the signature or return type
    must be defined at module level, not nested inside another function.
 
+Catalogue functions without the execution framework
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Dosho marks catalogue functions with ``@dosho.pystep``. This stores inert
+metadata and returns the original Python function, so annotations and defaults
+can be inspected without installing Shinobi. Pass a marked function directly
+to ``Recipe.add_step`` or ``add_loop``, or call
+``shinobi.cabs.adapt_definition`` for an explicit ``StepRef``. The generic
+signature-schema rules are shared with ``@shinobi.pystep``; runtime wrapping,
+path validation and execution remain Shinobi's responsibility. Arbitrary
+unmarked callables are not automatically converted into steps.
+
 Container-only imports: ``ctx.import_callable()`` / ``ctx.import_module()``
 ---------------------------------------------------------------------------
 

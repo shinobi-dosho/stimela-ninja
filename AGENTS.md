@@ -138,3 +138,13 @@ filesystem enforcement, dataset lifecycle/recovery and caches. Generic schema
 algorithms belong in Dosho; Shinobi adapters supply trusted dtype bindings and
 validate inert framework declarations. Dosho validation must never import
 Shinobi. Base catalogue access needs neither Pydantic nor Shinobi.
+
+
+Dosho definition lookup and documentation are independent of Shinobi.
+`dosho.get` and `dosho.define_cab` return `CabSpec` data or ordinary functions
+marked with `@dosho.pystep`. Shinobi adapts these through the single
+`shinobi.cabs.adapt_definition` helper at provider and recipe entry points.
+Runtime compilation supplies authoritative dtype bindings and validates inert
+framework declarations. Generic Python signature-schema helpers live in Dosho;
+Shinobi retains execution adapters and enforcement. Never reintroduce a
+Shinobi import into catalogue schema inspection merely to obtain runtime models.

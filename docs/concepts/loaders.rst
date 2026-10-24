@@ -15,6 +15,10 @@ It supports the same vocabulary --
 ``choices``, plus ``policies``, ``management.wranglers``, ``image``,
 ``flavour`` and ``command``. Dosho parses and compiles the static schema;
 Shinobi validates framework declarations and adapts the result into a ``Cab``.
+``dosho.validation.build_document`` returns a neutral definition without
+importing Shinobi. ``shinobi.cabs.build_document`` is a compatibility adapter
+that delegates to Dosho and builds a runnable object with trusted framework
+bindings. ``Recipe.add_step`` accepts the neutral definition directly.
 Recipes are declared separately in Python.
 
 `cult-cargo <https://github.com/caracal-pipeline/cult-cargo>`_ is the largest

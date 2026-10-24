@@ -18,14 +18,17 @@ Current 0.2 source tree
 
 These docs describe the 0.2 source tree. Shinobi 0.2.0b1 is not yet published;
 an unqualified ``pip install stimela-ninja`` installs the older stable 0.1.0.
-Dosho 0.2.0b1 is already published. Install current Shinobi from GitHub to use
-the matching adapter:
+The neutral-definition boundary needs matching candidate sources of Dosho and
+Shinobi. Installing only Shinobi from Git can resolve a published Dosho beta
+without the new shared helpers. Install both checkouts explicitly:
 
 .. code-block:: console
 
-    $ pip install git+https://github.com/shinobi-dosho/stimela-ninja.git
+    $ pip install -e "/path/to/dosho[validation]" -e /path/to/stimela-ninja
 
-This installs:
+Pin both source commits, or use the explicit wheel-pair helper in
+:doc:`design_cab_boundary`, until the coordinated release updates the dependency
+contract. This installs:
 
 * the ``ninja`` command-line tool;
 * the importable ``shinobi`` package; and
@@ -52,9 +55,9 @@ environment performing lifecycle inspection:
 
 .. code-block:: console
 
-    $ pip install "stimela-ninja[ms-contract] @ git+https://github.com/shinobi-dosho/stimela-ninja.git"
-    $ pip install "stimela-ninja[fits-contract] @ git+https://github.com/shinobi-dosho/stimela-ninja.git"
-    $ pip install "stimela-ninja[ms-contract,fits-contract] @ git+https://github.com/shinobi-dosho/stimela-ninja.git"
+    $ pip install -e "/path/to/dosho[validation]" -e "/path/to/stimela-ninja[ms-contract]"
+    $ pip install -e "/path/to/dosho[validation]" -e "/path/to/stimela-ninja[fits-contract]"
+    $ pip install -e "/path/to/dosho[validation]" -e "/path/to/stimela-ninja[ms-contract,fits-contract]"
 
 The extras name the supported formats. Their current implementations use
 ``python-casacore`` for Measurement Sets and Astropy for FITS; those packages

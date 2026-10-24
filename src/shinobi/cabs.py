@@ -1,40 +1,14 @@
-"""Resolve a `Cab`/`StepRef` by name across installed cab-provider packages.
+"""Resolve providers and adapt neutral definitions to executable steps.
 
-shinobi ships no cabs itself. A cab-provider package (e.g. `dosho`, the
-native shinobi cab repository) registers itself under the `shinobi.cabs`
-packaging entry-point group in its own `pyproject.toml`:
+Providers register under ``shinobi.cabs`` and expose ``list_cabs`` plus
+``get_document(name) -> (dialect, text)`` and/or ``get(name)``. Documents are
+tried first; optional ``loader_options()`` supplies image mappings and explicit
+filesystem roots. Dosho owns static parsing and name selection.
 
-    [project.entry-points."shinobi.cabs"]
-    dosho = "dosho.registry"
-
-The entry point's target is a module (or any object) exposing
-`list_cabs() -> list[str]` plus at least one resolver:
-
-* `get_document(name) -> (dialect, text)` -- hand back the cab's *definition*
-  and let shinobi build it. Preferred, and tried first. A provider that only
-  ever returns documents needs no dependency on shinobi at all: it reads a
-  file and returns bytes, which is what lets a cab repository ship as data
-  rather than as Python (see dosho's `docs/design_data_registry.md`).
-* `get(name) -> Cab | StepRef` -- hand back a live object, which requires the
-  provider to import shinobi and construct it. Still fully supported; it is
-  the only shape that can express a pystep, whose body is real code.
-
-Either raises `KeyError` when `name` isn't one of its cabs, which is how the
-search falls through to the next provider. A provider whose documents are not
-self-contained may also expose `loader_options() -> dict`, passed to the
-dialect's loader -- `images` for symbolic image names, `package_roots` for
-package-scoped includes. A provider may expose both: the
-document path is tried first, so a mixed provider can serve most cabs as data
-and the rest as objects. A provider entry can
-be either shape -- a `Cab` for real "binary"-flavour tools, or a `StepRef`
-(what `@shinobi.pystep` produces) for Python-package tools that have no
-standalone executable (e.g. CASA tasks, run via `ctx.import_callable` inside a
-container rather than argv-built and shelled out to) -- `Recipe.add_step`
-already accepts either identically, so this resolver doesn't need to care
-which one it got. This module only resolves *names* to providers -- it
-never parses/builds a cab itself, and never imports a provider module
-until a caller actually asks for one (so `ninja cabs list` doesn't pay the
-cost of every installed provider unless something calls `list_cabs`).
+``get`` may return a neutral ``CabSpec``, an original ``@dosho.pystep`` function,
+or an existing ``Scope``/``StepRef``. ``adapt_definition`` is the common boundary
+used by providers, recipe binding and CLI targets. It binds trusted strict
+types, checks runtime contracts and wraps only explicitly marked functions.
 """
 
 from __future__ import annotations
@@ -63,49 +37,48 @@ _DIALECTS = ("yaml_cab", "stimela-classic", "dosho-cab-v1")
 
 
 def build_document(dialect: str, text: str, name: str | None = None, **options: Any) -> "Cab | StepRef":
-    """Build a cab from its definition text, in the named dialect.
+    """Compatibility entry: let Dosho select a definition, then adapt it.
 
-    This is the half of the provider protocol shinobi owns: a provider that
-    returns documents does not parse them, so it needs neither a parser nor
-    shinobi itself.
-
-    Args:
-        dialect: One of `_DIALECTS`.
-        text: The definition's raw text.
-        name: Which cab to take, for dialects whose document can hold several
-            (cult-cargo). Optional when the document defines exactly one.
-        **options: Passed through to the dialect's own loader -- `images`,
-            `package_roots`. A document is not always self-contained: it may
-            name an image symbolically or include from an installed package,
-            and neither can be resolved without something only the provider
-            has. See `loader_options` in this module's docstring.
-
-    Raises:
-        CabLoadError: On an unknown dialect, or when `name` does not name a cab
-            the document defines.
+    ``options`` are passed to Dosho's dialect loader. A requested name must
+    match a definition in the document, including classic JSON definitions.
     """
-    if dialect in ("yaml_cab", "dosho-cab-v1"):
-        from shinobi.loaders import yaml_cab
+    try:
+        from dosho.validation import build_document as build_definition
+    except ImportError as exc:
+        raise ImportError("This Shinobi source requires matching Dosho sources with neutral definition support") from exc
+    from dosho.validation.exceptions import CabLoadError as DoshoLoadError
 
-        cabs = yaml_cab.loads(text, **options)
-        # A requested name must be one the document defines. Falling back to
-        # "it only defines one, so that must be it" would turn a provider
-        # returning the wrong document into a silently wrong cab, under the
-        # name the caller asked for. Providers alias freely -- dosho registers
-        # its `simms_classic` attribute as `simms` -- but they alias to the
-        # cab's *own* name, so a mismatch here is a bug, not a convention.
-        if name is not None:
-            if name in cabs:
-                return cabs[name]
-            raise CabLoadError(f"yaml_cab document defines {sorted(cabs)!r}, not {name!r}")
-        if len(cabs) == 1:
-            return next(iter(cabs.values()))
-        raise CabLoadError(f"yaml_cab document defines {sorted(cabs)!r}; no name was given to choose between them")
-    if dialect == "stimela-classic":
-        from shinobi.loaders import stimela_classic
+    try:
+        return adapt_definition(build_definition(dialect, text, name=name, **options))
+    except DoshoLoadError as exc:
+        raise CabLoadError(str(exc)) from exc
 
-        return stimela_classic.loads(text)
-    raise CabLoadError(f"unknown cab dialect {dialect!r} (known: {', '.join(_DIALECTS)})")
+
+def adapt_definition(definition):
+    """Bind a neutral definition, or preserve an existing executable scope.
+
+    Only functions explicitly marked by Dosho are accepted. Plain callables
+    remain ordinary Python and are never guessed to be workflow steps.
+    """
+    from dosho.validation import CabSpec
+    from shinobi.steps.schema import Scope, StepRef
+
+    if isinstance(definition, (Scope, StepRef)):
+        return definition
+    if isinstance(definition, CabSpec):
+        from shinobi.loaders.yaml_cab import _compile
+
+        return _compile(definition)
+    try:
+        from dosho.validation.pyfunc import get_pystep_definition
+    except ImportError as exc:
+        raise ImportError("This Shinobi source requires matching Dosho sources with neutral function schema support") from exc
+    declaration = get_pystep_definition(definition)
+    if declaration is not None:
+        from shinobi.steps.pyfunc import pystep
+
+        return pystep(**declaration.options)(definition)
+    raise TypeError(f"expected a Scope, StepRef, CabSpec or @dosho.pystep function, got {type(definition).__name__}")
 
 
 def _loader_options(module: Any) -> dict[str, Any]:
@@ -141,7 +114,7 @@ def get(name: str) -> "Cab | StepRef":
             except KeyError:
                 continue
             if resolver != "get_document":
-                return found
+                return adapt_definition(found)
             return build_document(*found, name=name, **_loader_options(module))
     installed = ", ".join(ep.name for ep in providers) or "none installed"
     raise CabLoadError(f"no such cab {name!r} in any shinobi.cabs provider ({installed})")

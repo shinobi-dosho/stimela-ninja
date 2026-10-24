@@ -248,9 +248,16 @@ def _resolve_target(target: str):
         raise click.ClickException(f"invalid target definition {target!r}:\n{exc}") from None
 
     try:
-        return getattr(module, attr)
+        definition = getattr(module, attr)
     except AttributeError:
         raise click.ClickException(f"no '{attr}' in {location}") from None
+
+    from shinobi.cabs import adapt_definition
+
+    try:
+        return adapt_definition(definition)
+    except (TypeError, ValueError) as exc:
+        raise click.ClickException(f"invalid target definition {target!r}:\n{exc}") from None
 
 
 def _forwarded_run_flags(*, quiet: bool, provenance: bool | None, sandbox: bool | None) -> list[str]:
