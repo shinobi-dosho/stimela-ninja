@@ -176,7 +176,17 @@ From v0.2.0b1 Dosho owns static cab parsing, parameter model generation and
 argv formatting. Its validation extra never imports Shinobi. Caller-supplied
 trusted dtype bindings preserve strict framework annotations; known framework
 dtypes without bindings are refused. Framework declaration fragments are inert
-JSON until the Shinobi adapter validates its authoritative models.
+JSON until the Shinobi adapter validates its authoritative models. Neutral
+schema descriptions retain declared type names and do not pretend to validate
+framework contracts. Recipe entry points and provider lookup adapt these
+definitions with real framework bindings before execution.
+
+Dosho's Python tools are trusted annotated functions marked with an inert
+`@dosho.pystep` decorator. Inspection imports trusted Python modules and
+resolves their annotations; it does not call the tool body. Generic signature
+schema derivation lives in Dosho, while Shinobi supplies runtime wrapping and
+execution checks. This is distinct from executing schema-generation code
+embedded in an untrusted cab document.
 
 Composition never imports packages or evaluates commands or schema hooks.
 Package-root containment, cycle detection, unsupported-flavour refusal and

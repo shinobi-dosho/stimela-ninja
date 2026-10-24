@@ -2,19 +2,15 @@
 
 Autodoc imports the ``shinobi`` package, so the build environment must have it
 installed (``uv sync --group docs`` locally; Read the Docs installs it via
-``.readthedocs.yaml``). The package lives under ``src/``, added to sys.path
-below so an editable/uninstalled checkout also builds.
+``.readthedocs.yaml``). Both editable installs and candidate wheels use normal import resolution;
+this configuration never shadows an installed wheel with checkout source.
 """
 
 from __future__ import annotations
 
-import os
-import sys
 from datetime import datetime, timezone
 
-sys.path.insert(0, os.path.abspath("../src"))
-
-from shinobi import __version__  # noqa: E402
+from shinobi import __version__
 
 # -- Project information -----------------------------------------------------
 

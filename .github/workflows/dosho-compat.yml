@@ -1,5 +1,7 @@
 name: dosho compatibility
 
+# Temporary candidate bootstrap for shinobi-dosho/dosho#102.
+# Restore dosho-ref defaults and fallbacks to main after that PR merges.
 on:
   push:
     branches: [main]
@@ -8,23 +10,36 @@ on:
   schedule:
     - cron: "31 22 * * *"
   workflow_dispatch:
+    inputs:
+      lane:
+        description: Candidate source (main) or hard-failing released compatibility gate
+        type: choice
+        options: [main, released]
+        default: main
+      dosho-ref:
+        description: Explicit Dosho source ref for the main lane
+        type: string
+        default: "7ef781462862c93c03b6c1a9a6181982bbe7bd61"
   workflow_call:
     inputs:
       lane:
         type: string
         required: true
+      dosho-ref:
+        type: string
+        default: "7ef781462862c93c03b6c1a9a6181982bbe7bd61"
 
 permissions:
   contents: read
 
 jobs:
   compatibility:
-    name: dosho ${{ matrix.lane }} (Python 3.12)
+    name: dosho ${{ matrix.lane == 'main' && 'candidate source' || 'released publication gate' }} (Python 3.12)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        lane: ${{ fromJSON(inputs.lane && format('["{0}"]', inputs.lane) || '["released","main"]') }}
+        lane: ${{ fromJSON(inputs.lane && format('["{0}"]', inputs.lane) || '["main"]') }}
     steps:
       - name: Checkout shinobi
         uses: actions/checkout@v7
@@ -36,4 +51,7 @@ jobs:
           python-version: "3.12"
 
       - name: Test installed dosho against this checkout
-        run: bash .github/scripts/test-dosho-compat.sh "${{ matrix.lane }}"
+        env:
+          DOSHO_LANE: ${{ matrix.lane }}
+          DOSHO_REF: ${{ inputs.dosho-ref || '7ef781462862c93c03b6c1a9a6181982bbe7bd61' }}
+        run: bash .github/scripts/test-dosho-compat.sh "$DOSHO_LANE" "$DOSHO_REF"

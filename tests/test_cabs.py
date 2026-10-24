@@ -304,3 +304,16 @@ def test_build_document_takes_options_directly():
     """
     cab = cabs.build_document("yaml_cab", _KEYED_IMAGE_DOC, "breizorro", images={"BREIZORRO": "ghcr.io/org/b:1"})
     assert cab.image == "ghcr.io/org/b:1"
+
+
+def test_classic_provider_accepts_shared_loader_options(monkeypatch, tmp_path):
+    class ClassicProvider(ProviderWithOptions):
+        def loader_options(self):
+            return {"images": {"IMG": "test:1"}, "package_roots": {"pkg": tmp_path}}
+
+    provider = ClassicProvider({"test": ("stimela-classic", '{"task":"test", "base":"IMG"}')})
+    _patch_entry_points(monkeypatch, [_fake_entry_point("classic", provider)])
+    result = cabs.get("test")
+    assert isinstance(result, Cab)
+    assert result.name == result.command == "test"
+    assert result.image == "IMG"

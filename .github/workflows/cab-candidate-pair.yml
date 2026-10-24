@@ -21,27 +21,11 @@ jobs:
           repository: shinobi-dosho/dosho
           ref: ${{ inputs.dosho-ref }}
           path: .work-cache/dosho-candidate
-      - name: Build and install explicit wheel pair
+      - name: Install locked dependencies and explicit wheel pair
         run: |
-          mkdir -p .work-cache/pair/tmp
-          export TMPDIR="$PWD/.work-cache/pair/tmp"
-          export UV_CACHE_DIR="$PWD/.work-cache/pair/cache"
-          pair_wheels=$(mktemp -d "$PWD/.work-cache/pair/wheels.XXXXXXXX")
-          uv venv
-          uv build --wheel --out-dir "$pair_wheels"
-          uv build --wheel --directory .work-cache/dosho-candidate --out-dir "$pair_wheels"
-          uv pip install "$pair_wheels"/*.whl pytest astropy
-          uv run --no-sync python - <<'PY'
-          import importlib.metadata as metadata
-          import tomllib
-          import shinobi, dosho
-          assert "site-packages" in shinobi.__file__ and "site-packages" in dosho.__file__
-          from pathlib import Path
-          for package, source in (("stimela-ninja", Path.cwd()), ("dosho", Path(".work-cache/dosho-candidate"))):
-              expected = tomllib.loads((source / "pyproject.toml").read_text())["project"]["version"]
-              assert metadata.version(package) == expected
-          PY
+          uv sync --locked --python 3.12 --group dev --group examples --extra fits-contract
+          bash .github/scripts/install-candidate-pair.sh .work-cache/dosho-candidate
       - name: Verify candidate contracts
         run: |
-          uv run --no-sync pytest -q -o pythonpath= tests/test_dosho_boundary.py tests/test_dosho_compat.py tests/test_yaml_cab_loader.py tests/test_policies.py tests/test_offload_bundle.py tests/test_offload_worker.py
+          uv run --no-sync pytest -q -o pythonpath= tests/test_dosho_boundary.py tests/test_dosho_compat.py tests/test_neutral_adaptation.py tests/test_yaml_cab_loader.py tests/test_policies.py tests/test_offload_bundle.py tests/test_offload_worker.py
           uv run --no-sync pytest -q -o pythonpath= .work-cache/dosho-candidate/tests

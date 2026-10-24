@@ -13,8 +13,14 @@ from dosho.cabs.simms import skysim, telsim
 from pydantic import BaseModel, create_model
 
 from shinobi import Recipe
+from shinobi.cabs import adapt_definition
 from shinobi.loaders import build_model
 from shinobi.steps.schema import ParamMeta
+
+# Runtime schema customizations below operate on adapted definitions.
+telsim = adapt_definition(telsim)
+skysim = adapt_definition(skysim)
+wsclean = adapt_definition(wsclean)
 
 _INPUT_DIR = Path(__file__).parent / "input-dir"
 

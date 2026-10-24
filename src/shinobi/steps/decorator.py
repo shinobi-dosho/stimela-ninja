@@ -32,6 +32,12 @@ def step(
     module docstring.
     """
 
+    from shinobi.cabs import adapt_definition
+
+    definition = adapt_definition(scope)
+    base_ref = definition if isinstance(definition, StepRef) else None
+    scope = base_ref.step if base_ref is not None else definition
+
     def decorator(func: Callable) -> StepRef:
         """Bind `func` as the orchestration function for `scope`.
 
@@ -45,11 +51,14 @@ def step(
         """
         bound_scope = scope.with_backend(backend).with_resources(resources)
         scatter_spec = ScatterSpec(fields=scatter) if isinstance(scatter, list) else scatter
+        if scatter_spec is None and base_ref is not None:
+            scatter_spec = base_ref.scatter
         return StepRef(
             name=name or func.__name__,
             step=bound_scope,
             func=func,
-            params=params,
+            params={**(base_ref.params if base_ref is not None else {}), **params},
+            wiring=base_ref.wiring if base_ref is not None else {},
             scatter=scatter_spec,
         )
 

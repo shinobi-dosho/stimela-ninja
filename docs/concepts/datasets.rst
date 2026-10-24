@@ -56,7 +56,7 @@ The annotation describes the Measurement Set format and its versioned profile;
 
 .. code-block:: console
 
-   pip install "stimela-ninja[ms-contract] @ git+https://github.com/shinobi-dosho/stimela-ninja.git"
+   pip install -e "/path/to/dosho[validation]" -e "/path/to/stimela-ninja[ms-contract]"
 
 For a source checkout managed by uv, use
 ``uv sync --group dev --group measurement-set``.  The development group is

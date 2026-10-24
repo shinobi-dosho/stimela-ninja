@@ -292,3 +292,15 @@ a specific YAML file, use ``ninja cabs show``/``ninja cabs list``:
 
     $ ninja cabs list
     $ ninja cabs show wsclean
+
+
+Dosho definitions and runtime objects
+-------------------------------------
+
+``dosho.get(name)`` and direct imports from ``dosho.cabs`` expose neutral
+``CabSpec`` definitions or ordinary marked Python functions. They require no
+Shinobi import for inspection. Recipes accept either directly. Use
+``shinobi.cabs.get(name)`` or ``shinobi.cabs.adapt_definition(definition)`` when
+code needs runtime attributes such as ``inputs_model``, ``field_meta`` or
+``step``. All adaptation paths use the same compiler and authoritative
+framework dtype bindings and declaration validation.
