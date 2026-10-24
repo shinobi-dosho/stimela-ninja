@@ -10,7 +10,7 @@ from shinobi.dataset_access import DatasetAccessError, resolve_scope_dataset_acc
 from shinobi.dataset_lifecycle import DatasetLifecyclePhase
 from shinobi.exceptions import DatasetLifecycleUnavailableError, DatasetLifecycleViolationError
 from shinobi.steps.schema import Mutability, Scope
-from tests._dataset_fixtures import attempts, make_ms, set_scans
+from tests._dataset_fixtures import attempts, make_ms, ms_fixture_tables, set_scans
 
 
 class Report(BaseModel):
@@ -292,12 +292,13 @@ def test_cached_redirect_and_precommit_redirect_are_refused(work, monkeypatch):
 
 def test_external_root_must_close_inside_itself_even_with_shared_workspace(work):
     import shutil
-    from casacore.tables import table
+
+    tables = ms_fixture_tables()
 
     ms = make_ms(work / "source.ms")
     external = work / "antenna"
     shutil.move(ms / "ANTENNA", external)
-    with table(str(ms), readonly=False, ack=False) as main:
+    with tables.table(str(ms), readonly=False, ack=False) as main:
         main.putkeyword("ANTENNA", f"Table: {external}")
     scope = Scope(name="read", inputs_model=MSInputs, outputs_model=Empty, dataset_accesses=[DatasetAccess(field="ms", mode="read", external_read=True)])
     with pytest.raises(DatasetAccessError, match="namespace"):
@@ -615,6 +616,8 @@ def test_sandboxed_strict_create_output_is_a_host_direct_passthrough(work):
     from shinobi import Cab
     from shinobi.steps.schema import ParamMeta
     from shinobi.datasets import DatasetStatus, inspect_measurement_set_v2
+
+    ms_fixture_tables()
 
     class Inputs(BaseModel):
         script: str
