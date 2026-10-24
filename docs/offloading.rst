@@ -152,7 +152,8 @@ be confirmed; it never tries to publish a contradictory failure beside it.
 Started/final records and requeue/publication diagnostics have separate names
 per attempt. Volatile ``unknown`` status is reconstructed rather than frozen as
 a write-once attempt record. This is not a multi-process cache
-journal or ownership lease. Shared cache coordination follows in M2.
+journal or ownership lease. Shared cache coordination uses the separate
+M2 protocol described below and in :doc:`concepts/config`.
 
 Worker submission and execution
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -161,7 +162,7 @@ Worker submission and execution
 requires every executed container image to resolve to an immutable reference
 on the submission host, creates a
 unique submission, materializes every pystep code bundle, snapshots the
-installed Shinobi worker source, fingerprints the worker interpreter's package
+installed Shinobi and Dosho worker source trees, fingerprints the worker interpreter's package
 set, and emits one worker command per Slurm allocation. A caller may use
 ``provision_worker_venv`` to build a content-addressed dependency environment
 from ``uv.lock`` on the login host, or name an already provisioned absolute

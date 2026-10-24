@@ -16,6 +16,12 @@ Schema helpers
 --------------
 
 Supporting types used when defining cabs, not re-exported at the top level.
+``Policies`` is re-exported from Dosho; Shinobi's ``ParamMeta``, ``ParamPattern``
+and ``ParamSegment`` extend the shared models with typed framework contracts.
+The public import paths below remain supported. For framework-independent
+schema compilation and argv formatting, use ``dosho.validation``;
+``shinobi.policies.build_argv`` normalizes framework product values before
+calling the shared formatter.
 
 .. autoclass:: shinobi.derived.DerivedAddress
    :members:

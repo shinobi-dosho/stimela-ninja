@@ -15,7 +15,10 @@ Backends, including live-verification status, are discussed in :doc:`concepts/ba
 
 ``stimela-ninja`` is the installable Python distribution and source repository, ``shinobi`` is its importable package,
 and ``ninja`` is the command-line tool.
-`dosho <https://dosho.readthedocs.io>`_ is the companion collection of native task definitions (cabs).
+`dosho <https://dosho.readthedocs.io>`_ provides task definitions (cabs),
+parameter validation and argv formatting. It is installed automatically with
+Shinobi. Shinobi owns workflow execution, filesystem enforcement and dataset
+lifecycle; see :doc:`design_cab_boundary` for the 0.2 compatibility contract.
 
 .. code-block:: python
 
@@ -78,13 +81,11 @@ The WSClean cab is defined above, while ``breizorro`` comes from ``dosho``.
 Its FITS annotations and read/create declarations come from dosho.
 Passing ``pipeline.outputs.image.restored`` to ``restored_image`` wires the
 masking step after imaging and makes the image available to it.
-This example currently requires a dosho source checkout containing the
-Breizorro FITS declarations, which are not yet released. The combined example
-is pending execution validation with that cab update; graph construction and
-access planning have been checked. Install that checkout
-with ``pip install -e /path/to/dosho`` and install
-``stimela-ninja[fits-contract]`` in the environment performing inspection.
-Use native WSClean and Breizorro executables to run the example.
+Install the current source with the ``fits-contract`` extra as described in
+:doc:`installation` in the environment performing inspection. Its Dosho
+dependency includes the Breizorro FITS declarations. This example selects ``native`` explicitly and requires
+host-installed WSClean and Breizorro executables. Cabs without an explicit
+backend use Apptainer by default.
 
 .. code-block:: console
 

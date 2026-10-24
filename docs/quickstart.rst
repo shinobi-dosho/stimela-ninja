@@ -81,11 +81,10 @@ Run a single cab
 ----------------
 
 You can run a cab directly; a function that only calls ``ctx.run()`` is not
-needed. For example, install ``dosho`` and inspect its ready-made WSClean cab:
+needed. Dosho is installed with Shinobi; inspect its ready-made WSClean cab:
 
 .. code-block:: console
 
-    $ pip install dosho
     $ ninja run dosho.cabs:wsclean --help
 
 ``ninja run`` accepts ``module:attribute`` targets and derives the command's

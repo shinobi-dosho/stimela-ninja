@@ -13,26 +13,29 @@ Apptainer is the default backend. Install its ``apptainer`` executable on
 ``PATH`` for containerized cabs, or select another backend with
 ``ninja --backend NAME`` or ``backend.default`` in :doc:`concepts/config`.
 
-From PyPI
----------
+Current 0.2 source tree
+-----------------------
 
-.. code-block:: console
-
-    $ pip install stimela-ninja
-
-From GitHub
------------
-
-To install the latest development version:
+These docs describe the 0.2 source tree. Shinobi 0.2.0b1 is not yet published;
+an unqualified ``pip install stimela-ninja`` installs the older stable 0.1.0.
+Dosho 0.2.0b1 is already published. Install current Shinobi from GitHub to use
+the matching adapter:
 
 .. code-block:: console
 
     $ pip install git+https://github.com/shinobi-dosho/stimela-ninja.git
 
-Either way, this installs:
+This installs:
 
-* the ``ninja`` command-line tool, and
-* the importable ``shinobi`` package.
+* the ``ninja`` command-line tool;
+* the importable ``shinobi`` package; and
+* ``dosho[validation]>=0.2.0b1,<0.3`` for cab schemas, parameter validation
+  and argv formatting. Pydantic 2.14 or newer is required.
+
+Dosho is now a mandatory dependency, so its catalogue is already available.
+A separate ``pip install dosho`` is unnecessary. Dosho alone still supports
+catalogue access without Shinobi; runnable cabs and pysteps require the
+framework. See :doc:`design_cab_boundary` for ownership and compatibility.
 
 .. note::
 
@@ -49,9 +52,9 @@ environment performing lifecycle inspection:
 
 .. code-block:: console
 
-    $ pip install "stimela-ninja[ms-contract]"
-    $ pip install "stimela-ninja[fits-contract]"
-    $ pip install "stimela-ninja[ms-contract,fits-contract]"
+    $ pip install "stimela-ninja[ms-contract] @ git+https://github.com/shinobi-dosho/stimela-ninja.git"
+    $ pip install "stimela-ninja[fits-contract] @ git+https://github.com/shinobi-dosho/stimela-ninja.git"
+    $ pip install "stimela-ninja[ms-contract,fits-contract] @ git+https://github.com/shinobi-dosho/stimela-ninja.git"
 
 The extras name the supported formats. Their current implementations use
 ``python-casacore`` for Measurement Sets and Astropy for FITS; those packages
@@ -118,5 +121,5 @@ To build the documentation locally:
 .. code-block:: console
 
     $ uv sync --group docs
-    $ uv run sphinx-build -b html docs docs/_build/html
+    $ uv run sphinx-build -E -n -W --keep-going -b html docs docs/_build/html
     $ open docs/_build/html/index.html

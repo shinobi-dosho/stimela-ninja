@@ -22,7 +22,9 @@ Global options
     :doc:`concepts/config`.
 
 ``--backend NAME``
-    Override the default backend for this invocation.
+    Override the default backend for this invocation. The built-in default is
+    ``apptainer``. Use ``ninja --backend native run ...`` for host-installed
+    tools or Python steps without a container image.
 
 ``--log-file NAME``
     Write a run log to this file, created under the log directory. File

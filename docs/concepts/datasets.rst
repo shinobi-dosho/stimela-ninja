@@ -56,7 +56,7 @@ The annotation describes the Measurement Set format and its versioned profile;
 
 .. code-block:: console
 
-   pip install "stimela-ninja[ms-contract]"
+   pip install "stimela-ninja[ms-contract] @ git+https://github.com/shinobi-dosho/stimela-ninja.git"
 
 For a source checkout managed by uv, use
 ``uv sync --group dev --group measurement-set``.  The development group is
@@ -886,3 +886,27 @@ Flagversions backup and delete use this contract with separately owned history
 bundles and ``cache: false``. Partial sidecar updates are not scientifically
 rolled back by MS snapshots; failed operations have no committed result, and
 the sidecar may require inspection or manual repair.
+
+Guarded catalogue readers
+-------------------------
+
+Dosho provides ``wsclean-readonly``, ``ddfacet-readonly`` and
+``quartical-readonly`` alongside the general writer cabs. Resolve them with
+``dosho.get("wsclean-readonly")`` or import the underscored attributes, for
+example ``from dosho.cabs import wsclean_readonly``. Inspect their required
+inputs with ``ninja run dosho.cabs:wsclean_readonly --help``.
+
+These variants declare strict MSv2 reads and protect their input paths with
+``writable: false``. Fixed schema choices and cab-owned argv constants disable
+native MS writes. WSClean requires an external temporary reorder directory;
+DDFacet disables prediction and weight columns; QuartiCal emits no MS products,
+columns or flags, while still publishing gains and logs. DDFacet and QuartiCal
+disable parset overrides that could bypass those controls.
+
+Give each invocation its own declared output and scratch destinations outside
+the input MS and other protected dependencies. Symlink aliases into an input
+are refused. Disjoint readers may run concurrently, while a writer or exclusive
+read reservation orders every conflicting access over the same closure.
+The ordinary strict lifecycle, inspector requirements and route limits still
+apply; a read-only name does not bypass them. See :doc:`../design_cab_boundary`
+for the shared compiler and compatibility contract.
