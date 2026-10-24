@@ -150,6 +150,8 @@ class DatasetAccess(BaseModel):
     be inferred from its path (notably an externally stored subtable).
     ``reservation`` is a canonicalizable path envelope used when the dataset
     path is produced dynamically and is therefore unknown during planning.
+    ``external_read`` permits a concrete READ outside the workspace, using
+    exactly the canonical MS root as its physical storage namespace.
     ``exclusive`` reserves a READ closure against every concurrent access.
     It does not grant writes, writable mounts or mutation recovery.
     ``allow_present_subtable_rewrite`` grants an explicit MAIN writer backing-
@@ -163,6 +165,7 @@ class DatasetAccess(BaseModel):
     mode: DatasetMode
     table: DatasetTable = DatasetTable.MAIN
     exclusive: bool = Field(default=False, strict=True, exclude_if=lambda value: not value)
+    external_read: bool = Field(default=False, strict=True, exclude_if=lambda value: not value)
     columns: DatasetColumns | None = None
     selection: DatasetSelection | None = None
     allow_row_count_change: bool = False
@@ -176,6 +179,8 @@ class DatasetAccess(BaseModel):
     @model_validator(mode="after")
     def _consistent(self) -> "DatasetAccess":
         columns = self.columns
+        if self.external_read and self.mode is not DatasetMode.READ:
+            raise ValueError("external_read requires READ access")
         if self.exclusive and self.mode is not DatasetMode.READ:
             raise ValueError("exclusive is only meaningful for READ access; writers already require exclusivity")
         if self.allow_present_subtable_rewrite and (self.mode is not DatasetMode.WRITE or self.table is not DatasetTable.MAIN):
@@ -475,6 +480,11 @@ def _declaration_label(dataset: str, declaration: DatasetAccess) -> str:
     return f"{dataset}, {target}.{names[0]}" if names else f"{dataset}, {target}"
 
 
+def access_storage_namespace(declaration: DatasetAccess, root: Path, workspace: Path) -> Path:
+    """Constrain explicit external reads to their concrete canonical MS root."""
+    return root.resolve() if declaration.external_read else workspace.resolve()
+
+
 def _resolve_known_access(
     scope: Any,
     values: dict[str, Any],
@@ -486,7 +496,7 @@ def _resolve_known_access(
     planned_roots: dict[Path, tuple[Path, ...]],
     allow_existing_create: bool,
     element_index: int | None = None,
-    closure_cache: dict[Path, DatasetClosure] | None = None,
+    closure_cache: dict[tuple[Path, Path], DatasetClosure] | None = None,
 ) -> ResolvedDatasetAccess:
     """Resolve one concrete path for both scalar and list declarations."""
     resolved_field = declaration.field if element_index is None else f"{declaration.field}[{element_index}]"
@@ -551,11 +561,13 @@ def _resolve_known_access(
                 else f"{declaration.mode.value} planned {_declaration_label(planned_root.name or declaration.field, declaration)}"
             ),
         )
-    closure = closure_cache.get(root_candidate) if closure_cache is not None else None
+    namespace = access_storage_namespace(declaration, root_candidate, workspace)
+    cache_key = (root_candidate, namespace)
+    closure = closure_cache.get(cache_key) if closure_cache is not None else None
     if closure is None:
-        closure = resolve_dataset_closure(root_candidate, storage_namespace=workspace)
+        closure = resolve_dataset_closure(root_candidate, storage_namespace=namespace)
         if closure_cache is not None:
-            closure_cache[root_candidate] = closure
+            closure_cache[cache_key] = closure
     if not closure.valid:
         raise DatasetAccessError(f"scope {scope.name!r} cannot resolve dataset field {resolved_field!r}: {closure.status.value}: {closure.message}")
     if declaration.table is not DatasetTable.MAIN and not any(declaration.table.value in resource.members for resource in closure.resources):
@@ -591,7 +603,7 @@ def resolve_scope_dataset_accesses(
     planned_roots: dict[Path, tuple[Path, ...]] | None = None,
     unresolved_inputs: set[str] | frozenset[str] = frozenset(),
     allow_existing_create: bool = False,
-    closure_cache: dict[Path, DatasetClosure] | None = None,
+    closure_cache: dict[tuple[Path, Path], DatasetClosure] | None = None,
 ) -> tuple[ResolvedDatasetAccess, ...]:
     """Resolve one leaf scope's MSv2 declarations against concrete values.
 
@@ -729,7 +741,7 @@ class ResolvedAccessPlanner:
         self._accesses: dict[Path, _AccessState] = {}
         self._planned_roots: dict[Path, tuple[Path, ...]] = {}
         # One planning pass only: execution/revalidation owns fresh planners.
-        self._closure_cache: dict[Path, DatasetClosure] = {}
+        self._closure_cache: dict[tuple[Path, Path], DatasetClosure] = {}
 
     def order_after(
         self,

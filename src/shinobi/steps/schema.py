@@ -429,6 +429,9 @@ class _ProductReservations:
     candidate_paths: dict[str, frozenset[Path]] | None = None
     relative_candidates: dict[str, tuple[tuple[Path, Path, str, tuple[tuple[str, str], ...]], ...]] | None = None
 
+    ordinary_paths: dict[str, Path] | None = None
+    ordinary_inputs: dict[str, Path] | None = None
+
     @property
     def declarations(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
         return (("harvest", self.harvest), ("scratch", self.scratch))
@@ -449,7 +452,9 @@ class _ProductReservations:
                     paths.remove(path)
                     paths.add((workspace / relative).resolve())
                 candidates[name] = frozenset(paths)
-        return _ProductReservations(self.harvest, self.scratch, inputs, self.families, self.derived, candidates, self.relative_candidates)
+        return _ProductReservations(
+            self.harvest, self.scratch, inputs, self.families, self.derived, candidates, self.relative_candidates, self.ordinary_paths, self.ordinary_inputs
+        )
 
 
 def _slice_descendants(mapping: dict | None, step_id: int, slice_index: int) -> dict:

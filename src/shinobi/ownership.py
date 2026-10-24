@@ -303,6 +303,64 @@ def scope_path_accesses(
     return list(collected.items()), step_inputs
 
 
+def ordinary_creator_paths(scope: Scope, values: dict[str, Any], *, workspace: Path, dataset_resources: set[Path], require_echo: bool = True) -> dict[str, Path]:
+    """Prove explicit scalar ordinary destinations echoed by the same field.
+
+    Python object mutability and dataset authority cannot supply this grant.
+    Every destination must be concrete and disjoint from the entire workflow's
+    scientific resources, including canonical aliases and ancestor paths.
+    """
+    from shinobi.datasets import dataset_fields
+    from shinobi.fits_access import fits_product_fields
+    from shinobi.steps.schema import Mutability
+    from types import UnionType
+    from typing import Union, get_args, get_origin
+
+    def scalar_path(annotation):
+        if get_origin(annotation) in (Union, UnionType):
+            return set(get_args(annotation)) == {Path, type(None)}
+        return annotation is Path
+
+    scientific = set(dataset_fields(scope.inputs_model)) | set(dataset_fields(scope.outputs_model))
+    scientific |= set(fits_product_fields(scope.inputs_model)) | set(fits_product_fields(scope.outputs_model))
+    scientific |= {access.field for access in (*scope.dataset_accesses, *scope.fits_accesses)}
+    proven = {}
+    for name in write_path_fields(scope) - scientific:
+        input_field = scope.inputs_model.model_fields.get(name)
+        output_field = scope.outputs_model.model_fields.get(name)
+        if input_field is None or not scalar_path(input_field.annotation):
+            continue
+        if require_echo and (output_field is None or not scalar_path(output_field.annotation)):
+            continue
+        if scope.mutability_of(name) is Mutability.MUTABLE or not isinstance(values.get(name), (str, Path)):
+            continue
+        path = Path(values[name])
+        path = (path if path.is_absolute() else workspace / path).resolve()
+        if not any(paths_overlap(path, resource) for resource in dataset_resources):
+            proven[name] = path
+    return proven
+
+
+def validate_ordinary_creator_outputs(
+    scope: Scope, outputs: BaseModel | None, *, workspace: Path, dataset_resources: set[Path], planned_inputs: _ProductReservations | None
+) -> None:
+    """Check actual scalar echoes independently of cache/product inventory."""
+    from shinobi.exceptions import DatasetLifecycleViolationError
+
+    if not dataset_resources or planned_inputs is None:
+        return
+    expected = planned_inputs.ordinary_paths or {}
+    actual = _model_values(outputs) if isinstance(outputs, BaseModel) else (outputs or {})
+    for name, path in expected.items():
+        value = actual.get(name)
+        resolved = None
+        if isinstance(value, (str, Path)):
+            candidate = Path(value)
+            resolved = (candidate if candidate.is_absolute() else workspace / candidate).resolve()
+        if resolved != path:
+            raise DatasetLifecycleViolationError(f"scope {scope.name!r} ordinary output {name!r} changed its frozen destination: {path} -> {resolved}")
+
+
 def contained_access_issues(
     scope: Scope,
     values: dict[str, Any] | BaseModel,
@@ -313,6 +371,10 @@ def contained_access_issues(
     validated_steps: dict[int | tuple[int, ...], tuple[BaseModel, bool]] | None = None,
 ) -> tuple[str, ...]:
     """Return generic filesystem declarations a contained read cannot prove.
+
+    Explicit scalar write_path inputs echoed by same-name ordinary Path
+    outputs are creators when fixed and disjoint; they are not granted
+    generic mutation authority.
 
     The contained lifecycle permits ordinary products only when their paths
     are fixed at the ownership boundary and do not overlap the claimed MSv2
@@ -391,7 +453,7 @@ def contained_access_issues(
         if unknown_inputs:
             issues.append(f"scope {leaf.name!r} has runtime-dependent generic path input(s): {', '.join(unknown_inputs)}")
 
-        generic_mutations = sorted(mutated_path_fields(leaf) - dataset_inputs)
+        generic_mutations = sorted(mutated_path_fields(leaf) - dataset_inputs - ordinary_creator_paths(leaf, known, workspace=root, dataset_resources=dataset_resources).keys())
         if generic_mutations:
             issues.append(f"scope {leaf.name!r} declares unsupported in-place generic mutation(s): {', '.join(generic_mutations)}")
 
@@ -487,6 +549,21 @@ def validate_contained_execution(
     issues = (
         list(contained_access_issues(scope, prepared, workspace=workspace, dataset_workspace=dataset_workspace, dataset_resources=dataset_resources)) if dataset_resources else []
     )
+    if dataset_resources:
+        expected = planned_inputs.ordinary_inputs if planned_inputs is not None else None
+        # Fixed destinations are field-local: a broader ownership claim or a
+        # sibling field cannot authorize a runtime redirect.
+        for name, path in (expected or {}).items():
+            value = prepared.get(name)
+            actual = None
+            if isinstance(value, (str, Path)):
+                candidate = Path(value)
+                actual = (candidate if candidate.is_absolute() else workspace / candidate).resolve()
+            if actual != path:
+                issues.append(f"scope {scope.name!r} ordinary destination {name!r} changed its frozen reservation: {path} -> {actual}")
+        for name in ordinary_creator_paths(scope, prepared, workspace=workspace, dataset_resources=dataset_resources):
+            if name not in (expected or {}):
+                issues.append(f"scope {scope.name!r} ordinary destination {name!r} has no frozen reservation")
     families = {name: meta.family for name, meta in scope.field_meta.items() if meta.family}
     if planned_inputs is not None and families != (planned_inputs.families or {}):
         issues.append(f"scope {scope.name!r} changed its planned family declarations")

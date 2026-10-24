@@ -455,6 +455,16 @@ oracle and requires detached-finalizer rollback before ownership release.
 Run it after the M2 storage probe with the ``measurement-set`` development
 dependencies available in the shared worker/tool environment.
 
+A read-only MS source can be a sibling of the launch workspace when its explicit
+``DatasetAccess`` sets ``external_read=True``. Its physical closure must fit
+inside that exact canonical MS root, and the source must still lie inside the
+qualified shared-storage tree. Ordinary scalar report outputs can accompany
+that read when their explicit ``write_path`` input fixes the same-name output
+destination before submission. Workers reconstruct these field-local
+reservations from the immutable original bundle inputs and refuse redirected
+inputs or returned outputs before success publication. See
+:doc:`concepts/datasets` for the declarations and confinement rules.
+
 When a recipe can be offloaded
 ------------------------------
 

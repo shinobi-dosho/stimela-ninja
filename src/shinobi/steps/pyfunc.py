@@ -93,6 +93,7 @@ from shinobi.sandbox import (
     observe_prepared_parents,
     prune_unused_parents,
     relativize_path_outputs,
+    validate_harvest_paths,
 )
 from shinobi.steps.schema import ParamMeta, Scope, StepRef, validate_declared_writes
 
@@ -531,11 +532,19 @@ def _run_pystep_subprocess(
                 raise TypeError(f"pystep {func.__name__!r} must return {outputs_model.__name__!r}, got {type(output_data).__name__!r} from the subprocess")
             outputs = outputs_model(**output_data)
 
+        if dataset_resources:
+            from shinobi.ownership import validate_ordinary_creator_outputs
+
+            # JSON outputs must satisfy the original host reservation before
+            # sandbox harvest can move or replace any workspace path.
+            validate_ordinary_creator_outputs(scope, outputs, workspace=Path(workspace), dataset_resources=dataset_resources, planned_inputs=planned)
+
         capture_outputs = outputs
         if sandbox_dir is not None:
             outputs = relativize_path_outputs(scope, outputs, Path(workspace))
+            validate_harvest_paths(scope, outputs, run_prepared, sandbox_dir, Path(workspace), dataset_resources, _capture=capture)
             prune_unused_parents(precreated, prepared_observations)
-            harvest_outputs(scope, outputs, run_prepared, sandbox_dir, Path(workspace), _capture=capture)
+            harvest_outputs(scope, outputs, run_prepared, sandbox_dir, Path(workspace), _capture=capture, dataset_resources=dataset_resources)
             discard_sandbox(sandbox_dir)
 
         result = StepResult(

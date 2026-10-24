@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pydantic import BaseModel
-from shinobi import pystep
+from shinobi import MeasurementSetV2, pystep
 
 
 class MagicOut(BaseModel):
@@ -105,3 +105,28 @@ def produce_recreated_directory(prefix: str) -> FamilyProducts:
     products = produce_recreated_empty_directory(prefix)
     (products.mfs / "science.dat").write_text("science")
     return products
+
+
+class StrictSandboxReport(BaseModel):
+    report: Path
+
+
+def strict_sandbox_report(ms: MeasurementSetV2, report: Path, target: str) -> StrictSandboxReport:
+    """Produce a scratch artifact and return its caller-selected relative path."""
+    path = Path(target)
+    if target == "source.ms":
+        path.mkdir()
+        (path / "table.dat").write_text("REPLACED")
+    else:
+        path.write_text("REPLACED")
+    return StrictSandboxReport(report=path)
+
+
+def strict_sandbox_alias(ms: MeasurementSetV2, report: Path, alias: str) -> StrictSandboxReport:
+    """Exercise output spellings whose sandbox and host meanings differ."""
+    if alias == "parent":
+        Path("link").symlink_to(ms / "ANTENNA", target_is_directory=True)
+        return StrictSandboxReport(report=Path("link/../table.dat"))
+    target = ms if alias == "direct" else Path("source.ms")
+    Path("report.txt").symlink_to(target, target_is_directory=True)
+    return StrictSandboxReport(report=Path("report.txt"))

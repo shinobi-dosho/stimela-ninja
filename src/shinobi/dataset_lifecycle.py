@@ -700,6 +700,30 @@ def observe_roots(roots: tuple[Path, ...], workspace: Path) -> tuple[tuple[Datas
     return tuple(observations), tuple(absent)
 
 
+def observe_access_roots(accesses: tuple[ResolvedDatasetAccess, ...], roots: tuple[Path, ...], workspace: Path) -> tuple[tuple[DatasetObservation, ...], tuple[Path, ...]]:
+    """Observe under every applicable declaration, without widening authority.
+
+    An external READ grants only the concrete MS root. Another declaration of
+    the same root must independently satisfy its own namespace boundary.
+    """
+    from shinobi.dataset_access import access_storage_namespace
+
+    observations = []
+    absent = []
+    for root in roots:
+        if not root.exists() and not root.is_symlink():
+            absent.append(root)
+            continue
+        namespaces = {access_storage_namespace(access.declaration, root, workspace) for access in accesses if access.root == root}
+        if not namespaces:
+            namespaces = {workspace.resolve()}
+        observed = None
+        for namespace in sorted(namespaces, key=str):
+            observed = _observe_root(root, namespace)
+        observations.append(observed)
+    return tuple(observations), tuple(absent)
+
+
 def _validate_disjoint_roots(roots: tuple[Path, ...], prefix: str) -> None:
     for index, left in enumerate(roots):
         for right in roots[index + 1 :]:
@@ -752,7 +776,7 @@ def resolve_lifecycle_snapshot(
         raise DatasetLifecycleUnavailableError("contained MSv2 read refused: every access must resolve to a validated local closure")
     roots = tuple(sorted({access.root for access in accesses if access.root is not None}, key=str))
     _validate_disjoint_roots(roots, "contained MSv2 read refused")
-    observations = tuple(_observe_root(root, workspace) for root in roots)
+    observations, _ = observe_access_roots(accesses, roots, workspace)
     _validate_observed_resources(accesses, observations, "contained MSv2 read refused")
     return DatasetLifecycleSnapshot(accesses=accesses, observations=observations)
 
@@ -781,7 +805,7 @@ def _resolve_mutation_snapshot(
     roots = tuple(sorted({access.root for access in accesses if access.root is not None}, key=str))
     _validate_disjoint_roots(roots, prefix)
     existing = tuple(root for root in roots if root not in created)
-    observations = tuple(_observe_root(root, workspace) for root in existing)
+    observations, _ = observe_access_roots(accesses, existing, workspace)
     for root in created:
         if root.exists() or root.is_symlink():
             raise DatasetLifecycleUnavailableError(f"{prefix}: CREATE target {root} already exists")
@@ -1219,7 +1243,7 @@ class StrictLeaf:
 
         from shinobi.snapshots import state_name
 
-        observations, absent = observe_roots(self.roots, self.lifecycle.workspace)
+        observations, absent = observe_access_roots(self.accesses, self.roots, self.lifecycle.workspace)
         self.pre = {observation.root: observation for observation in observations}
         self.absent = absent
         unexpected = sorted(set(absent) - {self.fields[field] for field in self.creates}, key=str)
@@ -1268,7 +1292,8 @@ class StrictLeaf:
                 post[root] = None
                 continue
             try:
-                post[root] = _observe_root(root, self.lifecycle.workspace)
+                observations, _ = observe_access_roots(self.accesses, (root,), self.lifecycle.workspace)
+                post[root] = observations[0]
             except DatasetLifecycleUnavailableError as exc:
                 failures.append(f"{root.name or root}: {exc}")
                 post[root] = None
