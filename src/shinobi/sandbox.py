@@ -666,7 +666,72 @@ def _remove(path: Path) -> None:
         path.unlink()
 
 
-def harvest_outputs(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbox_dir: Path, workspace: Path, *, _capture: ProductCapture | None = None) -> list[Path]:
+def _exclude_staged_read_targets(targets: dict[str, bool], capture: ProductCapture | None, sandbox_dir: Path) -> None:
+    """Apply the shared harvest exclusions before proving or moving targets."""
+    if capture is None:
+        return
+    from shinobi.derived import read_fingerprint
+
+    for path, (source, staged) in capture.staged_reads.items():
+        if not source.mutable:
+            if read_fingerprint(staged, require=True) != read_fingerprint(source, require=True):
+                raise ValueError(f"read-only staged dependency changed: {path}")
+            for rel in list(targets):
+                target = sandbox_dir / rel
+                if target == path or target.is_relative_to(path):
+                    targets.pop(rel)
+                elif path.is_relative_to(target):
+                    raise ValueError(f"harvest ancestor would carry read-only staged dependency: {target} / {path}")
+
+
+def validate_harvest_paths(
+    scope: Scope,
+    outputs: Any,
+    prepared: dict[str, Any],
+    sandbox_dir: Path,
+    workspace: Path,
+    dataset_resources: set[Path],
+    *,
+    _targets: dict[str, bool] | None = None,
+    _capture: ProductCapture | None = None,
+) -> None:
+    """Preflight every strict harvest source and destination before mutation.
+
+    Relative outputs have two namespaces: the source is interpreted inside
+    the sandbox, while the destination is interpreted inside the workspace.
+    Symlinks and parent traversal must not turn a declared product into a
+    move from outside the original sandbox or into a protected dataset tree.
+    """
+    from shinobi.exceptions import DatasetLifecycleViolationError
+
+    if not dataset_resources:
+        return
+    try:
+        if sandbox_dir.resolve() != sandbox_dir or not sandbox_dir.is_dir():
+            raise DatasetLifecycleViolationError(f"strict harvest sandbox changed its canonical location: {sandbox_dir}")
+        targets = _relative_targets(scope, outputs, prepared, sandbox_dir) if _targets is None else _targets
+        _exclude_staged_read_targets(targets, _capture, sandbox_dir)
+        for relative in targets:
+            artifact = sandbox_dir / relative
+            if not path_exists(artifact) and not artifact.is_symlink():
+                continue  # absolute host-direct outputs have no artifact to move
+            # Moving a relative link can rebind it in the host namespace,
+            # even when its current target stays safely inside the sandbox.
+            if (sandbox_dir / relative).is_symlink():
+                raise DatasetLifecycleViolationError(f"strict harvest refuses a symlink-root artifact: {relative!r}")
+            source = (sandbox_dir / relative).resolve()
+            destination = (workspace / relative).resolve()
+            if not source.is_relative_to(sandbox_dir) or source == sandbox_dir:
+                raise DatasetLifecycleViolationError(f"strict harvest source escapes its sandbox: {relative!r} -> {source}")
+            if any(paths_overlap(path, resource) for path in (source, destination) for resource in dataset_resources):
+                raise DatasetLifecycleViolationError(f"strict harvest path aliases a protected dataset: {relative!r} ({source} -> {destination})")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise DatasetLifecycleViolationError(f"strict harvest cannot prove source/destination paths: {exc}") from exc
+
+
+def harvest_outputs(
+    scope: Scope, outputs: Any, prepared: dict[str, Any], sandbox_dir: Path, workspace: Path, *, _capture: ProductCapture | None = None, dataset_resources: set[Path] | None = None
+) -> list[Path]:
     """Move the step's declared outputs from `sandbox_dir` to `workspace`,
     preserving their relative paths, and return the workspace-side paths
     that were moved. A declared output the tool never wrote (e.g. an
@@ -682,6 +747,9 @@ def harvest_outputs(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbo
         _capture.validate_family_boundaries()
     moved: list[Path] = []
     targets = _relative_targets(scope, outputs, prepared, sandbox_dir)
+    _exclude_staged_read_targets(targets, _capture, sandbox_dir)
+    if dataset_resources:
+        validate_harvest_paths(scope, outputs, prepared, sandbox_dir, workspace, dataset_resources, _targets=targets)
     candidates = ()
     if _capture is not None:
         try:
@@ -690,19 +758,6 @@ def harvest_outputs(scope: Scope, outputs: Any, prepared: dict[str, Any], sandbo
             _capture.complete = False
             # Actual harvest checks/moves still run and retain their failures.
 
-    if _capture is not None:
-        from shinobi.derived import read_fingerprint
-
-        for path, (source, staged) in _capture.staged_reads.items():
-            if not source.mutable:
-                if read_fingerprint(staged, require=True) != read_fingerprint(source, require=True):
-                    raise ValueError(f"read-only staged dependency changed: {path}")
-                for rel in list(targets):
-                    target = sandbox_dir / rel
-                    if target == path or target.is_relative_to(path):
-                        targets.pop(rel)
-                    elif path.is_relative_to(target):
-                        raise ValueError(f"harvest ancestor would carry read-only staged dependency: {target} / {path}")
     candidates = {rel for rel in candidates if rel in targets}
     for rel in sorted(targets, key=lambda rel: Path(rel).parts):
         src = sandbox_dir / rel

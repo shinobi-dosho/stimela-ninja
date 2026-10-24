@@ -1015,13 +1015,14 @@ def _execute_step_invocation(
                 declaration = bundle.declaration()
                 snapshots = planned_leaf_inputs(declaration, unpack(bundle.inputs), workspace=Path(bundle.workspace))
                 planned_inputs = snapshots.get(id(declaration.steps[index]))
-                if planned_inputs is not None and any(meta.family for meta in scope.field_meta.values()):
+                if planned_inputs is not None:
                     from shinobi.steps.dispatch import _snapshot_product_inputs
 
                     planned_inputs = _snapshot_product_inputs(scope, planned_inputs, workspace=Path(bundle.workspace))
-                    planned_inputs = replace(
-                        planned_inputs, candidate_paths={name: frozenset(Path(path) for path in paths) for name, paths in plan.product_candidates.get(step_path, {}).items()}
-                    )
+                    if planned_inputs is not None and any(meta.family for meta in scope.field_meta.values()):
+                        planned_inputs = replace(
+                            planned_inputs, candidate_paths={name: frozenset(Path(path) for path in paths) for name, paths in plan.product_candidates.get(step_path, {}).items()}
+                        )
             config = AppConfig.model_validate({name: unpack(value) for name, value in bundle.config.items()})
             recipe = bundle.recipe.restore()
             cache_enabled = (

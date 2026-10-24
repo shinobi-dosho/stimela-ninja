@@ -96,6 +96,60 @@ those execution shapes. ``CasaTab`` supports declaration and inspection only:
 any atomic input or output with that annotation is refused at dispatch, even
 a referenced subtable carrying ``root_field``.
 
+Fixed ordinary products from MS readers
+---------------------------------------
+
+A strict MS reader can create an ordinary report at an explicitly declared,
+fixed destination and return that same path:
+
+.. code-block:: python
+
+   from pathlib import Path
+   from pydantic import BaseModel
+   from shinobi import DatasetAccess, MSv2, pystep
+
+   class Report(BaseModel):
+       report: Path
+
+   @pystep(write_paths=["report"], dataset_accesses=[
+       DatasetAccess(field="ms", mode="read", external_read=True),
+   ])
+   def summarize(ms: MSv2, report: Path) -> Report:
+       report.write_text(ms.name)
+       return Report(report=report)
+
+   summarize(ms=Path("../source.ms"), report=Path("report.txt"))
+
+The report input and same-name output must be direct ordinary scalar paths
+(nullable scalar fields also work when a concrete path is supplied). The input
+must declare ``write_path`` and must not declare ``Mutability.MUTABLE``. Its
+canonical destination is frozen before ownership acquisition, must be disjoint
+from every workflow dataset resource, and cannot change through execution
+input overrides, returned outputs or cache reuse. It may replace an existing
+ordinary report; it is not a dataset ``CREATE`` declaration and does not become
+a scientific mutation snapshot participant. Sandbox harvest proves every source
+stays inside its original sandbox and refuses symlink-root artifacts before
+moving any product; host destination authority does not grant source access.
+Runtime destinations, containers,
+family/bundle shapes and generic in-place mutations retain their restrictions.
+
+External read-only MS roots
+---------------------------
+
+The default dataset namespace is the canonical workflow workspace. An explicit
+``DatasetAccess(field="ms", mode="read", external_read=True)`` permits a
+concrete MS root outside that workspace, such as the sibling source above.
+The effective namespace is exactly that canonical MS root, independently for
+each list element. Every subtable and backing resource must remain inside it;
+the flag does not permit linked external subtables, unknown path envelopes,
+writes or dataset creation. Structural and physical closure validation,
+ownership claims and pre/post read-only comparisons still apply.
+
+Detached workers additionally require the source, workspace and publication
+paths to lie inside the site's qualified shared-storage root. This flag never
+widens that qualification. Omit it for ordinary workspace-contained access;
+false is omitted from serialized declarations for compatibility.
+
 MSv2 lists
 -----------
 

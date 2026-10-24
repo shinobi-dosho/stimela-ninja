@@ -31,7 +31,7 @@ class LifecycleOperations:
     def observe(self, accesses, roots, workspace):
         if self.fits:
             return self.module.observe_accesses(self.module.current_accesses(tuple(a for a in accesses if a.root in roots)))
-        return self.module.observe_roots(roots, workspace)
+        return self.module.observe_access_roots(accesses, roots, workspace)
 
     def recovery_matches(self, before, after):
         if before is None or after is None:

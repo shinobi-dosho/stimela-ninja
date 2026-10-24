@@ -59,9 +59,10 @@ from shinobi.sandbox import (
     observe_prepared_parents,
     prune_unused_parents,
     relativize_path_outputs,
+    validate_harvest_paths,
 )
 from shinobi.steps.loops import passthrough_result, should_skip
-from shinobi.steps.schema import _ProductReservations, _slice_descendants, Cab, InputRef, Mutability, OutputRef, Recipe, Scope, StepRef, validate_declared_writes
+from shinobi.steps.schema import _ProductReservations, _slice_descendants, Cab, InputRef, Mutability, OutputRef, Recipe, Scope, StepRef, validate_declared_writes, write_path_fields
 from shinobi.wranglers import apply_wranglers
 
 # Run-log records (step lifecycle + captured tool output) go through the
@@ -436,9 +437,9 @@ def _snapshot_product_inputs(scope: Scope, inputs: BaseModel | dict[str, Any] | 
     try:
         if isinstance(inputs, _ProductReservations):
             return inputs.with_inputs(copy.deepcopy(inputs.inputs))
-        if not (scope.harvest or scope.scratch or scope.derived_reads or any(meta.family for meta in scope.field_meta.values())):
+        if not (scope.harvest or scope.scratch or scope.derived_reads or write_path_fields(scope) or any(meta.family for meta in scope.field_meta.values())):
             return None
-        from shinobi.ownership import _model_values
+        from shinobi.ownership import _model_values, ordinary_creator_paths
 
         values = _model_values(inputs) if isinstance(inputs, BaseModel) else inputs
         from shinobi.products import family_plans
@@ -461,6 +462,8 @@ def _snapshot_product_inputs(scope: Scope, inputs: BaseModel | dict[str, Any] | 
             copy.deepcopy(scope.derived_reads),
             candidates,
             relative,
+            ordinary_creator_paths(scope, values, workspace=workspace or Path.cwd(), dataset_resources=set()),
+            ordinary_creator_paths(scope, values, workspace=workspace or Path.cwd(), dataset_resources=set(), require_echo=False),
         )
     except Exception as exc:
         raise DatasetLifecycleUnavailableError(f"scope {scope.name!r} cannot freeze product directory reservation inputs: {exc}") from exc
@@ -929,6 +932,13 @@ def _snapshot_guard(
     them per step per run would bury the ones that matter.
     """
     prepared = ctx.prepare_inputs()
+    if ctx._dataset_lifecycle is not None and ctx._planned_inputs is not None and not any(read.mutable for read in scope.derived_reads.values()):
+        from shinobi.ownership import ordinary_creator_paths
+        from shinobi.steps.schema import mutated_path_fields
+
+        creators = ordinary_creator_paths(scope, ctx._planned_inputs.inputs, workspace=ctx._dataset_lifecycle.workspace, dataset_resources=ctx.workflow_dataset_resources())
+        if creators and mutated_path_fields(scope) <= creators.keys() and all(ctx._planned_inputs.ordinary_paths.get(name) == path for name, path in creators.items()):
+            return None
     protected, excluded = eligible_fields(scope, prepared, input_keys, wired_fields, slice_index is not None)
     for exclusion in excluded:
         if (cache_path, exclusion.field) not in _snapshot_warned:
@@ -1113,7 +1123,7 @@ def _dispatch(
             claim_covers_snapshot,
             dataset_observation_matches,
             dataset_snapshot_matches,
-            observe_roots,
+            observe_access_roots,
             overwrite_created_datasets,
             pending_dataset_recovery,
             resolve_lifecycle_snapshot,
@@ -1248,6 +1258,7 @@ def _dispatch(
             known_steps: dict[int | tuple[int, ...], dict[str, Any]] = {}
             accesses, leaf_inputs = scope_path_accesses(scope, validated_inputs, workspace=launch_workspace, known_steps=known_steps)
             planned_leaf_inputs = _snapshot_product_leaf_inputs(scope, known_steps)
+            planned_inputs = _snapshot_product_inputs(scope, validated_inputs, workspace=launch_workspace) if not isinstance(scope, Recipe) else None
             scatter_accesses = _snapshot_scatter_accesses(scope, known_steps)
             planned = resolve_snapshot()
             lifecycle.transition(
@@ -1376,7 +1387,7 @@ def _dispatch(
                     _workspace_claimed=True,
                     _dataset_lifecycle=lifecycle,
                     _validated_inputs=validated_inputs,
-                    _planned_inputs=validated_inputs if not isinstance(scope, Recipe) else None,
+                    _planned_inputs=planned_inputs,
                     _planned_leaf_inputs=planned_leaf_inputs,
                     _scatter_accesses=scatter_accesses,
                     _leaf_inputs=leaf_inputs,
@@ -1388,7 +1399,9 @@ def _dispatch(
                     # its own datasets; the workflow record states the end.
                     try:
                         final, _absent = (
-                            observe_current_accesses(planned.accesses, lifecycle, effective_cache_dir) if fits_route else observe_roots(planned_roots, launch_workspace)
+                            observe_current_accesses(planned.accesses, lifecycle, effective_cache_dir)
+                            if fits_route
+                            else observe_access_roots(planned.accesses, planned_roots, launch_workspace)
                         )
                     except BaseException as observe_exc:
                         exc.add_note(f"final dataset observation also failed: {type(observe_exc).__name__}: {observe_exc}")
@@ -1433,7 +1446,11 @@ def _dispatch(
                 raise
             if mutation:
                 try:
-                    final, _absent = observe_current_accesses(planned.accesses, lifecycle, effective_cache_dir) if fits_route else observe_roots(planned_roots, launch_workspace)
+                    final, _absent = (
+                        observe_current_accesses(planned.accesses, lifecycle, effective_cache_dir)
+                        if fits_route
+                        else observe_access_roots(planned.accesses, planned_roots, launch_workspace)
+                    )
                 except BaseException as exc:
                     violation = DatasetLifecycleViolationError(f"strict {format_name} workflow completed but its final dataset observation could not be established")
                     transition_preserving(DatasetLifecyclePhase.FAILED, f"final observation failed: {type(exc).__name__}: {exc}", violation)
@@ -1718,6 +1735,18 @@ def _dispatch(
 
     ctx.validate_contained_inputs()
 
+    def validate_ordinary_outputs(result):
+        if result.success:
+            from shinobi.ownership import validate_ordinary_creator_outputs
+
+            validate_ordinary_creator_outputs(
+                scope,
+                result.outputs,
+                workspace=_dataset_lifecycle.workspace if _dataset_lifecycle is not None else Path.cwd(),
+                dataset_resources=ctx.workflow_dataset_resources(),
+                planned_inputs=ctx._planned_inputs,
+            )
+
     manifest = None
     cache_key = None
 
@@ -1780,6 +1809,7 @@ def _dispatch(
             logger.warning("step %s: cache hit rejected for strict dataset reuse -- %s", cache_path, strict_leaf.cache.reason)
             hit = None
         if hit is not None:
+            validate_ordinary_outputs(hit)
             # A hit stands in for the run that first produced this key, so it
             # must advertise the same provenance -- otherwise dependents would
             # see the producer's key vanish and their own keys would flip
@@ -1795,6 +1825,7 @@ def _dispatch(
             def publish_hit() -> None:
                 if _result_precommit is not None:
                     _result_precommit(hit)
+                validate_ordinary_outputs(hit)
                 if _result_commit is not None:
                     _result_commit(hit, lambda: None)
                 if _cache_path is None and provenance_enabled:
@@ -1889,6 +1920,7 @@ def _dispatch(
                 result = ctx.run()
             elif not isinstance(result, StepResult):
                 raise TypeError(f"step function {getattr(func, '__name__', func)!r} must return StepResult or None, got {type(result).__name__}")
+        validate_ordinary_outputs(result)
         if result.success:
             from shinobi.fits_products import validate_fits_outputs
 
@@ -1956,6 +1988,7 @@ def _dispatch(
             try:
                 if _result_precommit is not None:
                     _result_precommit(result)
+                validate_ordinary_outputs(result)
             except BaseException as exc:
                 if guard is not None:
                     guard.after_failure()
@@ -2190,6 +2223,12 @@ def _run_cab(
         except (OSError, ValueError) as exc:
             raise ParameterError(f"{cab.name}: family resolution failed: {exc}") from exc
     outputs = _fill_outputs(cab, prepared, run, wrangled)
+    if run.returncode == 0 and dataset_resources:
+        from shinobi.ownership import validate_ordinary_creator_outputs
+
+        # Returned paths are untrusted publication targets. Check the frozen
+        # host destinations before harvesting can replace workspace entries.
+        validate_ordinary_creator_outputs(cab, outputs, workspace=workspace, dataset_resources=dataset_resources, planned_inputs=planned)
     if capture is not None and run.returncode == 0:
         try:
             capture.validate_output_ownership(outputs)
@@ -2199,8 +2238,9 @@ def _run_cab(
     if sandbox_dir is not None:
         outputs = relativize_path_outputs(cab, outputs, workspace)
         if run.returncode == 0:
+            validate_harvest_paths(cab, outputs, run_inputs, sandbox_dir, workspace, dataset_resources or set(), _capture=capture)
             prune_unused_parents(precreated, prepared_observations)
-            harvest_outputs(cab, outputs, run_inputs, sandbox_dir, workspace, _capture=capture)
+            harvest_outputs(cab, outputs, run_inputs, sandbox_dir, workspace, _capture=capture, dataset_resources=dataset_resources)
             discard_sandbox(sandbox_dir)
         else:
             warnings.warn(
