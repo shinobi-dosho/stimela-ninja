@@ -1,7 +1,5 @@
 name: dosho compatibility
 
-# Temporary candidate bootstrap for shinobi-dosho/dosho#102.
-# Restore dosho-ref defaults and fallbacks to main after that PR merges.
 on:
   push:
     branches: [main]
@@ -19,7 +17,7 @@ on:
       dosho-ref:
         description: Explicit Dosho source ref for the main lane
         type: string
-        default: "7ef781462862c93c03b6c1a9a6181982bbe7bd61"
+        default: main
   workflow_call:
     inputs:
       lane:
@@ -27,7 +25,7 @@ on:
         required: true
       dosho-ref:
         type: string
-        default: "7ef781462862c93c03b6c1a9a6181982bbe7bd61"
+        default: main
 
 permissions:
   contents: read
@@ -53,5 +51,5 @@ jobs:
       - name: Test installed dosho against this checkout
         env:
           DOSHO_LANE: ${{ matrix.lane }}
-          DOSHO_REF: ${{ inputs.dosho-ref || '7ef781462862c93c03b6c1a9a6181982bbe7bd61' }}
+          DOSHO_REF: ${{ inputs.dosho-ref || 'main' }}
         run: bash .github/scripts/test-dosho-compat.sh "$DOSHO_LANE" "$DOSHO_REF"

@@ -163,9 +163,10 @@ The helper checks versions, exact wheel origins and archive digests, imports
 from the active environment's site-packages, and records both source HEADs.
 Local dirty-tree notices distinguish working edits from those HEADs.
 
-CI defaults to Dosho ``main``. That default works only after the matching
-Dosho change has landed. Before merging a coordinated change, dispatch the
-full ``ci.yml`` workflow on the Shinobi candidate branch with ``dosho-ref``
+CI defaults to Dosho ``main``, which contains the neutral definitions and
+shared schema helpers since Dosho #102 merged. For future coordinated changes
+whose Dosho counterpart has not landed, dispatch the full ``ci.yml`` workflow
+on the Shinobi candidate branch with ``dosho-ref``
 set to the exact compatible Dosho candidate SHA (or use a reviewed temporary
 default). Never silently fall back between published and source candidates.
 The manual ``cab-candidate-pair.yml`` also takes an explicit ``dosho-ref``.

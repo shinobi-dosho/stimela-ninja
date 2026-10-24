@@ -1,19 +1,17 @@
 name: CI
 
-# Temporary candidate bootstrap for shinobi-dosho/dosho#102.
-# Restore dosho-ref defaults and fallbacks to main after that PR merges.
 on:
   workflow_dispatch:
     inputs:
       dosho-ref:
         description: Compatible Dosho source ref (use an exact candidate SHA before merge)
         type: string
-        default: "7ef781462862c93c03b6c1a9a6181982bbe7bd61"
+        default: main
   workflow_call:
     inputs:
       dosho-ref:
         type: string
-        default: "7ef781462862c93c03b6c1a9a6181982bbe7bd61"
+        default: main
   schedule:
     - cron: "17 3 * * *"
   push:
@@ -41,7 +39,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: shinobi-dosho/dosho
-          ref: ${{ inputs.dosho-ref || '7ef781462862c93c03b6c1a9a6181982bbe7bd61' }}
+          ref: ${{ inputs.dosho-ref || 'main' }}
           path: .work-cache/dosho-candidate
 
       - name: Install uv
@@ -90,7 +88,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: shinobi-dosho/dosho
-          ref: ${{ inputs.dosho-ref || '7ef781462862c93c03b6c1a9a6181982bbe7bd61' }}
+          ref: ${{ inputs.dosho-ref || 'main' }}
           path: .work-cache/dosho-candidate
 
       - name: Install uv
@@ -127,7 +125,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: shinobi-dosho/dosho
-          ref: ${{ inputs.dosho-ref || '7ef781462862c93c03b6c1a9a6181982bbe7bd61' }}
+          ref: ${{ inputs.dosho-ref || 'main' }}
           path: .work-cache/dosho-candidate
 
       - name: Install uv
