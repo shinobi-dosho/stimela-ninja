@@ -21,6 +21,7 @@ Settings
     backend:
       default: apptainer         # default backend when none is specified
       run_as_host_user: true     # docker/podman: run as host uid:gid, not root
+      container_tmp_root: null  # optional private host scratch for container pysteps
       venv:                      # settings for the `venv` backend
         default: null            #   venv used when a step declares none (path or a name below)
         envs: {}                 #   name -> venv path, so recipes/config refer to a venv by name
@@ -107,6 +108,18 @@ user, and ``--user`` there names an unmapped subuid inside the user
 namespace, which would make every write to a bind mount fail. It's a no-op
 for ``apptainer``, which already runs as the host user; set it to ``False``
 for images that need to run as root. See :doc:`backends`.
+
+``backend.container_tmp_root`` is an opt-in deployment setting for
+containerized Python steps. Set it to an existing, host-owned, writable
+directory inside the current workspace with mode ``0700`` and no symlink in
+its ancestry. Each launch receives a separate private child directory,
+mounted read-write at ``/ninja-tmp`` with the child's ``TMPDIR`` set there.
+The host runner and container runtime keep their original temporary-directory
+environment. The configured root must not overlap a strict dataset resource,
+read-only path input, or declared science product. The launch's host and
+container paths appear as diagnostic provenance fields; they do not affect
+scientific cache identity. Confirmed completion removes the private child;
+uncertain teardown retains it alongside the runner for investigation.
 
 ``backend.venv`` configures the ``venv`` backend. ``backend.venv.default`` is
 the venv a ``venv``-backend step uses when it declares none of its own (a path,
@@ -373,3 +386,48 @@ Loading config in Python
     config = AppConfig.load()                       # defaults + file + env
     config = AppConfig.load("my-config.yml")        # explicit file
     config = AppConfig.load(backend={"default": "docker"})  # CLI-style override
+
+Required cache replay
+---------------------
+
+A local restart can require exact prior results for selected atomic leaves::
+
+    cache:
+      enabled: true
+      dir: /same/workspace/cache
+      required:
+        continuum.acquire: <exact-prior-cache-key>
+        continuum.flag_save: <exact-prior-cache-key>
+
+Keys use full declared leaf paths, including the root recipe name. Unknown
+names refuse at root preflight. Each selected leaf must have caching enabled,
+compute that exact key, and pass the ordinary output/product inventory and
+strict dataset lineage checks. A missing, changed or rejected hit refuses
+before that leaf launches or prepares snapshot restores. Root preflight also
+checks stored expected keys and available recorded-product inventories. Authorized
+interrupted-state recovery occurs earlier under the root workflow's exclusive
+claim; a later computed-key mismatch may therefore refuse after recovery has
+already restored the interrupted writer's exact rollback state. Unlisted leaves keep
+ordinary cache behavior; an empty mapping preserves normal fresh-run semantics.
+This feature currently addresses local atomic leaves, not indexed scatter
+instances or detached-worker restart authority.
+
+An existing MS CREATE destination remains refused by default. Required replay
+admits it only when the cache entry's run ID binds an exact durable committed
+CREATE leaf in this workspace (step, field, optional element index, root and
+journal state). The live trusted journal head must descend from that CREATE.
+An interrupted downstream mutation may provisionally establish the same
+ancestry through its verified exact frozen rollback source; recovery still
+runs only under the workflow's exclusive claim, followed by live revalidation.
+A pending writer may have destroyed MAIN/table.dat. Before recovery its verified
+frozen rollback closure supplies only root-confined provisional claim resources
+for every access to that root; it supplies no fabricated live observation. The
+exact source and full marker evidence must match again after claim acquisition.
+Source closures containing symlinks or external resources are refused. After
+recovery the live closure and CREATE ancestry are checked anew, the actual
+resources must remain covered by the claim, and no pending proof may enter
+execution.
+The CREATE guard retains its refusal to recreate an existing destination, so
+required replay cannot turn a miss into deletion or recreation. This is not an
+overwrite option, and does not replace history-sidecar verification owned by
+the application.

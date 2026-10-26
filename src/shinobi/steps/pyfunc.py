@@ -29,8 +29,11 @@ interpreter (see `shinobi.backends.venv`). Either way the function's source
 *file* is mounted/read via `inspect.getfile()`, and a generated runner script
 loads it as an isolated module and invokes it. The runner never imports the
 framework stack (shinobi/pydantic). For a container it also stubs the target's
-*own* package (so the container's Python need not be ABI-compatible with the
-host's compiled wheels); for a venv it does *not* -- importing the venv's real
+*own* package, except exact source files for statically referenced imported
+same-package Python function helpers declared by module-level literal imports
+(so host compiled wheels never need load).
+Synthetic package parents support relative helper imports without executing
+package initializers. For a venv it does *not* -- importing the venv's real
 packages is the point. The host rebuilds the typed outputs from the child's
 JSON. Native runs call the function in-process (the original behaviour).
 
@@ -70,6 +73,8 @@ import os
 import pickle
 import shutil
 import tempfile
+import stat
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Sequence
@@ -136,7 +141,29 @@ def _ctx_shim() -> str:
     from shinobi.steps.dispatch import ExecContext
 
     methods = "\n".join(inspect.getsource(m) for m in (ExecContext.import_callable, ExecContext.import_func, ExecContext.import_module))
-    return "import builtins\nfrom types import ModuleType\n\n\nclass _Ctx:\n" + methods + "\nctx = _Ctx()\n"
+    guards = """
+_original_callable = _Ctx.import_callable
+_original_module = _Ctx.import_module
+
+def _checked_callable(self, name, module=None):
+    value = _original_callable(self, name, module)
+    stub = globals().get("_Any")
+    if stub is not None and isinstance(value, stub):
+        raise ImportError("runtime callable resolved to a package stub: " + str(module))
+    return value
+
+def _checked_module(self, module):
+    value = _original_module(self, module)
+    stub = globals().get("_StubLoader")
+    if stub is not None and isinstance(getattr(value, "__loader__", None), stub):
+        raise ImportError("runtime module resolved to a package stub: " + module)
+    return value
+
+_Ctx.import_callable = _checked_callable
+_Ctx.import_module = _checked_module
+ctx = _Ctx()
+"""
+    return "import builtins\nfrom types import ModuleType\n\n\nclass _Ctx:\n" + methods + guards
 
 
 # All paths in the runner (`inputs_path`, `outputs_path`, the script's own
@@ -156,7 +183,9 @@ def _ctx_shim() -> str:
 # `shinobi`/`pydantic`; for a container run, the target's own top-level package
 # too) are intercepted by a stub finder installed at the front of
 # `sys.meta_path`, so none of them -- nor their compiled deps -- ever load
-# in-child. This honours the ctx-shim's "shinobi is not assumed installed
+# in-child. The exact-source finder below precedes these stubs only for the
+# bounded, verified target/helper module map; package initializers stay stubbed.
+# This honours the ctx-shim's "shinobi is not assumed installed
 # in the container" design: the function is *defined* against dependency-free
 # stubs and *runs* using only stdlib plus whatever it pulls in via
 # `ctx.import_callable`/`ctx.import_module` (real, container-provided packages
@@ -177,18 +206,41 @@ import types
 
 
 class _Any:
-    """Permissive stand-in: every attribute access and call yields another
-    _Any, so a stubbed module's arbitrary members resolve to something
-    harmless at import time (they are never used for real work in-container)."""
+    """Passive package attribute placeholder; scientific use must fail loudly."""
 
     def __getattr__(self, name):
         return _ANY
 
-    def __call__(self, *args, **kwargs):
-        return _ANY
+    def _runtime_error(self, *args, **kwargs):
+        if globals().get("_HELPER_MANIFEST"):
+            _SOURCE_IMPORT_FAILURES.append("package placeholder computation")
+        raise TypeError("package placeholder used for runtime computation")
+
+    __call__ = __bool__ = __eq__ = __ne__ = _runtime_error
+    __str__ = __repr__ = __len__ = __iter__ = _runtime_error
+    __int__ = __float__ = __index__ = _runtime_error
+    __add__ = __radd__ = __sub__ = __rsub__ = _runtime_error
+    __mul__ = __rmul__ = __truediv__ = __rtruediv__ = _runtime_error
+    __lt__ = __le__ = __gt__ = __ge__ = _runtime_error
+    __hash__ = object.__hash__
 
 
 _ANY = _Any()
+
+
+class _Metadata(_Any):
+    """Explicit inert declaration metadata, never scientific computation."""
+    def __init__(self, *args, **kwargs):
+        self.__dict__.update(kwargs)
+
+    def __repr__(self):
+        return "<declaration metadata>"
+
+
+def _declaration_decorator(*args, **kwargs):
+    if len(args) == 1 and callable(args[0]) and not kwargs:
+        return args[0]
+    return lambda func: func
 
 
 class _StubModel:
@@ -217,11 +269,13 @@ def _stub_attr(name):
         raise AttributeError(name)
     if name == "BaseModel":
         return _StubModel
-    if name == "pystep":
+    if name in ("Field", "ParamMeta", "ConfigDict", "DatasetAccess", "DatasetColumns"):
+        return _Metadata
+    if name in ("pystep", "step", "field_validator", "model_validator", "field_serializer", "model_serializer", "computed_field"):
         # `@shinobi.pystep(...)` used as a decorator: return a factory whose
         # decorator leaves the function unchanged, so the module-level name
         # stays the plain function rather than a StepRef.
-        return lambda *a, **k: (lambda func: func)
+        return _declaration_decorator
     return _ANY
 
 
@@ -248,12 +302,97 @@ class _StubFinder(importlib.abc.MetaPathFinder):
 
 sys.meta_path.insert(0, _StubFinder())
 
+_HELPER_MANIFEST = {helper_manifest!r}
+_TARGET_MODULE = {target_module!r}
+_OWN_PACKAGE = _TARGET_MODULE.split(".")[0] if _TARGET_MODULE is not None else None
+_SOURCE_PARENTS = set()
+_SOURCE_IMPORT_FAILURES = []
+for _name in _HELPER_MANIFEST:
+    _parts = _name.split(".")
+    _SOURCE_PARENTS.update(".".join(_parts[:index]) for index in range(1, len(_parts)))
+
+
+def _missing_source_attribute(module, name):
+    qualified = module + "." + name
+    if not (name.startswith("__") and name.endswith("__")) and qualified not in _HELPER_MANIFEST and qualified not in _SOURCE_PARENTS:
+        _SOURCE_IMPORT_FAILURES.append(qualified)
+    raise AttributeError("module " + repr(module) + " has no attribute " + repr(name))
+
+
+def _source_root_attribute(name):
+    if name in ("images", "pystep", "step", "BaseModel", "Field", "ConfigDict", "ParamMeta", "DatasetAccess", "DatasetColumns", "Recipe", "Cab", "Scope", "InputRef", "OutputRef", "MSv2", "MeasurementSetV2", "FITSImage", "ProductFamily", "DirectoryBundle"):
+        return _stub_attr(name)
+    return _missing_source_attribute(_OWN_PACKAGE, name)
+
+
+class _SourcePackageLoader(importlib.abc.Loader):
+    def create_module(self, spec):
+        module = types.ModuleType(spec.name)
+        module.__path__ = []
+        if spec.name == _OWN_PACKAGE:
+            # Only the root exposes orchestration metadata such as
+            # dosho.pystep/images. Intermediate parents are normal packages.
+            module.__getattr__ = _source_root_attribute
+        else:
+            module.__getattr__ = lambda name: _missing_source_attribute(spec.name, name)
+        return module
+
+    def exec_module(self, module):
+        pass
+
+
+class _ExactSourceLoader(importlib.abc.Loader):
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        import hashlib
+        path, expected = _HELPER_MANIFEST[module.__name__]
+        try:
+            with open(path, "rb") as source:
+                content = source.read()
+        except OSError:
+            _SOURCE_IMPORT_FAILURES.append(module.__name__)
+            raise
+        if hashlib.sha256(content).hexdigest() != expected:
+            _SOURCE_IMPORT_FAILURES.append(module.__name__)
+            raise ImportError("Python source changed after helper discovery: " + module.__name__)
+        exec(compile(content, path, "exec"), module.__dict__)
+
+
+class _ExactSourceFinder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in _HELPER_MANIFEST:
+            return importlib.util.spec_from_file_location(fullname, _HELPER_MANIFEST[fullname][0], loader=_ExactSourceLoader())
+        if fullname in _SOURCE_PARENTS:
+            return importlib.machinery.ModuleSpec(fullname, _SourcePackageLoader(), is_package=True)
+        if _OWN_PACKAGE is not None and fullname.startswith(_OWN_PACKAGE + "."):
+            _SOURCE_IMPORT_FAILURES.append(fullname)
+            raise ImportError("unmapped same-package source import: " + fullname)
+        return None
+
+
+if _HELPER_MANIFEST:
+    # Synthetic parents permit relative imports without executing __init__.
+    for _name in _HELPER_MANIFEST:
+        _parts = _name.split(".")
+        for _index in range(1, len(_parts)):
+            _parent = ".".join(_parts[:_index])
+            if _parent not in sys.modules:
+                _parent_spec = importlib.machinery.ModuleSpec(_parent, _SourcePackageLoader(), is_package=True)
+                _package = importlib.util.module_from_spec(_parent_spec)
+                sys.modules[_parent] = _package
+    sys.meta_path.insert(0, _ExactSourceFinder())
+
 _SOURCE_ROOT = {source_root!r}
 if _SOURCE_ROOT is not None:
     sys.path.insert(0, _SOURCE_ROOT)
 
-_spec = importlib.util.spec_from_file_location("_shinobi_pystep_target", {source_file!r})
+_spec = (_ExactSourceFinder().find_spec(_TARGET_MODULE) if _TARGET_MODULE is not None
+         else importlib.util.spec_from_file_location("_shinobi_pystep_target", {source_file!r}))
 _module = importlib.util.module_from_spec(_spec)
+if _TARGET_MODULE is not None:
+    sys.modules[_TARGET_MODULE] = _module
 sys.modules["_shinobi_pystep_target"] = _module
 _spec.loader.exec_module(_module)
 
@@ -266,11 +405,16 @@ with open({inputs_path!r}, "rb") as f:
     inputs = pickle.load(f)
 {ctx_shim}
 result = {func_name}({ctx_arg}**inputs)
+if _SOURCE_IMPORT_FAILURES:
+    raise ImportError("unsupported same-package source dependencies were caught: " + ", ".join(_SOURCE_IMPORT_FAILURES))
 
 if result is not None and hasattr(result, "model_dump"):
     result = result.model_dump(mode="json")
+_serialized_result = json.dumps(result, default=str)
+if _SOURCE_IMPORT_FAILURES:
+    raise ImportError("unsupported same-package source dependencies were caught: " + ", ".join(_SOURCE_IMPORT_FAILURES))
 with open({outputs_path!r}, "w") as f:
-    json.dump(result, f, default=str)
+    f.write(_serialized_result)
 '''
 
 
@@ -293,6 +437,43 @@ class _Launch:
     # Runtime-specific teardown for a container ninja's signals cannot reach
     # (docker/podman); None everywhere else. See `_stream.run_streaming`.
     stop: Callable[[], None] | None = None
+    private_tmp_host: Path | None = None
+
+
+def _validated_container_tmp_root(root: Path, scope: Scope, prepared: dict[str, Any], workspace: Path, dataset_resources: set[Path]) -> Path:
+    """Validate private scratch before any output cleanup or directory creation."""
+    from shinobi.steps.schema import _resolved_product_patterns, declared_output_paths, iter_product_paths, path_input_modes, paths_overlap, product_pattern_issue
+
+    absolute = root if root.is_absolute() else workspace / root
+    for ancestor in (absolute, *absolute.parents):
+        try:
+            mode = ancestor.lstat().st_mode
+        except OSError as exc:
+            raise BackendError(f"container_tmp_root {absolute} must already exist: {exc}") from exc
+        if stat.S_ISLNK(mode):
+            raise BackendError(f"container_tmp_root {absolute} has symlink ancestor {ancestor}")
+    if not absolute.is_dir() or absolute.stat().st_uid != os.getuid() or stat.S_IMODE(absolute.stat().st_mode) != 0o700 or not os.access(absolute, os.W_OK | os.X_OK):
+        raise BackendError(f"container_tmp_root {absolute} must be an existing writable, owned mode 0700 directory")
+    canonical = absolute.resolve()
+    if not canonical.is_relative_to(workspace.resolve()):
+        raise BackendError(f"container_tmp_root {canonical} must be inside workspace {workspace.resolve()}")
+    protected = set(dataset_resources)
+    for name, writable in path_input_modes(scope, prepared).items():
+        if not writable:
+            for path in iter_product_paths(prepared[name]):
+                protected.add((path if path.is_absolute() else workspace / path).resolve())
+    for path, _source in declared_output_paths(scope, prepared, workspace=workspace):
+        protected.add((path if path.is_absolute() else workspace / path).resolve())
+    for path in protected:
+        if paths_overlap(canonical, path):
+            raise BackendError(f"container_tmp_root {canonical} overlaps protected scientific path {path}")
+    for source, pattern in _resolved_product_patterns(scope, prepared, workspace=workspace):
+        if pattern is None:
+            continue
+        issue = product_pattern_issue(pattern, workspace=workspace, resources={canonical}, resource_label="container temp root")
+        if issue:
+            raise BackendError(f"container_tmp_root {canonical} overlaps declared {source}: {issue}")
+    return canonical
 
 
 class _ContainerLauncher:
@@ -305,12 +486,14 @@ class _ContainerLauncher:
     def __init__(self, backend_name: str, ctx: ExecContext):
         self.backend_name = backend_name
         self.ctx = ctx
+        self.tmp_root: Path | None = None
 
-    def build(self, runner_path: Path, workdir: str, extra_dirs: list[str], run_prepared: dict[str, Any]) -> _Launch:
+    def build(self, runner_path: Path, workdir: str, extra_dirs: list[str], run_prepared: dict[str, Any], readonly_files: list[str] | None = None) -> _Launch:
         from shinobi.backends.container import build_container_argv, container_stopper, new_container_name
 
         container_name = new_container_name()
         dataset_plan = self.ctx.dataset_backend_plan(self.backend_name, run_prepared)
+        private_tmp = self.tmp_root / f"shinobi-pystep-{uuid.uuid4().hex}" if self.tmp_root is not None else None
         full_argv, image_digest = build_container_argv(
             self.backend_name,
             self.ctx.scope,
@@ -318,19 +501,30 @@ class _ContainerLauncher:
             run_prepared,
             workdir,
             extra_dirs=extra_dirs,
+            extra_readonly_paths=readonly_files,
             dataset_mounts=[(str(mount.source), mount.writable) for mount in dataset_plan.mounts] if dataset_plan is not None else None,
             run_as_host_user=(self.ctx._config or AppConfig.load()).backend.run_as_host_user,
             pin=self.ctx._pin,
             container_name=container_name,
+            private_tmp_host=str(private_tmp) if private_tmp is not None else None,
         )
+        if private_tmp is not None:
+            private_tmp.mkdir(mode=0o700)
         return _Launch(
             argv=full_argv,
             env=None,
             cwd=None,  # docker gets its workdir via --workdir, runs in host cwd
-            provenance={"image": self.ctx.scope.image, "image_digest": image_digest, "containerized": True},
+            provenance={
+                "image": self.ctx.scope.image,
+                "image_digest": image_digest,
+                "containerized": True,
+                "container_tmp_host": str(private_tmp) if private_tmp is not None else None,
+                "container_tmp_inside": "/ninja-tmp" if private_tmp is not None else None,
+            },
             # Ignored for the apptainer-likes (they need no handle); the
             # difference is decided inside `container_stopper`, not here.
             stop=container_stopper(self.backend_name, container_name),
+            private_tmp_host=private_tmp,
         )
 
     def failure_hint(self, stderr: str) -> str | None:
@@ -353,7 +547,7 @@ class _VenvLauncher:
         self.backend_name = backend_name
         self.ctx = ctx
 
-    def build(self, runner_path: Path, workdir: str, extra_dirs: list[str], run_prepared: dict[str, Any]) -> _Launch:
+    def build(self, runner_path: Path, workdir: str, extra_dirs: list[str], run_prepared: dict[str, Any], readonly_files: list[str] | None = None) -> _Launch:
         from shinobi.backends.venv import venv_digest, venv_env
 
         return _Launch(
@@ -406,6 +600,15 @@ def _run_pystep_subprocess(
     if launcher.stub_target_package and staged_code_root is None and func.__module__ != "__main__":
         stub_prefixes.add(func.__module__.split(".")[0])
 
+    source_helpers = None
+    if launcher.stub_target_package and staged_code_root is None:
+        from shinobi.source_helpers import resolve_source_helpers
+
+        if getattr(ctx, "_source_helpers_resolved", False):
+            source_helpers = ctx._source_helpers
+        else:
+            source_helpers = resolve_source_helpers(func)
+
     # Same objects the in-process path passes: prepare_inputs() applies
     # mutability handling on top of pydantic-coerced values. They travel by
     # pickle (protocol 4, not 5, so containers on Python 3.4-3.7 can
@@ -418,6 +621,10 @@ def _run_pystep_subprocess(
     # containerized-cab counterpart in `dispatch._run_cab` documents the
     # scheme. `prepared` (the caller's original values) is kept for harvest.
     workspace = os.getcwd()
+    if isinstance(launcher, _ContainerLauncher):
+        configured_tmp = (ctx._config or AppConfig.load()).backend.container_tmp_root
+        if configured_tmp is not None:
+            launcher.tmp_root = _validated_container_tmp_root(configured_tmp, scope, prepared, Path(workspace), ctx.workflow_dataset_resources())
     sandbox_dir: Path | None = None
     precreated: list[Path] = []
     run_prepared = prepared
@@ -465,6 +672,7 @@ def _run_pystep_subprocess(
     # KeyboardInterrupt that *did* stop the child, cleans up as before.
     tmpdir = tempfile.mkdtemp(prefix="shinobi_pystep_")
     keep_tmpdir = False
+    launch: _Launch | None = None
     try:
         io_dir = Path(tmpdir) / "io"
         io_dir.mkdir()
@@ -478,6 +686,8 @@ def _run_pystep_subprocess(
         runner_path.write_text(
             _RUNNER_TEMPLATE.format(
                 stub_prefixes=stub_prefixes,
+                helper_manifest=source_helpers.manifest if source_helpers is not None else {},
+                target_module=func.__module__ if source_helpers is not None else None,
                 source_root=str(staged_code_root) if staged_code_root is not None else None,
                 source_file=str(source_file),
                 qualname_parts=func.__qualname__.split("."),
@@ -494,8 +704,13 @@ def _run_pystep_subprocess(
         # pystep needs the complete frozen import root: its captured helpers
         # are deliberately part of the executable identity.
         extra_dirs = [str(io_dir), str(staged_code_root or source_file.parent)]
-
-        launch = launcher.build(runner_path, workdir, extra_dirs, run_prepared)
+        if source_helpers is not None:
+            # Expose exact Python files, never the host package tree/wheels.
+            extra_dirs = [str(io_dir)]
+            readonly_files = [path for path, _digest in source_helpers.manifest.values()]
+            launch = launcher.build(runner_path, workdir, extra_dirs, run_prepared, readonly_files=readonly_files)
+        else:
+            launch = launcher.build(runner_path, workdir, extra_dirs, run_prepared)
 
         run = run_streaming(
             launch.argv, label=display_label(ctx._cache_path) if ctx._cache_path else scope.name, stream=ctx._stream, cwd=launch.cwd, env=launch.env, stop=launch.stop
@@ -567,13 +782,16 @@ def _run_pystep_subprocess(
     except TeardownIncomplete:
         keep_tmpdir = True
         logger.error(
-            "pystep '%s': keeping %s -- the process using it could not be stopped, so removing it would only hide a writer that is still running.",
+            "pystep '%s': keeping runner %s and container temp %s -- the process using them could not be stopped.",
             scope.name,
             tmpdir,
+            launch.private_tmp_host if launch is not None else None,
         )
         raise
     finally:
         if not keep_tmpdir:
+            if launch is not None and launch.private_tmp_host is not None:
+                shutil.rmtree(launch.private_tmp_host)
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 

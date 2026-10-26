@@ -429,8 +429,8 @@ class _ProductReservations:
     candidate_paths: dict[str, frozenset[Path]] | None = None
     relative_candidates: dict[str, tuple[tuple[Path, Path, str, tuple[tuple[str, str], ...]], ...]] | None = None
 
-    ordinary_paths: dict[str, Path] | None = None
-    ordinary_inputs: dict[str, Path] | None = None
+    ordinary_paths: dict[str, Path | None] | None = None
+    ordinary_inputs: dict[str, Path | None] | None = None
 
     @property
     def declarations(self) -> tuple[tuple[str, tuple[str, ...]], ...]:

@@ -195,7 +195,7 @@ def test_historical_v1_observation_remains_readable(tmp_path):
     assert DatasetObservation.model_validate(record).closure_profile == "msv2-dataset-closure/v1"
 
 
-def test_predicted_output_ref_is_revalidated_before_consumer(tmp_path):
+def test_predicted_output_ref_redirect_is_refused_before_publication(tmp_path):
     ms = make_ms(tmp_path / "planned.ms")
     other = make_ms(tmp_path / "other.ms")
 
@@ -206,7 +206,7 @@ def test_predicted_output_ref_is_revalidated_before_consumer(tmp_path):
     recipe = Recipe(name="revalidate", inputs_model=MSInput, outputs_model=Empty)
     recipe.add_step("producer", misdirect, ms=InputRef(field="ms"))
     recipe.add_step("write", renumber, ms=OutputRef(step="producer", field="ms"), value=7)
-    with pytest.raises(DatasetLifecycleUnavailableError, match="workflow claim does not cover"):
+    with pytest.raises(DatasetLifecycleViolationError, match="dataset output must preserve its claimed path"):
         recipe(ms=ms, **run_kwargs(tmp_path))
     assert scans(other) == [1] * ROWS
 

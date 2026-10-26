@@ -143,6 +143,9 @@ class DatasetLifecycleSnapshot(BaseModel):
     accesses: tuple[ResolvedDatasetAccess, ...]
     observations: tuple[DatasetObservation, ...]
     absent_roots: tuple[Path, ...] = ()
+    # Provisional CREATE replay: root, exact verified rollback source, marker.
+    # These are pending recovery authorities, never live observations.
+    pending_recoveries: tuple[tuple[Path, Path, str], ...] = ()
 
 
 def dataset_observation_matches(before: DatasetObservation | None, after: DatasetObservation | None) -> bool:
@@ -164,6 +167,7 @@ def dataset_snapshot_matches(before: DatasetLifecycleSnapshot, after: DatasetLif
     return (
         before.accesses == after.accesses
         and before.absent_roots == after.absent_roots
+        and before.pending_recoveries == after.pending_recoveries
         and len(before.observations) == len(after.observations)
         and all(dataset_observation_matches(left, right) for left, right in zip(before.observations, after.observations))
     )
@@ -789,6 +793,9 @@ def _resolve_mutation_snapshot(
     validated_steps: dict[int, tuple[BaseModel, bool]] | None,
 ) -> DatasetLifecycleSnapshot:
     prefix = "contained MSv2 mutation refused"
+    from shinobi._required_cache import clear_pending_create_recoveries
+
+    clear_pending_create_recoveries()
     if isinstance(scope, Recipe):
         plan = plan_recipe_accesses(scope, values, workspace=workspace, validated_steps=validated_steps, validated_inputs=values)
         accesses = tuple(access for ref in scope.steps for access in plan.accesses.get(ref.name, ()))
@@ -804,13 +811,17 @@ def _resolve_mutation_snapshot(
             raise DatasetLifecycleUnavailableError(f"{prefix}: dataset field {access.field!r} does not resolve to a validated local closure")
     roots = tuple(sorted({access.root for access in accesses if access.root is not None}, key=str))
     _validate_disjoint_roots(roots, prefix)
-    existing = tuple(root for root in roots if root not in created)
+    # The shared access resolver has already proved exact prior CREATE
+    # authority for an existing target. Observe it as present, never absent.
+    from shinobi._required_cache import pending_create_recoveries
+
+    pending = pending_create_recoveries(created)
+    pending_roots = {root for root, _source, _marker in pending}
+    existing = tuple(root for root in roots if (root not in created or root.exists()) and root not in pending_roots)
     observations, _ = observe_access_roots(accesses, existing, workspace)
-    for root in created:
-        if root.exists() or root.is_symlink():
-            raise DatasetLifecycleUnavailableError(f"{prefix}: CREATE target {root} already exists")
+    created = {root for root in created if not root.exists()}
     _validate_observed_resources(accesses, observations, prefix)
-    return DatasetLifecycleSnapshot(accesses=accesses, observations=observations, absent_roots=tuple(sorted(created, key=str)))
+    return DatasetLifecycleSnapshot(accesses=accesses, observations=observations, absent_roots=tuple(sorted(created, key=str)), pending_recoveries=pending)
 
 
 def _claimed_for(owner: WorkspaceOwner, resource: Path, writes: bool) -> bool:
@@ -849,7 +860,11 @@ def resolve_claimed_leaf_accesses(
 
     from shinobi.dataset_access import scope_has_dataset_contract
 
-    accesses = resolve_scope_dataset_accesses(scope, prepared, workspace=lifecycle.workspace, planned_roots=planned_roots) if scope_has_dataset_contract(scope) else ()
+    authority = getattr(lifecycle, "required_cache_authority", None)
+    from contextlib import nullcontext
+
+    with authority.activate() if authority is not None else nullcontext():
+        accesses = resolve_scope_dataset_accesses(scope, prepared, workspace=lifecycle.workspace, planned_roots=planned_roots) if scope_has_dataset_contract(scope) else ()
     claim = lifecycle.record.claim
     if claim is None:
         raise DatasetLifecycleUnavailableError(f"strict leaf {scope.name!r} has no workflow claim")
@@ -1137,9 +1152,15 @@ class StrictLeaf:
         self.addresses.update({field: read.address for field, read in self.auxiliary.items()})
         from shinobi.datasets import executable_dataset_list_fields
 
-        self.passthrough_roots = {
-            field: tuple(root for _, root in sorted({access.element_index: access.root for access in self.accesses if access.declaration.field == field}.items()))
-            for field in executable_dataset_list_fields(scope.outputs_model)
+        self.list_output_fields = executable_dataset_list_fields(scope.outputs_model)
+        from shinobi.datasets import executable_dataset_fields
+
+        output_fields = set(executable_dataset_fields(scope.outputs_model)) | {
+            access.field for access in scope.dataset_accesses if access.field in scope.outputs_model.model_fields
+        }
+        self.output_paths = {
+            field: tuple(path for _, path in sorted({access.element_index: access.requested_path for access in self.accesses if access.declaration.field == field}.items()))
+            for field in output_fields
         }
         self.roots = tuple(sorted({access.root for access in self.accesses if access.root is not None}, key=str))
 
@@ -1280,6 +1301,28 @@ class StrictLeaf:
             )
         self._record("pending", "predecessor observed under the workflow claim")
 
+    def output_path_issues(self, outputs: BaseModel | None) -> tuple[str, ...]:
+        """Bind returned and cached dataset outputs to the resolved claim."""
+
+        if outputs is None:
+            return ("missing declared dataset output model",) if self.output_paths else ()
+        issues = []
+        for field, original in self.output_paths.items():
+            actual = getattr(outputs, field)
+            values = actual if field in self.list_output_fields else (actual,)
+            canonical = tuple((path if path.is_absolute() else self.lifecycle.workspace / path).resolve() for path in (values or ()) if path is not None)
+            if original != canonical or (field in self.list_output_fields and not original and actual is not None):
+                rule = "list output must preserve exact ordered input roots" if field in self.list_output_fields else "dataset output must preserve its claimed path"
+                issues.append(f"{field}: {rule}")
+        return tuple(issues)
+
+    def validate_output_paths(self, outputs: BaseModel | None) -> None:
+        from shinobi.exceptions import DatasetLifecycleViolationError
+
+        issues = self.output_path_issues(outputs)
+        if issues:
+            raise DatasetLifecycleViolationError("; ".join(issues))
+
     def validate(self, guard: Any | None, outputs: BaseModel | None = None) -> None:
         """Declared postconditions; hands successor signatures to the guard."""
 
@@ -1302,20 +1345,7 @@ class StrictLeaf:
         unobservable = {root for root in self.roots if post[root] is None and (root.exists() or root.is_symlink())}
         judged = tuple(access for access in self.accesses if access.root not in unobservable)
         issues = failures + leaf_postcondition_issues(judged, self.pre, post)
-        if outputs is not None:
-            from shinobi.datasets import executable_dataset_list_fields
-
-            for field in executable_dataset_list_fields(self.scope.outputs_model):
-                original = self.passthrough_roots[field] or None
-                actual = getattr(outputs, field)
-
-                def canonical(values):
-                    if values is None:
-                        return None
-                    return tuple((path if path.is_absolute() else self.lifecycle.workspace / path).resolve() for path in values)
-
-                if canonical(original) != canonical(actual):
-                    issues.append(f"{field}: list output must preserve exact ordered input roots")
+        issues.extend(self.output_path_issues(outputs))
         observed = tuple(observation for observation in post.values() if observation is not None)
         if issues:
             reason = "postcondition failed: " + "; ".join(issues)

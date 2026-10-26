@@ -460,7 +460,7 @@ def cab_semantic_identity(cab: Cab) -> Any:
     return json.loads(json.dumps(declaration, sort_keys=True, default=str))
 
 
-def _identity(scope: Scope, func: Callable | None) -> Any:
+def _identity(scope: Scope, func: Callable | None, *, source_helpers=None) -> Any:
     """The non-parameter part of a step's cache key: what tool/code is
     actually being run. A step with its own orchestration function
     (a `@shinobi.pystep`'s bare `Scope`, or any `@shinobi.step`-wrapped
@@ -483,6 +483,10 @@ def _identity(scope: Scope, func: Callable | None) -> Any:
         except (OSError, TypeError):
             source = repr(real_func)
         identity = ["func", source]
+        # A bounded imported-helper closure changes execution identity. Keep
+        # the historical shape exactly when only same-module helpers exist.
+        if source_helpers is not None:
+            identity.append(["python-source-helpers/v1", source_helpers.identity])
         return [*identity, cab_semantic_identity(scope)] if isinstance(scope, Cab) else identity
     if isinstance(scope, Cab):
         return cab_semantic_identity(scope)
@@ -592,6 +596,9 @@ class ExecutionIdentity:
     image_digest: str | None = None
     venv: str | None = None
     venv_digest: str | None = None
+    # Attempt-local routing/evidence, not independent cache-key components.
+    isolated_container_pystep: bool = False
+    source_helpers: Any | None = None
 
 
 def resolve_input_keys(ref, inbound_keys: dict[str, Any], results: dict[str, StepResult]) -> dict[str, Any]:
@@ -683,7 +690,10 @@ def compute_cache_key(
 
     execution = execution or ExecutionIdentity()
     image_identity = execution.image_digest or scope.image
-    code_identity = ["code", execution.code_digest] if execution.code_digest else _identity(scope, func)
+    from shinobi.steps.pyfunc import PystepCallable
+
+    helper_source = execution.source_helpers if execution.isolated_container_pystep and isinstance(func, PystepCallable) else None
+    code_identity = ["code", execution.code_digest] if execution.code_digest else _identity(scope, func, source_helpers=helper_source)
     if execution.code_digest and isinstance(scope, Cab):
         code_identity.append(cab_semantic_identity(scope))
     parts: list[Any] = [image_identity, code_identity]

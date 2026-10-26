@@ -49,6 +49,9 @@ class BackendConfig(BaseModel):
     # for a uid inside its user namespace would break every bind-mount
     # write instead of fixing ownership -- see `_rootless`).
     run_as_host_user: bool = True
+    # Optional host-owned, short-path scratch for containerized Python steps.
+    # The existing directory must be private; each launch gets its own child.
+    container_tmp_root: Path | None = None
     # `venv` backend settings; reachable as SHINOBI_BACKEND__VENV__DEFAULT /
     # __ENVS via the env_nested_delimiter below.
     venv: VenvConfig = Field(default_factory=VenvConfig)
@@ -110,6 +113,8 @@ class CacheConfig(BaseModel):
     # default -- caching is opt-in, like parallel execution.
     enabled: bool = False
     dir: str = ".shinobi/cache"
+    # Full leaf path -> exact previously committed cache key. Misses refuse.
+    required: dict[str, str] = Field(default_factory=dict)
     snapshots: SnapshotConfig = Field(default_factory=SnapshotConfig)
     # Add a bounded content sample (first+last 4 KiB per file) to boundary
     # path fingerprints -- see `shinobi.cache._hash_path`. Off by default

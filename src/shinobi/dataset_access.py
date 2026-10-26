@@ -514,18 +514,26 @@ def _resolve_known_access(
             raise DatasetAccessError(
                 f"scope {scope.name!r} CREATE dataset field {resolved_field!r} is a symlink ({spelled} -> {requested}); overwrite refuses it, remove or replace the link yourself"
             )
-        if (requested.exists() or requested.is_symlink()) and not allow_existing_create:
+        from shinobi._required_cache import existing_create_replay
+
+        replay = None
+        if not spelled.is_symlink() and (requested.exists() or requested.is_symlink()):
+            replay = existing_create_replay(scope, requested, declaration.field, element_index)
+        if (requested.exists() or requested.is_symlink()) and not (allow_existing_create or replay is not None):
             raise DatasetAccessError(
                 f"scope {scope.name!r} CREATE dataset field {resolved_field!r} already exists at {requested}; "
                 "re-run with --overwrite <step> (overwrite_steps=[...] in Python) to delete it and invalidate the cache downstream"
             )
+        from shinobi._required_cache import replay_closure as resolve_replay_closure
+
+        replay_closure = resolve_replay_closure(requested, workspace, replay) if replay is not None else None
         return ResolvedDatasetAccess(
             field=resolved_field,
             element_index=element_index,
             declaration=declaration,
             requested_path=requested,
             root=requested,
-            resources=(requested,),
+            resources=tuple(resource.path for resource in replay_closure.resources) if replay_closure is not None else (requested,),
             mode=declaration.mode,
             whole_dataset=declaration.columns is None,
             path_known=True,
@@ -565,7 +573,11 @@ def _resolve_known_access(
     cache_key = (root_candidate, namespace)
     closure = closure_cache.get(cache_key) if closure_cache is not None else None
     if closure is None:
-        closure = resolve_dataset_closure(root_candidate, storage_namespace=namespace)
+        from shinobi._required_cache import replay_closure
+
+        closure = replay_closure(root_candidate, workspace)
+        if closure is None:
+            closure = resolve_dataset_closure(root_candidate, storage_namespace=namespace)
         if closure_cache is not None:
             closure_cache[cache_key] = closure
     if not closure.valid:

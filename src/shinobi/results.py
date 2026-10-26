@@ -174,6 +174,8 @@ class StepResult:
     bundle_inventories: list[dict[str, Any]] | None = None
     cache_key: str | None = None
     output_keys: "dict[str, ProvenanceKey | list[ProvenanceKey | None]] | None" = None
+    container_tmp_host: str | None = None
+    container_tmp_inside: str | None = None
 
     @property
     def success(self) -> bool:

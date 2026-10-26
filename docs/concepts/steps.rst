@@ -225,3 +225,47 @@ Two further fields matter only inside a recipe:
     step belongs to and which sentinel it should check. Bookkeeping for the
     short-circuit decision only -- the edges that make an unrolled loop a real
     DAG are ordinary ``wiring`` and ``after``, never this.
+
+Imported Python function helpers in containers
+---------------------------------------------
+
+An ordinary isolated container pystep can use a module-level literal import of a Python function from
+another module in its own package, including relative imports and transitive
+function helpers. Once a module is admitted, its literal same-package function
+imports are included too, so top-level initializers call exact source helpers.
+The target is analyzed before the no-helper decision. A shared recursive
+initialization traversal covers control flow, class bodies, function defaults
+and decorators, while ordinary function bodies use separate lexical dependency
+analysis. Unsupported dynamic initializer imports refuse at every such level;
+no package placeholder may silently stand in for the missing function. The controller resolves exact ``.py`` files under the target's
+import root without importing modules or package initializers. The runner loads
+only that exact source map before its normal package stubs, with synthetic
+package parents and read-only file binds. Source digests are checked before
+execution; host package initializers and compiled dependencies are never loaded
+through this map. With a helper map active, unmapped own-package submodules
+refuse at import, including aliased dynamic imports. Synthetic intermediate
+parents expose normal missing-attribute failures; only the root keeps explicit
+orchestration metadata. A denied dependency or failed source digest prevents
+result publication even if user code catches the import error and returns a
+fallback. UTF-8 source bytes, including CRLF line endings, are preserved
+when deriving the source digests.
+
+The supported dependency boundary is Python function symbols. Missing, escaped,
+conflicting, module-style, conditional/class/nested imports, imported
+nonfunction-state and statically identified same-package dynamic imports refuse
+explicitly. Unsupported target imports are checked even without a direct helper
+binding; unsupported imports anywhere in an admitted helper source also refuse. Runtime ``ctx`` imports that
+resolve to an orchestration/package stub also refuse. Passive placeholders
+cannot be called, compared, converted to text or used as truth values or in
+arithmetic; only explicit model/decorator/declaration stubs support metadata. External runtime imports
+through ``ctx`` retain their normal behavior. This is not a general dynamic
+Python dependency packager.
+
+Only genuine pysteps on the resolved isolated container route use this helper
+identity. When imported helpers exist, cache identity includes the target and
+helper source bytes addressed by module names, independent of deployment paths.
+The exact source evidence belongs to the current execution context, so later
+cache-disabled runs and concurrent attempts do not inherit another attempt's
+source snapshot. Same-module helpers retain the historical function identity.
+Native execution, host orchestration, virtualenv imports and staged offload
+bundles retain their existing identity and source contracts.

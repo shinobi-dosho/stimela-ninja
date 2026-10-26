@@ -986,11 +986,13 @@ def build_container_argv(
     workdir: str,
     *,
     extra_dirs: list[str] | None = None,
+    extra_readonly_paths: list[str] | None = None,
     dataset_mounts: list[tuple[str, bool]] | None = None,
     run_as_host_user: bool = False,
     pin: bool = False,
     runs_here: bool = True,
     container_name: str | None = None,
+    private_tmp_host: str | None = None,
 ) -> tuple[list[str], str | None]:
     """Wrap argv in a container-runtime invocation. Shared with the Slurm
     backend, which runs cabs under apptainer the same way a plain
@@ -1064,6 +1066,8 @@ def build_container_argv(
             if d not in seen:
                 seen.add(d)
                 dir_modes.append((d, True))  # extra dirs (runner/module) mount read-write
+    if extra_readonly_paths:
+        dir_modes = merge_dataset_mounts(dir_modes, [(path, False) for path in extra_readonly_paths], scope_name=getattr(scope, "name", "<scope>"))
     if dataset_mounts:
         dir_modes = merge_dataset_mounts(
             dir_modes,
@@ -1071,8 +1075,19 @@ def build_container_argv(
             scope_name=getattr(scope, "name", "<scope>"),
         )
 
+    # This is a separate, non-identity mount. Refuse any destination that
+    # intersects an existing mount; later binds must not mask its permissions.
+    if private_tmp_host is not None:
+        destination = Path("/ninja-tmp")
+        for source, _writable in dir_modes:
+            target = Path(source).resolve()
+            if destination == target or destination.is_relative_to(target) or target.is_relative_to(destination):
+                raise BackendError(f"private container temp destination {destination} overlaps identity mount {target}")
+
     if runtime in _DOCKER_LIKE:
         mounts = [flag for d, w in dir_modes for flag in ("-v", f"{d}:{d}" if w else f"{d}:{d}:ro")]
+        if private_tmp_host is not None:
+            mounts += ["-v", f"{private_tmp_host}:/ninja-tmp:rw"]
         user_flags: list[str] = []
         if run_as_host_user:
             # `--user` is what a *root-daemon* runtime needs to stop writing
@@ -1087,11 +1102,15 @@ def build_container_argv(
             user_flags = [] if _rootless(runtime) else ["--user", f"{os.getuid()}:{os.getgid()}"]
             user_flags += ["-e", f"HOME={workdir}"]
         name_flags = ["--name", container_name] if container_name else []
-        return [runtime, "run", "--rm", *name_flags, *user_flags, *limit_flags, *mounts, "-w", workdir, run_ref, *argv], digest
+        tmp_env = ["-e", "TMPDIR=/ninja-tmp"] if private_tmp_host is not None else []
+        return [runtime, "run", "--rm", *name_flags, *user_flags, *tmp_env, *limit_flags, *mounts, "-w", workdir, run_ref, *argv], digest
 
     # apptainer
     binds = [flag for d, w in dir_modes for flag in ("--bind", f"{d}:{d}" if w else f"{d}:{d}:ro")]
-    return [runtime, "exec", *limit_flags, *binds, "--pwd", workdir, run_ref, *argv], digest
+    if private_tmp_host is not None:
+        binds += ["--bind", f"{private_tmp_host}:/ninja-tmp:rw"]
+    tmp_env = ["--env", "TMPDIR=/ninja-tmp"] if private_tmp_host is not None else []
+    return [runtime, "exec", *tmp_env, *limit_flags, *binds, "--pwd", workdir, run_ref, *argv], digest
 
 
 class ContainerBackend(Backend):

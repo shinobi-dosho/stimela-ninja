@@ -303,7 +303,9 @@ def scope_path_accesses(
     return list(collected.items()), step_inputs
 
 
-def ordinary_creator_paths(scope: Scope, values: dict[str, Any], *, workspace: Path, dataset_resources: set[Path], require_echo: bool = True) -> dict[str, Path]:
+def ordinary_creator_paths(
+    scope: Scope, values: dict[str, Any], *, workspace: Path, dataset_resources: set[Path], require_echo: bool = True, include_absent: bool = False
+) -> dict[str, Path | None]:
     """Prove explicit scalar ordinary destinations echoed by the same field.
 
     Python object mutability and dataset authority cannot supply this grant.
@@ -332,7 +334,13 @@ def ordinary_creator_paths(scope: Scope, values: dict[str, Any], *, workspace: P
             continue
         if require_echo and (output_field is None or not scalar_path(output_field.annotation)):
             continue
-        if scope.mutability_of(name) is Mutability.MUTABLE or not isinstance(values.get(name), (str, Path)):
+        if scope.mutability_of(name) is Mutability.MUTABLE:
+            continue
+        if include_absent and name in values and values[name] is None and type(None) in get_args(input_field.annotation):
+            # Freeze validated absence without granting a writable path.
+            proven[name] = None
+            continue
+        if not isinstance(values.get(name), (str, Path)):
             continue
         path = Path(values[name])
         path = (path if path.is_absolute() else workspace / path).resolve()
@@ -419,6 +427,15 @@ def contained_access_issues(
     ):
         dataset_inputs = set(executable_dataset_fields(leaf.inputs_model))
         dataset_outputs = set(executable_dataset_fields(leaf.outputs_model))
+        # Explicit accesses are validated direct Path contracts too. Only the
+        # addressed field receives dataset authority; root_field and other
+        # aliases must still pass the generic containment checks below.
+        from shinobi.dataset_access import validate_scope_dataset_accesses
+
+        validate_scope_dataset_accesses(leaf)
+        explicit_fields = {access.field for access in leaf.dataset_accesses}
+        dataset_inputs |= explicit_fields & leaf.inputs_model.model_fields.keys()
+        dataset_outputs |= explicit_fields & leaf.outputs_model.model_fields.keys()
         created_dataset_roots: set[Path] = set()
         # Only creators need the absent-root alias exception. Resolving a
         # reader here would inspect a wired product before its creator runs.
@@ -453,7 +470,14 @@ def contained_access_issues(
         if unknown_inputs:
             issues.append(f"scope {leaf.name!r} has runtime-dependent generic path input(s): {', '.join(unknown_inputs)}")
 
-        generic_mutations = sorted(mutated_path_fields(leaf) - dataset_inputs - ordinary_creator_paths(leaf, known, workspace=root, dataset_resources=dataset_resources).keys())
+        absent_paths = {
+            name
+            for name, value in ordinary_creator_paths(leaf, known, workspace=root, dataset_resources=dataset_resources, require_echo=False, include_absent=True).items()
+            if value is None and name not in unresolved
+        }
+        generic_mutations = sorted(
+            mutated_path_fields(leaf) - dataset_inputs - absent_paths - ordinary_creator_paths(leaf, known, workspace=root, dataset_resources=dataset_resources).keys()
+        )
         if generic_mutations:
             issues.append(f"scope {leaf.name!r} declares unsupported in-place generic mutation(s): {', '.join(generic_mutations)}")
 
