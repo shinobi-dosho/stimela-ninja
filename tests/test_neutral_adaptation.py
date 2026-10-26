@@ -171,7 +171,6 @@ def test_real_dosho_function_uses_container_stubs(tmp_path, monkeypatch):
     from unittest.mock import patch
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("CASASITECONFIG", str(tmp_path / "unused-siteconfig.py"))
     bootstrap = """
 import runpy, sys, types
 from pathlib import Path
@@ -180,12 +179,21 @@ class Block:
         if name.split('.')[0] in ('dosho', 'shinobi', 'pydantic'):
             raise ImportError('blocked in container: ' + name)
 sys.meta_path.insert(0, Block())
-module = types.ModuleType('casatasks')
-module.casalog = types.SimpleNamespace(setlogfile=lambda path: None)
-def listobs(**kwargs):
-    Path(kwargs['listfile']).write_text('observed ' + kwargs['vis'])
-module.listobs = listobs
-sys.modules['casatasks'] = module
+package = types.ModuleType('fitstoolz')
+package.__path__ = []
+apps = types.ModuleType('fitstoolz.apps')
+apps.__path__ = []
+module = types.ModuleType('fitstoolz.apps.header')
+def runit(opts):
+    assert isinstance(opts.fname, str) and isinstance(opts.outfile, str)
+    assert opts.edit == ['CRVAL4=1'] and opts.replace is False
+    Path(opts.outfile).write_text('edited ' + Path(opts.fname).read_text())
+    return opts.outfile
+module.runit = runit
+package.apps = apps
+apps.header = module
+sys.modules.update({'fitstoolz': package, 'fitstoolz.apps': apps,
+                    'fitstoolz.apps.header': module})
 runpy.run_path(sys.argv[1], run_name='__main__')
 """
 
@@ -193,9 +201,12 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         runner = next(value for value in argv if value.endswith("runner.py"))
         return subprocess.run([sys.executable, "-c", bootstrap, runner], capture_output=True, text=True, check=False)
 
-    ref = adapt_definition(dosho.get("listobs"))
+    source = tmp_path / "input.fits"
+    source.write_text("native input")
+    ref = adapt_definition(dosho.get("fitstoolz-header"))
     with patch("shinobi.steps.pyfunc.run_streaming", side_effect=run_script):
-        result = ref(vis=tmp_path / "input.ms", listfile=tmp_path / "summary.txt", backend="docker")
+        result = ref(fname=source, edit=["CRVAL4=1"], outfile=tmp_path / "edited.fits", backend="docker")
     assert result.success, result.stderr
-    assert result.outputs.listfile == tmp_path / "summary.txt"
-    assert result.outputs.listfile.read_text() == f"observed {tmp_path / 'input.ms'}"
+    assert result.outputs.outfile == tmp_path / "edited.fits"
+    assert result.outputs.outfile.read_text() == "edited native input"
+    assert source.read_text() == "native input"

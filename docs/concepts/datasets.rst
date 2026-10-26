@@ -96,6 +96,20 @@ those execution shapes. ``CasaTab`` supports declaration and inspection only:
 any atomic input or output with that annotation is refused at dispatch, even
 a referenced subtable carrying ``root_field``.
 
+Explicit access on neutral Python paths
+---------------------------------------
+
+A neutral ``@dosho.pystep`` function may retain ordinary direct ``Path``
+annotations and declare its dataset contract through ``dataset_accesses``.
+Shinobi validates those declarations when adapting the function and grants
+only the addressed field the declared dataset authority. Other path inputs,
+including ``root_field`` aliases, still require their own containment proof.
+A same-name scalar dataset output must preserve its resolved claimed path,
+both when returned by execution and when reused from cache. A missing output
+model cannot satisfy a declared dataset output. WRITE and CREATE outputs cannot
+redirect downstream consumers to an unclaimed root. CREATE
+still requires an absent destination unless explicit overwrite is requested.
+
 Fixed ordinary products from MS readers
 ---------------------------------------
 
@@ -121,7 +135,9 @@ fixed destination and return that same path:
    summarize(ms=Path("../source.ms"), report=Path("report.txt"))
 
 The report input and same-name output must be direct ordinary scalar paths
-(nullable scalar fields also work when a concrete path is supplied). The input
+(nullable scalar fields also work when a concrete path is supplied). A nullable
+input set to ``None`` reserves no path and its same-name output must remain
+``None``, including through cache reuse and publication. The input
 must declare ``write_path`` and must not declare ``Mutability.MUTABLE``. Its
 canonical destination is frozen before ownership acquisition, must be disjoint
 from every workflow dataset resource, and cannot change through execution

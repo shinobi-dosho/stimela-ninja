@@ -11,17 +11,22 @@ import importlib
 import inspect
 import json
 import pickle
+import shutil
+from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from shinobi import pystep
 from shinobi.backends.recording import RecordingBackend
 from shinobi.exceptions import CabRunError
+from shinobi.config import AppConfig, BackendConfig
+from shinobi.backends._stream import TeardownIncomplete
 from shinobi.steps import InputRef, Recipe, register_step_backend
 from shinobi.steps.dispatch import _dispatch
 from shinobi.steps.schema import Cab, Scope
@@ -184,6 +189,129 @@ def test_pystep_container_generates_correct_argv():
     assert "shinobi_pystep_" in runner_path
     mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
     assert any(runner_path.startswith(m.split(":")[0]) for m in mounts)
+
+
+@pytest.mark.parametrize("backend,flag", [("docker", "-v"), ("apptainer", "--bind")])
+def test_private_container_tmp_lifecycle(tmp_path, monkeypatch, backend, flag):
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "scratch"
+    root.mkdir(mode=0o700)
+    monkeypatch.setattr(AppConfig, "load", lambda *args, **kwargs: AppConfig(backend=BackendConfig(container_tmp_root=root)))
+    seen = []
+
+    def fake(argv, **kwargs):
+        mount = next(argv[i + 1] for i, part in enumerate(argv) if part == flag and argv[i + 1].endswith(":/ninja-tmp:rw"))
+        host = Path(mount.split(":")[0])
+        assert host.is_dir() and host.stat().st_mode & 0o777 == 0o700
+        seen.append(host)
+        assert "TMPDIR=/ninja-tmp" in argv
+        return _fake_container_run({"result": "test.ms:100"})(argv)
+
+    ref = pystep(image="casa:latest", backend=backend)(container_func)
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
+        first = ref(ms="test.ms")
+        second = ref(ms="test.ms")
+    assert len(set(seen)) == 2
+    assert all(not path.exists() for path in seen)
+    assert first.container_tmp_host == str(seen[0])
+    assert first.container_tmp_inside == "/ninja-tmp"
+    assert second.container_tmp_host == str(seen[1])
+    from shinobi.provenance import _record
+
+    assert _record(first).container_tmp_host == str(seen[0])
+    assert _record(first).container_tmp_inside == "/ninja-tmp"
+
+
+def test_private_container_tmp_failure_and_uncertain_stop(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "scratch"
+    root.mkdir(mode=0o700)
+    monkeypatch.setattr(AppConfig, "load", lambda *args, **kwargs: AppConfig(backend=BackendConfig(container_tmp_root=root)))
+    ref = pystep(image="casa:latest", backend="docker")(container_func)
+    failure = MagicMock(returncode=1, stdout="", stderr="failed")
+    with patch("shinobi.steps.pyfunc.run_streaming", return_value=failure):
+        with pytest.raises(CabRunError):
+            ref(ms="test.ms")
+    assert list(root.iterdir()) == []
+    runner_dirs = []
+
+    def uncertain(argv, **kwargs):
+        runner_dirs.append(Path(next(arg for arg in argv if arg.endswith("runner.py"))).parent.parent)
+        raise TeardownIncomplete("uncertain")
+
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=uncertain):
+        with pytest.raises(TeardownIncomplete):
+            ref(ms="test.ms")
+    retained = list(root.iterdir())
+    assert len(retained) == 1
+    assert retained[0].is_dir()
+    assert len(runner_dirs) == 1 and runner_dirs[0].is_dir()
+    # The test owns this synthetic interrupted launch and can clean it now.
+    retained[0].rmdir()
+    shutil.rmtree(runner_dirs[0])
+
+
+def test_private_container_tmp_validation_is_canonical_and_preflight(tmp_path):
+    from shinobi.exceptions import BackendError
+    from shinobi.steps.pyfunc import _validated_container_tmp_root
+
+    class ReadOnlyInput(BaseModel):
+        vis: Path = Field(json_schema_extra={"writable": False})
+
+    class Empty(BaseModel):
+        pass
+
+    scope = Scope(name="read", image="image", inputs_model=ReadOnlyInput, outputs_model=Empty)
+    root = tmp_path / "scratch"
+    root.mkdir(mode=0o700)
+    assert _validated_container_tmp_root(root, scope, {"vis": tmp_path / "science"}, tmp_path, set()) == root
+    with pytest.raises(BackendError, match="protected scientific path"):
+        _validated_container_tmp_root(root, scope, {"vis": root / "science"}, tmp_path, set())
+    with pytest.raises(BackendError, match="protected scientific path"):
+        _validated_container_tmp_root(root, scope, {"vis": tmp_path / "science"}, tmp_path, {root / "dataset"})
+
+    class ProductInput(BaseModel):
+        product: Path
+
+    class ProductOutput(BaseModel):
+        product: Path
+
+    producer = Scope(name="produce", image="image", inputs_model=ProductInput, outputs_model=ProductOutput)
+    with pytest.raises(BackendError, match="protected scientific path"):
+        _validated_container_tmp_root(root, producer, {"product": root / "science.fits"}, tmp_path, set())
+    pattern_owner = Scope(name="pattern", image="image", inputs_model=Empty, outputs_model=Empty, harvest=["scratch/*"])
+    with pytest.raises(BackendError, match="declared harvest"):
+        _validated_container_tmp_root(root, pattern_owner, {}, tmp_path, set())
+    root.chmod(0o755)
+    with pytest.raises(BackendError, match="mode 0700"):
+        _validated_container_tmp_root(root, scope, {"vis": tmp_path / "science"}, tmp_path, set())
+    root.chmod(0o700)
+    alias = tmp_path / "alias"
+    alias.symlink_to(root)
+    with pytest.raises(BackendError, match="symlink ancestor"):
+        _validated_container_tmp_root(alias, scope, {"vis": tmp_path / "science"}, tmp_path, set())
+
+
+def test_concurrent_container_launches_get_separate_private_tmp(tmp_path):
+    from shinobi.steps.pyfunc import _ContainerLauncher
+
+    root = tmp_path / "scratch"
+    root.mkdir(mode=0o700)
+
+    class Empty(BaseModel):
+        pass
+
+    scope = Scope(name="concurrent", image="image", inputs_model=Empty, outputs_model=Empty)
+    ctx = SimpleNamespace(scope=scope, _config=AppConfig(backend=BackendConfig(container_tmp_root=root)), _pin=False, dataset_backend_plan=lambda *_args: None)
+    launcher = _ContainerLauncher("apptainer", ctx)
+    launcher.tmp_root = root
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        launches = list(pool.map(lambda _: launcher.build(tmp_path / "runner.py", str(tmp_path), [], {}), range(8)))
+    children = [launch.private_tmp_host for launch in launches]
+    assert len(set(children)) == 8
+    assert all(path is not None and path.is_dir() for path in children)
+    for path in children:
+        path.rmdir()
 
 
 def test_pystep_container_mounts_source_and_io_dirs():

@@ -53,6 +53,23 @@ def test_docker_wrap_mounts_workdir_only_when_no_file_params():
     ]
 
 
+@pytest.mark.parametrize("runtime,flag", [("docker", "-v"), ("apptainer", "--bind")])
+def test_private_tmp_is_pure_nonidentity_mount(runtime, flag, tmp_path):
+    cab = make_cab()
+    private = tmp_path / "not-created"
+    argv, _ = container.build_container_argv(runtime, cab, ["tool"], {}, "/work", private_tmp_host=str(private))
+    assert not private.exists()
+    assert f"{private}:/ninja-tmp:rw" in [argv[i + 1] for i, value in enumerate(argv) if value == flag]
+    assert "TMPDIR=/ninja-tmp" in argv
+
+
+@pytest.mark.parametrize("path", ["/ninja-tmp", "/ninja-tmp/data", "/"])
+def test_private_tmp_refuses_every_overlapping_identity_target(path):
+    cab = make_cab()
+    with pytest.raises(BackendError, match="overlaps identity mount"):
+        container.build_container_argv("apptainer", cab, ["tool"], {}, "/work", extra_dirs=[path], private_tmp_host="/work/scratch/leaf")
+
+
 def test_docker_wrap_user_flags_default_on():
     cab = make_cab({"threshold": ("float", False, None)})
     argv, _ = DockerBackend(workdir="/work", run_as_host_user=True)._wrap(cab, ["tool", "--threshold", "1.0"], {"threshold": 1.0})

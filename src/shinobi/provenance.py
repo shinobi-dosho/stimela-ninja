@@ -80,6 +80,8 @@ class StepRecord(BaseModel):
     inputs: dict[str, Any]
     outputs: dict[str, Any]
     steps: list["StepRecord"] = []
+    container_tmp_host: str | None = None
+    container_tmp_inside: str | None = None
 
 
 class RunManifest(BaseModel):
@@ -148,6 +150,8 @@ def _record(result: StepResult, name: str | None = None) -> StepRecord:
         venv_digest=result.venv_digest,
         sandboxed=result.sandboxed,
         sandbox_path=result.sandbox_path,
+        container_tmp_host=result.container_tmp_host,
+        container_tmp_inside=result.container_tmp_inside,
         code_digest=result.code_digest,
         worker_digest=result.worker_digest,
         job_id=result.job_id,

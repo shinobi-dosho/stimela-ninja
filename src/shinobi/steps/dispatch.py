@@ -311,7 +311,7 @@ def get_step_backend(name: str) -> Any:
     return get_backend(name)
 
 
-def _local_execution_identity(scope: Scope, ctx: "ExecContext", *, pinned: bool) -> ExecutionIdentity | None:
+def _local_execution_identity(scope: Scope, ctx: "ExecContext", *, pinned: bool, func=None) -> ExecutionIdentity | None:
     """Resolve cache-relevant software facts for an in-process dispatch.
 
     ``None`` means the selected environment could not be fingerprinted, in
@@ -340,7 +340,22 @@ def _local_execution_identity(scope: Scope, ctx: "ExecContext", *, pinned: bool)
             resolved_venv_digest = venv_digest(resolved)
             if resolved_venv_digest is None:
                 return None
+    from shinobi.backends.container import CONTAINER_RUNTIMES
+    from shinobi.steps.pyfunc import PystepCallable
+
+    isolated_pystep = bool(
+        isinstance(func, PystepCallable) and scope.image and backend in CONTAINER_RUNTIMES and getattr(func.__wrapped__, "__shinobi_staged_code_root__", None) is None
+    )
+    helper_source = None
+    if isolated_pystep:
+        from shinobi.source_helpers import resolve_source_helpers
+
+        helper_source = resolve_source_helpers(func)
+        ctx._source_helpers = helper_source
+        ctx._source_helpers_resolved = True
     return ExecutionIdentity(
+        isolated_container_pystep=isolated_pystep,
+        source_helpers=helper_source,
         image_digest=image_digest,
         venv=resolved_venv,
         venv_digest=resolved_venv_digest,
@@ -462,8 +477,8 @@ def _snapshot_product_inputs(scope: Scope, inputs: BaseModel | dict[str, Any] | 
             copy.deepcopy(scope.derived_reads),
             candidates,
             relative,
-            ordinary_creator_paths(scope, values, workspace=workspace or Path.cwd(), dataset_resources=set()),
-            ordinary_creator_paths(scope, values, workspace=workspace or Path.cwd(), dataset_resources=set(), require_echo=False),
+            ordinary_creator_paths(scope, values, workspace=workspace or Path.cwd(), dataset_resources=set(), include_absent=True),
+            ordinary_creator_paths(scope, values, workspace=workspace or Path.cwd(), dataset_resources=set(), require_echo=False, include_absent=True),
         )
     except Exception as exc:
         raise DatasetLifecycleUnavailableError(f"scope {scope.name!r} cannot freeze product directory reservation inputs: {exc}") from exc
@@ -1106,6 +1121,27 @@ def _dispatch(
     config = _config or AppConfig.load()
     run_id = _run_id or new_run_id()
     dataset_declarations = _scope_dataset_declarations(scope)
+    required_authority = None
+    if _cache_path is None and _dataset_lifecycle is None and config.cache.required:
+        from shinobi._required_cache import RequiredCacheAuthority
+
+        required_authority = RequiredCacheAuthority(
+            scope,
+            config.cache.required,
+            cache_dir or scope.cache_dir or _recipe_cache_dir or config.cache.dir,
+            Path.cwd(),
+        )
+
+        def check_required_enabled(node, path, inherited):
+            effective = False if cache is False else node.cache if node.cache is not None else inherited
+            if isinstance(node, Recipe):
+                for ref in node.steps:
+                    check_required_enabled(ref.step, path + "." + ref.name, effective)
+            elif path in config.cache.required and (effective is False or (effective is None and not config.cache.enabled and not _leaf_dataset_writes(node))):
+                raise DatasetLifecycleUnavailableError(f"required cache {path!r} is disabled")
+
+        check_required_enabled(scope, scope.name, cache if cache is not None else _recipe_cache)
+        required_authority.preflight()
     if overwrite_steps and (not dataset_declarations or _dataset_lifecycle is not None or _cache_path is not None):
         raise DatasetLifecycleUnavailableError(
             "overwrite applies only to a top-level workflow whose steps create a strict MeasurementSetV2; declare the created field as MeasurementSetV2"
@@ -1209,6 +1245,10 @@ def _dispatch(
                 **({"cache_dir": effective_cache_dir} if fits_route else {}),
             )
 
+        authority_context = required_authority.activate() if required_authority is not None else None
+        if authority_context is not None:
+            authority_context.__enter__()
+        lifecycle.required_cache_authority = required_authority
         try:
             backends = _dataset_execution_backends(scope, func, root_backend)
             from shinobi.dataset_backends import DatasetBackendStatus, DatasetNamespaceMode, dataset_backend_capability
@@ -1264,7 +1304,7 @@ def _dispatch(
             lifecycle.transition(
                 DatasetLifecyclePhase.PLANNED,
                 (
-                    f"resolved {len(planned.observations) + len(planned.absent_roots)} contained ordinary {format_name} root(s) for mutation"
+                    f"resolved {len(planned.observations) + len(planned.absent_roots) + len(getattr(planned, 'pending_recoveries', ()))} contained ordinary {format_name} root(s) for mutation"
                     if mutation
                     else f"resolved {len(planned.observations)} contained ordinary {format_name} read root(s)"
                 ),
@@ -1335,10 +1375,14 @@ def _dispatch(
                     f"contained {format_name} {noun} refused before backend execution: pending mutation recovery requires an exclusive writer claim: "
                     + ", ".join(map(str, pending))
                 )
-            if mutation and notes:
+            if mutation and (notes or getattr(revalidated, "pending_recoveries", ())):
                 # Recovery may have rolled a dataset back; the baseline the
                 # workflow runs against is the recovered one.
                 revalidated = resolve_snapshot()
+                if getattr(revalidated, "pending_recoveries", ()):
+                    raise DatasetLifecycleUnavailableError("provisional CREATE replay remains pending after exclusive recovery")
+                if claim_covers_accesses(lease.owner, revalidated.accesses):
+                    raise DatasetLifecycleUnavailableError("post-recovery dataset resources exceed the exclusive workflow claim")
                 lifecycle.amend(pre_observations=revalidated.observations)
                 planned = revalidated
             lifecycle.transition(
@@ -1530,6 +1574,8 @@ def _dispatch(
                 raise wrapped from exc
             raise
         finally:
+            if authority_context is not None:
+                authority_context.__exit__(None, None, None)
             if lease is not None:
                 try:
                     lease.release()
@@ -1737,6 +1783,9 @@ def _dispatch(
 
     def validate_ordinary_outputs(result):
         if result.success:
+            validate_dataset_outputs = getattr(strict_leaf, "validate_output_paths", None)
+            if validate_dataset_outputs is not None:
+                validate_dataset_outputs(result.outputs)
             from shinobi.ownership import validate_ordinary_creator_outputs
 
             validate_ordinary_creator_outputs(
@@ -1774,7 +1823,7 @@ def _dispatch(
             strict_leaf = StrictLeaf(_dataset_lifecycle, cache_path, scope, ctx.prepare_inputs())
 
     if cacheable:
-        execution_identity = _execution_identity or _local_execution_identity(scope, ctx, pinned=provenance_enabled)
+        execution_identity = _execution_identity or _local_execution_identity(scope, ctx, pinned=provenance_enabled, func=func)
         if execution_identity is None:
             logger.warning("step %s: cache disabled -- selected execution environment could not be fingerprinted", cache_path)
             cacheable = False
@@ -1785,12 +1834,17 @@ def _dispatch(
         )
         strict_leaf.fail(None, reason, refused=True)
         raise DatasetLifecycleUnavailableError(f"strict {format_name} mutation of {cache_path!r} refused before launch: {reason}")
+    required_key = config.cache.required.get(cache_path)
+    if required_key is not None and not cacheable:
+        raise DatasetLifecycleUnavailableError(f"required cache {cache_path!r} unavailable: caching is disabled or execution identity is unknown")
     if cacheable:
         manifest = get_cache_manifest(cache_dir_value)
         prepared_for_key = ctx.prepare_inputs()
         derived_identity = strict_leaf.select_derived_states(get_journal(cache_dir_value)) if strict_leaf is not None else None
         cache_key = compute_cache_key(scope, func, prepared_for_key, _input_keys, execution_identity, derived_identity)
-        if strict_leaf is not None and getattr(strict_leaf.lifecycle, "kind", None) == "fits":
+        if required_key is not None and cache_key != required_key:
+            raise DatasetLifecycleUnavailableError(f"required cache {cache_path!r} key mismatch: expected {required_key}, computed {cache_key}")
+        if required_key is None and strict_leaf is not None and getattr(strict_leaf.lifecycle, "kind", None) == "fits":
             strict_leaf.repair_cache(manifest, cache_key, scope, prepared_for_key, defer_fits_fields=strict_leaf.deferred_output_fields() if _cache_path is not None else ())
         hit = manifest.check(
             cache_path,
@@ -1833,6 +1887,9 @@ def _dispatch(
 
             publish(publish_hit)
             return hit
+
+    if required_key is not None:
+        raise DatasetLifecycleUnavailableError(f"required cache {cache_path!r} has no valid reusable hit; refusing before launch or snapshot restore")
 
     logger.info(
         "step %s: starting%s",
