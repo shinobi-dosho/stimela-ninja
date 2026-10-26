@@ -227,7 +227,7 @@ Two further fields matter only inside a recipe:
     DAG are ordinary ``wiring`` and ``after``, never this.
 
 Imported Python function helpers in containers
----------------------------------------------
+----------------------------------------------
 
 An ordinary isolated container pystep can use a module-level literal import of a Python function from
 another module in its own package, including relative imports and transitive

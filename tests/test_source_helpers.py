@@ -267,6 +267,7 @@ def test_literal_ctx_same_package_helper_reference_refuses(tmp_path, monkeypatch
 def test_actual_save_keeps_exact_historical_identity():
     import dosho
 
+    pytest.importorskip("dosho.cabs.casa_selfcal", reason="requires companion Dosho history integration")
     func = dosho.get("flagmanager-save")
     scope = Scope(name="save", inputs_model=BaseModel, outputs_model=BaseModel)
     assert resolve_source_helpers(func) is None
