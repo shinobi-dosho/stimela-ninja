@@ -28,14 +28,13 @@ still serializes as a path string.
 The current named profiles are ``casa-table/v1`` and
 ``msv2-structural/v1``.  The profile name is part of the declaration, so a
 future, stronger contract will not silently change what an existing annotation
-means.  The older cab-loader dtype ``MS`` is unchanged and continues to map to
-a plain ``Path``.
+means. The cab-loader dtype ``MS`` maps to a plain ``Path``.
 
-``CasaTable`` and ``MeasurementSetV2`` remain object-identical compatibility
-aliases for ``CasaTab`` and ``MSv2``. Those four names also work as
-case-insensitive YAML dtypes and carry the same strict declarations. ``MSv4``
-is reserved and rejected as a dtype, including inside composite types; no MSv4
-parameter annotation or execution lifecycle is provided.
+``CasaTable`` and ``MeasurementSetV2`` are object-identical aliases for
+``CasaTab`` and ``MSv2``. Those four names also work as case-insensitive YAML
+dtypes and carry the same strict declarations. ``MSv4`` is reserved and
+rejected as a dtype, including inside composite types; no MSv4 parameter
+annotation or execution lifecycle is provided.
 
 Explicit structural inspection
 ------------------------------
@@ -52,11 +51,11 @@ Inspection is a separate operation:
 
 The annotation describes the Measurement Set format and its versioned profile;
 ``python-casacore`` supplies the current inspector. Install the optional
-``ms-contract`` extra in the environment which performs inspection:
+``ms`` extra in the environment which performs inspection:
 
 .. code-block:: console
 
-   pip install -e "/path/to/dosho[validation]" -e "/path/to/stimela-ninja[ms-contract]"
+   pip install "stimela-ninja[ms]>=0.2.0b1"
 
 For a source checkout managed by uv, use
 ``uv sync --group dev --group measurement-set``.  The development group is
@@ -365,13 +364,12 @@ closure validation still apply. This supplemental evidence does not change the f
 ``msv2-structural-signature/v1`` coverage or any scientific logical identity.
 
 Explicit non-MAIN writing contracts add a versioned cache-key component
-containing their scope's dataset-access declarations. This invalidates old
-successes whose subtable column promises were unchecked; runtime column
-parameters and templates remain part of the key. Ordinary, read-only,
-inferred and MAIN-only key vectors without the present-subtable rewrite grant
-retain their historical values. Reuse
-checks the committed mutation chain rather than testing an ancestor's column
-promise against its live descendant: a later writer may remove that column.
+containing their scope's dataset-access declarations. Runtime column
+parameters and templates also contribute to the key. Ordinary, read-only,
+inferred and MAIN-only keys without the present-subtable rewrite grant omit
+this component. Reuse checks the committed mutation chain rather than testing
+an ancestor's column promise against its live descendant: a later writer may
+remove that column.
 
 An explicit MAIN ``write`` may opt into
 ``allow_present_subtable_rewrite=True`` when a tool also rewrites the backing
@@ -391,7 +389,7 @@ promises; unknown MAIN columns do not relax them. The flag belongs only on a
 MAIN ``write``, never on ``read``, ``create`` or a subtable access. Each list
 element uses its own restored closure. It adds a versioned cache-key component
 containing the complete scope access declarations only when true; false is
-omitted from serialization, preserving historical nongrant key vectors.
+omitted from serialization and nongrant cache keys.
 Structural signatures, member fingerprints, snapshots and logical state
 identities retain their existing coverage and meaning.
 
@@ -740,8 +738,8 @@ selector's output supplies them. ``planned_accesses`` retains the original
 conservative workflow plan, including ``unknown-columns`` for an unresolved
 selector. A cached reader also records its resolved accesses and cache
 decision. Refused runtime resolution records an empty-access leaf with its
-diagnostic. Historical version 1 reader records remain readable; inserting
-the first leaf upgrades an attempt to version 2 atomically with that evidence.
+diagnostic. Inserting the first leaf changes an attempt from version 1 to
+version 2 atomically with that evidence.
 
 Detached worker execution
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -782,7 +780,7 @@ for inspection instead of inferring safety from Slurm state.
 This route does not turn equal path strings into proof of shared bytes.  Run
 the physical shared-metadata and strict MSv2/Casacore gates in
 ``tests/slurm_physical`` on the exact site storage before treating the route as
-supported.  The legacy argv compiler remains planning-only for dataset
+supported.  The argv compiler remains planning-only for dataset
 contracts.
 
 Re-creating a dataset
@@ -827,9 +825,9 @@ directory rename cannot restore a closure spanning several roots),
 unsupported/opaque closure shapes, nested dataset recipes, mutating dataset scatter,
 orchestration functions, manual ``Scope`` routes, and unproven storage
 namespaces remain strict refusals.  Dry-run and both compilers may still plan
-dataset-bearing workflows.  The legacy compiler retains its planning-only
+dataset-bearing workflows.  The argv compiler retains its planning-only
 marker; worker preparation replaces its bundle marker only after constructing
-the complete compute-side lifecycle plan.  Use ``Path`` or the legacy loader
+the complete compute-side lifecycle plan.  Use ``Path`` or the loader
 dtype ``MS`` when one of the unsupported routes is required.
 
 FITS image and table contracts
@@ -839,12 +837,12 @@ FITS image and table contracts
 ``fits-image/v1`` and ``fits-table/v1`` declarations. Model construction,
 serialization and JSON Schema generation perform no filesystem inspection and
 import no Astropy. These contracts describe FITS formats; Astropy supplies the
-current parser and WCS validation. Install ``stimela-ninja[fits-contract]`` in
+current parser and WCS validation. Install ``stimela-ninja[fits]`` in
 the environment performing lifecycle inspection,
-or use ``uv sync --group dev --extra fits-contract`` for FITS acceptance tests.
+or use ``uv sync --group dev --extra fits`` for FITS acceptance tests.
 The ordinary CI matrix keeps these dependencies optional and skips the FITS
 modules when Astropy is absent. The measurement-set CI matrix installs the
-``measurement-set`` group and ``fits-contract`` extra and runs the FITS modules,
+``measurement-set`` group and ``fits`` extra and runs the FITS modules,
 including real MS/FITS product-gate integration tests, on Python 3.11 and 3.12.
 
 ``FITSImage`` selects a primary image or ordinary IMAGE extension of any

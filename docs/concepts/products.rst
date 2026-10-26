@@ -226,8 +226,8 @@ producer field and sorted typed coordinate address.
 Detached workers preserve framework types with a closed codec and selection
 bindings in bundle schema version 2. Arbitrary subclass validators remain
 unsupported. Coordinate-bearing produced states and bundle inventories use
-attempt-record version 4; historical scalar and indexed-MS records retain
-their shapes and readability. See :doc:`provenance` and :doc:`../offloading`.
+attempt-record version 4. Scalar and indexed-MS records use their respective
+schemas. See :doc:`provenance` and :doc:`../offloading`.
 
 Supported boundaries
 --------------------

@@ -68,4 +68,4 @@ def test_fits_inspector_unavailable_is_actionable(tmp_path, monkeypatch, inspect
     descriptor = inspect(candidate)
     assert descriptor.status is FITSStatus.INSPECTOR_UNAVAILABLE
     assert str(error) in descriptor.message
-    assert "install stimela-ninja[fits-contract] in the inspection environment" in descriptor.message
+    assert "install stimela-ninja[fits] in the inspection environment" in descriptor.message

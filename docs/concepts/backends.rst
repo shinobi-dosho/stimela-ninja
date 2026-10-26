@@ -69,10 +69,9 @@ Available backends
     host user (not root) by default, so bind-mounted outputs come out
     host-owned -- see ``backend.run_as_host_user`` in :doc:`config`.
     ``apptainer`` already runs as the host user, so this is a no-op there.
-    ``singularity`` is the same backend under the project's former name: it
-    behaves exactly as ``apptainer`` but invokes the ``singularity`` binary,
-    which is the only one present on some HPC sites. Pick whichever your
-    cluster actually installs.
+    ``singularity`` behaves exactly as ``apptainer`` but invokes the
+    ``singularity`` binary, which is the only one present on some HPC sites.
+    Pick whichever your cluster actually installs.
     With :doc:`provenance` enabled, the image is digest-pinned before running
     (``repo@sha256:...``); by default it runs by its original tag.
 
@@ -149,13 +148,10 @@ A backend can be selected in several places, in increasing order of specificity:
     def image(ctx):
         return ctx.run()
 
-``ninja --backend`` is checked against the list above before anything runs, so
-a name that isn't a backend is rejected on the spot and told what the
-alternatives are. This matters more than it looks: a ``@pystep`` with an
-``image`` containerises only when the resolved backend *is* a container
-runtime, and otherwise runs the function in the calling process -- so an
-unrecognised name used to run a containerised step on the host and fail on
-whatever the image was supposed to provide.
+``ninja --backend`` is checked against the list above before anything runs.
+An unrecognized backend name is rejected with the available alternatives.
+A ``@pystep`` with an ``image`` runs in a container only when the resolved
+backend is a container runtime; otherwise it runs in the calling process.
 
 Interrupting a run
 ------------------
@@ -282,14 +278,13 @@ refuse to create the container at all::
     FATAL:   container creation failed: while applying cgroups config: ...
     .../apptainer-3628201.scope/cpu.max: no such file or directory
 
-so a single unenforceable dimension used to take down the enforcement of the
-other, and the run with it. Under the default ``execution.enforce_resources:
-auto`` shinobi probes the delegated set and emits each dimension on its own
-merits: memory limits are still applied, and one warning per run says which
-flags were dropped and why. A run that fails this way anyway (under
-``always``, or on a runtime whose reach could not be probed) gets the cause
-and the remedy spelled out instead of the raw ``openat2`` message. See
-:doc:`config` for the setting and how to inspect your own delegation.
+Under the default ``execution.enforce_resources: auto``, Shinobi probes the
+delegated set and emits each dimension on its own merits: memory limits are
+still applied, and one warning per run says which flags were dropped and why.
+A run that fails this way anyway (under ``always``, or on a runtime whose
+reach could not be probed) gets the cause and the remedy spelled out instead
+of the raw ``openat2`` message. See :doc:`config` for the setting and how to
+inspect your own delegation.
 
 Verification status
 --------------------
@@ -322,5 +317,5 @@ refusal. See :doc:`datasets` for the complete FITS boundary.
 Slurm support uses detached compute workers with a pinned shared-storage
 qualification, independently of the tool backend selected inside each
 allocation. The blocking ``slurm`` tool backend and remote container daemons
-remain unqualified. Install ``fits-contract`` in every environment performing
+remain unqualified. Install ``fits`` in every environment performing
 inspection; the tool image's packages are independent of that requirement.

@@ -418,7 +418,7 @@ def inspect_dataset(
             candidate,
             expected,
             DatasetStatus.INSPECTOR_UNAVAILABLE,
-            "python-casacore is unavailable; install stimela-ninja[ms-contract] in the inspection environment",
+            "python-casacore is unavailable; install stimela-ninja[ms] in the inspection environment",
             unsupported_features=(feature,),
         )
 

@@ -174,7 +174,7 @@ group in `pyproject.toml` (Read the Docs installs from the former).
 
 ### Cab ownership and paired changes
 
-From 0.2.0b1, Dosho owns generic parameter schemas/validation, policies,
+Dosho owns generic parameter schemas/validation, policies,
 patterns and argv formatting. Shinobi owns framework types, DAG wiring,
 execution, filesystem enforcement, dataset lifecycle and caches. Put shared
 schema algorithms in Dosho; Shinobi adapters supply trusted dtype bindings

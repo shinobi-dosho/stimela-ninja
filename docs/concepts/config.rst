@@ -131,10 +131,10 @@ absolute path. Both are reachable via the environment as
 a deployment concern, so it lives here or on a ``Scope`` in Python -- never in a
 shared cab repo. See :doc:`backends` and :doc:`provenance`.
 
-``log.stream`` (default ``True``) live-echoes a running cab's stdout/stderr
-as it runs (native/container backends only); set to ``False`` to restore the
-old behavior of a silent run followed by one dump of captured output at the
-end. Overridable per-invocation with ``ninja run --quiet``.
+``log.stream`` (default ``True``) live-echoes a running cab's stdout/stderr as
+it runs (native/container backends only); set to ``False`` to capture output
+silently and display it when the run ends. Overridable per-invocation with
+``ninja run --quiet``.
 
 ``log.file`` (default ``None`` = off) turns on the run-log file, written to
 ``log.dir/log.file`` and filtered at ``log.level``. Every step -- cab,
@@ -196,16 +196,15 @@ not filesystem declarations.
 
 Every recorded product must still exist, including individual ``harvest``
 matches. Cache hits check those exact paths without expanding globs again;
-deleting a previously produced family member reruns the step. Directory outputs
-require the directory itself, with harvest-selected descendants checked
-separately. Changing path declarations, implicit templates, harvest patterns or
-the workspace invalidates reuse independently of the scientific cache key.
-Older entries containing path or harvest declarations refresh once; scalar-only
-legacy results remain readable. Path outputs with opaque executable default
-factories conservatively rerun, without evaluating factories for cache identity;
-builtin empty-container factories retain reuse. Failed execution, validation and harvesting do
-not publish a reusable result. Mutation snapshot and worker attempt identities
-retain their existing contracts.
+deleting a previously produced family member reruns the step. Directory
+outputs require the directory itself, with harvest-selected descendants
+checked separately. Changing path declarations, implicit templates, harvest
+patterns or the workspace invalidates reuse independently of the scientific
+cache key. Path outputs with opaque executable default factories
+conservatively rerun, without evaluating factories for cache identity; builtin
+empty-container factories retain reuse. Failed execution, validation and
+harvesting do not publish a reusable result. Mutation snapshot and worker
+attempt identities retain their existing contracts.
 
 The cache manifest and mutation journal are mutable shared metadata. Their
 read-modify-write transactions are serialized with persistent sibling lock
@@ -216,12 +215,9 @@ a failed refresh leaves a warning and a recoverable commit instead of falsely
 reporting that the transaction failed;
 an incomplete trailing record is ignored, while corruption in a completed
 record fails closed. ``ninja clean --cache`` is the explicit recovery when the
-cache can be discarded. The existing JSON filenames remain the snapshot files, and the
-first update imports an existing cache as the log's initial snapshot. This is a
-**one-way upgrade**: every later writer must be M2-aware. A pre-M2 process writes
-only the compatibility JSON, outside the lock, and its changes are ignored to
-protect committed log state. Do not point an older Shinobi or pinned old remote
-launcher environment at an upgraded cache.
+cache can be discarded. JSON files provide snapshot views of the committed
+log. Every cache and journal writer must participate in this transaction
+protocol; the log is authoritative.
 
 Lock/log files are intentionally left in place, including during
 ``ninja clean --cache``, because deleting one while a process holds it could
@@ -296,15 +292,13 @@ workflow outright (see
 
 .. important::
 
-   With rollback in play, **declaring in-place mutation stops being an
-   optimisation and becomes a correctness requirement.** It used to only
-   affect whether a step re-ran needlessly. Now, a step that rewrites a
-   measurement set another step also uses must say so -- by declaring that
-   path as an output, or marking the input ``mutable`` -- and, if a later
-   step depends on that rewrite, must be **wired** ahead of it so the graph
-   records the ordering. Two steps that touch one path with no edge between
-   them are independent as far as shinobi is concerned, and a rollback of
-   one can discard the other's work without anything noticing.
+   **Declaring in-place mutation is a correctness requirement for rollback.**
+   A step that rewrites a measurement set another step also uses must say so
+   -- by declaring that path as an output, or marking the input ``mutable`` --
+   and, if a later step depends on that rewrite, must be **wired** ahead of it
+   so the graph records the ordering. Two steps that touch one path with no
+   edge between them are independent as far as shinobi is concerned, and a
+   rollback of one can discard the other's work without anything noticing.
 
 ``cache.content_sample`` adds a bounded sample (the first and last 4 KiB of
 each file) to the fingerprints of *boundary* inputs -- raw data you supplied,

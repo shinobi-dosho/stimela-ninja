@@ -107,11 +107,11 @@ Datasets
 
 .. py:data:: CasaTable
 
-   Object-identical compatibility alias for :data:`CasaTab`.
+   Object-identical alias for :data:`CasaTab`.
 
 .. py:data:: MeasurementSetV2
 
-   Object-identical compatibility alias for :data:`MSv2`.
+   Object-identical alias for :data:`MSv2`.
 
 .. autoclass:: shinobi.datasets.DatasetType
 

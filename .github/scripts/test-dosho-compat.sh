@@ -13,7 +13,8 @@ repo=$(git rev-parse --show-toplevel)
 cd "$repo"
 mkdir -p .work-cache/compat/tmp
 export TMPDIR="$repo/.work-cache/compat/tmp"
-export UV_CACHE_DIR="$repo/.work-cache/compat/cache"
+# setup-uv must save the same cache that the commands below populate.
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$repo/.work-cache/compat/cache}"
 uv sync --locked --python 3.12 --group dev --group examples
 
 if [[ "$lane" == main ]]; then

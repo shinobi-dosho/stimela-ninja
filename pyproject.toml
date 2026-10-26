@@ -26,8 +26,11 @@ dependencies = [
 [project.optional-dependencies]
 # Format contracts are opt-in. These packages provide the current inspectors;
 # the annotations and versioned profiles describe formats independently of them.
-ms-contract = ["python-casacore>=3.7,<4"]
-fits-contract = ["astropy>=7.2,<9"]
+ms = ["python-casacore>=3.7,<4"]
+fits = ["astropy>=7.2,<9"]
+# Compatibility aliases; keep inspector dependencies in the short extras above.
+ms-contract = ["stimela-ninja[ms]"]
+fits-contract = ["stimela-ninja[fits]"]
 
 [dependency-groups]
 dev = [

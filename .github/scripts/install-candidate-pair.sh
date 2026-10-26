@@ -7,7 +7,7 @@ candidate=$(cd "$candidate" && pwd)
 cd "$repo"
 mkdir -p .work-cache/candidate-pair/tmp
 export TMPDIR="$repo/.work-cache/candidate-pair/tmp"
-export UV_CACHE_DIR="$repo/.work-cache/candidate-pair/cache"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$repo/.work-cache/candidate-pair/cache}"
 pair_dir=$(mktemp -d "$repo/.work-cache/candidate-pair/build.XXXXXXXX")
 trap 'rm -rf "$pair_dir"' EXIT
 for source in "$repo" "$candidate"; do

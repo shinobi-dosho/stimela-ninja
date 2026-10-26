@@ -343,7 +343,7 @@ def inspect_fits(
     except (ImportError, OSError) as exc:
         return result(
             FITSStatus.INSPECTOR_UNAVAILABLE,
-            f"Astropy FITS parser unavailable: {exc}; install stimela-ninja[fits-contract] in the inspection environment",
+            f"Astropy FITS parser unavailable: {exc}; install stimela-ninja[fits] in the inspection environment",
         )
     try:
         total_header = 0
