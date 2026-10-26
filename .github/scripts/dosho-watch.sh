@@ -21,7 +21,7 @@ ROOT=$PWD
 watch_cache="$ROOT/stimela-ninja/.work-cache/dosho-watch"
 mkdir -p "$watch_cache/tmp"
 export TMPDIR="$watch_cache/tmp"
-export UV_CACHE_DIR="$watch_cache/cache"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$watch_cache/cache}"
 ninja_sha=$(git -C "$ROOT/stimela-ninja" rev-parse HEAD)
 dosho_sha=$(git -C "$ROOT/dosho" rev-parse HEAD)
 cd dosho
