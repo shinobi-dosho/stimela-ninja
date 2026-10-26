@@ -11,7 +11,7 @@ Shared-storage worker bundles
 The supported shared-storage path provides a **plan and result protocol**
 through ``shinobi.offload.bundle`` and ``shinobi.offload.records``, plus an
 opt-in short-lived compute worker.
-The legacy argv compiler remains the default. ``ninja compile --worker
+The argv compiler remains the default. ``ninja compile --worker
 --submit`` stages and submits the worker lifecycle; ``--worker`` without
 ``--submit`` is refused because immutable source and environment staging is a
 submission-preparation side effect.
@@ -33,8 +33,8 @@ workers claim and observe every contained root, and refuse a change to any
 read-only element before publishing success. Explicit WRITE inputs use the
 same joint transaction and exact participant recovery as local execution.
 Compatible same-name outputs preserve the exact ordered roots. Indexed producer
-keys and ordered key arrays travel in attempt-record schema version 3;
-historical scalar version 1/2 records retain their wire shape and readability.
+keys and ordered key arrays travel in attempt-record schema version 3. Scalar
+records use schema versions 1 and 2.
 The immutable worker attempt remains the commit oracle: a mutable lifecycle
 leaf cannot commit a failed immutable publication. Finalization retains the
 workflow claim until every participant is trusted and marker-free. See
@@ -211,7 +211,7 @@ unrelated branches. A venv fingerprint establishes package-version parity,
 not an exact binary/OS pin; venv-backed results therefore remain unpinned even
 when cached. ``ninja compile --worker --submit --cache`` and ``--no-cache``
 override scope/config settings, while ``--cache-dir`` selects the shared store
-without enabling it by itself. These options are refused by the legacy argv
+without enabling it by itself. These options are refused by the argv
 compiler rather than silently ignored.
 
 Mutation-declaring leaves use the same snapshot eligibility, state naming,
@@ -287,7 +287,7 @@ the reusable cache index and marker cleanup follow it. The finalizer
 reconciles written roots and requires terminal lifecycle evidence before it
 releases ownership. A missing result, corrupt lifecycle file, failed
 recovery, stale invocation or lost claim remains fail-closed. This supports
-contained read, write and create leaves; the legacy argv compiler remains
+contained read, write and create leaves; the argv compiler remains
 planning-only for dataset contracts.
 
 Dataset reconciliation holds a persistent cache-wide recovery lock across the
@@ -470,7 +470,7 @@ When a recipe can be offloaded
 
 Offloading requires that the whole recipe be statically knowable -- the
 compiler must be able to determine every job and every dependency without
-running any Python. A recipe using the legacy ``ninja compile`` argv path is
+running any Python. A recipe using the ``ninja compile`` argv path is
 eligible only when:
 
 * it has **no orchestration functions** (nothing whose behaviour depends on
@@ -491,7 +491,7 @@ typed data. It retains declared loops, but rejects arbitrary orchestration
 functions, nested recipes and scatter. Ordinary non-path outputs may cross
 between worker steps through committed attempt records. Every filesystem write
 target must remain statically resolvable so submission can freeze a complete
-ownership access set and derive the same mutation ordering as the legacy
+ownership access set and derive the same mutation ordering as the argv
 compiler. This includes ``MUTABLE`` inputs, same-named path inputs/outputs,
 ``write_path`` destinations, path outputs and templated harvest/scratch roots;
 an unresolved declaration is refused before any job is submitted.
@@ -611,7 +611,7 @@ sharing an external subtable are ordered consistently in local, dry-run and
 Slurm planning.  The compiled job records retain deterministic reasons such
 as ``write-after-read: observation.ms, MAIN.FLAG``.  Columns remain
 provenance detail: different columns do not authorize parallel writers yet.
-The legacy compiler retains a planning-only marker for strict datasets. A
+The argv compiler retains a planning-only marker for strict datasets. A
 worker bundle also carries a preparation marker, but
 ``prepare_worker_slurm`` replaces it with an executable versioned lifecycle
 plan only after validating the contained closure, shared identity mapping,
@@ -793,10 +793,11 @@ Output families in workers
 Coordinate-labelled file families and local directory bundles use the ordinary
 worker dispatch and immutable result publication lifecycle. A bundle containing
 family types/declarations or coordinate selections uses schema version 2;
-ordinary historical bundles retain version 1. The codec recognizes only exact
+bundles without those declarations use version 1. The codec recognizes only exact
 framework family/bundle types and never bypasses checks for arbitrary model
 subclasses. Coordinate-bearing produced states and recursive bundle inventories
-use attempt-record version 4. Old scalar and indexed-MS records remain readable.
+use attempt-record version 4. Scalar and indexed-MS records use their
+respective schemas.
 
 Selections resolve after the producing dependency commits, against its saved
 member table. Planning reserves the exact path when a selector uniquely fixes
@@ -807,7 +808,7 @@ ambiguous, discovered and whole-family references remain runtime-dependent.
 As in local planning, a validated unset optional path contributes no scratch
 destination. An unknown path or an unset string template still refuses
 preparation; the worker does not infer an implicit destination.
-The legacy argv compiler refuses families and selections because
+The argv compiler refuses families and selections because
 it cannot preserve post-execution membership/evidence. Remote stores and
 store-relative subresources remain gated. See :doc:`concepts/products`.
 
@@ -815,7 +816,7 @@ FITS worker contracts
 ---------------------
 
 Strict FITS scalar/list accesses and typed FITS output products use detached
-Slurm compute workers on qualified shared storage. Install ``fits-contract``
+Slurm compute workers on qualified shared storage. Install ``fits``
 in the preparation, worker and finalization environments that inspect files.
 The tool's container or venv supplies its own dependencies independently.
 The same persisted shared-storage qualification used for MSv2 pins the mount,
@@ -830,7 +831,7 @@ finalization and recovery, including whole-file byte identities and complete
 joint-write participant sets. Pre-oracle failure restores predecessor bytes or
 CREATE absence; a committed immutable result preserves its successors.
 
-The legacy argv compiler remains unable to enforce these contracts. Whole-family
+The argv compiler remains unable to enforce these contracts. Whole-family
 FITS inputs, authoritative mixed MS/FITS workflows, FITS reusable states,
 nested/scattered authoritative FITS execution and unqualified namespaces remain
 unsupported. Typed FITS output families are validation-only and do not grant
@@ -847,10 +848,10 @@ durable worker records.
 Cab semantics in worker bundles
 -------------------------------
 
-New bundles containing cabs use schema version 3. Each cab freezes its ordered
+Bundles containing cabs use schema version 3. Each cab freezes its ordered
 argument declarations, metadata, patterns, policies and Dosho schema/formatter
-contract versions; restoration verifies that identity. Historical versions 1
-and 2 remain readable. Non-cab bundles retain their existing version rules.
+contract versions; restoration verifies that identity. Non-cab bundles use
+the schema version required by their declarations.
 Workers stage both installed Shinobi and Dosho packages, with one source digest
 covering the combined tree. Locked provisioning exports include Dosho's active
 validation extra through Shinobi's mandatory dependency.

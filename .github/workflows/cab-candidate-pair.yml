@@ -23,7 +23,7 @@ jobs:
           path: .work-cache/dosho-candidate
       - name: Install locked dependencies and explicit wheel pair
         run: |
-          uv sync --locked --python 3.12 --group dev --group examples --extra fits-contract
+          uv sync --locked --python 3.12 --group dev --group examples --extra fits
           bash .github/scripts/install-candidate-pair.sh .work-cache/dosho-candidate
       - name: Verify candidate contracts
         run: |

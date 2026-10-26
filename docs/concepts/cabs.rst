@@ -73,7 +73,7 @@ framework dtype bindings. For plain configuration schemas,
 ``dosho.validation.build_model`` is available without importing Shinobi.
 Use the Shinobi helper for ``MSv2``, ``FITSImage`` and product-family dtypes.
 
-``File`` and legacy ``MS`` map to path annotations, which container and cluster
+``File`` and ``MS`` map to path annotations, which container and cluster
 backends inspect to decide which paths to bind-mount. ``MSv2`` additionally
 declares a strict dataset contract; ``MS`` remains path-only.
 

@@ -771,7 +771,7 @@ def _prepare_worker_slurm(
     if scope_tree_has_fits_contract(recipe) or any(fits_product_contract(ref.step) for ref in recipe.steps):
         probe = subprocess.run([worker.python, "-c", "from astropy.io import fits"], capture_output=True, text=True)
         if probe.returncode:
-            raise DatasetLifecycleUnavailableError("FITS inspecting worker requires stimela-ninja[fits-contract] (astropy): " + probe.stderr.strip())
+            raise DatasetLifecycleUnavailableError("FITS inspecting worker requires stimela-ninja[fits] (astropy): " + probe.stderr.strip())
     graph = build_graph(recipe)
     step_index = {name: i for i, name in enumerate(graph.names)}
     recipe_inputs = unpack(pinned.inputs)

@@ -25,13 +25,12 @@ Installation
 
 Requires Python 3.11 or newer::
 
-    pip install git+https://github.com/shinobi-dosho/stimela-ninja.git
+    pip install "stimela-ninja>=0.2.0b1"
 
 This installs the ``ninja`` command, the importable ``shinobi`` package, and
 ``dosho[validation]>=0.2.0b1,<0.3`` for task schemas and argument formatting.
-Shinobi and Dosho validation require Pydantic 2.14 or newer. These docs describe the 0.2
-source tree; the latest published Shinobi release is still 0.1.0. Dosho
-0.2.0b1 is published and installed by the source requirement.
+Shinobi and Dosho validation require Pydantic 2.14 or newer. This documentation
+assumes Shinobi and Dosho 0.2.0b1 or newer.
 
 Apptainer is the default execution backend. External tools must be installed
 locally or available through the container or cluster backend you use. See the `installation guide

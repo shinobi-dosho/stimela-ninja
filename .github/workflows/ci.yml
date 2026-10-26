@@ -143,7 +143,7 @@ jobs:
 
       - name: Install all locked inspectors and candidate wheels
         run: |
-          uv sync --python ${{ matrix.python-version }} --locked --group dev --group measurement-set --extra fits-contract
+          uv sync --python ${{ matrix.python-version }} --locked --group dev --group measurement-set --extra fits
           bash .github/scripts/install-candidate-pair.sh .work-cache/dosho-candidate
 
       - name: Verify optional inspector installation

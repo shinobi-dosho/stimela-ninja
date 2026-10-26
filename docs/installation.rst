@@ -13,32 +13,25 @@ Apptainer is the default backend. Install its ``apptainer`` executable on
 ``PATH`` for containerized cabs, or select another backend with
 ``ninja --backend NAME`` or ``backend.default`` in :doc:`concepts/config`.
 
-Current 0.2 source tree
------------------------
+Install Shinobi
+---------------
 
-These docs describe the 0.2 source tree. Shinobi 0.2.0b1 is not yet published;
-an unqualified ``pip install stimela-ninja`` installs the older stable 0.1.0.
-The neutral-definition boundary needs matching candidate sources of Dosho and
-Shinobi. Installing only Shinobi from Git can resolve a published Dosho beta
-without the new shared helpers. Install both checkouts explicitly:
+This documentation assumes Shinobi and Dosho 0.2.0b1 or newer:
 
 .. code-block:: console
 
-    $ pip install -e "/path/to/dosho[validation]" -e /path/to/stimela-ninja
+    $ pip install "stimela-ninja>=0.2.0b1"
 
-Pin both source commits, or use the explicit wheel-pair helper in
-:doc:`design_cab_boundary`, until the coordinated release updates the dependency
-contract. This installs:
+This installs:
 
 * the ``ninja`` command-line tool;
 * the importable ``shinobi`` package; and
 * ``dosho[validation]>=0.2.0b1,<0.3`` for cab schemas, parameter validation
   and argv formatting. Pydantic 2.14 or newer is required.
 
-Dosho is now a mandatory dependency, so its catalogue is already available.
-A separate ``pip install dosho`` is unnecessary. Dosho alone still supports
-catalogue access without Shinobi; runnable cabs and pysteps require the
-framework. See :doc:`design_cab_boundary` for ownership and compatibility.
+Dosho is a mandatory dependency, so its catalogue is available automatically.
+Dosho also supports catalogue access without Shinobi; runnable cabs and pysteps
+require the framework. See :doc:`design_cab_boundary` for the ownership contract.
 
 .. note::
 
@@ -55,9 +48,9 @@ environment performing lifecycle inspection:
 
 .. code-block:: console
 
-    $ pip install -e "/path/to/dosho[validation]" -e "/path/to/stimela-ninja[ms-contract]"
-    $ pip install -e "/path/to/dosho[validation]" -e "/path/to/stimela-ninja[fits-contract]"
-    $ pip install -e "/path/to/dosho[validation]" -e "/path/to/stimela-ninja[ms-contract,fits-contract]"
+    $ pip install "stimela-ninja[ms]>=0.2.0b1"
+    $ pip install "stimela-ninja[fits]>=0.2.0b1"
+    $ pip install "stimela-ninja[ms,fits]>=0.2.0b1"
 
 The extras name the supported formats. Their current implementations use
 ``python-casacore`` for Measurement Sets and Astropy for FITS; those packages
@@ -72,21 +65,17 @@ and in preparation/finalization environments that inspect files. Installing it
 only in a tool image does not provide the controller or worker inspector.
 Tool containers remain free to use other FITS libraries.
 
-From a source checkout, use ``uv sync --extra ms-contract`` or
-``uv sync --extra fits-contract``. The broader ``measurement-set`` development
+From a source checkout, use ``uv sync --extra ms`` or
+``uv sync --extra fits``. The broader ``measurement-set`` development
 group below also supplies the MS state export and reconstruction stack.
-
-When upgrading an existing installation, replace the old ``casacore`` extra
-with ``ms-contract`` and the old ``fits`` extra with ``fits-contract``.
-For source checkouts, replace ``--group fits`` with ``--extra fits-contract``.
 
 For development
 ---------------
 
 Explicit MSv2 state operations currently require a source checkout and
 ``uv sync --group measurement-set``. The group requires
-``msutils[exact-native]>=3.1.0``, the first release with the preservation v2
-public APIs, while ``uv.lock`` records the resolved release and complete stack
+``msutils[exact-native]>=3.1.0`` for the preservation v2 public APIs, while
+``uv.lock`` records the resolved release and complete stack
 for reproducible local installs. Refresh it with
 ``uv lock --upgrade-package msutils`` then
 ``uv sync --locked --group measurement-set``. The group is unpublished, so

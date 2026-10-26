@@ -18,7 +18,7 @@ and ``ninja`` is the command-line tool.
 `dosho <https://dosho.readthedocs.io>`_ provides task definitions (cabs),
 parameter validation and argv formatting. It is installed automatically with
 Shinobi. Shinobi owns workflow execution, filesystem enforcement and dataset
-lifecycle; see :doc:`design_cab_boundary` for the 0.2 compatibility contract.
+lifecycle; see :doc:`design_cab_boundary` for the ownership contract.
 
 .. code-block:: python
 
@@ -81,7 +81,7 @@ The WSClean cab is defined above, while ``breizorro`` comes from ``dosho``.
 Its FITS annotations and read/create declarations come from dosho.
 Passing ``pipeline.outputs.image.restored`` to ``restored_image`` wires the
 masking step after imaging and makes the image available to it.
-Install the current source with the ``fits-contract`` extra as described in
+Install Shinobi with the ``fits`` extra as described in
 :doc:`installation` in the environment performing inspection. Its Dosho
 dependency includes the Breizorro FITS declarations. This example selects ``native`` explicitly and requires
 host-installed WSClean and Breizorro executables. Cabs without an explicit

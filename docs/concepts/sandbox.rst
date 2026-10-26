@@ -224,8 +224,8 @@ cache hits. Optional filenames that were never produced and unused setup
 directories do not become products. Known pre-launch shallow observations
 distinguish unchanged setup directories from tool-recreated or modified empty
 directories, which survive harvesting whether caching is enabled or disabled.
-When setup identity is unavailable, empty directories receive historical
-best-effort pruning and the cache inventory remains unknown, protecting existing
+When setup identity is unavailable, empty directories receive best-effort
+pruning and the cache inventory remains unknown, protecting existing
 workspace data from phantom setup outputs. ``scratch`` declarations contribute
 no products.
 

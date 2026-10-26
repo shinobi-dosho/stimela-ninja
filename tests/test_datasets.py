@@ -199,7 +199,7 @@ def test_inspector_unavailable_is_actionable(tmp_path, monkeypatch, error):
     assert descriptor.status is DatasetStatus.INSPECTOR_UNAVAILABLE
     assert descriptor.unsupported_features == ("python-casacore metadata inspection",)
     assert "unavailable" in descriptor.message
-    assert "install stimela-ninja[ms-contract] in the inspection environment" in descriptor.message
+    assert "install stimela-ninja[ms] in the inspection environment" in descriptor.message
 
 
 def test_unexpected_inspector_loader_errors_surface(tmp_path, monkeypatch):

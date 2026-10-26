@@ -398,7 +398,7 @@ def test_fits_worker_dependency_preflight(tmp_path, monkeypatch):
 
     monkeypatch.setattr(slurm.subprocess, "run", missing)
     bundle = freeze_recipe(recipe(tmp_path, read=True), {"file": path}, config=AppConfig(), workspace=tmp_path)
-    with pytest.raises(DatasetLifecycleUnavailableError, match=r"fits-contract.*astropy"):
+    with pytest.raises(DatasetLifecycleUnavailableError, match=r"fits.*astropy"):
         prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable), dataset_storage_qualification=qualified_storage(tmp_path))
 
 

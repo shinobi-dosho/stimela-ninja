@@ -114,7 +114,7 @@ It freezes the resolved run as a tree of steps:
 
     {
       "schema_version": 1,
-      "shinobi_version": "0.1.0b1",
+      "shinobi_version": "0.2.0b1",
       "target": "myrecipe.py:selfcal",
       "generated_at": "2026-07-13T14:07:50Z",
       "backend": "docker",
@@ -145,11 +145,10 @@ current profile, so ordinary run replay never substitutes a stored state for a
 recorded path.
 
 The state record and attempt provenance carry the same validated native
-profile/model pair reported by msutils. Historical v1/v1 records keep their
-canonical serialization; v2/v2 source content uses representation schema v3.
-Verification compares the recorded pair with the preservation bundle before
-materialization, while the exact producer-stack check remains in force for
-older states.
+profile/model pair reported by msutils. Native v1/v1 records use their canonical
+serialization; v2/v2 source content uses representation schema v3. Verification
+compares the recorded pair with the preservation bundle before materialization
+and requires the exact producer stack for every state.
 
 A recipe's sub-steps appear, in declaration order, under ``steps``.
 
@@ -287,12 +286,13 @@ Coordinate product provenance
 
 :doc:`products` selections retain the original producing field and a typed
 coordinate address, including through renamed recipe outputs and loop
-pass-through. Downstream keys append this address conditionally; historical
-scalar scientific keys retain their shape. Coordinates never reuse the strict
-MS list ``element_index``. Whole-family values and bundle roots use the shared
-path walker for boundary fingerprints and mounts. Family product declarations
-and recursive kind inventories are product-cache evidence, independent of
-scientific keys, mutation snapshots and reusable dataset-state identities.
+pass-through. Downstream keys append this address only for coordinate
+selections; scalar scientific keys contain no coordinate address. Coordinates
+never reuse the strict MS list ``element_index``. Whole-family values and
+bundle roots use the shared path walker for boundary fingerprints and mounts.
+Family product declarations and recursive kind inventories are product-cache
+evidence, independent of scientific keys, mutation snapshots and reusable
+dataset-state identities.
 
 FITS byte observations and exact recovery
 -----------------------------------------
@@ -356,7 +356,8 @@ Detached FITS workers retain the same byte and participant guarantees. Their
 ``fits-commit-reference/v2`` points to an exact immutable worker attempt and
 binds its workflow, bundle and workspace identity. Worker attempt-record
 version 5 carries FITS lifecycle evidence; execution-plan version 3 freezes
-the FITS worker contract. Existing local v1 references and older MS/ordinary
-worker records retain their supported wire shapes. Finalization verifies the
-committed worker evidence before releasing ownership; a mutable lifecycle side
-record or successful scheduler exit cannot substitute for the immutable result.
+the FITS worker contract. Local references use ``fits-commit-reference/v1``;
+MS and ordinary worker records use their respective schemas. Finalization
+verifies the committed worker evidence before releasing ownership; a mutable
+lifecycle side record or successful scheduler exit cannot substitute for the
+immutable result.

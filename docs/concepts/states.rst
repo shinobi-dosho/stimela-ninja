@@ -53,20 +53,20 @@ are JSON text, preserving non-finite fill values without normalization.
 
 Ordinary metadata files retain a 64 MiB serialized limit. Only the physical
 ``representation.json`` ledger has a separate finite 256 MiB limit, allowing
-full datasets with many independently hashed chunks. New physical manifests
-use compact JSON; historical pretty JSON remains readable within the physical
-limit. Formatting does not change the canonical model digest or omit ledger
-entries. Reads are bounded to the selected limit plus one byte and reject
-nonregular files and duplicate JSON keys before strict model validation.
-An oversized physical manifest refuses while export is still private staging.
-Decoded JSON and Pydantic ledger objects can consume substantially more memory
-than the serialized file; this byte budget is not a peak-memory guarantee.
+full datasets with many independently hashed chunks. Physical manifests use
+compact JSON; readers also accept pretty JSON within the physical limit.
+Formatting does not change the canonical model digest or omit ledger entries.
+Reads are bounded to the selected limit plus one byte and reject nonregular
+files and duplicate JSON keys before strict model validation. An oversized
+physical manifest refuses while export is still private staging. Decoded JSON
+and Pydantic ledger objects can consume substantially more memory than the
+serialized file; this byte budget is not a peak-memory guarantee.
 
-Fresh source observations include supplemental ``table_columns`` evidence
-for supported MSv2 subtables. Historical observations omit this optional field;
-an empty default stays omitted even in nested representation serialization,
-preserving their original canonical representation digests. The evidence does
-not enter the frozen structural-signature v1 inputs or scientific logical IDs.
+Source observations include supplemental ``table_columns`` evidence for
+supported MSv2 subtables. This optional field is omitted when empty, including
+in nested representation serialization, so absent evidence does not affect
+canonical representation digests. The evidence does not enter the frozen
+structural-signature v1 inputs or scientific logical IDs.
 
 Manifests reject unknown fields/contracts. Reopening requires the exact
 recorded runtime stack and the same recorded msutils value. A release install
@@ -82,36 +82,34 @@ integrity, not authentication, for caller-owned local stores.
 
 Fidelity is **exact-logical**, never physical. The writer is msutils' pinned
 arcae 0.5.4 value writer; python-casacore constructs schema and metadata and
-independently verifies the result. dask-ms is no longer required for state
-operations. Its historical runtime-record key remains, with ``not-installed``
-when absent, so old records remain parseable without bypassing exact-stack
-verification. Settle attempts before upgrading and use their original stack
-to reopen older states. Keeping v1 IDs and representation serialization does
-not bypass the recorded-stack check: an old state still needs its original
-qualified runtime for replay. Native profile v2 accepts typed empty column
-keywords, uniformly defined zero-length cells and TiledColumn/TiledShape
-managers. Casacore can regenerate physical manager fields, which the v2
-native model excludes from its logical identity. After msutils succeeds Shinobi checks
-the frozen structural document and independently recomputes the native
-logical root before publication. Only this reusable-state replay comparison
-omits per-resource table filenames, which casacore may regenerate when it
-renumbers storage managers. Resource paths, members, manager types, profiles,
-status, rows, columns, keywords and subtables remain exact. The frozen observed
-structural signature, mutation snapshots and their recovery rules are unchanged.
-Consumers needing identical files refuse.
+independently verifies the result. The runtime record uses ``not-installed``
+for dask-ms when absent; state operations do not require it. Reopening a state
+requires its original qualified runtime, including when logical IDs and
+representation serialization match. Native profile v2 accepts typed empty
+column keywords, uniformly defined zero-length cells and
+TiledColumn/TiledShape managers. Casacore can regenerate physical manager
+fields, which the v2 native model excludes from its logical identity. After
+msutils succeeds Shinobi checks the frozen structural document and
+independently recomputes the native logical root before publication. Only this
+reusable-state replay comparison omits per-resource table filenames, which
+casacore may regenerate when it renumbers storage managers. Resource paths,
+members, manager types, profiles, status, rows, columns, keywords and
+subtables remain exact. The frozen observed structural signature, mutation
+snapshots and their recovery rules are unchanged. Consumers needing identical
+files refuse.
 
 Transactions and recovery
 -------------------------
 
-Export takes a shared READ claim in the workflow ownership registry and
-checks a contained single-directory source before and after export/capture.
-Source changes and pending mutation markers in the configured cache refuse.
-Readers coexist; declared writers conflict. External/multi-root closures refuse.
-The v2 dataset closure includes opaque MAIN ``Table:`` keyword members, so
+Export takes a shared READ claim in the workflow ownership registry and checks
+a contained single-directory source before and after export/capture. Source
+changes and pending mutation markers in the configured cache refuse. Readers
+coexist; declared writers conflict. External/multi-root closures refuse. The
+v2 dataset closure includes opaque MAIN ``Table:`` keyword members, so
 contained extra tables participate in observation and source-change checks.
-New state provenance records the observed closure profile; historical v1
-state records remain readable. Export and materialization still require the
-state adapter's supported table schemas and exact logical validation.
+State provenance records the observed closure profile. Export and
+materialization require the state adapter's supported table schemas and exact
+logical validation.
 
 Materialization takes an exclusive CREATE claim for destination and private
 sibling staging. The parent must exist. Existing files/directories/dangling
@@ -120,12 +118,12 @@ There is no overwrite. msutils runs inside a recorded outer stage;
 independent validation and content sync precede Linux
 ``renameat2(RENAME_NOREPLACE)`` publication. A racing empty directory survives.
 
-Exports continue to write ``shinobi-state-attempt/v2``. New materializations
+Exports write ``shinobi-state-attempt/v2``. Materializations
 write ``shinobi-state-attempt/v3`` and keep the source structural signature in
 both the attempt and its ``shinobi-state-provenance/v1`` record. A separate
 ``restored_structural_signature`` records the observed candidate's frozen
 signature before publication. It may equal the source signature. The field is
-omitted while absent; historical v1/v2 attempts reject a non-null restored
+omitted while absent; v1/v2 attempts reject a non-null restored
 signature and retain their serialized shape and exact-signature recovery.
 Ready, published and committed v3 attempts require both signatures, validated
 exact replay provenance, complete versions and candidate/state identities.
@@ -144,8 +142,7 @@ exact qualified package-key set plus the recorded msutils value (the release
 version, or the commit of an upstream Git install). Actual
 fidelity is absent until reconstruction validates. A refusal before validation cannot
 claim successful exact replay; a later publication failure may retain the
-validated staged-reconstruction evidence while its attempt remains failed. Legacy
-``shinobi-state-attempt/v1`` recovery records remain readable.
+validated staged-reconstruction evidence while its attempt remains failed.
 
 Materialization is the reusable-state replay path for the paired
 ``fixed-shape-defined-or-empty/v1`` and ``/v2`` native profiles. Before writing, it
@@ -204,23 +201,22 @@ Explicit MSv4 codec and precision artifacts
 ``--level``, ``--chunk-rows`` and, for Blosc only, ``--shuffle none|byte|bit``.
 PackBits applies only to boolean arrays; Delta applies only to signed and
 unsigned integer arrays. The combined choice applies each where eligible.
-Other array types use Zstd alone. These are explicit selections; the default
-export still uses its historical layout. Semantic selections write C-order
-chunks explicitly and preserve the array's native dtype.
-For native profile v1, the historical export keeps its v1 representation
-manifest; an explicit lossless selection uses ``shinobi-state-representation/v2``.
-Native profile v2 uses ``shinobi-state-representation/v3`` with explicit
-preservation profile/model fields, whether or not a lossless layout is selected.
-No new fields are serialized into historical v1/v2 representation manifests,
-so their representation digests remain unchanged. An explicit selection rewrites
-the MSv4 tree inside private export staging. It checks the public
-``msutils.logical_id`` before and after rewriting, then captures the usual
-native preservation sidecar against the final MSv4 tree. Numeric copies use
-bounded N-dimensional tiles. Variable-length strings retain the upstream
-decode expansion risk. The original ``zstd``, ``gzip`` and ``blosc-zstd``
-profiles retain msutils' existing native payload layout and describe the
-companion MSv4 tree only. The semantic profiles select filters for both trees
-as described below.
+Other array types use Zstd alone. These are explicit selections; omitting them
+uses the default export layout. Semantic selections write C-order chunks
+explicitly and preserve the array's native dtype. For native profile v1, the
+default export uses a v1 representation manifest; an explicit lossless
+selection uses ``shinobi-state-representation/v2``. Native profile v2 uses
+``shinobi-state-representation/v3`` with explicit preservation profile/model
+fields, whether or not a lossless layout is selected. Representation manifests
+serialize only the fields defined by their schema version, keeping
+representation digests stable. An explicit selection rewrites the MSv4 tree
+inside private export staging. It checks the public ``msutils.logical_id``
+before and after rewriting, then captures the usual native preservation
+sidecar against the final MSv4 tree. Numeric copies use bounded N-dimensional
+tiles. Variable-length strings retain the upstream decode expansion risk. The
+original ``zstd``, ``gzip`` and ``blosc-zstd`` profiles retain msutils'
+existing native payload layout and describe the companion MSv4 tree only. The
+semantic profiles select filters for both trees as described below.
 
 ``derive-precision`` creates a separate approximate MSv4 artifact under
 ``derived/``. Its closed ``mantissa-round-nearest-even/v1`` policy names exact

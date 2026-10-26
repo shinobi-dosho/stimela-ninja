@@ -272,8 +272,8 @@ proceeds anyway, running unpinned steps by their original image reference (and
 venv steps by their original venv).
 
 ``--target 'path/to/file.py:name'`` overrides the recorded target -- required
-for manifests that don't record one (older manifests, or runs launched
-programmatically rather than via ``ninja run``).
+for manifests that don't record one, such as runs launched programmatically
+rather than via ``ninja run``.
 
 The recorded backend is used by default; the global ``ninja --backend`` flag
 overrides it (the escape hatch when the recorded backend doesn't exist on the
@@ -418,9 +418,8 @@ current directory.
 ``ninja logs`` -- read a detached run's output
 -----------------------------------------------
 
-Replaces the ``ssh <host> tail -f <path>`` line a ``--remote`` launch used to
-print. It takes a name from ``ninja runs`` (or a handle path, so the two
-commands accept each other's output), and it knows which host and which file:
+``ninja logs`` takes a name from ``ninja runs`` or a handle path and reads
+the recorded log file from the run's host:
 
 .. code-block:: console
 

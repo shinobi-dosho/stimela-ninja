@@ -155,8 +155,7 @@ package boundary split raises on its own depends on the package:
 on any scipy new enough to expose its subpackages lazily -- a wrong-shaped
 object the body then carries to its first call site.
 
-``ctx.import_func`` is the former name of this method, kept as an alias so
-existing pysteps keep working; it delegates, check included.
+``ctx.import_func`` is an alias with the same validation.
 
 When the body wants the **module object itself** rather than one of its
 attributes, use :meth:`ExecContext.import_module
@@ -266,6 +265,6 @@ identity. When imported helpers exist, cache identity includes the target and
 helper source bytes addressed by module names, independent of deployment paths.
 The exact source evidence belongs to the current execution context, so later
 cache-disabled runs and concurrent attempts do not inherit another attempt's
-source snapshot. Same-module helpers retain the historical function identity.
-Native execution, host orchestration, virtualenv imports and staged offload
-bundles retain their existing identity and source contracts.
+source snapshot. Same-module helpers use function identity. Native execution,
+host orchestration, virtualenv imports and staged offload bundles use their
+respective identity and source contracts.

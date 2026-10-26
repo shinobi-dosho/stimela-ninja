@@ -331,7 +331,7 @@ qualification used the actual scientific executables.
 ## Physical FITS lifecycle probe
 
 `run_fits.py` requires a fresh successful M2 qualification on the exact shared
-mount, a shared worker interpreter with `fits-contract`, and a Python Apptainer
+mount, a shared worker interpreter with `fits`, and a Python Apptainer
 image. It submits each phase from a short-lived process. Native creation runs
 on `k1`, an Apptainer writer replaces the file by rename on `n1`, and a native
 reader validates its pixels on `n2`. The image writer needs only standard

@@ -29,20 +29,17 @@ steps and declare their wiring. Each worker body requires its own port.
 First: package-scoped ``_include`` needs ``package_roots``
 ----------------------------------------------------------
 
-This is a **breaking change** and it will be the first thing you hit.
-
-A schema that pulls in a shared base by package name --
+A schema can pull in a shared base by package name:
 
 .. code-block:: yaml
 
     libs:
       _include: (caracal.schemas)caracal_base.yaml
 
--- used to be resolved by *importing* ``caracal.schemas`` to find its
-directory. shinobi no longer does that: importing a package named by a
-config file executes its ``__init__.py``, which is arbitrary code execution
-from data (see ``SECURITY.md``). Both loaders now resolve the dotted name
-against an explicit mapping the caller supplies:
+Both loaders resolve the dotted name against an explicit mapping supplied
+by the caller. Importing a package named by a config file would execute its
+``__init__.py``, allowing arbitrary code execution from data (see
+``SECURITY.md``). Supply the filesystem root explicitly:
 
 .. code-block:: python
 

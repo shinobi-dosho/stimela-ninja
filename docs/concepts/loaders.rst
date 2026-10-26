@@ -69,9 +69,9 @@ such as ``Optional[int]`` conflicts with this declaration and fails loading.
 The generated annotation carries the contract through compiled worker bundles.
 
 With ``nullable: true``, a required field without a default must still be
-supplied, but may contain null. With no ``nullable`` key, the historical rule
-is preserved: a required field without a default is non-nullable; other
-fields allow null and use their declared default (or null when absent).
+supplied, but may contain null. With no ``nullable`` key, a required field
+without a default is non-nullable; other fields allow null and use their
+declared default (or null when absent).
 
 Unsupported features
 ~~~~~~~~~~~~~~~~~~~~
@@ -100,8 +100,8 @@ Strict dataset declarations
 
 Case-insensitive ``dtype: MSv2`` and ``dtype: CasaTab`` preserve the same
 versioned dataset metadata as their Python annotations. The compatibility
-spellings ``MeasurementSetV2`` and ``CasaTable`` do likewise. Legacy ``MS``
-remains a plain ``Path``, including ``List[MS]``. ``MSv4`` is reserved and
+spellings ``MeasurementSetV2`` and ``CasaTable`` do likewise. ``MS``
+is a plain ``Path``, including ``List[MS]``. ``MSv4`` is reserved and
 unsupported, even inside a list, tuple or union.
 
 Cab-level ``dataset_accesses`` is a list of mappings validated by
@@ -341,13 +341,13 @@ Loading these declarations never executes a tool or external schema function.
 Shared Dosho validation
 -----------------------
 
-From v0.2.0b1, Dosho owns the static compiler and argv formatter. Shinobi's
-public loaders adapt the resulting records into its existing ``Cab`` type.
+Dosho owns the static compiler and argv formatter. Shinobi's public loaders
+adapt the resulting records into its ``Cab`` type.
 The current ownership, security and compatibility contract is recorded in
 :doc:`../design_cab_boundary`.
 
 Shinobi and Dosho's validation extra require Pydantic 2.14 or newer, including
-for threaded product-family handoffs. The currently tested Python 3.11–3.14 range is unchanged.
+for threaded product-family handoffs. The tested Python range is 3.11–3.14.
 
 The mandatory validation dependency also supplies reusable recipe input
 structures without introducing a recipe language:
@@ -365,7 +365,7 @@ contracts such as ``MSv2`` or ``ProductFamily[FITSImage]``; that adapter supplie
 the trusted type bindings. The bare Dosho compiler refuses unbound framework
 dtypes instead of silently weakening them.
 
-The ``dosho-cab-v1`` provider dialect requires the 0.2 Shinobi adapter. Legacy
-third-party ``yaml_cab`` and ``stimela-classic`` documents remain supported.
-Dosho's ``get`` and ``define_cab`` bridges construct runnable objects lazily;
-the old ``dosho[run]`` installation extra is retired.
+The Shinobi adapter accepts the ``dosho-cab-v1`` provider dialect and third-party
+``yaml_cab`` and ``stimela-classic`` documents. Dosho's ``get`` and ``define_cab``
+return neutral definitions; Shinobi adapts them into runnable objects at recipe
+and provider entry points.
