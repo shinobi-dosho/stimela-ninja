@@ -61,7 +61,7 @@ def main(
     log_dir: str | None,
     log_level: str | None,
 ) -> None:
-    """ninja -- the shinobi (Stimela 3.0) CLI."""
+    """ninja -- the shinobi (Stimela Ninja) CLI."""
     overrides: dict = {}
     if backend:
         # Checked here, at the door, because an unrecognised name does not

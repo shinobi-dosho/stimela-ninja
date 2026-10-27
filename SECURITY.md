@@ -33,22 +33,15 @@ inline Python/shell source (e.g. `bdsf.catalog`) or a dotted reference to a
 function to import and call (e.g. `msutils.copycol`'s `flavour: python`);
 these are non-`"binary"` flavours.
 
-### Recipes, unlike cab definitions, *always* execute
+### Recipes execute trusted Python
 
-Everything below is about **cab and config definitions** — the YAML shinobi
-*reads*. It does not extend to recipes, and the distinction is easy to
-over-generalise, so state it plainly:
+**A Shinobi recipe is a Python file. `ninja run file.py:target` imports and
+executes it with your privileges**, before any cab is dispatched or any sandbox
+exists. Recipe builders use Python to select steps and declare their wiring.
 
-**A shinobi recipe is a Python file, and `ninja run file.py:target` imports
-and executes it.** That is the project's central design choice, not a gap:
-control flow is Python, so running a recipe runs arbitrary Python with your
-privileges, before any cab is dispatched or any sandbox exists.
-
-Treat a recipe exactly as you would any script someone sent you — read it
-before you run it, and don't run one from a source you wouldn't `curl | sh`
-from. The guarantees in this document are about what a *cab definition* can
-make shinobi do; none of them constrain what a recipe can do, because a
-recipe is code by design.
+Run recipes from trusted sources and review them as you would other Python
+scripts. The cab and configuration loading guarantees below apply to data
+definitions. Recipe code has the same authority as the user running it.
 
 ### Run input schemas must not resolve imports
 

@@ -1,117 +1,104 @@
 Installation
 ============
 
-Requirements
-------------
+You need **Python 3.11 or newer**. These instructions use a Linux or macOS
+terminal. You can install Stimela Ninja and explore its tools before setting
+up containers or a cluster.
 
-* Python 3.11 or newer
-* One or more execution backends available on ``PATH`` for the cabs you run
-  (for example ``wsclean``, or a container runtime such as ``docker`` /
-  ``podman`` / ``apptainer``, or a ``slurm`` cluster).
+Install Stimela Ninja
+---------------------
 
-Apptainer is the default backend. Install its ``apptainer`` executable on
-``PATH`` for containerized cabs, or select another backend with
-``ninja --backend NAME`` or ``backend.default`` in :doc:`concepts/config`.
-
-Install Shinobi
----------------
-
-This documentation assumes Shinobi and Dosho 0.2.0b1 or newer:
+Create an environment for your pipeline work, then activate it. This keeps
+its Python packages separate from your other projects:
 
 .. code-block:: console
 
+    $ python3 -m venv .venv
+    $ source .venv/bin/activate
     $ pip install "stimela-ninja>=0.2.0b1"
 
-This installs:
+If you already have a Python environment for this work, activate it and run
+just the last command. The examples in these docs use Shinobi 0.2.0b1
+and Dosho 0.2.0b2 or newer.
 
-* the ``ninja`` command-line tool;
-* the importable ``shinobi`` package; and
-* ``dosho[validation]>=0.2.0b1,<0.3`` for cab schemas, parameter validation
-  and argv formatting. Pydantic 2.14 or newer is required.
+The installation includes the ``ninja`` command, the ``shinobi`` Python
+package, and Dosho's ready-made tool definitions. Python dependencies are
+installed automatically. The package to install is ``stimela-ninja``;
+the unrelated package named ``shinobi`` on PyPI is a different project.
 
-Dosho is a mandatory dependency, so its catalogue is available automatically.
-Dosho also supports catalogue access without Shinobi; runnable cabs and pysteps
-require the framework. See :doc:`design_cab_boundary` for the ownership contract.
+Check the installation
+----------------------
 
-.. note::
+.. code-block:: console
 
-   The distribution is named ``stimela-ninja`` on PyPI, the command is
-   ``ninja``, and the import name is ``shinobi``.
+    $ ninja --help
+    $ ninja cabs list
+    $ ninja cabs show wsclean
 
-Optional format contracts
--------------------------
+These commands show help, list available tools, and display WSClean's
+parameters. They do not run an astronomy tool or need any data.
 
-``MSv2``, ``FITSImage`` and ``FITSTable`` annotations are available in the base
-package. Declaring them does not import an inspector or inspect files. To
-execute their strict contracts, install the corresponding extra in the
-environment performing lifecycle inspection:
+If your terminal cannot find ``ninja``, activate the environment again with
+``source .venv/bin/activate``. You also need to activate it when opening a
+new terminal.
+
+Prepare to run a tool
+---------------------
+
+Dosho contains tool definitions; the astronomy software itself is supplied
+separately. Choose how you want to run it:
+
+* **In a container:** Apptainer is the default. Its ``apptainer`` command
+  must be available in your terminal. A cab with a container image can then
+  use that image to run the tool.
+* **Already installed on your computer:** select ``native`` with
+  ``ninja --backend native run ...``. The tool's command must be available
+  in your terminal.
+* **Another container system or a cluster:** see :doc:`concepts/backends`
+  for Docker, Podman and cluster setup, supported workflows and verification
+  status.
+
+You can change the default in :doc:`concepts/config`.
+Once your tools are available, follow :doc:`quickstart` to build a small
+imaging and masking pipeline.
+
+When a recipe checks Measurement Sets or FITS files
+---------------------------------------------------
+
+Some recipes check the contents and structure of their data before and after
+running a tool. Install the matching extra when a recipe requires these
+checks. For Measurement Sets:
 
 .. code-block:: console
 
     $ pip install "stimela-ninja[ms]>=0.2.0b1"
+
+For FITS images and tables:
+
+.. code-block:: console
+
     $ pip install "stimela-ninja[fits]>=0.2.0b1"
+
+For both:
+
+.. code-block:: console
+
     $ pip install "stimela-ninja[ms,fits]>=0.2.0b1"
 
-The extras name the supported formats. Their current implementations use
-``python-casacore`` for Measurement Sets and Astropy for FITS; those packages
-are implementation dependencies, while the annotations specify versioned
-format profiles. A declared strict contract refuses execution if its inspector
-is unavailable. See :doc:`concepts/datasets` for the supported profiles and
-execution routes. A strict annotation opts a field into enforcement; installing
-an extra alone does not make ordinary ``Path`` fields strict.
+The imaging and masking quickstart needs ``fits``. Recipes using strict
+Measurement Set definitions from Dosho may need both extras.
+A recipe that declares these checks will refuse to run if the required
+inspection package is missing. Installing an extra does not turn on checks
+for every file; the recipe's definitions select them.
 
-For Slurm compute workers, provision the extra in the shared worker interpreter
-and in preparation/finalization environments that inspect files. Installing it
-only in a tool image does not provide the controller or worker inspector.
-Tool containers remain free to use other FITS libraries.
+Install extras in the environment that runs the checks. For remote Slurm
+workflows, this includes the shared worker interpreter and the environments
+that prepare and finalize the run. Installing them only inside an astronomy
+tool's container is not enough. See :doc:`concepts/datasets` for supported
+workflows and :doc:`concepts/states` for Measurement Set state operations.
 
-From a source checkout, use ``uv sync --extra ms`` or
-``uv sync --extra fits``. The broader ``measurement-set`` development
-group below also supplies the MS state export and reconstruction stack.
+For contributors
+----------------
 
-For development
----------------
-
-Explicit MSv2 state operations currently require a source checkout and
-``uv sync --group measurement-set``. The group requires
-``msutils[exact-native]>=3.1.0`` for the preservation v2 public APIs, while
-``uv.lock`` records the resolved release and complete stack
-for reproducible local installs. Refresh it with
-``uv lock --upgrade-package msutils`` then
-``uv sync --locked --group measurement-set``. The group is unpublished, so
-the optional Measurement Set stack stays out of a plain install. State
-operations check that msutils supplies the preservation v2 public APIs and
-accept two provenances: an ordinary release install, which records the msutils
-version, or a Git install of the upstream repository, which records the exact
-commit. Local paths, editable installs and other repositories are refused.
-
-The other qualified packages remain pinned: xarray-ms, xarray, arcae,
-numcodecs, and Zarr (3.1.6 on Python 3.11 and 3.3.0 on newer Python).
-Measurement Set CI refreshes to the latest msutils release on every
-integration run and daily, making regressions in a new release visible
-promptly.
-See :doc:`concepts/states` for the profile and local Linux requirement.
-
-The project uses `uv <https://docs.astral.sh/uv/>`_:
-
-.. code-block:: console
-
-    $ git clone https://github.com/shinobi-dosho/stimela-ninja.git
-    $ cd stimela-ninja
-    $ uv sync --group dev
-    $ .venv/bin/pytest
-    $ .venv/bin/ruff check .
-    $ .venv/bin/ruff format --check .
-
-``uv.lock`` is committed, so ``uv sync`` gives you the same dependency versions
-CI tests against (it runs every job with ``--locked``). Change
-``pyproject.toml`` and you must re-run ``uv lock`` and commit both; the repo's
-pre-commit hook and CI each reject the mismatch. See ``CONTRIBUTING.md``.
-
-To build the documentation locally:
-
-.. code-block:: console
-
-    $ uv sync --group docs
-    $ uv run sphinx-build -E -n -W --keep-going -b html docs docs/_build/html
-    $ open docs/_build/html/index.html
+Source checkout setup, tests, documentation builds and Measurement Set state
+development are covered in :doc:`contributing`.

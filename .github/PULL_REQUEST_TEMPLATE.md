@@ -22,5 +22,5 @@
 - [ ] `ruff check src tests` is clean
 - [ ] Docs updated if public API changed (`uv run sphinx-build -b html docs docs/_build/html`)
 - [ ] Added/updated tests for the change
-- [ ] I read [`AGENTS.md`](../AGENTS.md) and this change is consistent with its
+- [ ] I read [`CONTRIBUTING.md`](https://github.com/shinobi-dosho/stimela-ninja/blob/main/CONTRIBUTING.md) and this change is consistent with its
       design conventions

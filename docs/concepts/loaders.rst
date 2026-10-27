@@ -24,8 +24,8 @@ Recipes are declared separately in Python.
 `cult-cargo <https://github.com/caracal-pipeline/cult-cargo>`_ is the largest
 published library of cabs written in this dialect. Dosho supplies maintained
 static ports, including tools whose cult-cargo definitions depend on executable
-schema generation. The dialect is scabha's, and the compatibility loader is
-not specific to either catalogue.
+schema generation. Both catalogues use scabha's vocabulary; the loader
+supports static definitions through the same parser.
 
 :func:`shinobi.loaders.yaml_cab.load_file` reads a YAML file and returns a
 ``{name: Cab}`` mapping:

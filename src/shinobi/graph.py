@@ -1,6 +1,6 @@
 """The shared dependency graph of a Recipe's declared steps.
 
-A `Recipe` is a declared DAG (see AGENTS.md): its `steps` list plus the
+A `Recipe` is a declared DAG: its `steps` list plus the
 `OutputRef` wiring between them *is* the graph. `build_graph` reads that
 graph once -- validating every wiring reference and rejecting cycles -- and
 returns a `RecipeGraph` that BOTH consumers depend on:
@@ -46,7 +46,7 @@ class RecipeNotOffloadableError(ValueError):
     """A recipe is a valid graph but cannot be compiled to an external
     workflow engine and detached: it relies on shinobi's live, in-process
     execution semantics. See `check_offloadable` for the exact rules and
-    AGENTS.md's "DAG offload" section for why. Such a recipe should run
+    :doc:`offloading guide </offloading>` for why. Such a recipe should run
     locally (the default `ctx.run()` path) instead -- it is never silently
     degraded.
     """
@@ -362,7 +362,7 @@ def check_offloadable(recipe: "Recipe", *, worker: bool = False, allow_dataset_p
     non-submittable. It never enables dataset execution.
 
     The default rules follow directly from "the cluster runs the graph, shinobi is
-    not in the loop per step" (see AGENTS.md / the design note):
+    not in the loop per step" (see :doc:`/offloading`):
 
     - **No orchestration function** on any step -- arbitrary Python run
       against live upstream outputs can't be statically compiled, and

@@ -3,18 +3,16 @@ Migrating from CARACal / Stimela 2
 
 This guide maps CARACal worker schemas and Python modules to shinobi recipes.
 
-**Your cab definitions carry over.** cult-cargo YAML is loaded as-is,
-including ``_include`` and ``_use`` (:doc:`concepts/loaders`). Two
-exceptions are documented below.
+**Static cab definitions load through the YAML loader.** This includes
+``_include`` and ``_use`` composition (:doc:`concepts/loaders`). Check the
+schema-generation and executable-flavour limits below when using cult-cargo
+definitions.
 
-**Your worker configuration does not port automatically.** A CARACal worker
-is a YAML schema plus a Python module that reads it; shinobi has no worker
-concept and no ``enable:`` machinery. What replaces both is a function that
-builds a :class:`~shinobi.Recipe`. Worker bodies are ported manually; this
-page describes the corresponding constructs.
-
-Existing worker schemas can be retained, while Python builders select the
-steps and declare their wiring. Each worker body requires its own port.
+**Port worker bodies to Python recipe builders.** A CARACal worker combines a
+YAML configuration schema with a Python module. In Shinobi, a Python function
+builds a :class:`~shinobi.Recipe`, selects its steps and declares their wiring.
+Existing worker schemas can be retained. The builder handles ``enable`` flags
+through ordinary Python conditions.
 
 .. note::
 
@@ -56,21 +54,19 @@ by the caller. Importing a package named by a config file would execute its
 Without it you get a ``ConfigLoadError`` naming the package and telling you
 what to pass.
 
-This is not a weakening of the rule. The point is that *shinobi* must not
-import a name it read out of a YAML file; your own code importing your own
-package, deliberately, is fine. One entry covers a whole tree --
+The caller supplies trusted package locations. Shinobi resolves names from
+YAML against that mapping without importing them. One entry covers a whole tree:
 ``resolve_package_root`` matches the longest registered prefix and descends
 the remainder as subdirectories, so ``{"caracal": ...}`` resolves
 ``(caracal.schemas)`` and ``(caracal.anything.else)`` alike.
 
-The same applies to ``shinobi.loaders.yaml_cab.load_file``/``loads``, which
-have always worked this way.
+The same mapping is accepted by
+``shinobi.loaders.yaml_cab.load_file``/``loads``.
 
 Two cab-level limitations to check first
 ----------------------------------------
 
-Before porting anything, check your cab library against these -- both are
-deliberate, and both are better discovered now than halfway through.
+Check these execution boundaries when choosing cab definitions for the port.
 
 ``dynamic_schema`` is not resolved
     A cab whose real schema comes from a Python function
@@ -220,9 +216,8 @@ and every segment collapses to the same four lines:
         recipe.add_step("flag_shadow", flagdata, vis=current_ms, mode="shadow", tolerance=config.flag_shadow.tol, field=selected_field, flagbackup=False)
         current_ms = recipe.outputs.flag_shadow.vis
 
-There is no cleverness to find here, and that is the point -- porting a
-worker is mechanical once the pattern is in hand. Three things are worth
-noticing:
+Each enabled segment adds a step and updates the dataset reference.
+Three details preserve the worker's behaviour:
 
 **Preserve execution order with explicit dependencies.** Thread
 ``current_ms`` through the enabled flagging segments to preserve their
@@ -295,11 +290,10 @@ The mapping, item by item
 Keeping your schemas
 --------------------
 
-You do not have to give up the schema files. ``load_worker_schema`` turns a
-scabha-dialect worker schema into pydantic models
-(:doc:`concepts/loaders`), so the config surface, its defaults, its
-``choices`` and its ``info`` strings stay exactly where they are -- and you
-get CLI options generated from them for free.
+``load_worker_schema`` turns a scabha-dialect worker schema into Pydantic
+models (:doc:`concepts/loaders`). This preserves the configuration fields,
+defaults, ``choices`` and ``info`` strings, and generates CLI options from
+the same definitions.
 
 That is the incremental path, and the one caracal2 took: keep every schema,
 port one worker body at a time, and leave the rest of the pipeline alone
@@ -307,8 +301,6 @@ while you do it.
 
 What has no equivalent yet
 --------------------------
-
-Stated plainly, so you can judge before committing:
 
 * **No resume-from-step.** The opt-in cache (:doc:`concepts/config`)
   approximates it by skipping steps whose inputs are unchanged, but there is

@@ -22,12 +22,11 @@ Available backends
     ``PYTHONHOME``/``PYTHONPATH`` are cleared (what ``activate`` does, minus the
     shell). A bare command is rewritten to the venv's own copy when it has one,
     so a genuinely missing tool fails loudly rather than falling through to a
-    host binary of the same name. This is *weaker* than a container -- no
-    filesystem namespace, no OS-level pin -- and a **complement** to the
-    container backends, not a replacement: it covers the pip-installable half of
-    a pipeline (quartical, tricolour, breizorro, ...) without a container
-    runtime, while tools that need a full image (wsclean, casa, aoflagger) still
-    use one. The venv is named on the step (``venv=`` on a ``Scope`` or
+    host binary of the same name. It runs pip-installable tools such as
+    QuartiCal, Tricolour and Breizorro using the host operating system and
+    filesystem. The environment has no filesystem isolation or OS-level pin.
+    Use a container backend for tools packaged in a full image.
+    The venv is named on the step (``venv=`` on a ``Scope`` or
     ``@pystep``) or in :doc:`config` (``backend.venv``); it is **not** read from
     cab YAML, since a venv path is machine-specific. If the ``venv`` backend is
     selected but no venv is declared anywhere, the step runs natively (with a
