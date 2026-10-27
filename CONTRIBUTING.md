@@ -205,7 +205,7 @@ execution, filesystem enforcement, dataset lifecycle and caches. Put shared
 schema algorithms in Dosho; Shinobi adapters supply trusted dtype bindings
 and validate inert framework declarations.
 
-Shinobi requires `dosho[validation]>=0.2.0b1,<0.3` and Pydantic >=2.14.
+Shinobi requires `dosho[validation]>=0.2.0b2,<0.3` and Pydantic >=2.14.
 Its compatibility CI checks both the locked Dosho release and fresh Dosho main.
 For coordinated changes, dispatch `.github/workflows/cab-candidate-pair.yml`
 with an exact `dosho-ref`; it builds explicit wheels for both projects and
