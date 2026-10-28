@@ -1,6 +1,6 @@
 """Static execution-graph *renderer* for `ninja run --dryrun`.
 
-Recipes are declared DAGs (see AGENTS.md): a `Recipe`'s `steps` list plus
+Recipes are declared DAGs: a `Recipe`'s `steps` list plus
 its wiring already *is* the graph. The graph itself -- nodes, true
 dependency edges, cycle/wiring validation -- is built by
 `shinobi.graph.build_graph`, shared with the executor so the two can never

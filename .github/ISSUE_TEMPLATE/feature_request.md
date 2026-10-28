@@ -7,7 +7,7 @@ assignees: ""
 ---
 
 <!--
-For context on the project's design and philosophy, AGENTS.md is a helpful
+For context on the project's design and philosophy, CONTRIBUTING.md is a helpful
 read. We aim to keep things simple and robust while staying flexible — so
 proposals that solve real problems with minimal added machinery are easiest
 to adopt.

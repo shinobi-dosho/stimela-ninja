@@ -2,8 +2,8 @@ Cab ownership and integration
 =============================
 
 Dosho provides reusable cab schemas and argument formatting; Shinobi provides
-workflow execution. These contracts apply to ``stimela-ninja`` and ``dosho``
-0.2.0b1 or newer. Recipes are declared Python DAGs.
+workflow execution. These contracts apply to ``stimela-ninja`` 0.2.0b1 or
+newer and ``dosho`` 0.2.0b2 or newer. Recipes are declared Python DAGs.
 
 Ownership and dependency
 ------------------------
@@ -14,7 +14,7 @@ owns declared framework types, DAG construction and wiring, scheduling,
 execution and backends, filesystem enforcement, dataset lifecycle and recovery,
 and caching.
 
-``stimela-ninja`` requires ``dosho[validation]>=0.2.0b1,<0.3`` and Pydantic
+``stimela-ninja`` requires ``dosho[validation]>=0.2.0b2,<0.3`` and Pydantic
 2.14 or newer. Dosho's base catalogue remains readable without Pydantic or
 Shinobi. Its ``validation`` extra provides reusable Pydantic structures and a
 compiler without importing Shinobi. Install Shinobi to obtain runnable

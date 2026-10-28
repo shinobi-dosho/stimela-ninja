@@ -337,15 +337,15 @@ wheels = [
 
 [[package]]
 name = "dosho"
-version = "0.2.0b1"
+version = "0.2.0b2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ad/e7/88b8fb078644942f98d10e276e635eb69dcd8049f5daf4463296fc38ec97/dosho-0.2.0b1.tar.gz", hash = "sha256:bb3c435cf1da232367251d23d0974d8971cfdded3e86d3747eda93a67e301534", size = 204783, upload-time = "2026-10-23T19:26:40.654Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a9/53/daaa32cb1268d6bb889f0f5d02550a43f311999ba54fded29e887f63193e/dosho-0.2.0b2.tar.gz", hash = "sha256:3b1b7c8cddc1279b6d8dfdf67d915103b216b93f20d305dd661fc173ab44c2a2", size = 229529, upload-time = "2026-10-27T18:44:11.871Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/db/e5/fb8a1ac23478a7cd70f22254046fe0aa9439d4cc9531ec12c8d799807190/dosho-0.2.0b1-py3-none-any.whl", hash = "sha256:da88ba2bccc5f04e28d836e4acfcae63fb9a587c2698b01fee5cb7eb38dde659", size = 238072, upload-time = "2026-10-23T19:26:39.559Z" },
+    { url = "https://files.pythonhosted.org/packages/87/92/be20f95151c8c1c91d8ec5e406acd05c9c588f9286b7fe1dad57e73ebc12/dosho-0.2.0b2-py3-none-any.whl", hash = "sha256:338c235f1ac271e2a495a7d6fd251bfccd69c289d528d4860c1cc24a8d603515", size = 269836, upload-time = "2026-10-27T18:44:10.308Z" },
 ]
 
 [package.optional-dependencies]
@@ -1764,7 +1764,7 @@ measurement-set = [
 requires-dist = [
     { name = "astropy", marker = "extra == 'fits'", specifier = ">=7.2,<9" },
     { name = "click", specifier = ">=8.1" },
-    { name = "dosho", extras = ["validation"], specifier = ">=0.2.0b1,<0.3" },
+    { name = "dosho", extras = ["validation"], specifier = ">=0.2.0b2,<0.3" },
     { name = "packaging", specifier = ">=23" },
     { name = "pydantic", specifier = ">=2.14" },
     { name = "pydantic-settings", specifier = ">=2.2" },

@@ -63,7 +63,7 @@ class ExecutionConfig(BaseModel):
     # How many recipe steps may run concurrently. Default 1 (sequential) --
     # parallelism is opt-in: at 1 the scheduler reproduces exact
     # declaration-order execution, and no MUTABLE input can be shared across
-    # concurrently-running steps (see AGENTS.md's recipe-execution note).
+    # concurrently-running steps (see docs/concepts/recipes.rst).
     max_workers: int = 1
     # The machine budget steps are admitted against, on top of `max_workers`
     # (see `shinobi.resources`). Only consulted when some step actually

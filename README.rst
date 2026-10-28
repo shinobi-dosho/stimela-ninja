@@ -1,15 +1,14 @@
-stimela-ninja (Stimela 3.0)
-===========================
+Stimela Ninja
+=============
 
-Stimela 3.0 is a Python framework for reproducible radio astronomy pipelines.
-It builds on `Stimela classic <https://github.com/ratt-ru/Stimela-classic>`_
-with typed task inputs and outputs, Python recipes, and execution on local
-machines, containers, and computing clusters.
+**Stimela Ninja** helps you turn radio astronomy processing tasks into
+repeatable pipelines. Connect tools such as WSClean, CASA and QuartiCal in a
+Python recipe, then run it from the command line.
 
-Use it to compose radio astronomy tools into workflows, run independent tasks
-concurrently, cache results, and record provenance for reproducible runs.
-`dosho <https://github.com/shinobi-dosho/dosho>`_ provides ready-to-use task
-definitions for tools such as WSClean, CASA, QuartiCal, and simms.
+Preview the steps before running, reuse cached results, and keep a record
+of how a run was made. Tools can run on your computer, in containers, or on
+a computing cluster. `Dosho <https://github.com/shinobi-dosho/dosho>`_ is
+included and provides ready-made tool definitions, called **cabs**.
 
 Academic attribution
 --------------------
@@ -27,14 +26,15 @@ Requires Python 3.11 or newer::
 
     pip install "stimela-ninja>=0.2.0b1"
 
-This installs the ``ninja`` command, the importable ``shinobi`` package, and
-``dosho[validation]>=0.2.0b1,<0.3`` for task schemas and argument formatting.
-Shinobi and Dosho validation require Pydantic 2.14 or newer. This documentation
-assumes Shinobi and Dosho 0.2.0b1 or newer.
+This includes the ``ninja`` command, the ``shinobi`` Python package, and
+Dosho. Install ``stimela-ninja`` even though Python examples import
+``shinobi``. Python dependencies are installed automatically.
 
-Apptainer is the default execution backend. External tools must be installed
-locally or available through the container or cluster backend you use. See the `installation guide
-<https://stimela-ninja.readthedocs.io/en/latest/installation.html>`_.
+The `installation guide
+<https://stimela-ninja.readthedocs.io/en/latest/installation.html>`_ walks
+through creating a Python environment, checking the installation, and
+setting up astronomy tools. Apptainer is the default way to run tools in
+containers; you can also use software installed on your computer.
 
 Quick start
 -----------
@@ -50,12 +50,12 @@ Save this minimal Python step as ``myrecipe.py``:
     def greet(name: str = "world") -> None:
         print(f"Hello, {name}!")
 
-Run it from the command line; the function parameters become CLI options::
+Run it from the command line::
 
     ninja --backend native run myrecipe.py:greet --name astronomer
 
-The ``native`` override runs this Python function on the host. Containerized
-cabs use Apptainer by default and require an image and the runtime on ``PATH``.
+This prints ``Hello, astronomer!``. The ``native`` option runs the example
+on your computer, so you can try it without containers or astronomy data.
 For an imaging workflow that combines multiple tools, follow the
 `pipeline tutorial <https://stimela-ninja.readthedocs.io/en/latest/quickstart.html>`_.
 

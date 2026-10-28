@@ -2,7 +2,7 @@
 
 Thanks for your interest in contributing! **stimela-ninja** (import name
 `shinobi`, CLI `ninja`) is a simple but flexible framework for reproducible
-radio-astronomy pipelines — Stimela 3.0. It's early-beta software, so the most
+radio-astronomy pipelines. It's early-beta software, so the most
 valuable contributions right now are bug reports, focused fixes, tests,
 documentation, and feedback on the design.
 
@@ -15,12 +15,15 @@ Our guiding principle is to **keep things simple and robust, while staying
 flexible and effective**. We favour small, focused changes and prefer solving
 problems with plain Python over adding new layers of machinery.
 
-For background on how the project is put together and the reasoning behind its
-current design, see
-**[`AGENTS.md`](https://github.com/shinobi-dosho/stimela-ninja/blob/main/AGENTS.md)**.
-It's helpful context when proposing anything that touches the recipe/
-orchestration layer. If you're considering a larger change, opening an issue to
-discuss it first is a great way to align before writing code.
+A recipe declares its steps and their data dependencies in Python. The whole
+graph must be available for validation and preview before execution. Keep
+parameter definitions declarative; do not add an expression language or
+runtime control flow to YAML. Reuse shared schema and graph helpers so loading,
+execution and previews agree.
+
+For background, see the [recipe guide](https://stimela-ninja.readthedocs.io/en/latest/concepts/recipes.html)
+and [cab ownership contract](https://stimela-ninja.readthedocs.io/en/latest/design_cab_boundary.html).
+If you're considering a larger change, open an issue to discuss it first.
 
 ## Ways to contribute
 
@@ -45,6 +48,28 @@ git config core.hooksPath .githooks
 ```
 
 (You can equivalently use `uv run pytest` / `uv run ruff check .`.)
+
+### Measurement Set state development
+
+Explicit MSv2 state operations currently require a source checkout and
+`uv sync --group measurement-set`. The group requires
+`msutils[exact-native]>=3.1.0` for the preservation v2 public APIs, while
+`uv.lock` records the resolved release and complete stack
+for reproducible local installs. Refresh it with
+`uv lock --upgrade-package msutils` then
+`uv sync --locked --group measurement-set`. The group is unpublished, so
+the optional Measurement Set stack stays out of a plain install. State
+operations check that msutils supplies the preservation v2 public APIs and
+accept two provenances: an ordinary release install, which records the msutils
+version, or a Git install of the upstream repository, which records the exact
+commit. Local paths, editable installs and other repositories are refused.
+
+The other qualified packages remain pinned: xarray-ms, xarray, arcae,
+numcodecs, and Zarr (3.1.6 on Python 3.11 and 3.3.0 on newer Python).
+Measurement Set CI refreshes to the latest msutils release on every
+integration run and daily, making regressions in a new release visible
+promptly.
+See [dataset states](https://stimela-ninja.readthedocs.io/en/latest/concepts/states.html) for the profile and local Linux requirement.
 
 ### The lockfile
 
@@ -180,7 +205,7 @@ execution, filesystem enforcement, dataset lifecycle and caches. Put shared
 schema algorithms in Dosho; Shinobi adapters supply trusted dtype bindings
 and validate inert framework declarations.
 
-Shinobi requires `dosho[validation]>=0.2.0b1,<0.3` and Pydantic >=2.14.
+Shinobi requires `dosho[validation]>=0.2.0b2,<0.3` and Pydantic >=2.14.
 Its compatibility CI checks both the locked Dosho release and fresh Dosho main.
 For coordinated changes, dispatch `.github/workflows/cab-candidate-pair.yml`
 with an exact `dosho-ref`; it builds explicit wheels for both projects and
@@ -207,9 +232,16 @@ integration suite and docs against Ninja main automatically, with an optional
 Write clear, descriptive commit messages explaining *why* a change is made. No
 formal convention (Conventional Commits, sign-off/DCO, or CLA) is required.
 
-Provenance for an assistant-assisted commit (for example an LLM) goes in a commit trailer as
-``Assisted-by: <LLM> <MODEL>`` and never in the PR description — see
-[*Attribution: commit trailers yes, PR trailers no*](https://github.com/shinobi-dosho/stimela-ninja/blob/main/AGENTS.md#attribution-commit-trailers-yes-pr-trailers-no).
+If a coding assistant helped with a commit, end its message with a plain-text
+trailer naming the assistant and model:
+
+```text
+Assisted-by: <LLM> <MODEL>
+```
+
+Use no email address or assistant `Co-authored-by:` trailer. Pull request
+descriptions carry no assistant trailer, badge or generated-by notice; they
+describe the change and its validation.
 
 ## Versioning and releases
 

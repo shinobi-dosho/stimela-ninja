@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it using these metadata."
 title: "stimela-ninja"
 abstract: >-
-  Stimela 3.0 -- a functional, flexible, and simple framework for reproducible
+  Stimela Ninja -- a functional, flexible, and simple framework for reproducible
   radio astronomy pipelines.
 type: software
 authors:
