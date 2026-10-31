@@ -40,6 +40,7 @@ from shinobi.steps.schema import (
     path_fields,
     paths_overlap,
     planned_output_values,
+    gathered_output_values,
     static_wiring_values,
     unresolved_output_path_fields,
     write_path_fields,
@@ -205,6 +206,7 @@ def _resolved_leaf_inputs(
             from shinobi.steps.dispatch import _build_scatter_slices
             from shinobi.steps.schema import _slice_descendants
 
+            gathered_inputs = []
             for slice_index, inputs in enumerate(_build_scatter_slices(ref, known)):
                 key = (id(ref), slice_index)
                 model = None
@@ -215,6 +217,7 @@ def _resolved_leaf_inputs(
                     step_inputs[key] = (model, reusable and not runtime_dependent and not output_wired)
                 except Exception:
                     pass
+                gathered_inputs.append(inputs)
                 if known_steps is not None:
                     known_steps[key] = {name: value for name, value in inputs.items() if name not in unresolved_fields}
                 nested_steps = {}
@@ -232,6 +235,7 @@ def _resolved_leaf_inputs(
                 step_inputs.update({(*key, *(nested_key if isinstance(nested_key, tuple) else (nested_key,))): value for nested_key, value in nested_steps.items()})
                 if known_steps is not None:
                     known_steps.update({(*key, *(nested_key if isinstance(nested_key, tuple) else (nested_key,))): value for nested_key, value in nested_known.items()})
+            outputs[ref.name] = gathered_output_values(ref.step, gathered_inputs, unresolved_inputs=unresolved_fields)
             continue
         validated = None
         prior = validated_steps.get(id(ref)) if validated_steps is not None else None

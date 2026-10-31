@@ -125,7 +125,7 @@ def test_exact_create_prefix_replay_then_changed_image(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("marker_kind", ["group", "historical-scalar", "corrupt-source"])
 @pytest.mark.parametrize("corrupt_live", [False, True], ids=["valid-live", "missing-main-table-dat"])
-def test_interrupted_creator_prefix_recovers_same_workspace(tmp_path, monkeypatch, marker_kind, corrupt_live, claim_tamper="none"):
+def test_interrupted_creator_prefix_recovers_same_workspace(tmp_path, monkeypatch, marker_kind, corrupt_live, claim_tamper="none", automatic=False):
     pytest.importorskip("casacore.tables")
     import os
     import subprocess
@@ -138,7 +138,7 @@ def test_interrupted_creator_prefix_recovers_same_workspace(tmp_path, monkeypatc
     monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "owners.json"))
     repository = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join([str(repository), env["PYTHONPATH"]])
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(repository), env.get("PYTHONPATH")]))
     env["REQUIRED_CACHE_KILL_IMAGE"] = "1"
     if corrupt_live:
         env["REQUIRED_CACHE_REMOVE_MAIN"] = "1"
@@ -175,7 +175,8 @@ _dispatch(pipeline(), None, ms=Path('obs.ms').resolve(), _config=config)
 
         journal.update_chain(chain_id(ms), change_marker)
     manifest = get_cache_manifest(config.cache.dir)
-    config.cache.required = {f"continuum.{name}": manifest.entry(f"continuum.{name}")["cache_key"] for name in ("acquire", "read", "prepare", "save")}
+    if not automatic:
+        config.cache.required = {f"continuum.{name}": manifest.entry(f"continuum.{name}")["cache_key"] for name in ("acquire", "read", "prepare", "save")}
     assert reconcile_ownership(tmp_path).liveness == "dead"
     if marker_kind == "corrupt-source":
         with pytest.raises(DatasetLifecycleUnavailableError, match="frozen identity"):

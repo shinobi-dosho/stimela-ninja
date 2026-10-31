@@ -1608,3 +1608,34 @@ def test_unresolved_scratch_destination_is_refused_only_under_a_dataset_contract
     validate_contained_execution(cab, {}, workspace=tmp_path, dataset_resources=set(), planned_inputs=planned)
     with pytest.raises(DatasetLifecycleUnavailableError, match="unresolved product directory reservation"):
         validate_contained_execution(cab, {}, workspace=tmp_path, dataset_resources={tmp_path / "obs.ms"}, planned_inputs=planned)
+
+
+@pytest.mark.parametrize("absolute", [False, True])
+def test_discovery_in_literal_scatter_directory(tmp_path, absolute):
+    from shinobi.products import FamilyPlan, FamilySpec
+    from shinobi.steps.schema import validate_family_inputs
+
+    root = tmp_path / "imager[0]"
+    root.mkdir()
+    output = root / "output[2]"
+    output.mkdir()
+    expected = output / "image.3.fits"
+    expected.write_text("psf")
+    prefix = str(output / "image") if absolute else "output[2]/image"
+    spec = FamilySpec(root=".", coordinates={"cycle": "int"}, rules=[{"path": "{prefix}.{cycle}.fits", "captures": {"cycle": "int"}}])
+    plan = FamilyPlan(spec, Path, {"prefix": prefix}, root)
+    validate_family_inputs("psf", plan, [(root / "obs.ms", "ms")], root)
+    [member] = list(plan.discovered())
+    assert member.path == expected
+    assert member.coordinates == {"cycle": 3}
+
+
+def test_family_reservations_use_literal_scatter_root(tmp_path):
+    from shinobi.steps.schema import path_accesses
+
+    root = tmp_path / "imager[0]"
+    root.mkdir()
+    spec = FamilySpec(root=".", coordinates={"cycle": "int"}, rules=[{"path": "{prefix}.{cycle}.fits", "captures": {"cycle": "int"}}])
+    cab = Cab(name="psf", command="true", inputs_model=Inputs, outputs_model=Outputs, field_meta={"image": ParamMeta(family=spec)})
+    accesses = path_accesses(cab, Inputs(script="", prefix="out[2]/image").model_dump(), workspace=root)
+    assert (root / "out[2]", True) in accesses

@@ -579,8 +579,8 @@ def _run_remote(
     "overwrite_step",
     multiple=True,
     metavar="STEP",
-    help="Delete the existing strict MeasurementSetV2 that STEP creates, and invalidate the cached results of STEP and "
-    "everything downstream of it, before running. Repeatable. Usually spelled '--overwrite STEP'; this long form is for a "
+    help="Invalidate STEP and downstream cached results before running; nested paths such as branch.image are accepted. "
+    "For a strict MeasurementSetV2 CREATE step, also delete its existing dataset. Repeatable. Usually spelled '--overwrite STEP'; this long form is for a "
     "target that has its own 'overwrite' parameter.",
 )
 @click.option(

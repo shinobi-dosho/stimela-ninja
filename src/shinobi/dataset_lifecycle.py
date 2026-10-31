@@ -1449,8 +1449,8 @@ def overwrite_created_datasets(
 ) -> tuple[DatasetOverwrite, ...]:
     """Delete the existing CREATE targets of ``steps`` and invalidate downstream.
 
-    A strict ``create`` refuses an existing target, because replacing it is
-    not the same contract as creating it. This is the explicit opt-out: for
+    A strict ``create`` may reuse a verified cache hit, but cannot execute
+    against an existing target. This is the explicit regeneration path: for
     each named step, its existing targets are deleted under a short
     exclusive claim of their own, and the skip-cache entries of the step and
     everything downstream of it -- wiring, ``after`` and access-hazard edges

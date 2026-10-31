@@ -47,12 +47,13 @@ def test_neutral_path_contract_executes_and_reuses_claim(work, mode):
 
     step = adapt_definition(operation)
     ms = work / "source.ms" if mode == "create" else make_ms(work / "source.ms")
-    for _ in range(1 if mode == "create" else 2):
+    for _ in range(2):
         assert step(ms=ms, cache=True, cache_dir=str(work / "cache")).outputs.ms == ms
     assert len(calls) == 1
     assert scans(ms) == [7 if mode == "write" else 1] * ROWS
     assert all(attempt.outcome == "committed" for attempt in attempts(work))
     if mode == "create":
+        get_cache_manifest(str(work / "cache")).remove({"operation"})
         with pytest.raises(DatasetAccessError, match="already exists"):
             step(ms=ms, cache=True, cache_dir=str(work / "cache"))
 

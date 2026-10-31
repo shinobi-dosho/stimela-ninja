@@ -369,9 +369,12 @@ class FamilyPlan:
                         local_path(text)
                         regex += re.escape(text)
                         glob += glob_module.escape(text)
-                if "*" in str(Path(glob).parent):
+                from shinobi._glob import literal_component
+
+                parents = [literal_component(part) for part in Path(glob).parts[:-1]]
+                if any(part is None for part in parents):
                     raise ValueError("discovery captures in directory components are unsupported")
-                self._contain(local_path(glob))
+                self._contain(Path(*parents) / Path(glob).name)
                 self.matchers.append((re.compile("^" + regex + "$"), glob, rule))
                 continue
             axes = [(name, axis.expand(inputs, spec.max_members)) for name, axis in rule.axes.items()]
@@ -415,9 +418,11 @@ class FamilyPlan:
         self.validate_root()
         count = 0
         for regex, glob, rule in self.matchers:
-            for path in self.root.glob(glob):
+            pattern = glob if Path(glob).is_absolute() else glob_module.escape(str(self.root)) + "/" + glob
+            for filename in glob_module.iglob(pattern):
+                path = Path(filename)
                 self._contain(path)
-                match = regex.fullmatch(path.relative_to(self.root).as_posix())
+                match = regex.fullmatch(path.as_posix() if Path(glob).is_absolute() else path.relative_to(self.root).as_posix())
                 if match:
                     count += 1
                     if count + len(self.candidates) > self.spec.max_members:
@@ -451,7 +456,7 @@ class FamilyPlan:
             if rule is None:
                 relative = path.relative_to(self.root).as_posix()
                 for regex, _glob, candidate_rule in self.matchers:
-                    match = regex.fullmatch(relative)
+                    match = regex.fullmatch(path.as_posix() if Path(_glob).is_absolute() else relative)
                     if match:
                         expected = dict(candidate_rule.coordinates)
                         expected.update({name: int(value) if candidate_rule.captures[name] == "int" else value for name, value in match.groupdict().items()})
@@ -467,7 +472,7 @@ class FamilyPlan:
             raise ValueError("cached rule cardinality below minimum")
 
     def patterns(self):
-        return [str(self.root / glob) for _, glob, _ in self.matchers]
+        return [glob if Path(glob).is_absolute() else glob_module.escape(str(self.root)) + "/" + glob for _, glob, _ in self.matchers]
 
 
 def family_plans(scope, inputs, cwd, *, best_effort=False):

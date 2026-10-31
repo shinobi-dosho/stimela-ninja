@@ -407,3 +407,25 @@ A recipe that is *purely declarative* -- no orchestration functions, only
 a cluster workflow and detached. Steps that rewrite a shared path in place
 (the usual self-cal pattern) are offloadable too: the compiler derives the
 ordering they need from the resolved paths. See :doc:`../offloading`.
+
+Explicitly rerunning cached steps
+---------------------------------
+
+Use ``--overwrite`` to invalidate a step and its downstream dependents before
+running. Nested paths are relative to the recipe being invoked:
+
+.. code-block:: console
+
+   $ ninja run pipeline.py:recipe --overwrite step.child
+
+This uses the same cache-and-snapshot invalidation as ``ninja cache invalidate``.
+It follows wiring and ``after`` dependencies across recipe boundaries, while
+keeping unrelated siblings cached. Selecting a recipe (``--overwrite step``)
+selects its whole branch; selecting a scatter selects all its slices. Repeat
+``--overwrite`` to select several steps. Python callers use
+``overwrite_steps=["step.child"]``.
+
+For ordinary workflows, this invalidates cached results rather than deleting
+output files. Strict MS CREATE steps use the dataset regeneration behavior in
+:doc:`datasets`. Nested strict-MS recipes remain unsupported by the dataset
+execution planner; dotted selection does not remove that restriction.

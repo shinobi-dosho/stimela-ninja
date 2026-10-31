@@ -24,7 +24,7 @@ class CreateReplay:
 
 
 class RequiredCacheAuthority:
-    def __init__(self, scope, required, cache_dir, workspace):
+    def __init__(self, scope, required, cache_dir, workspace, *, resume_creates=False, overwrite_steps=()):
         from shinobi.steps.schema import Recipe
 
         self.required = dict(required)
@@ -32,6 +32,9 @@ class RequiredCacheAuthority:
         self.workspace = Path(workspace).resolve()
         self.names = {}
         self.pending = {}
+        self.resume_creates = resume_creates
+        self.replayed = {}
+        self.overwritten = {scope.name + "." + name if isinstance(scope, Recipe) else name for name in overwrite_steps}
         scattered = set()
 
         def visit(node, path, in_scatter=False):
@@ -83,6 +86,12 @@ class RequiredCacheAuthority:
             _active.reset(token)
 
     def replay(self, scope, root, field, element_index):
+        """Admit only a verified prior creation; require its key again at dispatch.
+
+        Automatic resume discovers the candidate from the ordinary cache index.
+        Explicit required-cache pins remain authoritative. Neither grants a
+        cache-miss execution or replacement of the existing dataset.
+        """
         from shinobi.cache import get_cache_manifest
         from shinobi.dataset_lifecycle import DatasetMode, DatasetMutationOutcome, dataset_attempt_path, read_dataset_attempt, dataset_identity
         from shinobi.snapshots import get_journal, chain_id, state_name, strict_reuse_issue, _frozen_rollback_source
@@ -94,8 +103,10 @@ class RequiredCacheAuthority:
         if root.is_symlink() or chain is None:
             return None
         for name in self.names.get(id(scope), ()):
-            key = self.required.get(name)
             entry = get_cache_manifest(self.cache_dir).entry(name)
+            key = self.required.get(name)
+            if key is None and self.resume_creates and name not in self.overwritten and isinstance(entry, dict):
+                key = entry.get("cache_key")
             if not key or not entry or entry.get("cache_key") != key or not entry.get("run_id"):
                 continue
             record = read_dataset_attempt(dataset_attempt_path(self.workspace, entry["run_id"]))
@@ -122,6 +133,7 @@ class RequiredCacheAuthority:
                 continue
             if chain.marker is None:
                 if strict_reuse_issue(journal, root, state, dataset_identity(root, self.workspace)) is None:
+                    self.replayed[name] = key
                     return CreateReplay()
                 continue
             # A partial downstream writer is not live evidence. Provisional
@@ -152,6 +164,7 @@ class RequiredCacheAuthority:
                 if current.name == state:
                     proof = CreateReplay(source, json.dumps(marker.as_json(), sort_keys=True))
                     self.pending[root] = proof
+                    self.replayed[name] = key
                     return proof
                 seen.add(current.name)
                 current = chain.generation(current.parent) if current.parent else None

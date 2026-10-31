@@ -786,9 +786,21 @@ contracts.
 Re-creating a dataset
 ~~~~~~~~~~~~~~~~~~~~~
 
-A ``create`` step refuses a target that already exists, so re-running a
-pipeline that simulates its own MS fails at planning with a pointer to the
-opt-in:
+Local execution automatically reuses a completed ``create`` step when its
+same-workspace cache entry, committed creation record and current dataset
+lineage prove that the output is reusable. The step must still pass the
+ordinary execution-key and output checks under ownership before it can be
+skipped. This also applies to a local recipe driver running inside a Slurm
+allocation; it does not change detached bundle preparation.
+
+An unchanged simulation therefore preserves its exact noise realization on
+resume, while a missing downstream image can be rebuilt independently.
+Existence alone is never sufficient: unrelated, modified or unverified targets
+remain refused. Changed creation parameters or an invalidated creator cache
+also refuse an existing target rather than silently replacing it. No creator
+is launched against an existing target admitted for cache reuse.
+
+To explicitly regenerate the dataset and invalidate dependent results, use:
 
 .. code-block:: console
 
