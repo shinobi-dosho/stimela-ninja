@@ -12,7 +12,10 @@ from shinobi.config import AppConfig
 from shinobi.dataset_access import DatasetAccessError
 from shinobi.exceptions import DatasetLifecycleUnavailableError
 from shinobi.steps.schema import InputRef, OutputRef
-from tests._dataset_fixtures import make_ms, scans, set_scans
+from tests._dataset_fixtures import make_ms, ms_fixture_tables, scans, set_scans
+
+# Skip before dispatch: a skip raised inside a task becomes a workflow failure.
+ms_fixture_tables()
 
 
 class Inputs(BaseModel):
