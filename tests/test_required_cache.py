@@ -138,7 +138,7 @@ def test_interrupted_creator_prefix_recovers_same_workspace(tmp_path, monkeypatc
     monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "owners.json"))
     repository = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join([str(repository), env["PYTHONPATH"]])
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(repository), env.get("PYTHONPATH")]))
     env["REQUIRED_CACHE_KILL_IMAGE"] = "1"
     if corrupt_live:
         env["REQUIRED_CACHE_REMOVE_MAIN"] = "1"
