@@ -852,8 +852,7 @@ def test_overwrite_deletes_the_target_and_invalidates_downstream(tmp_path):
     target = tmp_path / "new.ms"
     assert create_recipe()(ms=target, **run_kwargs(tmp_path)).success
     assert scans(target) == [5] * ROWS
-    with pytest.raises(Exception, match="already exists.*--overwrite"):
-        create_recipe()(ms=target, **run_kwargs(tmp_path))
+    assert create_recipe()(ms=target, **run_kwargs(tmp_path)).success
     assert scans(target) == [5] * ROWS
 
     assert create_recipe()(ms=target, overwrite_steps=["simulate"], **run_kwargs(tmp_path)).success
@@ -891,20 +890,18 @@ def test_overwrite_refuses_what_it_cannot_safely_delete(tmp_path):
     assert scans(real) == [1] * ROWS
 
 
-def test_overwrite_names_must_be_creating_steps(tmp_path):
+def test_overwrite_accepts_writers_and_readers(tmp_path):
     ms = make_ms(tmp_path / "obs.ms")
     with pytest.raises(DatasetLifecycleUnavailableError, match="unknown step"):
         create_recipe()(ms=tmp_path / "new.ms", overwrite_steps=["nope"], **run_kwargs(tmp_path))
-    with pytest.raises(DatasetLifecycleUnavailableError, match="creates no strict MeasurementSetV2"):
-        chain_recipe()(ms=ms, overwrite_steps=["renumber"], **run_kwargs(tmp_path))
+    assert chain_recipe()(ms=ms, overwrite_steps=["renumber"], **run_kwargs(tmp_path)).success
 
     @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="read")])
     def reader(ms: MeasurementSetV2) -> None:
-        pytest.fail("a read-only workflow ran with overwrite")
+        assert scans(ms) == [11] * ROWS
 
-    with pytest.raises(DatasetLifecycleUnavailableError, match="only reads"):
-        reader(ms=ms, overwrite_steps=["reader"])
-    assert scans(ms) == [1] * ROWS
+    assert reader(ms=ms, overwrite_steps=["reader"], **run_kwargs(tmp_path)).success
+    assert scans(ms) == [11] * ROWS
 
 
 CLI_MODULE = """\
@@ -937,8 +934,7 @@ def test_cli_overwrite_option(tmp_path):
     runner = CliRunner()
     base = ["run", f"{module}:simulate", "--ms", str(tmp_path / "cli.ms"), "--cache-dir", str(tmp_path / "cache")]
     assert runner.invoke(main, base).exit_code == 0
-    refused = runner.invoke(main, base)
-    assert refused.exit_code != 0 and "--overwrite" in refused.output
+    assert runner.invoke(main, base).exit_code == 0
     assert runner.invoke(main, [*base, "--overwrite", "simulate"]).exit_code == 0
     assert runner.invoke(main, [*base, "--overwrite=simulate"]).exit_code == 0
     assert "--overwrite deletes data" in runner.invoke(main, [*base, "--dryrun", "--overwrite", "simulate"]).output

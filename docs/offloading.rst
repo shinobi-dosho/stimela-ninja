@@ -855,3 +855,35 @@ the schema version required by their declarations.
 Workers stage both installed Shinobi and Dosho packages, with one source digest
 covering the combined tree. Locked provisioning exports include Dosho's active
 validation extra through Shinobi's mandatory dependency.
+
+Bundled local branch arrays (experimental)
+------------------------------------------
+
+``shinobi.offload.branch.prepare_branch_array`` stages a trusted module-level
+recipe builder, explicit JSON arguments and a copy of the Shinobi/Dosho driver.
+``submit_branch_array`` submits one Slurm array; each task calls the builder and
+executes the resulting declared recipe locally. Local scatter remains local.
+This is separate from the atomic-step ``RecipeBundle`` protocol and does not
+silently remove its eligibility checks.
+
+Each ``BranchCase`` supplies a name, absolute disjoint workspace, builder
+``parameters`` and optional recipe ``inputs``. The caller supplies explicit
+``code_roots``, a shared ``directory``, worker Python and Slurm resource options.
+The initial implementation accepts local native/Apptainer execution and absolute
+local image files. Scheduler and remote backends inside a branch are refused.
+The captured source, driver environment and image hashes are verified before
+execution. Image-selection environment settings are applied at process startup.
+
+Each branch retains its own cache, sandbox and provenance roots. Every worker
+invocation writes immutable started/finished records with a distinct attempt ID
+and scheduler restart count. An interrupted invocation has no successful finish;
+a retry verifies prior attempts against their immutable bundles and started
+records, then reconciles only those exact local ownership claims using durable
+liveness checks. Live or uncertain owners still refuse recovery. A shared
+ownership registry defaults to the submission directory's parent; all submissions
+that resume the same workspace must retain access to their earlier records.
+The ordinary cache lifecycle then resumes completed work. Submission is
+one-shot: an uncertain scheduler submission leaves its claim for inspection.
+There is no automatic scheduler retry or aggregate finalizer in this first API.
+Explicit ``overwrite_steps`` applies on every invocation of that case; omit it
+for ordinary resume/requeue.

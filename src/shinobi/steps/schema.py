@@ -352,6 +352,19 @@ def planned_output_values(scope: Scope, prepared: dict[str, Any], *, workspace: 
     return values
 
 
+def gathered_output_values(scope: Scope, slices: list[dict[str, Any]], *, unresolved_inputs=frozenset()) -> dict[str, Any]:
+    """Gather only outputs declared statically for every concrete scatter slice.
+
+    Runtime-derived values and observed product-family membership stay unknown.
+    Actual returned paths still have to match the workflow ownership claim.
+    """
+    if isinstance(scope, Recipe) or not slices:
+        return {}
+    outputs = [static_output_values(scope, inputs, unresolved_inputs=unresolved_inputs) for inputs in slices]
+    common = set.intersection(*(set(values) for values in outputs))
+    return {field: [values[field] for values in outputs] for field in common}
+
+
 def _resolved_output_path_values(scope: Scope, prepared: dict[str, Any]) -> Iterator[tuple[str, Any, bool]]:
     """Yield ``(field, value, resolved)`` for path-typed outputs.
 
@@ -511,12 +524,14 @@ def _resolved_product_patterns(
             if format_spec:
                 require_present_fields(format_spec)
 
+    import glob
+
     cwd = workspace or Path.cwd()
     for name, plan in family_plans(scope, prepared, cwd, best_effort=True).items():
-        candidates = (str(candidate.path) for candidate in plan.candidates) if include_candidates else ()
+        candidates = (glob.escape(str(candidate.path)) for candidate in plan.candidates) if include_candidates else ()
         for pattern in [*candidates, *plan.patterns()]:
             if not Path(plan.spec.root.format(**prepared)).is_absolute():
-                pattern = str(Path(pattern).relative_to(cwd))
+                pattern = str(Path(pattern).relative_to(glob.escape(str(cwd))))
             yield f"family {name!r} pattern", pattern
     for kind, patterns in declarations if declarations is not None else (("harvest", scope.harvest), ("scratch", scope.scratch)):
         for pattern in patterns:
@@ -532,11 +547,14 @@ def _resolved_product_patterns(
 
 def _product_pattern_directory(pattern: str) -> Path:
     """Literal directory prefix retained for conservative reservations."""
+    from shinobi._glob import literal_component
+
     literal: list[str] = []
     for part in Path(pattern).parts[:-1]:
-        if _GLOB_CHARS & set(part):
+        decoded = literal_component(part)
+        if decoded is None:
             break
-        literal.append(part)
+        literal.append(decoded)
     return Path(*literal) if literal else Path(".")
 
 
@@ -555,10 +573,14 @@ def product_pattern_issue(pattern: str | None, *, workspace: Path, resources: se
     path = Path(pattern)
     if ".." in path.parts or "**" in pattern or path == Path(".") or pattern.endswith("/"):
         return "is not a bounded basename pattern (recursive, empty, or escaping path)"
-    if any(_GLOB_CHARS & set(part) for part in path.parts[:-1]):
+    from shinobi._glob import literal_component
+
+    parts = [literal_component(part) for part in path.parts[:-1]]
+    if any(part is None for part in parts):
         return "has a wildcard directory component"
+    literal_parent = Path(*parts)
     try:
-        parent = (path.parent if path.is_absolute() else workspace / path.parent).resolve()
+        parent = (literal_parent if path.is_absolute() else workspace / literal_parent).resolve()
         protected = {resource.resolve() for resource in resources}
         for resource in protected:
             if parent == resource or parent.is_relative_to(resource):
@@ -925,10 +947,10 @@ def mutated_path_fields(scope: Scope) -> set[str]:
     `outputs_model` as well as `inputs_model`, its input is declared
     `Mutability.MUTABLE` (the flag/gaincal/applycal shape, where a cab
     rewrites its MS without re-declaring it as an output), or a
-    `DatasetAccess` declares ``mode="write"`` on the input. The last is the
-    strict MSv2 spelling of the second; leaving it out would let the cache
-    key fingerprint a dataset its own step rewrites while the snapshotter
-    ignored it.
+    `DatasetAccess` declares ``mode="write"`` or ``mode="create"`` on the
+    input. Declared CREATE targets contribute their path, not their current
+    contents: creation itself must not change the request's cache key.
+    Declared writers likewise cannot key on content they rewrite.
 
     This lives here, in schema, rather than in either of its two callers,
     because they must never disagree. `cache.compute_cache_key` drops these
@@ -939,7 +961,7 @@ def mutated_path_fields(scope: Scope) -> set[str]:
     computation and both import it.
     """
     input_paths = path_fields(scope.inputs_model)
-    declared_writes = {access.field for access in (*scope.dataset_accesses, *scope.fits_accesses) if access.mode.value == "write"}
+    declared_writes = {access.field for access in (*scope.dataset_accesses, *scope.fits_accesses) if access.mode.value in {"write", "create"}}
     return (input_paths & path_fields(scope.outputs_model)) | {name for name in input_paths if scope.mutability_of(name) is Mutability.MUTABLE} | (input_paths & declared_writes)
 
 

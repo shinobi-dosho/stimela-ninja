@@ -306,19 +306,23 @@ def _load_identity(submission_dir: Path) -> tuple[Submission, RecipeBundle, Exec
     return submission, bundle, plan
 
 
-def _verify_environment(bundle: RecipeBundle, plan: ExecutionPlan) -> None:
-    if plan.worker.shinobi_version != __version__:
-        raise BundleError(f"worker/bundle environment mismatch: staged worker is {plan.worker.shinobi_version}, running worker is {__version__}")
-    if plan.worker.python_version != platform.python_version() or plan.worker.platform != worker_platform():
+def verify_worker_environment(worker: WorkerEnvironment) -> None:
+    if worker.shinobi_version != __version__:
+        raise BundleError(f"worker/bundle environment mismatch: staged worker is {worker.shinobi_version}, running worker is {__version__}")
+    if worker.python_version != platform.python_version() or worker.platform != worker_platform():
         raise BundleError("running worker platform does not match the staged worker environment")
-    if plan.worker.distributions_digest is not None:
+    if worker.distributions_digest is not None:
         from shinobi.backends.venv import digest_of_dists, freeze_dists
 
         distributions = freeze_dists(Path(sys.executable))
-        if distributions is None or digest_of_dists(distributions) != plan.worker.distributions_digest:
+        if distributions is None or digest_of_dists(distributions) != worker.distributions_digest:
             raise BundleError("running worker dependencies do not match the staged worker environment")
-    if source_tree_digest(Path(plan.worker.source)) != plan.worker.source_digest:
+    if source_tree_digest(Path(worker.source)) != worker.source_digest:
         raise BundleError("staged worker source no longer matches its recorded digest")
+
+
+def _verify_environment(bundle: RecipeBundle, plan: ExecutionPlan) -> None:
+    verify_worker_environment(plan.worker)
     for step in bundle.steps:
         image = unpack(step.scope.settings["image"]) if "image" in step.scope.settings else None
         if image and step.backend in ("docker", "podman", "apptainer") and step.image_digest is None:

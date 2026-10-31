@@ -615,3 +615,21 @@ def test_derived_reads_refuse_strict_creator_factory_before_dataset_overwrite(tm
     with pytest.raises(ValueError, match="creator.*supports only Cab"):
         ref(overwrite_steps=("creator",))
     assert marker.read_bytes() == b"existing dataset must survive"
+
+
+def test_optional_derived_reader_runs_inside_ms_lifecycle(tmp_path, monkeypatch):
+    pytest.importorskip("casacore.tables")
+    from shinobi import DatasetAccess, MeasurementSetV2, Recipe, pystep
+    from tests._dataset_fixtures import make_ms
+
+    monkeypatch.chdir(tmp_path)
+    ms = make_ms(tmp_path / "obs.ms")
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="read")])
+    def inspect(ms: MeasurementSetV2) -> None:
+        assert ms.exists()
+
+    pipeline = Recipe(name="derived", inputs_model=Empty, outputs_model=Empty, backend="native")
+    pipeline.add_step("inspect", inspect, ms=ms)
+    pipeline.add_step("optional", reader(required=False))
+    assert pipeline(cache=True, cache_dir=str(tmp_path / "cache")).success

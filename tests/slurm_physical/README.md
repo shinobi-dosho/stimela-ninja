@@ -382,3 +382,25 @@ replacement with sibling overwrite/rename denial, failed WRITE restoring
 exact bytes, and failed CREATE restoring absence. Runtime/image selection is
 controlled by `SHINOBI_FITS_TEST_RUNTIME` and `SHINOBI_FITS_TEST_IMAGE`; the
 test itself never pulls images.
+
+## Bundled branch-array routes
+
+`run_branch_array.py` exercises the experimental bundled local driver with
+tiny four-row Measurement Sets. It requires three idle eight-CPU workers in
+the selected partition, shared storage, and an Apptainer image containing
+`/usr/bin/python3`, NumPy and python-casacore. Run from the controller:
+
+```sh
+python tests/slurm_physical/run_branch_array.py \
+  --root /data/branch-routes-001 \
+  --image /data/images/simms.sif --partition dev
+```
+
+Use a fresh root for every invocation. The probe checks simultaneous execution
+on three distinct hosts, explicit CREATE overwrite followed by regeneration of
+both dependent scatter slices, and Slurm requeue after the first slice commits.
+The requeued task must finish with the creator and first slice cache records
+unchanged and identical MS file hashes (excluding casacore lock files).
+`results.json` is written only after every assertion passes; `progress.json`
+records submitted jobs for diagnosis. This is a live acceptance probe, not part
+of ordinary pytest, and does not qualify another site's shared filesystem.

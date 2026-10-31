@@ -622,9 +622,9 @@ def resolve_scope_dataset_accesses(
     Unknown columns and omitted declarations degrade to whole-dataset access.
     An unknown path is refused unless its declaration supplies a reservation
     envelope, because otherwise neither ordering nor ownership can cover it.
-    A CREATE target that already exists is refused unless
-    ``allow_existing_create`` is set, which only the explicit ``overwrite``
-    path does, to locate the target it is about to delete. ``closure_cache``
+    An existing CREATE target requires trusted same-workspace cache replay
+    evidence, or ``allow_existing_create`` for the explicit ``overwrite``
+    path to locate the target it is about to delete. ``closure_cache``
     is caller-owned for one planning pass; a new filesystem validation must
     use a fresh cache.
     """
@@ -913,7 +913,7 @@ def plan_recipe_accesses(
 
     from shinobi.graph import RecipeGraph, build_graph
     from shinobi.ownership import _model_values
-    from shinobi.steps.schema import Recipe, planned_output_values, static_wiring_values
+    from shinobi.steps.schema import Recipe, gathered_output_values, planned_output_values, static_wiring_values
 
     if recipe.dataset_accesses:
         raise DatasetAccessError(f"recipe {recipe.name!r} declares dataset access metadata; attach access to the atomic steps that touch the dataset")
@@ -989,6 +989,7 @@ def plan_recipe_accesses(
 
         resolved_generic = generic_paths(known, validated_steps) if isinstance(ref.step, Recipe) and ref.scatter is None else None
         slice_plans = []
+        gathered_inputs = []
         if strict_scatter and (unresolved_fields or any(field not in known for field in ref.scatter.fields)):
             raise DatasetAccessError(f"step {ref.name!r} read-only dataset scatter requires concrete slice inputs before dispatch")
         if ref.scatter is not None and all(field in known for field in ref.scatter.fields):
@@ -1006,6 +1007,7 @@ def plan_recipe_accesses(
                         raise DatasetAccessError(f"step {ref.name!r} scatter slice {slice_index} cannot be validated before dispatch") from exc
                 for name in unresolved_fields:
                     inputs.pop(name, None)
+                gathered_inputs.append(inputs)
                 generic = generic_paths(inputs, _slice_descendants(validated_steps, id(ref), slice_index))
                 resolved_generic.extend(generic)
                 if strict_scatter:
@@ -1019,7 +1021,11 @@ def plan_recipe_accesses(
                     resources = [*generic, *dataset_workspace_accesses(decision.datasets)]
                     resources_by_slice.append(resources)
                     slice_plans.append(decision)
-        outputs_for_step = {} if ref.scatter is not None else planned_output_values(ref.step, known, workspace=root, unresolved_inputs=unresolved_fields)
+        outputs_for_step = (
+            gathered_output_values(ref.step, gathered_inputs, unresolved_inputs=unresolved_fields)
+            if ref.scatter is not None
+            else planned_output_values(ref.step, known, workspace=root, unresolved_inputs=unresolved_fields)
+        )
         if strict_scatter:
             _validate_scatter_collisions(ref.name, resources_by_slice)
             parents = {parent for one in slice_plans for parent in one.dependencies}

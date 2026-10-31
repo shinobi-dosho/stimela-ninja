@@ -947,7 +947,13 @@ def _snapshot_guard(
     them per step per run would bury the ones that matter.
     """
     prepared = ctx.prepare_inputs()
-    if ctx._dataset_lifecycle is not None and ctx._planned_inputs is not None and not any(read.mutable for read in scope.derived_reads.values()):
+    from shinobi.derived import derived_reads
+
+    if (
+        ctx._dataset_lifecycle is not None
+        and ctx._planned_inputs is not None
+        and not any(read.mutable for read in derived_reads(scope, prepared, ctx._dataset_lifecycle.workspace))
+    ):
         from shinobi.ownership import ordinary_creator_paths
         from shinobi.steps.schema import mutated_path_fields
 
@@ -1122,7 +1128,7 @@ def _dispatch(
     run_id = _run_id or new_run_id()
     dataset_declarations = _scope_dataset_declarations(scope)
     required_authority = None
-    if _cache_path is None and _dataset_lifecycle is None and config.cache.required:
+    if _cache_path is None and _dataset_lifecycle is None and (config.cache.required or dataset_declarations):
         from shinobi._required_cache import RequiredCacheAuthority
 
         required_authority = RequiredCacheAuthority(
@@ -1130,6 +1136,8 @@ def _dispatch(
             config.cache.required,
             cache_dir or scope.cache_dir or _recipe_cache_dir or config.cache.dir,
             Path.cwd(),
+            resume_creates=True,
+            overwrite_steps=overwrite_steps,
         )
 
         def check_required_enabled(node, path, inherited):
@@ -1142,7 +1150,7 @@ def _dispatch(
 
         check_required_enabled(scope, scope.name, cache if cache is not None else _recipe_cache)
         required_authority.preflight()
-    if overwrite_steps and (not dataset_declarations or _dataset_lifecycle is not None or _cache_path is not None):
+    if overwrite_steps and (_dataset_lifecycle is not None or _cache_path is not None):
         raise DatasetLifecycleUnavailableError(
             "overwrite applies only to a top-level workflow whose steps create a strict MeasurementSetV2; declare the created field as MeasurementSetV2"
         )
@@ -1276,25 +1284,49 @@ def _dispatch(
                 cache_issues = _strict_mutation_cache_issues(scope, cache, _recipe_cache, cache_dir, _recipe_cache_dir, config)
                 if cache_issues:
                     raise DatasetLifecycleUnavailableError(f"contained {format_name} mutation refused: " + "; ".join(cache_issues))
+            overwrite_graph = None
             if overwrite_steps:
-                if not mutation:
-                    raise DatasetLifecycleUnavailableError("overwrite applies only to steps that create a strict MeasurementSetV2; this workflow only reads")
-                # Before planning, which refuses an existing CREATE target:
-                # this is the one explicit way past that refusal.
-                overwrites = overwrite_created_datasets(
-                    scope,
-                    validated_inputs,
-                    tuple(overwrite_steps),
-                    workspace=launch_workspace,
-                    cache_dir=effective_cache_dir,
-                    run_id=run_id,
-                )
-                for record in overwrites:
-                    if record.existed:
-                        logger.warning("overwrite: deleted %s (step %s, field %s)", record.path, record.step, record.field)
-                if overwrites:
-                    logger.warning("overwrite: invalidated cached results of %s", ", ".join(overwrites[0].invalidated))
-                lifecycle.amend(overwrites=overwrites)
+                from shinobi._overwrite import overwrite_cached_steps
+                from shinobi.dataset_access import DatasetMode, plan_recipe_accesses, resolve_scope_dataset_accesses
+
+                try:
+                    # Validate every selector before deleting any CREATE output.
+                    overwrite_cached_steps(scope, overwrite_steps, effective_cache_dir, validate_only=True)
+                    if isinstance(scope, Recipe):
+                        overwrite_plan = plan_recipe_accesses(
+                            scope,
+                            validated_inputs,
+                            workspace=launch_workspace,
+                            validated_inputs=validated_inputs,
+                            overwrite_steps=frozenset(overwrite_steps),
+                        )
+                        overwrite_graph = overwrite_plan.graph
+                        selected_accesses = overwrite_plan.accesses
+                    else:
+                        selected_accesses = {
+                            scope.name: resolve_scope_dataset_accesses(
+                                scope,
+                                validated_inputs.model_dump(),
+                                workspace=launch_workspace,
+                                allow_existing_create=True,
+                            )
+                        }
+                except ValueError as exc:
+                    raise DatasetLifecycleUnavailableError(f"overwrite refused: {exc}") from exc
+                creators = tuple(name for name in overwrite_steps if any(access.mode is DatasetMode.CREATE for access in selected_accesses.get(name, ())))
+                if creators:
+                    overwrites = overwrite_created_datasets(
+                        scope,
+                        validated_inputs,
+                        creators,
+                        workspace=launch_workspace,
+                        cache_dir=effective_cache_dir,
+                        run_id=run_id,
+                    )
+                    for record in overwrites:
+                        if record.existed:
+                            logger.warning("overwrite: deleted %s (step %s, field %s)", record.path, record.step, record.field)
+                    lifecycle.amend(overwrites=overwrites)
             known_steps: dict[int | tuple[int, ...], dict[str, Any]] = {}
             accesses, leaf_inputs = scope_path_accesses(scope, validated_inputs, workspace=launch_workspace, known_steps=known_steps)
             planned_leaf_inputs = _snapshot_product_leaf_inputs(scope, known_steps)
@@ -1389,6 +1421,11 @@ def _dispatch(
                 DatasetLifecyclePhase.REVALIDATED,
                 "post-claim access plan and observation match the claimed baseline",
             )
+            if overwrite_steps:
+                # Read-only imaging invalidation also runs under the workflow's
+                # claim. Match scattered cache instances, not only their parent.
+                for note in overwrite_cached_steps(scope, overwrite_steps, effective_cache_dir, root_graph=overwrite_graph):
+                    logger.warning("overwrite: %s", note)
             lifecycle.transition(
                 DatasetLifecyclePhase.EXECUTING,
                 f"entering contained local dispatch under the {'exclusive' if mutation else 'shared read'} claim",
@@ -1647,6 +1684,7 @@ def _dispatch(
                     _result_commit=_result_commit,
                     _publication_gate=_publication_gate,
                     _workspace_claimed=True,
+                    overwrite_steps=overwrite_steps,
                     _dataset_lifecycle=_dataset_lifecycle,
                     _validated_inputs=validated_inputs,
                     _leaf_inputs=leaf_inputs,
@@ -1657,6 +1695,11 @@ def _dispatch(
                 )
             finally:
                 lease.release()
+    if overwrite_steps and not dataset_declarations:
+        from shinobi._overwrite import overwrite_cached_steps
+
+        for note in overwrite_cached_steps(scope, overwrite_steps, cache_dir or scope.cache_dir or _recipe_cache_dir or config.cache.dir):
+            logger.warning("overwrite: %s", note)
     if _cache_path is None:
         # Top-level entry: the start of a run, and the memoized boundary-path
         # hashes and execution-environment identities must not outlive one.
@@ -1835,6 +1878,13 @@ def _dispatch(
         strict_leaf.fail(None, reason, refused=True)
         raise DatasetLifecycleUnavailableError(f"strict {format_name} mutation of {cache_path!r} refused before launch: {reason}")
     required_key = config.cache.required.get(cache_path)
+    if required_key is None and strict_leaf is not None:
+        authority = getattr(strict_leaf.lifecycle, "required_cache_authority", None)
+        if authority is not None:
+            # Planning admitted this existing CREATE target only as a replay.
+            # It must pass the ordinary key/output/lineage checks below; never
+            # fall through to launching a creator against an existing MS.
+            required_key = authority.replayed.get(cache_path)
     if required_key is not None and not cacheable:
         raise DatasetLifecycleUnavailableError(f"required cache {cache_path!r} unavailable: caching is disabled or execution identity is unknown")
     if cacheable:
