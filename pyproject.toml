@@ -34,8 +34,8 @@ fits-contract = ["stimela-ninja[fits]"]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.0",
-    "ruff>=0.5",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
 ]
 
 # Real Measurement Set development and acceptance coverage. Keep this separate
@@ -48,10 +48,10 @@ measurement-set = [
     "python-casacore>=3.7,<4",
     "msutils[exact-native]>=3.1.0",
     "xarray-ms==0.5.8",
-    "xarray==2026.7.0",
+    "xarray==2026.9.0",
     "dask[array]==2026.8.0",
     "arcae==0.5.4",
-    "numcodecs==0.16.5",
+    "numcodecs==0.16.6",
     "zarr==3.1.6; python_version < '3.12'",
     "zarr==3.3.0; python_version >= '3.12'",
 ]
