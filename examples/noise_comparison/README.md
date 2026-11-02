@@ -78,12 +78,6 @@ failure propagation and local execution of the same placed graph.
 That campaign used `threads=4`, `max_workers=1` and `max_parallel=3`, with
 eight CPUs and 32 GiB reserved per branch allocation.
 
-**Monitoring:** new mixed runs use version-7 records with immutable child
-references and shared schema/log artifacts. `ninja status` and `current_manifest`
-verify the current invocation chain without reconstructing full result trees;
-logs and manifests are hashed in chunks. Memory still depends on the frozen
-bundle and individual node/schema sizes. See the
-[storage contract and measured bounds](../../docs/offloading.rst#mixed-result-storage-and-monitoring).
 
 **Existing version-6 runs:** the completed snapshot campaign used the older
 recursive format and produced a 598 MB final record. `ninja status` was killed
