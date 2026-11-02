@@ -18,7 +18,7 @@ from pydantic import model_serializer, ConfigDict, Field, JsonValue, model_valid
 from shinobi.cache import ProvenanceKey
 from shinobi.dataset_lifecycle import DatasetLifecycleAttempt
 from shinobi.fits_lifecycle import FITSLifecycleAttempt
-from shinobi.offload._codec import BundleError, ModelSpec, WireModel, pack_model, unpack
+from shinobi.offload._codec import BundleError, ModelSpec, WireModel, pack, pack_model, unpack
 from shinobi.offload.bundle import write_new
 from shinobi.provenance import StepRecord, _record
 from shinobi.results import StepResult
@@ -111,15 +111,15 @@ class AttemptRecord(WireModel):
             raise BundleError("MS and FITS authoritative evidence are mutually exclusive")
         if (self.fits_lifecycle is not None) != (self.schema_version == 5):
             raise BundleError("FITS evidence requires attempt-record schema version 5")
-        if self.bundle_inventories is not None and self.schema_version not in (4, 5, 6):
+        if self.bundle_inventories is not None and self.schema_version not in (4, 5, 6, 7):
             raise BundleError("bundle inventories require attempt-record schema version 4")
         required_version = attempt_record_version(lifecycle, self.output_keys.values())
-        if required_version == 4 and self.schema_version not in (4, 5, 6):
+        if required_version == 4 and self.schema_version not in (4, 5, 6, 7):
             raise BundleError("coordinate producer identities require attempt-record schema version 4")
         indexed = required_version == 3
-        if indexed and self.schema_version not in (3, 4, 5, 6):
+        if indexed and self.schema_version not in (3, 4, 5, 6, 7):
             raise BundleError("indexed producer identities require attempt-record schema version 3")
-        if self.schema_version not in (3, 4, 5, 6) and (self.schema_version == 1) != (lifecycle is None):
+        if self.schema_version not in (3, 4, 5, 6, 7) and (self.schema_version == 1) != (lifecycle is None):
             raise BundleError("dataset lifecycle evidence requires attempt-record schema version 2")
         if lifecycle is not None:
             if lifecycle.attempt_id != str(self.attempt_id):
@@ -140,11 +140,11 @@ class AttemptRecord(WireModel):
                     raise BundleError("composite child belongs to a different attempt")
                 if self.committed and not child.committed:
                     raise BundleError("successful composite contains an unsuccessful child")
-        elif self.children is not None or self.result_models is not None or self.source_attempts:
+        elif self.schema_version != 7 and (self.children is not None or self.result_models is not None or self.source_attempts):
             raise BundleError("composite records require schema version 6")
         for value in self.output_keys.values():
             for key in value if isinstance(value, list) else [value]:
-                if key is not None and key.producer_field is None and self.schema_version != 6:
+                if key is not None and key.producer_field is None and self.schema_version not in (6, 7):
                     raise BundleError("synthetic producer identities require schema version 6")
         result = self.observation
         if self.state in ("running", "unknown"):
@@ -155,7 +155,7 @@ class AttemptRecord(WireModel):
                 if self.state != "failed" or not self.error:
                     raise BundleError("only a failed attempt with diagnostics may omit its leaf observation")
             else:
-                if result.steps and self.schema_version != 6:
+                if result.steps and self.schema_version not in (6, 7):
                     raise BundleError("a final worker record needs one leaf observation")
                 if result.name != self.step_path:
                     raise BundleError("observation name does not match the logical step_path")
@@ -189,11 +189,17 @@ class AttemptRecord(WireModel):
         sandbox: str | None = None,
         dataset_lifecycle: DatasetLifecycleAttempt | None = None,
         composite: bool = False,
+        recursive: bool = True,
     ) -> AttemptRecord:
         composite = composite or result.sub_results is not None
-        inputs, outputs = pack_model(result.inputs), pack_model(result.outputs)
+        inputs = pack_model(result.inputs)
+        outputs = (
+            pack_model(result.outputs)
+            if result.success
+            else {name: pack(getattr(result.outputs, name)) for name in type(result.outputs).model_fields if hasattr(result.outputs, name)}
+        )
         # Reuse provenance's metadata mapping, but not its lossy I/O payload.
-        metadata = _record(result, name=step_path).model_dump(exclude={"inputs", "outputs"})
+        metadata = _record(result, name=step_path, recursive=recursive).model_dump(exclude={"inputs", "outputs"})
         keys = {}
         if result.success:
             for field in type(result.outputs).model_fields:
@@ -218,6 +224,7 @@ class AttemptRecord(WireModel):
             children={
                 name: cls.from_result(child, workflow_id=workflow_id, attempt_id=attempt_id, step_path=name, bundle_digest=bundle_digest, composite=True)
                 for name, child in (result.sub_results or {}).items()
+                if recursive
             }
             if composite
             else None,
@@ -276,8 +283,13 @@ class AttemptRecord(WireModel):
         return write_new(directory / str(self.workflow_id) / "attempts" / str(self.attempt_id) / f"{phase}.json", snapshot)
 
     @classmethod
-    def read(cls, path: Path, *, workflow_id: UUID, attempt_id: UUID, step_path: str, bundle_digest: str) -> AttemptRecord:
-        record = cls.model_validate_json(path.read_text(encoding="utf-8"))
+    def read(cls, path: Path, *, workflow_id: UUID, attempt_id: UUID, step_path: str, bundle_digest: str, legacy_limit=None) -> AttemptRecord:
+        if cls is AttemptRecord:
+            from shinobi.offload.record_store import read_terminal
+
+            record = read_terminal(path, legacy_limit=legacy_limit)
+        else:
+            record = cls.model_validate_json(path.read_text(encoding="utf-8"))
         expected = (workflow_id, attempt_id, step_path, bundle_digest)
         if (record.workflow_id, record.attempt_id, record.step_path, record.bundle_digest) != expected:
             raise BundleError("attempt record does not belong to the requested workflow, attempt, step and bundle")

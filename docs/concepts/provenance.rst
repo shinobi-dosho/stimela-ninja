@@ -43,6 +43,23 @@ they are terminal it records the final result. A missing worker record remains
 ``sandboxes/<attempt-id>/``; rerunning finalization can never turn scheduler
 ``COMPLETED`` into scientific success.
 
+Mixed allocation workers use version-7 result evidence. Each node has one shallow
+observation; ordered child references reconstruct the ordinary provenance tree
+without storing recursive observations inside every ancestor. Effective schemas
+and diagnostic streams are immutable content-addressed artifacts. The finalizer
+streams the run manifest and commits its byte digest and length in its terminal
+record. ``mixed.current_manifest`` verifies that binding and all current dependency
+evidence without loading the manifest or concatenating logs. Explicit full-result
+reconstruction remains eager. Scheduler invocation IDs, logical node addresses,
+artifact digests, cache keys and dataset-state identities remain distinct.
+
+The offline ``python -m shinobi.offload.mixed convert-records --submission PATH``
+command converts existing version-6 dependency closures to bound version-7
+sidecars without altering original records. It preserves historical ownership
+and validates the original source bytes on later reads; conversion requires a
+host capable of loading the largest legacy record. See :doc:`../offloading` for
+the storage contract, monitoring measurements and migration limits.
+
 Provenance makes a run **reproducible**: it pins every container image to a
 content digest before running, and writes a static manifest recording exactly
 what ran -- resolved inputs and outputs, the backend, and the pinned image

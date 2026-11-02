@@ -51,11 +51,16 @@ def write_new(path: Path, model: WireModel) -> Path:
     All parent entries are synced before returning, including directories
     created by this call or by submission staging. Sync failures propagate.
     """
+    return write_new_stream(path, lambda stream: stream.write(model.model_dump_json(indent=2).encode()))
+
+
+def write_new_stream(path: Path, writer) -> Path:
+    """Publish writer-produced bytes with the same no-replace durability contract."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".record-", dir=path.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(model.model_dump_json(indent=2))
+        with os.fdopen(fd, "wb") as stream:
+            writer(stream)
             stream.flush()
             os.fsync(stream.fileno())
         os.link(temporary, path)  # atomic no-clobber publication

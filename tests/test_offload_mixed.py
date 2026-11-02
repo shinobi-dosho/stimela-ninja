@@ -591,7 +591,6 @@ mixed.execute(Path(sys.argv[1]),"run",step=1,task=0)
 def test_recursive_result_read_keeps_expected_predecessor_identity(graph, monkeypatch):
     from uuid import uuid4
     import shinobi.offload.mixed as mixed
-    from shinobi.offload.records import AttemptRecord
 
     recipe, source, workspace = graph
     directory = prepare_mixed(freeze_mixed(recipe, {}, config=config(), workspace=workspace, code_roots=(source,)), submission_root=workspace / "submissions")
@@ -607,7 +606,9 @@ def test_recursive_result_read_keeps_expected_predecessor_identity(graph, monkey
             injected = True
             newer = current.model_copy(update={"attempt_id": uuid4(), "restart": 1})
             mixed.write_new(directory / "invocations" / name / f"{newer.attempt_id}.json", newer)
-            record = AttemptRecord.model_validate_json((directory / "results" / str(current.attempt_id) / "final.json").read_text())
+            from shinobi.offload.record_store import read_terminal
+
+            record = read_terminal(directory / "results" / str(current.attempt_id) / "final.json")
 
             # A successful replacement still cannot be substituted for the
             # exact attempt consumed by the already committed parent gather.
@@ -710,3 +711,140 @@ def test_mixed_scheduler_matches_singleton_arrays_and_requires_live_query(monkey
     assert mixed._mixed_scheduler_states({"step-0": "42"}, execution) == {"step-0_0": "COMPLETED"}
     live_returncode = 1
     assert mixed._mixed_scheduler_states({"step-0": "42"}, execution) == {"step-0_0": "UNKNOWN"}
+
+
+def _legacy_campaign(graph):
+    """Make genuine v6 fixtures from the explicit eager compatibility API."""
+    import shinobi.offload.mixed as mixed
+    from shinobi.offload.records import AttemptRecord
+    from shinobi.offload.record_store import read_terminal
+
+    recipe, source, workspace = graph
+    directory = prepare_mixed(freeze_mixed(recipe, {}, config=config(), workspace=workspace, code_roots=(source,)), submission_root=workspace / "submissions")
+    _complete_branches(directory)
+    process = invoke(directory, "finalize")
+    assert process.returncode == 0, process.stderr
+    bundle, execution = mixed._load(directory)
+    legacy = {}
+    for name in ("unit-0-0", "unit-0-1", "gather-0", "finalize"):
+        invocation = mixed._latest(directory, name)
+        path = directory / "results" / str(invocation.attempt_id) / "final.json"
+        terminal = read_terminal(path)
+        value = mixed._read_result(directory, bundle, execution, name)
+        record = AttemptRecord.from_result(
+            value, workflow_id=execution.workflow_id, attempt_id=invocation.attempt_id, step_path=terminal.step_path, bundle_digest=bundle.digest, composite=True
+        )
+        legacy[path] = record.model_copy(update={"source_attempts": terminal.source_attempts}).model_dump_json(indent=2).encode()
+    for path, data in legacy.items():
+        path.write_bytes(data)
+    return directory, legacy
+
+
+def test_migration_closure_interruption_retry_and_bounded_monitoring(graph, monkeypatch):
+    import shinobi.offload.mixed as mixed
+    from shinobi.offload.record_store import Store, read_terminal
+    from shinobi.offload.records import AttemptRecord
+    from shinobi.offload.tracking import FINISHED
+
+    directory, originals = _legacy_campaign(graph)
+    bundle, execution = mixed._load(directory)
+    with pytest.raises(BundleError, match="convert-records"):
+        mixed._CurrentEvidence(directory, bundle, execution, legacy_limit=1).read("finalize")
+    assert mixed._read_result(directory, bundle, execution, "finalize").success
+    original = mixed.write_new
+    published = 0
+
+    def interrupt(path, value):
+        nonlocal published
+        if path.name == "final.v7.json":
+            published += 1
+            if published == 2:
+                raise OSError("conversion interrupted")
+        return original(path, value)
+
+    monkeypatch.setattr(mixed, "write_new", interrupt)
+    with pytest.raises(OSError, match="conversion interrupted"):
+        mixed.convert_records(directory)
+    assert len(list(directory.glob("results/*/final.v7.json"))) == 1
+    monkeypatch.setattr(mixed, "write_new", original)
+    mixed.convert_records(directory)
+    sidecars = {path: path.read_bytes() for path in directory.glob("results/*/final.v7.json")}
+    assert len(sidecars) == 4
+    mixed.convert_records(directory)
+    assert all(path.read_bytes() == data for path, data in sidecars.items())
+    assert all(path.read_bytes() == data for path, data in originals.items())
+    assert all(read_terminal(path).schema_version == 7 for path in originals)
+    converted = subprocess.run([sys.executable, "-m", "shinobi.offload.mixed", "convert-records", "--submission", str(directory)], capture_output=True, text=True)
+    assert converted.returncode == 0, converted.stderr
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("eager reconstruction used during monitoring")
+
+    monkeypatch.setattr(Store, "result", forbidden)
+    monkeypatch.setattr(AttemptRecord, "result", forbidden)
+    monkeypatch.setattr(mixed, "_read_result", forbidden)
+    monkeypatch.setattr(mixed, "_mixed_scheduler_states", lambda *args: {"fixture": "COMPLETED"})
+    assert mixed.current_manifest(directory).exists()
+    state = mixed.mixed_status({"submission": str(directory), "jobs": {}})
+    assert state.state == FINISHED and state.exit_code == 0
+    final = mixed._latest(directory, "finalize")
+    final_path = directory / "results" / str(final.attempt_id) / "final.json"
+    sidecar_path = final_path.with_name("final.v7.json")
+    saved_sidecar = sidecar_path.read_bytes()
+    sidecar_path.write_text(read_terminal(final_path).model_copy(update={"manifest": None}).model_dump_json())
+    with pytest.raises(BundleError, match="no bound manifest"):
+        mixed.current_manifest(directory)
+    state = mixed.mixed_status({"submission": str(directory), "jobs": {}})
+    assert state.state != FINISHED
+    sidecar_path.write_bytes(saved_sidecar)
+    path = next(iter(originals))
+    path.write_bytes(originals[path] + b" ")
+    with pytest.raises(BundleError, match="digest"):
+        mixed.current_manifest(directory)
+
+
+def test_migration_refuses_conflicting_sidecar_and_requeue(graph, monkeypatch):
+    from uuid import uuid4
+    import shinobi.offload.mixed as mixed
+    from shinobi.offload.record_store import Record
+
+    directory, originals = _legacy_campaign(graph)
+    mixed.convert_records(directory)
+    path = next(iter(originals)).with_name("final.v7.json")
+    before = path.read_bytes()
+    record = Record.model_validate_json(before).model_copy(update={"error": "contradictory conversion"})
+    path.write_text(record.model_dump_json())
+    with pytest.raises(BundleError, match="contradicts"):
+        mixed.convert_records(directory)
+    path.write_bytes(before)
+    current = mixed._latest(directory, "unit-0-0")
+    newer = current.model_copy(update={"attempt_id": uuid4(), "restart": 1})
+    mixed.write_new(directory / "invocations" / current.name / f"{newer.attempt_id}.json", newer)
+    with pytest.raises(BundleError, match="superseded predecessor"):
+        mixed.convert_records(directory)
+    with pytest.raises(BundleError, match="superseded predecessor"):
+        mixed.current_manifest(directory)
+
+
+def test_migration_rechecks_invocations_after_publication(graph, monkeypatch):
+    from uuid import uuid4
+    import shinobi.offload.mixed as mixed
+
+    directory, _ = _legacy_campaign(graph)
+    original = mixed.write_new
+    changed = False
+
+    def publish(path, value):
+        nonlocal changed
+        result = original(path, value)
+        if path.name == "final.v7.json" and not changed:
+            changed = True
+            current = mixed._latest(directory, "unit-0-0")
+            newer = current.model_copy(update={"attempt_id": uuid4(), "restart": 1})
+            original(directory / "invocations" / current.name / f"{newer.attempt_id}.json", newer)
+        return result
+
+    monkeypatch.setattr(mixed, "write_new", publish)
+    with pytest.raises(BundleError, match="invocation changed"):
+        mixed.convert_records(directory)
+    assert not (directory / "results" / str(mixed._latest(directory, "finalize").attempt_id) / "final.v7.json").exists()

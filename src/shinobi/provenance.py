@@ -128,7 +128,7 @@ class RunManifest(BaseModel):
         return path
 
 
-def _record(result: StepResult, name: str | None = None) -> StepRecord:
+def _record(result: StepResult, name: str | None = None, *, recursive: bool = True) -> StepRecord:
     """Walk a `StepResult` (and its `sub_results`) into a `StepRecord` tree.
 
     `name` overrides `result.name`: a recipe's `sub_results` are keyed by the
@@ -159,7 +159,7 @@ def _record(result: StepResult, name: str | None = None) -> StepRecord:
         resources=result.resources,
         inputs=_jsonable(result.inputs),
         outputs=_jsonable(result.outputs),
-        steps=[_record(sub, name=key) for key, sub in (result.sub_results or {}).items()],
+        steps=[_record(sub, name=key) for key, sub in (result.sub_results or {}).items()] if recursive else [],
     )
 
 
