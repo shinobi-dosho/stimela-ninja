@@ -995,7 +995,9 @@ def _local_code_identity(recipe):
     return result
 
 
-def run_local_mixed(recipe, inputs, *, config, budget=None, cache=None, cache_dir=None, backend=None, stream=None, provenance=None, sandbox=None, input_keys=None, target=None):
+def run_local_mixed(
+    recipe, inputs, *, config, budget=None, cache=None, cache_dir=None, backend=None, stream=None, provenance=None, sandbox=None, input_keys=None, target=None, builder_origin=None
+):
     """Run explicitly placed branches locally with independent lifecycle roots.
 
     The parent is only a scheduler/aggregator. Every branch uses ordinary root
@@ -1153,7 +1155,9 @@ def run_local_mixed(recipe, inputs, *, config, budget=None, cache=None, cache_di
         stderr="\n".join(results[ref.name].stderr for ref in recipe.steps if results[ref.name].stderr),
     )
     if provenance if provenance is not None else config.provenance.enabled:
-        build_manifest(result, backend=backend or recipe.backend or config.backend.default, target=target).write(run_manifest_path(config, recipe.name))
+        build_manifest(result, backend=backend or recipe.backend or config.backend.default, target=target, builder_origin=builder_origin).write(
+            run_manifest_path(config, recipe.name)
+        )
     return result
 
 

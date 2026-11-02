@@ -338,6 +338,7 @@ def test_run_remote_forwards_provenance_sandbox_and_quiet(monkeypatch, tmp_path)
         ],
     )
     assert result.exit_code == 0, result.output
+    assert "--static-target-only" in remote_cmd
     assert "--provenance" in remote_cmd
     assert "--sandbox" in remote_cmd
     assert "--quiet" in remote_cmd

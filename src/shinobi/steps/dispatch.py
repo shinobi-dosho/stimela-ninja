@@ -915,6 +915,7 @@ def _emit_run_manifest(
     config: AppConfig,
     backend: str | None,
     target: str | None = None,
+    builder_origin: dict[str, Any] | None = None,
 ) -> None:
     """Write the run manifest for a completed top-level run. Callers gate on
     the resolved provenance flag; this stays best-effort -- a provenance
@@ -923,7 +924,7 @@ def _emit_run_manifest(
     try:
         from shinobi.provenance import build_manifest, run_manifest_path
 
-        manifest = build_manifest(result, backend=ctx.resolve_backend_name(backend), target=target)
+        manifest = build_manifest(result, backend=ctx.resolve_backend_name(backend), target=target, builder_origin=builder_origin)
         manifest.write(run_manifest_path(config, result.name))
     except Exception as exc:  # noqa: BLE001 -- provenance must not break a run
         warnings.warn(f"failed to write run manifest for {result.name!r}: {exc}", stacklevel=2)
@@ -1096,6 +1097,7 @@ def _dispatch(
     _cache_path: str | None = None,
     _config: AppConfig | None = None,
     _provenance_target: str | None = None,
+    _builder_origin: dict[str, Any] | None = None,
     _input_keys: dict[str, Any] | None = None,
     _wired_fields: set[str] | None = None,
     _budget: Budget | None = None,
@@ -1157,6 +1159,7 @@ def _dispatch(
                 sandbox=sandbox,
                 input_keys=_input_keys,
                 target=_provenance_target,
+                builder_origin=_builder_origin,
             )
     dataset_declarations = _scope_dataset_declarations(scope)
     required_authority = None
@@ -1491,6 +1494,7 @@ def _dispatch(
                     _cache_path=_cache_path,
                     _config=config,
                     _provenance_target=_provenance_target,
+                    _builder_origin=_builder_origin,
                     _input_keys=_input_keys,
                     _wired_fields=_wired_fields,
                     _budget=_budget,
@@ -1712,6 +1716,7 @@ def _dispatch(
                     _cache_path=_cache_path,
                     _config=config,
                     _provenance_target=_provenance_target,
+                    _builder_origin=_builder_origin,
                     _input_keys=_input_keys,
                     _wired_fields=_wired_fields,
                     _budget=_budget,
@@ -1975,7 +1980,7 @@ def _dispatch(
                 if _result_commit is not None:
                     _result_commit(hit, lambda: None)
                 if _cache_path is None and provenance_enabled:
-                    _emit_run_manifest(hit, ctx, config, backend, target=_provenance_target)
+                    _emit_run_manifest(hit, ctx, config, backend, target=_provenance_target, builder_origin=_builder_origin)
 
             publish(publish_hit)
             return hit
@@ -2192,7 +2197,7 @@ def _dispatch(
             if _result_commit is not None:
                 _result_commit(result, lambda: None)
         if _cache_path is None and provenance_enabled:
-            _emit_run_manifest(result, ctx, config, backend, target=_provenance_target)
+            _emit_run_manifest(result, ctx, config, backend, target=_provenance_target, builder_origin=_builder_origin)
 
     publish(publish_result)
     return result

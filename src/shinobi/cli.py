@@ -11,7 +11,6 @@ import time
 from pathlib import Path
 
 import click
-from pydantic import ValidationError
 
 import shinobi
 from shinobi._state_cli import state
@@ -244,7 +243,7 @@ def _resolve_target(target: str):
             spec.loader.exec_module(module)
         else:
             module = importlib.import_module(location)
-    except ValidationError as exc:
+    except (ValueError, TypeError) as exc:
         raise click.ClickException(f"invalid target definition {target!r}:\n{exc}") from None
 
     try:
@@ -252,12 +251,41 @@ def _resolve_target(target: str):
     except AttributeError:
         raise click.ClickException(f"no '{attr}' in {location}") from None
 
+    from shinobi.builders import RecipeBuilder
+
+    if isinstance(definition, RecipeBuilder):
+        return definition
+
     from shinobi.cabs import adapt_definition
 
     try:
         return adapt_definition(definition)
     except (TypeError, ValueError) as exc:
         raise click.ClickException(f"invalid target definition {target!r}:\n{exc}") from None
+
+
+def _builder_options(builder, ctx):
+    """Check generated spellings against each other and actual outer controls."""
+    options = build_options(builder.inputs_model)
+    seen = {"--help", "-h"}
+    for param in ctx.command.params:
+        if isinstance(param, click.Option):
+            seen.update(param.opts + param.secondary_opts)
+    for option in options:
+        for spelling in option.opts + option.secondary_opts:
+            if spelling in seen:
+                raise click.ClickException(f"recipe builder option {spelling!r} collides with another option")
+            seen.add(spelling)
+    return options
+
+
+def _construct_builder(builder, kwargs):
+    try:
+        inputs = builder.validate_inputs(unflatten_kwargs(builder.inputs_model, kwargs))
+        arguments = inputs.model_dump(mode="json")
+        return builder.build(inputs), arguments
+    except (ValueError, TypeError, OSError) as exc:
+        raise click.ClickException(f"cannot construct recipe: {exc}") from None
 
 
 def _forwarded_run_flags(*, quiet: bool, provenance: bool | None, sandbox: bool | None) -> list[str]:
@@ -471,7 +499,7 @@ def _run_remote(
     # parameters). Order is what keeps them separable: a target parameter
     # taking a value can't swallow a trailing `--sandbox` if the flags never
     # trail it.
-    run_argv = [*_forwarded_run_flags(quiet=quiet, provenance=provenance, sandbox=sandbox), *ctx.args]
+    run_argv = ["--static-target-only", *_forwarded_run_flags(quiet=quiet, provenance=provenance, sandbox=sandbox), *ctx.args]
     launcher = ["ninja", *ctx.meta.get("remote_group_flags", ()), "run"]
     handle = launch_remote(remote_spec, remote_target, run_argv, venv=venv_mode, venv_path=resolved.path, launcher=launcher)
 
@@ -592,6 +620,7 @@ def _run_remote(
     "discovered cab deps -- needed for orchestration code (StepRef/@shinobi.step) that "
     "reads local files the static cab-dep scan can't see, or for cabs it can't resolve.",
 )
+@click.option("--static-target-only", is_flag=True, hidden=True)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -609,6 +638,7 @@ def run(
     add_venv: bool | None,
     overwrite_step: tuple[str, ...],
     include_paths: tuple[str, ...],
+    static_target_only: bool,
 ) -> None:
     """Run a Cab, Recipe, or @shinobi.step TARGET ('path/to/file.py:name'
     or 'pkg.mod:name').
@@ -642,8 +672,15 @@ def run(
         return
 
     obj = _resolve_target(target)
+    from shinobi.builders import RecipeBuilder
 
-    if isinstance(obj, StepRef):
+    builder = obj if isinstance(obj, RecipeBuilder) else None
+    if builder is not None and static_target_only:
+        raise click.ClickException("SSH remote execution supports static targets only; recipe builders are not supported")
+
+    if builder is not None:
+        scope, func, params = builder, None, {}
+    elif isinstance(obj, StepRef):
         scope: Scope = obj.step
         func = obj.func
         params = obj.params
@@ -652,7 +689,7 @@ def run(
     else:
         raise click.ClickException(f"{target!r} is neither a Cab, Recipe, nor a @shinobi.step function")
 
-    target_options = build_options(scope.inputs_model)
+    target_options = _builder_options(builder, ctx) if builder else build_options(scope.inputs_model)
     # `--overwrite STEP` is taken from the target's arguments only when the
     # target has no `overwrite` parameter of its own (many tools do); the
     # parameter wins, and `--overwrite-step` is the unambiguous spelling.
@@ -679,6 +716,12 @@ def run(
         raise click.ClickException("--overwrite deletes data before running and cannot be combined with --dryrun")
 
     def _callback(**kwargs):
+        nonlocal scope
+        builder_origin = None
+        if builder is not None:
+            scope, arguments = _construct_builder(builder, kwargs)
+            builder_origin = {"target": target, "arguments": arguments}
+            kwargs = {}
         # Drop options the user didn't provide (None) so the inputs_model's
         # own defaults apply; per-step constants from a StepRef go under
         # them. `unflatten_kwargs` also re-nests any `--parent-child`
@@ -714,6 +757,7 @@ def run(
                 sandbox=sandbox,
                 _config=ctx.obj,
                 _provenance_target=target,
+                _builder_origin=builder_origin,
                 overwrite_steps=tuple(overwrite_steps),
                 **call_kwargs,
             )
@@ -794,6 +838,9 @@ def replay(ctx: click.Context, run_manifest: str, target_override: str | None, a
     except (OSError, ValidationError) as exc:
         raise click.ClickException(f"cannot read run manifest {run_manifest!r}: {exc}") from None
 
+    if manifest.builder_origin is not None:
+        raise click.ClickException("replay of recipe-builder runs is unsupported: builder arguments do not snapshot settings files; compile a frozen bundle for durable execution")
+
     target = target_override or manifest.target
     if target is None:
         raise click.ClickException(
@@ -807,6 +854,10 @@ def replay(ctx: click.Context, run_manifest: str, target_override: str | None, a
         )
 
     obj = _resolve_target(target)
+    from shinobi.builders import RecipeBuilder
+
+    if isinstance(obj, RecipeBuilder):
+        raise click.ClickException("replay targets must be static; recipe builders cannot be replayed")
     if isinstance(obj, StepRef):
         # Per-step params are ignored: the manifest root inputs are the
         # fully-resolved values of the original run, which subsume them.
@@ -1197,24 +1248,42 @@ def compile_recipe(
         raise click.ClickException(f"unknown engine '{engine}' (only 'slurm' in v1)")
 
     obj = _resolve_target(target)
-    if not isinstance(obj, Recipe):
+    from shinobi.builders import RecipeBuilder
+
+    builder = obj if isinstance(obj, RecipeBuilder) else None
+    if not isinstance(obj, (Recipe, RecipeBuilder)):
         raise click.ClickException(f"{target!r} is not a Recipe -- only recipes can be offloaded")
     recipe = obj
     runtime = None if container_runtime.lower() == "none" else container_runtime
     from shinobi.offload.mixed import has_placement
 
-    mixed = has_placement(recipe)
-    if worker and mixed:
-        raise click.ClickException("--worker selects flat compatibility mode; omit it for placed recipes")
-    if worker and not submit:
-        raise click.ClickException("--worker currently requires --submit because submission preparation stages immutable source and environment data")
-    if not worker and not mixed and (cache is not None or cache_dir is not None):
-        raise click.ClickException("--cache/--no-cache/--cache-dir require --worker; the legacy argv compiler has no runtime cache lifecycle")
-    if not worker and dataset_storage_qualification is not None:
-        raise click.ClickException("--dataset-storage-qualification requires --worker")
+    options = _builder_options(builder, ctx) if builder else build_options(recipe.inputs_model)
+
+    def _validate_compile_options(recipe):
+        mixed = has_placement(recipe)
+        if worker and mixed:
+            raise click.ClickException("--worker selects flat compatibility mode; omit it for placed recipes")
+        if worker and not submit:
+            raise click.ClickException("--worker currently requires --submit because submission preparation stages immutable source and environment data")
+        if not worker and not mixed and (cache is not None or cache_dir is not None):
+            raise click.ClickException("--cache/--no-cache/--cache-dir require --worker; the legacy argv compiler has no runtime cache lifecycle")
+        if not worker and dataset_storage_qualification is not None:
+            raise click.ClickException("--dataset-storage-qualification requires --worker")
+        return mixed
+
+    if builder is None:
+        _validate_compile_options(recipe)
 
     def _callback(**kwargs):
-        inputs = unflatten_kwargs(recipe.inputs_model, kwargs)
+        nonlocal recipe
+        if builder is not None:
+            if Path(workdir or os.getcwd()).resolve() != Path.cwd().resolve():
+                raise click.ClickException("recipe builders require --workdir to be the invocation working directory")
+            recipe, _ = _construct_builder(builder, kwargs)
+            inputs = {}
+        else:
+            inputs = unflatten_kwargs(recipe.inputs_model, kwargs)
+        mixed = _validate_compile_options(recipe)
         if mixed:
             from shinobi.offload._codec import BundleError
             from shinobi.offload.mixed import freeze_mixed, plan_mixed, prepare_mixed, submit_mixed
@@ -1299,7 +1368,7 @@ def compile_recipe(
 
     inner = click.Command(
         name=target,
-        params=build_options(recipe.inputs_model),
+        params=options,
         callback=_callback,
         help=recipe.info,
     )

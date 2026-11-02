@@ -1110,3 +1110,15 @@ one-shot: an uncertain scheduler submission leaves its claim for inspection.
 There is no automatic scheduler retry or aggregate finalizer in this first API.
 Explicit ``overwrite_steps`` applies on every invocation of that case; omit it
 for ordinary resume/requeue.
+
+Recipe builders are construction boundaries
+-------------------------------------------
+
+``ninja compile`` constructs an explicit ``@recipe_builder`` target once, then
+uses the same eligibility checks, placement planning and freezing as a static
+recipe. A builder may declare the entire bounded DAG, but cannot defer graph
+structure to workers. Its returned recipe requires no caller-supplied runtime
+root inputs. Frozen workers restore the complete graph and constants; they do
+not invoke the builder or reread its settings. Compilation requires the
+invocation directory as ``--workdir`` so cwd-relative settings and graph paths
+retain the same meaning. SSH ``run --remote`` supports static targets only.

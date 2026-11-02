@@ -12,6 +12,14 @@ Top-level package
    :members:
    :imported-members:
 
+Recipe construction
+-------------------
+
+``shinobi.RecipeBuilder`` and ``shinobi.recipe_builder`` expose the explicit
+validated Python construction boundary described in :doc:`../concepts/recipes`.
+Their arguments declare construction settings; the returned graph retains its
+own runtime input schema.
+
 Schema helpers
 --------------
 

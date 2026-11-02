@@ -378,3 +378,19 @@ MS and ordinary worker records use their respective schemas. Finalization
 verifies the committed worker evidence before releasing ownership; a mutable
 lifecycle side record or successful scheduler exit cannot substitute for the
 immutable result.
+
+Builder-origin runs
+-------------------
+
+Run manifests may include optional ``builder_origin`` metadata containing the
+CLI target and validated construction arguments. Older manifests omit it. These
+arguments are diagnostic: a settings path does not snapshot that file's contents.
+Runtime root inputs remain in ``root.inputs`` and are separate from construction
+arguments. Both ordinary and placed local runs preserve this distinction.
+Compilation freezes the graph itself; this diagnostic local-run metadata is
+not carried into compiled worker manifests.
+
+``ninja replay`` refuses builder-origin manifests even with a ``--target``
+override, and refuses targets resolving to builders before calling their bodies.
+For durable detached execution, compile a frozen bundle containing the complete
+declared graph instead of expecting replay to reconstruct mutable settings.

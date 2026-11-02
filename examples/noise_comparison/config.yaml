@@ -1,0 +1,8 @@
+backend:
+  default: apptainer
+cache:
+  enabled: true
+sandbox:
+  enabled: true
+provenance:
+  enabled: true
