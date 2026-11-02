@@ -34,12 +34,21 @@ def has_placement(recipe):
     return any(ref.placement is not None or isinstance(ref.step, Recipe) and has_placement(ref.step) for ref in recipe.steps)
 
 
+def _reject_mixed_loops(recipe):
+    for ref in recipe.steps:
+        if ref.loop is not None:
+            raise BundleError("mixed allocation loop boundaries are unsupported for local execution and compilation")
+        if isinstance(ref.step, Recipe):
+            _reject_mixed_loops(ref.step)
+
+
 def freeze_mixed(recipe, inputs, *, config, workspace, code_roots=(), include_modules=(), cache=None, cache_dir=None):
     """Capture a recursively constructed graph without rebuilding it on nodes."""
     from shinobi.fits_access import scope_tree_has_fits_contract
     from shinobi.dataset_access import scope_tree_has_dataset_contract
     from shinobi.policies import EXECUTABLE_FLAVOURS
 
+    _reject_mixed_loops(recipe)
     build_graph(recipe)
     if scope_tree_has_fits_contract(recipe):
         raise BundleError("authoritative FITS is unsupported in mixed allocation graphs")
@@ -133,6 +142,7 @@ def plan_declared(recipe, values, workspace, digest="local", *, config=None, cac
     from shinobi.offload.slurm import _require_static_write_declarations
     from shinobi.steps.schema import static_wiring_values, gathered_output_values, planned_output_values
 
+    _reject_mixed_loops(recipe)
     config = config or AppConfig()
     graph = build_graph(recipe)
     outputs = {}
@@ -842,12 +852,15 @@ def run_local_mixed(recipe, inputs, *, config, budget=None, cache=None, cache_di
     """
     from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
     from shinobi.resources import Budget
-    from shinobi.steps.dispatch import _resolve_wiring
+    from shinobi.steps.dispatch import _resolve_wiring, _admission_demand
+    from contextlib import ExitStack
+    import heapq
     from shinobi.cache import resolve_input_keys
     from shinobi.results import StepResult
     from shinobi.products import resolve_reference
     from shinobi.provenance import build_manifest, run_manifest_path
 
+    _reject_mixed_loops(recipe)
     recipe = _local_code_identity(recipe)
     prepared = _prepare_inputs(recipe, inputs)
     plan = plan_declared(recipe, prepared, Path.cwd(), config=config, cache_dir=cache_dir)
@@ -857,10 +870,29 @@ def run_local_mixed(recipe, inputs, *, config, budget=None, cache=None, cache_di
     pending = set(range(len(recipe.steps)))
     workers = recipe.max_workers or config.execution.max_workers
     failure = None
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    held = {}
+
+    def drain_reservations():
+        # Run before joining the pool, including scheduler-side exceptions.
+        # A completed direct leaf may hold the budget a nested scheduler
+        # needs in order to finish; joining first would deadlock them.
+        budget.abandon()
+        for future in list(held):
+            if future.cancel():
+                budget.release(held.pop(future))
+        while held:
+            done, _ = wait(held, return_when=FIRST_COMPLETED)
+            for future in done:
+                budget.release(held.pop(future))
+
+    with ExitStack() as cleanup:
+        pool = cleanup.enter_context(ThreadPoolExecutor(max_workers=workers))
+        cleanup.callback(drain_reservations)
         running = {}
         groups = {}
-        while pending or running:
+        queued = []
+        payloads = {}
+        while pending or queued or running:
             for index in sorted(pending):
                 if failure is not None or not all(recipe.steps[parent].name in results for parent in graph.deps[index]):
                     continue
@@ -876,36 +908,69 @@ def run_local_mixed(recipe, inputs, *, config, budget=None, cache=None, cache_di
                     name = f"{recipe.name}.{ref.name}" + (f"[{number}]" if ref.scatter else "")
                     scope = ref.step.model_copy(update={"name": name})
                     unit = next(unit for unit in plan.units if unit.step_index == index and unit.slice_index == (number if ref.scatter else None))
-                    future = pool.submit(
-                        _dispatch_unit,
+                    payloads[index, number] = (
                         unit,
                         scope,
                         ref.func,
-                        _config=config.model_copy(deep=True),
-                        _budget=budget,
-                        _run_id=str(uuid4()),
-                        _input_keys=keys,
-                        _wired_fields=set(ref.wiring),
-                        _recipe_backend=backend or recipe.backend,
-                        _recipe_cache=recipe.cache,
-                        _recipe_cache_dir=recipe.cache_dir,
-                        _recipe_sandbox=recipe.sandbox,
-                        cache=cache,
-                        cache_dir=cache_dir,
-                        stream=stream,
-                        provenance=provenance,
-                        sandbox=sandbox,
-                        **one,
+                        dict(
+                            _config=config.model_copy(deep=True),
+                            _budget=budget,
+                            _run_id=str(uuid4()),
+                            _input_keys=keys,
+                            _wired_fields=set(ref.wiring),
+                            _recipe_backend=backend or recipe.backend,
+                            _recipe_cache=recipe.cache,
+                            _recipe_cache_dir=recipe.cache_dir,
+                            _recipe_sandbox=recipe.sandbox,
+                            cache=cache,
+                            cache_dir=cache_dir,
+                            stream=stream,
+                            provenance=provenance,
+                            sandbox=sandbox,
+                            **one,
+                        ),
                     )
-                    running[future] = (index, number)
+                    heapq.heappush(queued, (index, number))
                 pending.remove(index)
                 if not slices:
                     results[ref.name] = _aggregate_scatter_results(ref.step, ref.scatter.fields, values, [])
+            parked = False
+            generation = 0
+            while queued and len(running) < workers and failure is None:
+                index, number = queued[0]
+                unit, scope, func, kwargs = payloads[index, number]
+                demand = _admission_demand(scope)
+                granted, generation = budget.try_acquire(demand, scope.name)
+                if not granted:
+                    parked = True
+                    break
+                try:
+                    future = pool.submit(_dispatch_unit, unit, scope, func, **kwargs)
+                except BaseException:
+                    budget.release(demand)
+                    raise
+                held[future] = demand
+                running[future] = (index, number)
+                heapq.heappop(queued)
+                del payloads[index, number]
+            if not parked:
+                # Empty composite demands do not consume a refused atomic
+                # unit's FIFO ticket. If composites fill the worker slots,
+                # retaining that ticket blocks their leaves while we wait
+                # for the composites themselves to finish.
+                budget.abandon()
             if not running:
+                if parked:
+                    budget.wait_for_change(generation)
+                    continue
                 break
-            done, _ = wait(running, return_when=FIRST_COMPLETED)
+            # A nested scheduler may release budget before its composite
+            # future finishes. Retry admission then instead of waiting for
+            # that whole subtree while holding this scheduler's FIFO ticket.
+            done, _ = wait(running, timeout=0.05 if parked else None, return_when=FIRST_COMPLETED)
             for future in done:
                 index, number = running.pop(future)
+                budget.release(held.pop(future))
                 try:
                     result = future.result()
                     groups[index][1][number] = result
@@ -921,6 +986,8 @@ def run_local_mixed(recipe, inputs, *, config, budget=None, cache=None, cache_di
                 for future in list(running):
                     if future.cancel():
                         running.pop(future)
+                        budget.release(held.pop(future))
+                budget.abandon()
     if failure is not None:
         raise failure
     result = StepResult(

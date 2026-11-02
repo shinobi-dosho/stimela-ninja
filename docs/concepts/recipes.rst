@@ -368,12 +368,17 @@ Rules:
    drawn even though fewer may run. What actually happened is in the run
    manifest, where short-circuited steps are recorded with ``skipped: true``.
 
-A loop *is* offloadable -- it compiles to a plain dependency chain, with the
+The legacy flat compiler can offload a loop as a plain dependency chain, with the
 convergence test as a guard at the top of each job's script. The exception is a
 body that names its outputs per cycle (via ``index_input`` and an ``implicit``
 template): those paths cannot be known at compile time, so ``ninja compile``
 rejects the recipe rather than emitting a path no job will write. Such a loop
 still runs locally.
+
+Graphs with explicit Slurm placement use the bounded mixed route instead.
+That route refuses declared loops recursively, before any step starts, for
+both local execution and compilation. Ordinary recipes without placement
+retain the convergence behavior described above.
 
 Orchestration functions
 ------------------------

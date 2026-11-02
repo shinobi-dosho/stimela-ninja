@@ -53,6 +53,8 @@ their digests and staged source are checked before execution and publication.
 Native module-level pysteps are trusted Python, just as in a local recipe.
 Arbitrary orchestration, nested allocation boundaries, dynamically sized
 scatters, unresolved writes and authoritative FITS lifecycle scopes are refused.
+Declared loops anywhere in a placed graph are refused before execution, both
+locally and when compiling; this route does not implement convergence guards.
 The existing flat ``--worker`` protocol and argv compiler remain available.
 ``--overwrite`` selections on placed roots are currently refused explicitly.
 

@@ -80,6 +80,16 @@ _STEP_BACKENDS: dict[str, Any] = {}
 # an undeclared step never touches the budget's lock.
 _NO_RESOURCES = Resources()
 
+
+def _admission_demand(scope: Scope) -> Resources:
+    """Reserve atomic work only; composite leaves share the same budget.
+
+    Reserving for a Recipe as well would double-count its leaves and could
+    deadlock while they wait for resources held by their parent.
+    """
+    return _NO_RESOURCES if isinstance(scope, Recipe) or scope.resources is None else scope.resources
+
+
 # Slice index standing for "this unit is a whole step, not a scatter slice",
 # used only inside the scheduler's `pending` heap. Heap entries must be
 # order-comparable and `None` cannot be ordered against an int, so the
@@ -2904,20 +2914,7 @@ def _run_recipe(
                 stop = True
 
         def _demand_of(i: int) -> Resources:
-            """What step `i` reserves while it runs.
-
-            A nested `Recipe` reserves nothing: it is not a unit of
-            execution, its leaves are, and they schedule against this same
-            shared budget. Reserving for both would double-count -- and
-            deadlock, since the parent would hold that reservation while the
-            nested scheduler waited for budget only the parent could release.
-            (`build_graph` rejects the declaration outright; this is the
-            invariant the scheduler itself relies on.)
-            """
-            scope = recipe.steps[i].step
-            if scope.resources is None or isinstance(scope, Recipe):
-                return _NO_RESOURCES
-            return scope.resources
+            return _admission_demand(recipe.steps[i].step)
 
         def _submit_unit(i: int, slice_idx: int | None, demand: Resources, backfilled: bool = False) -> None:
             """Submit one admission unit that has already been granted."""
