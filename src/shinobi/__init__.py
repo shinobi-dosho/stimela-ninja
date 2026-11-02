@@ -148,3 +148,7 @@ from shinobi.fits import FITSHDU, FITSDescriptor, FITSStatus, FITSInspectionLimi
 from shinobi.fits_access import FITSAccess  # noqa: E402
 
 __all__ += ["FITSImage", "FITSTable", "FITSHDU", "FITSAccess", "FITSDescriptor", "FITSStatus", "FITSInspectionLimits", "inspect_fits", "inspect_fits_image", "inspect_fits_table"]
+
+from shinobi.builders import RecipeBuilder, recipe_builder  # noqa: E402
+
+__all__ += ["RecipeBuilder", "recipe_builder"]

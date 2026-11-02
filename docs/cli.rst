@@ -44,12 +44,13 @@ Targets
 
 Commands that act on a cab or recipe take a **target** of the form
 ``path/to/file.py:name`` or ``dotted.module.path:name``. The name must resolve
-to a ``Cab``, ``Recipe``, or a ``@shinobi.step``-decorated function.
+to a ``Cab``, ``Recipe``, ``@shinobi.step``-decorated function, or explicit
+``@shinobi.recipe_builder`` wrapper.
 
 ``ninja run`` -- run a target
 -----------------------------
 
-Runs a ``Cab``, ``Recipe``, or step. The target's own parameters become the
+Runs a ``Cab``, ``Recipe``, step, or recipe builder. The target's own parameters become the
 command's options -- run ``ninja run TARGET --help`` to see them.
 
 .. code-block:: console
@@ -65,7 +66,8 @@ Add ``--dryrun`` to render the execution graph without running anything:
     image
     └── mask  (read-after-write: /work/img-MFS-image.fits)
 
-Nothing is executed to produce this: a ``Recipe`` is a declared graph (its
+A recipe builder executes its trusted construction body first; no workflow
+steps execute during rendering. A ``Recipe`` is a declared graph (its
 steps and their ``InputRef``/``OutputRef`` wiring), and ``--dryrun`` renders
 that graph through the same builder (``shinobi.graph.build_graph``) the real
 executor uses -- so a cyclic or mis-wired recipe is rejected identically
@@ -463,3 +465,33 @@ rather than guessing. ``ninja runs`` still tracks them.
 .. code-block:: console
 
     $ ninja version
+
+Recipe construction targets
+---------------------------
+
+``ninja run`` and ``ninja compile`` accept explicit ``@recipe_builder`` targets:
+
+.. code-block:: console
+
+    $ ninja --config execution.yaml run pipeline.py:recipe --settings settings.yaml
+    $ ninja run pipeline.py:recipe --help
+    $ ninja run pipeline.py:recipe --settings settings.yaml --dryrun
+    $ ninja compile pipeline.py:recipe --settings settings.yaml
+
+Target help inspects the builder input schema without invoking the body or
+reading settings. Python module import remains ordinary trusted Python. Actual
+run, dry-run and compile each construct once after argument validation. Builder
+option spellings must be unique, including flattened nested fields, short
+aliases and boolean negative flags, and must not collide with command controls.
+Static Cab, Recipe and step targets retain their existing interface.
+
+Paths use the invocation working directory, including settings contents. A
+builder compile refuses a different ``--workdir`` before calling its body;
+static recipes retain their existing ``--workdir`` behavior. File-target imports
+do not add the target's directory to Python's import path: expose helper modules
+through an installed package or an explicit ``PYTHONPATH``.
+
+``--remote`` supports static targets only. The local launcher still does not
+import the target. The remote command refuses a builder before invoking its
+body; because SSH launches detached, that refusal can appear in the remote log.
+There is no automatic settings-file synchronization.

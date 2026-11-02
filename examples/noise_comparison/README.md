@@ -1,97 +1,67 @@
-# Thermal-noise comparison: one declared workflow
+# Compare thermal noise across arrays and imagers
 
-`noise_pipeline.py:recipe` declares one outer telescope/declination zip scatter.
-Each of its 30 branches creates one strict MS, then locally scatters WSClean,
-DDFacet, CASA and CASA FITS export over 14 robustness/band-mode combinations.
-The six telescopes, five declinations, seven Briggs values, two spectral modes
-and three imagers produce 1,260 image/PSF pairs. Native per-branch inventory
-steps require all six image/PSF files and CASA metadata for each combination.
-Root outputs are ordered MS paths and `products.json` inventory paths; detached
-finalization writes `results/<attempt-uuid>/manifest.json` with the complete
-observations and outputs. Use `shinobi.offload.mixed.current_manifest(submission)`
-to select the latest terminal result, including after a finalizer requeue.
+One script declares the experiment: simulate noise once for each array and
+declination, then image the **same Measurement Set** with WSClean, DDFacet and
+CASA at each Briggs robustness value. Each imager produces a dirty image and
+PSF for a single channel and for the full band. No deconvolution is performed.
 
-Both commands consume the same ordinary Recipe. From the repository root,
-configure `settings.json` as described below, then inspect or compile it:
+Edit the configuration, then run the recipe. Shinobi handles dependencies,
+parallel execution, caching and output checks.
 
-```sh
-example_root="$PWD/examples/noise_comparison"
-export PYTHONPATH="$example_root${PYTHONPATH:+:$PYTHONPATH}"
-export NOISE_SETTINGS="$example_root/settings.json"
-ninja --config "$example_root/config.json" run noise_pipeline:recipe --dryrun
-ninja --config "$example_root/config.json" compile noise_pipeline:recipe \
-  --workdir /data/noise-snapshot --code-root "$example_root"
-ninja --config "$example_root/config.json" compile noise_pipeline:recipe \
-  --submit --workdir /data/noise-snapshot --code-root "$example_root" \
-  --worker-python /data/env/bin/python
-```
+## Configuration
 
-To execute locally instead, use a separate existing workspace:
+| File | What to change |
+| --- | --- |
+| `settings.yaml` | Arrays, declinations, robustness values, observing duration, integration time and concurrency. |
+| `config.yaml` | Execution backend, caching, sandboxing and provenance. |
+| `layouts/*.yaml` | Antenna positions; paths in `settings.yaml` are relative to the invocation working directory. |
 
-```sh
-(cd /data/noise-local && ninja --config "$example_root/config.json" run noise_pipeline:recipe)
-```
+The supplied grid has six arrays, five declinations, seven robustness values,
+two channel selections and three imagers: **30 simulations and 1,260 image/PSF
+pairs**. To try a smaller experiment, keep one entry in `arrays` and set
+`declinations` to `[-25]` and `robust` to `[0]`. This produces six pairs from
+one simulation. No Python changes are needed.
 
-For the submitted run, the printed handle works with `ninja status HANDLE`,
-`ninja logs HANDLE`, and `ninja runs --workdir /data/noise-snapshot`. For existing
-version-6 runs, see the conversion guidance below.
+The default observation is four hours with 32-second integrations. Change
+`duration_seconds` and `integration_seconds` together; their ratio must be a
+whole number. Observations are centred on local transit unless
+`start_hour_angle` is supplied. Array SEFDs, frequencies and image scales are
+experiment inputs; adjust them for the comparison you want to make.
 
-Use an existing writable shared workspace and a preinstalled matching worker
-Python. Set `NOISE_SETTINGS=/absolute/path/settings.json` to select reviewed
-settings. Layout paths resolve relative to that JSON file. Set `images` to
-absolute shared SIF paths under keys `simms`, `wsclean`, `ddfacet`, `casa-tasks`.
-The supplied `config.json` selects Apptainer and enables caching, sandboxing
-and provenance. Install the `ms` and `fits` extras in the submitting and worker
-Python environments for dataset and product validation. The native inventory
-runs on the worker Python. For Slurm, `sbatch_opts` names site routing/resources,
-e.g. `{"partition":"dev","cpus-per-task":"8","mem":"32G","time":"04:00:00"}`;
-`max_parallel` limits active branches. `max_workers` limits local imaging tasks
-inside a branch; `threads` sets per-tool concurrency. No custom launcher or
-manual output-directory scaffolding is needed.
+## Run
 
-The supplied defaults retain four hours (`duration_seconds=14400`,
-`integration_seconds=32`, 450 integrations). For the separately reviewed
-8-minute snapshot use `duration_seconds=480`, `integration_seconds=8` (60
-integrations). A null `start_hour_angle` centres either duration on transit:
--2 hours for four hours, -1/15 hour for the snapshot. Use a fresh workspace to
-keep the existing four-hour evidence separate. The example retains the
-imagers' original rank-filter settings; filter-disabled controls are separate
-experiments.
+Install Shinobi with the `ms` and `fits` extras and make Apptainer available.
+The tool environment needs Simms with local-hour-angle support and a Dosho
+catalogue supporting DDFacet's `DirtyPSF` mode. Catalogue container images are
+used by default. To use local images, add an `images` mapping to `settings.yaml`
+with absolute SIF paths under `simms`, `wsclean`, `ddfacet` and `casa-tasks`.
 
-Dependencies: Dosho must include merged PR #106 (`DirtyPSF`); the older
-0.2.0b2 release rejects that mode correctly. Use the reviewed merged source
-in the execution environment rather than relaxing validation. Simms must
-include local-hour-angle start support (PR #237). WSClean, DDFacet and CASA
-are supplied by the configured images. `noise_casa.py` preserves native
-metadata and exports the actual dirty image and measured PSF, without
-substituting a fitted Gaussian. `layouts/provenance.json` records layout sources.
-
-Compiling without `--submit` is pure validation. Submission snapshots the
-constructed branch graph and Python helpers; compute nodes restore that graph
-and never invoke `build_pipeline`. Pending jobs do not reserve paths. See the
-maintained offloading documentation for claims, recovery, handles and logs.
-
-The complete 30-case snapshot campaign has passed execution and product audits:
-1,260 image/PSF pairs, 30 MSs with 60 eight-second integrations, and successful
-gather/finalizer records. Separate live checks cover interruption, cache reuse,
-failure propagation and local execution of the same placed graph.
-That campaign used `threads=4`, `max_workers=1` and `max_parallel=3`, with
-eight CPUs and 32 GiB reserved per branch allocation.
-
-
-**Existing version-6 runs:** the completed snapshot campaign used the older
-recursive format and produced a 598 MB final record. `ninja status` was killed
-with exit 137 while reading it; an out-of-memory cause was not independently
-confirmed. Monitoring now refuses unconverted legacy records larger than 8 MiB
-with a conversion diagnostic. On a host sized to load the largest legacy record,
-run:
+From the repository root:
 
 ```sh
-python -m shinobi.offload.mixed convert-records --submission /shared/submission
+export PYTHONPATH="$PWD/examples/noise_comparison${PYTHONPATH:+:$PYTHONPATH}"
+ninja --config examples/noise_comparison/config.yaml run examples/noise_comparison/noise_pipeline.py:recipe --settings examples/noise_comparison/settings.yaml --dryrun
+ninja --config examples/noise_comparison/config.yaml run examples/noise_comparison/noise_pipeline.py:recipe --settings examples/noise_comparison/settings.yaml
 ```
 
-Conversion preserves the original records and publishes bound version-7
-sidecars. Later monitoring hashes the original bytes without loading them all
-into memory. The original campaign has not been revalidated through this path;
-see the [migration limits](../../docs/offloading.rst#converting-existing-version-6-results)
-and [issue #251](https://github.com/shinobi-dosho/stimela-ninja/issues/251).
+The explicit `PYTHONPATH` exposes the example's helper modules. For a run from another
+directory, use absolute paths for the target, execution config, settings and
+helper `PYTHONPATH`, and update layout paths in the settings for that invocation
+directory. Paths inside YAML are cwd-relative too.
+
+`max_workers` limits concurrent recipe tasks; `threads` controls tool
+parallelism. Outputs go under
+`noise-products/<array>/dec<declination>/<single|continuum>/robust-<index>/`,
+where the index follows the order in `settings.yaml`. Each array/declination
+also has a `noise.ms` and a `products.json` inventory of its FITS files.
+
+## Read the script
+
+`noise_pipeline.py` loads the settings, loops over arrays and declinations,
+and declares the simulation and imaging steps. Zipped scatters pair each
+robustness value with its channel selection and output directory. Explicit
+output references connect the imagers to the simulation.
+
+Two helpers contain tool details: `noise_casa.py` runs CASA and exports its
+actual dirty image and PSF; `noise_inventory.py` checks the expected files and
+writes the inventory. Layout sources are recorded in `layouts/provenance.json`.

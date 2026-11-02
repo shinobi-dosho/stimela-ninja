@@ -98,6 +98,7 @@ class RunManifest(BaseModel):
     stimela_version: str | None = None
     cab_repo_commit: str | None = None
     target: str | None = None
+    builder_origin: dict[str, Any] | None = None
     generated_at: datetime
     backend: str
     returncode: int
@@ -163,11 +164,12 @@ def _record(result: StepResult, name: str | None = None, *, recursive: bool = Tr
     )
 
 
-def build_manifest(result: StepResult, *, backend: str, target: str | None = None) -> RunManifest:
+def build_manifest(result: StepResult, *, backend: str, target: str | None = None, builder_origin: dict[str, Any] | None = None) -> RunManifest:
     """Build a `RunManifest` freezing a completed top-level run's `result`."""
     return RunManifest(
         shinobi_version=_shinobi_version,
         target=target,
+        builder_origin=builder_origin,
         generated_at=datetime.now(timezone.utc),
         backend=backend,
         returncode=result.returncode,

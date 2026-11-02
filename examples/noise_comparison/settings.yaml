@@ -1,0 +1,57 @@
+declinations:
+- -25
+- -15
+- 5
+- 20
+- 30
+robust:
+- -2
+- -1.3333333333333333
+- -0.6666666666666666
+- 0
+- 0.6666666666666666
+- 1.3333333333333333
+- 2
+duration_seconds: 14400
+integration_seconds: 32
+nchan: 4
+single_channel: 0
+threads: 2
+max_workers: 2
+arrays:
+  meerkat:
+    layout: examples/noise_comparison/layouts/meerkat.yaml
+    sefd_jy: 450
+    cell_arcsec: 1.0
+    first_channel_hz: 1376000000.0
+    image_size: 512
+  vla-b:
+    layout: examples/noise_comparison/layouts/vla-b.yaml
+    sefd_jy: 420
+    cell_arcsec: 0.7
+    first_channel_hz: 1376000000.0
+    image_size: 512
+  vla-c:
+    layout: examples/noise_comparison/layouts/vla-c.yaml
+    sefd_jy: 420
+    cell_arcsec: 2.0
+    first_channel_hz: 1376000000.0
+    image_size: 512
+  gmrt:
+    layout: examples/noise_comparison/layouts/gmrt.yaml
+    sefd_jy: 300
+    cell_arcsec: 0.3
+    first_channel_hz: 1376000000.0
+    image_size: 512
+  askap:
+    layout: examples/noise_comparison/layouts/askap.yaml
+    sefd_jy: 1800
+    cell_arcsec: 1.2
+    first_channel_hz: 1376000000.0
+    image_size: 512
+  skamid-aastar:
+    layout: examples/noise_comparison/layouts/skamid-aastar.yaml
+    sefd_jy: 400
+    cell_arcsec: 0.2
+    first_channel_hz: 1376000000.0
+    image_size: 512
