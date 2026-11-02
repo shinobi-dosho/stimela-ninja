@@ -404,3 +404,33 @@ unchanged and identical MS file hashes (excluding casacore lock files).
 `results.json` is written only after every assertion passes; `progress.json`
 records submitted jobs for diagnosis. This is a live acceptance probe, not part
 of ordinary pytest, and does not qualify another site's shared filesystem.
+
+### Ordinary mixed Recipe acceptance
+
+`mixed_workflow.py:recipe` declares two concurrent strict-MS CREATE branches,
+with two local read slices per branch and an ordinary downstream JSON gather.
+It uses native python-casacore/numpy in the shared worker environment. From a
+fresh shared workspace with the source checkout and worker Python visible:
+
+```sh
+export SHINOBI_OWNERSHIP_REGISTRY=/data/workspace-owners.json
+export PYTHONPATH=/data/source/tests/slurm_physical:/data/source/src
+/data/env/bin/ninja run mixed_workflow:recipe --dryrun
+/data/env/bin/ninja compile mixed_workflow:recipe --workdir "$PWD" \
+  --code-root /data/source/tests/slurm_physical
+/data/env/bin/ninja compile mixed_workflow:recipe --submit --workdir "$PWD" \
+  --code-root /data/source/tests/slurm_physical --worker-python /data/env/bin/python
+/data/env/bin/ninja runs
+/data/env/bin/ninja status .shinobi/<submission-uuid>/handle.json
+/data/env/bin/ninja logs <submission-uuid>
+```
+
+`report.json` must contain `{"values": [[1, 2], [1, 2]]}` despite reversed
+slice completion. Rerun locally with `ninja run mixed_workflow:recipe` to
+verify the same canonical leaf cache and strict CREATE lineage are reusable.
+The published submission contains per-invocation logs, terminal records and
+`results/<attempt-uuid>/manifest.json`. Select the current manifest with
+`shinobi.offload.mixed.current_manifest(submission_dir)`; an unfinished newer
+finalizer never exposes an older success. Inspect the accepted `jobs/step-0.json` to identify the Slurm
+array for a controlled requeue test. Change placement partition/resources only
+in a reviewed fixture copy for sites without the example `dev` partition.

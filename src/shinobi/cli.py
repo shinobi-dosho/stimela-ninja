@@ -1177,12 +1177,17 @@ def compile_recipe(
     """Compile a Recipe TARGET ('path/to/file.py:name' or 'pkg.mod:name')
     into a cluster workflow and, with --submit, hand it off and detach.
 
-    Only purely-declarative recipes can be offloaded; anything relying on
-    live Python (orchestration functions, MUTABLE non-path inputs, non-path
-    data flow) is rejected with an explanation -- run those locally via
-    `ninja run`. Steps that rewrite a shared path in place are fine: the
-    compiler derives the ordering they need. [OPTIONS] carry the recipe's
-    own inputs; run `ninja compile TARGET --help` to see them.
+    Only declared graphs can be compiled; arbitrary orchestration functions
+    are rejected. Explicit Slurm placement selects bounded mixed execution:
+    branch allocations run local DAGs, typed outputs pass through ordered
+    gathers, and the scheduler carries dependencies. This route requires
+    explicit dependencies between conflicting filesystem accesses and rejects dynamic
+    scatter sizes and nested allocation boundaries.
+
+    The legacy flat argv compiler rejects non-path data flow and MUTABLE
+    non-path inputs. It derives ordering for steps that rewrite shared paths.
+    [OPTIONS] carry the recipe's own inputs; run `ninja compile TARGET --help`
+    to see them.
     """
     if target in ("-h", "--help"):
         click.echo(ctx.get_help())
@@ -1196,15 +1201,38 @@ def compile_recipe(
         raise click.ClickException(f"{target!r} is not a Recipe -- only recipes can be offloaded")
     recipe = obj
     runtime = None if container_runtime.lower() == "none" else container_runtime
+    from shinobi.offload.mixed import has_placement
+
+    mixed = has_placement(recipe)
+    if worker and mixed:
+        raise click.ClickException("--worker selects flat compatibility mode; omit it for placed recipes")
     if worker and not submit:
         raise click.ClickException("--worker currently requires --submit because submission preparation stages immutable source and environment data")
-    if not worker and (cache is not None or cache_dir is not None):
+    if not worker and not mixed and (cache is not None or cache_dir is not None):
         raise click.ClickException("--cache/--no-cache/--cache-dir require --worker; the legacy argv compiler has no runtime cache lifecycle")
     if not worker and dataset_storage_qualification is not None:
         raise click.ClickException("--dataset-storage-qualification requires --worker")
 
     def _callback(**kwargs):
         inputs = unflatten_kwargs(recipe.inputs_model, kwargs)
+        if mixed:
+            from shinobi.offload._codec import BundleError
+            from shinobi.offload.mixed import freeze_mixed, plan_mixed, prepare_mixed, submit_mixed
+
+            try:
+                bundle = freeze_mixed(recipe, inputs, config=ctx.obj, workspace=Path(workdir or os.getcwd()), code_roots=code_root, cache=cache, cache_dir=cache_dir)
+                plan = plan_mixed(bundle)
+                if not submit:
+                    click.echo(f"mixed plan: {len(plan.units)} local drivers; bundle {bundle.digest}")
+                    for unit in plan.units:
+                        click.echo(f"  {unit.name}")
+                    return
+                directory = prepare_mixed(bundle, submission_root=submission_root or Path(bundle.workspace) / ".shinobi/submissions", worker_python=worker_python)
+                handle = submit_mixed(directory)
+            except (BundleError, ShinobiError, RecipeGraphError, ValueError) as exc:
+                raise click.ClickException(str(exc)) from None
+            click.echo(f"submitted {len(handle.jobs)} jobs (detached); handle: {directory / 'handle.json'}")
+            return
         if worker:
             from shinobi.offload._codec import BundleError
             from shinobi.offload.bundle import freeze_recipe
@@ -1293,7 +1321,13 @@ def show_status(handle_file: str) -> None:
     # An unreachable host is a condition on the operator's network, not a
     # bug in ninja, and a traceback is the wrong way to say so.
     try:
-        if engine == "slurm":
+        if engine == "slurm" and data.get("mixed"):
+            from shinobi.offload.mixed import mixed_status
+
+            state = mixed_status(data)
+            click.echo(state.describe())
+            click.echo(state.detail)
+        elif engine == "slurm":
             for name, state in status_slurm(data["jobs"]).items():
                 click.echo(f"{name}: {state}")
         elif engine == "slurm-worker":

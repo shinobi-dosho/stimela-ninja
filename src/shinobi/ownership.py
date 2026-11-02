@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shinobi._input_schema import validate_scope_input_models
 from shinobi.exceptions import ShinobiError
@@ -45,6 +45,27 @@ from shinobi.steps.schema import (
     unresolved_output_path_fields,
     write_path_fields,
 )
+
+
+from contextvars import ContextVar
+from contextlib import contextmanager
+
+_partition_accesses: ContextVar[tuple | None] = ContextVar("shinobi_partition_accesses", default=None)
+
+
+@contextmanager
+def partitioned_claim(accesses):
+    """Opt in only a prevalidated allocation to disjoint same-root claims."""
+    token = _partition_accesses.set(accesses)
+    try:
+        yield
+    finally:
+        _partition_accesses.reset(token)
+
+
+def partitioned_write_paths():
+    accesses = _partition_accesses.get()
+    return None if accesses is None else {path for path, writes in accesses if writes}
 
 
 class WorkspaceOwnershipError(ShinobiError):
@@ -235,7 +256,7 @@ def _resolved_leaf_inputs(
                 step_inputs.update({(*key, *(nested_key if isinstance(nested_key, tuple) else (nested_key,))): value for nested_key, value in nested_steps.items()})
                 if known_steps is not None:
                     known_steps.update({(*key, *(nested_key if isinstance(nested_key, tuple) else (nested_key,))): value for nested_key, value in nested_known.items()})
-            outputs[ref.name] = gathered_output_values(ref.step, gathered_inputs, unresolved_inputs=unresolved_fields)
+            outputs[ref.name] = gathered_output_values(ref.step, gathered_inputs, unresolved_inputs=unresolved_fields, workspace=workspace)
             continue
         validated = None
         prior = validated_steps.get(id(ref)) if validated_steps is not None else None
@@ -283,7 +304,7 @@ def scope_path_accesses(
     step_inputs: dict[int | tuple[int, ...], tuple[BaseModel, bool]] = {}
     from shinobi.dataset_access import ResolvedAccessPlanner, dataset_workspace_accesses
 
-    planner = ResolvedAccessPlanner(workspace)
+    planner = ResolvedAccessPlanner(workspace, track_order=False)
     for index, (leaf, known, unresolved) in enumerate(_resolved_leaf_inputs(scope, values, step_inputs=step_inputs, known_steps=known_steps, workspace=workspace)):
         if leaf.derived_reads:
             from shinobi.derived import derived_reads
@@ -639,7 +660,7 @@ def validate_contained_execution(
 class WorkspaceOwner(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     workflow_id: str
     kind: Literal["local", "slurm"]
     workspace: str
@@ -647,6 +668,16 @@ class WorkspaceOwner(BaseModel):
     submission: str | None = None
     accesses: tuple[WorkspaceAccess, ...] = ()
     registry: str
+
+    partitioned: bool = Field(default=False, exclude_if=lambda value: not value)
+
+    @model_validator(mode="after")
+    def _partition_version(self):
+        if self.partitioned != (self.schema_version == 2):
+            raise ValueError("partitioned ownership requires owner schema version 2")
+        if self.partitioned and (self.kind != "local" or not self.accesses):
+            raise ValueError("partitioned ownership requires concrete local access claims")
+        return self
 
 
 def _same_claim(left: WorkspaceOwner, right: WorkspaceOwner) -> bool:
@@ -658,6 +689,7 @@ def _same_claim(left: WorkspaceOwner, right: WorkspaceOwner) -> bool:
         left.submission,
         left.accesses,
         left.registry,
+        left.partitioned,
     ) == (
         right.workflow_id,
         right.kind,
@@ -665,6 +697,7 @@ def _same_claim(left: WorkspaceOwner, right: WorkspaceOwner) -> bool:
         right.submission,
         right.accesses,
         right.registry,
+        right.partitioned,
     )
 
 
@@ -728,7 +761,7 @@ class WorkspaceOwnershipStore(JsonFileStore):
                     raise WorkspaceOwnershipError(f"workspace {self.workspace} has conflicting metadata for workflow {owner.workflow_id}")
                 return current, False
             for held in owners.values():
-                if not _read_claim(owner) or not _read_claim(held):
+                if (not _read_claim(owner) or not _read_claim(held)) and not (owner.partitioned and held.partitioned and not _owners_conflict(owner, held)):
                     raise WorkspaceOwnershipError(
                         f"workspace {self.workspace} is owned by {held.kind} workflow {held.workflow_id}"
                         + (f" ({held.submission})" if held.submission else "")
@@ -899,7 +932,15 @@ def acquire_workspace(
     store = WorkspaceOwnershipStore(workspace)
     canonical = _canonical_accesses(store.workspace, accesses or [(store.workspace, True)])
     registry_path = (registry or ownership_registry()).expanduser().resolve()
+    partition = _partition_accesses.get()
+    if partition is not None:
+        for access in canonical:
+            if not any((Path(access.path) == path or Path(access.path).is_relative_to(path)) and (writes or not access.writes) for path, writes in partition):
+                raise WorkspaceOwnershipError(f"allocation changed frozen filesystem access: {access.path}")
+    partitioned = partition is not None and bool(canonical)
     owner = WorkspaceOwner(
+        schema_version=2 if partitioned else 1,
+        partitioned=partitioned,
         workflow_id=workflow_id,
         kind=kind,
         workspace=str(store.workspace),

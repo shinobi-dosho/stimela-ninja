@@ -492,8 +492,11 @@ another slice's reservation cannot cover redirected I/O. Scalar refinements
 that preserve these accesses are allowed. Any cross-slice overlap involving a write
 is refused before any task launches. This includes duplicate outputs, parent
 and descendant paths, canonical symlink aliases, and external closure members.
-Explicit or inferred dataset WRITE/CREATE scatter and nested MS dataset
-recipes remain refused by access planning. Execution also refuses authoritative
+Atomic dataset WRITE/CREATE scatter and generic nested MS dataset recipes
+remain refused by access planning. An explicitly placed branch containing
+strict MS CREATE followed by atomic read-only imaging scatters is admitted
+as its own lifecycle root; see :doc:`../offloading` for that bounded exception.
+Execution also refuses authoritative
 FITS scatter and nested FITS recipes; their existing planning and dry-run
 routes remain available. Flatten unsupported steps (including bounded loop
 expansions) so every access has one declared graph node.

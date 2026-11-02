@@ -269,10 +269,11 @@ Scatter previews preserve the declared nodes and dependency edges.
 
 Strict MSv2 readers may scatter atomic steps in a flat recipe when every slice
 input resolves before dispatch. Dataset WRITE/CREATE, authoritative FITS and
-nested dataset scatter remain refused. Shared reads are permitted; cross-slice
+generic nested dataset scatter remain refused. Shared reads are permitted; cross-slice
 filesystem overlap involving a write is rejected before launch. See
-:doc:`datasets` for the contained lifecycle contract. Offload compilation still
-refuses scatter.
+:doc:`datasets` for the contained lifecycle contract. The legacy argv compiler and flat worker route still refuse scatter. Explicit
+``SlurmPlacement`` supports bounded outer scatter with local inner scatters; see
+:doc:`../offloading`.
 
 Use the ``scatter=`` argument of ``add_step`` or the decorators:
 
@@ -304,7 +305,9 @@ Rules:
 * a downstream step can scatter over a gathered output in turn, or consume the
   whole list as a single input.
 
-Scattered recipes are not offloadable in v1.
+Declare ``placement=SlurmPlacement(...)`` on an outer branch to compile a bounded
+scattered recipe. Placement is separate from leaf ``Resources`` and is displayed
+in dry runs. See :doc:`../offloading` for supported boundaries and ownership.
 
 .. _declared-loops:
 
@@ -402,11 +405,18 @@ on`` note naming the rest. See :doc:`../cli` for the ``--dryrun`` output.
 Offloading
 ----------
 
-A recipe that is *purely declarative* -- no orchestration functions, only
-``binary`` cabs, and only paths crossing between steps -- can be compiled to
-a cluster workflow and detached. Steps that rewrite a shared path in place
-(the usual self-cal pattern) are offloadable too: the compiler derives the
-ordering they need from the resolved paths. See :doc:`../offloading`.
+A recipe with explicit ``SlurmPlacement`` boundaries can compile bounded
+outer scatters into allocations that execute their inner DAGs locally. This
+route supports native and Apptainer tools and typed aggregate outputs; the
+submitter exits after handing off scheduler dependencies and finalization.
+Conflicting accesses require declared ordering, and dynamically sized scatters
+and nested allocation boundaries are refused.
+
+The legacy flat argv compiler accepts purely declarative binary-cab recipes
+with path-only inter-step data. In that route, steps that rewrite shared paths
+are ordered from their resolved accesses. The flat ``--worker`` route adds
+the worker result and lifecycle protocol. See :doc:`../offloading` for the
+eligibility and integrity requirements of each route.
 
 Explicitly rerunning cached steps
 ---------------------------------

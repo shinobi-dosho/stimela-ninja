@@ -748,7 +748,8 @@ class _AccessState:
 class ResolvedAccessPlanner:
     """Incremental path+dataset hazard planner in an existing stable order."""
 
-    def __init__(self, workspace: Path | None = None) -> None:
+    def __init__(self, workspace: Path | None = None, *, track_order: bool = True) -> None:
+        self._track_order = track_order
         self._workspace = (workspace or Path.cwd()).resolve()
         self._accesses: dict[Path, _AccessState] = {}
         self._planned_roots: dict[Path, tuple[Path, ...]] = {}
@@ -800,6 +801,11 @@ class ResolvedAccessPlanner:
         for access in datasets:
             if access.mode is DatasetMode.CREATE and access.root is not None:
                 self._planned_roots[access.root] = access.resources
+        if not self._track_order:
+            # Ownership needs the complete validated access set, but never
+            # consumes scheduler edges. Avoid quadratic hazard bookkeeping
+            # for that caller while preserving closure/CREATE validation.
+            return AccessDecision(dependencies=frozenset(), reasons={}, datasets=datasets)
         declared_resources = {resource for access in datasets for resource in access.resources}
         accesses: list[tuple[Path, bool, str]] = []
         for access in datasets:

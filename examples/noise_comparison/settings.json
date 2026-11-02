@@ -1,0 +1,46 @@
+{
+  "arrays": {
+    "meerkat": {
+      "layout": "layouts/meerkat.yaml",
+      "sefd_jy": 450,
+      "cell_arcsec": 1.0,
+      "first_channel_hz": 1376000000.0,
+      "image_size": 512
+    },
+    "vla-b": {
+      "layout": "layouts/vla-b.yaml",
+      "sefd_jy": 420,
+      "cell_arcsec": 0.7,
+      "first_channel_hz": 1376000000.0,
+      "image_size": 512
+    },
+    "vla-c": {
+      "layout": "layouts/vla-c.yaml",
+      "sefd_jy": 420,
+      "cell_arcsec": 2.0,
+      "first_channel_hz": 1376000000.0,
+      "image_size": 512
+    },
+    "gmrt": {
+      "layout": "layouts/gmrt.yaml",
+      "sefd_jy": 300,
+      "cell_arcsec": 0.3,
+      "first_channel_hz": 1376000000.0,
+      "image_size": 512
+    },
+    "askap": {
+      "layout": "layouts/askap.yaml",
+      "sefd_jy": 1800,
+      "cell_arcsec": 1.2,
+      "first_channel_hz": 1376000000.0,
+      "image_size": 512
+    },
+    "skamid-aastar": {
+      "layout": "layouts/skamid-aastar.yaml",
+      "sefd_jy": 400,
+      "cell_arcsec": 0.2,
+      "first_channel_hz": 1376000000.0,
+      "image_size": 512
+    }
+  }
+}

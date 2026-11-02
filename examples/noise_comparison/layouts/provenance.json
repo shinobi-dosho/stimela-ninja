@@ -1,0 +1,93 @@
+{
+  "meerkat": {
+    "source": "https://github.com/shinobi-dosho/simms/tree/af9c3e338a2efd588481d746ba997fa264168872/src/simms/telescope/layouts",
+    "note": "Exact named selection from merged Simms layout.",
+    "antennas": 64,
+    "baseline_m": [
+      29.269011429340427,
+      7697.577842420968
+    ],
+    "height_m": [
+      1075.9450000019424,
+      1110.4230000023927
+    ],
+    "layout_sha256": "9858295f252a05f009c39902b0173235f5dcdef65567b8e698ae9904f305f68c"
+  },
+  "skamid-aastar": {
+    "source": "https://github.com/shinobi-dosho/simms/tree/af9c3e338a2efd588481d746ba997fa264168872/src/simms/telescope/layouts",
+    "note": "Exact named selection from merged Simms layout.",
+    "antennas": 143,
+    "baseline_m": [
+      29.269011429340427,
+      35970.257636165465
+    ],
+    "height_m": [
+      1036.9120000009455,
+      1361.8120000005674
+    ],
+    "layout_sha256": "0d3a54d9d0f984224610965c93d5ddbe656f0243ab7b296deefaa667c0333764"
+  },
+  "vla-b": {
+    "source": "https://github.com/shinobi-dosho/simms/tree/af9c3e338a2efd588481d746ba997fa264168872/src/simms/telescope/layouts",
+    "note": "Exact named selection from merged Simms layout. Corrected centre to casacore WGS84 VLA; antenna positions unchanged.",
+    "antennas": 27,
+    "baseline_m": [
+      243.11816474160554,
+      11128.039155443606
+    ],
+    "height_m": [
+      2113.6523589804183,
+      2143.2204673067245
+    ],
+    "layout_sha256": "0069da49575eca18837ffa027c894fdd46bf124c8c482f2f81ff417adace3a7f"
+  },
+  "vla-c": {
+    "source": "https://github.com/shinobi-dosho/simms/tree/af9c3e338a2efd588481d746ba997fa264168872/src/simms/telescope/layouts",
+    "note": "Exact named selection from merged Simms layout. Corrected centre to casacore WGS84 VLA; antenna positions unchanged.",
+    "antennas": 27,
+    "baseline_m": [
+      78.0428424958336,
+      3387.4686200173915
+    ],
+    "height_m": [
+      2113.6476401147875,
+      2119.166246782796
+    ],
+    "layout_sha256": "9ebe06bba9ac9789236b51648e65adad72f7d84181527a0496d771a74d0c096c"
+  },
+  "askap": {
+    "source": "https://github.com/askap-craco/craco-python/blob/a0c47d8c9dcf5811554a82c09b050e834e3e0a80/testdata/fcm_20220714.txt",
+    "source_sha256": "55988487efbcd9e90250320bab98faf33dec171200b36655f098e09eacb33fce",
+    "note": "Physical antennas 1..36; excluded ant90 duplicate/test entry. Individual measured ITRF positions, no common-height approximation. Centre is antenna 1.",
+    "antennas": 36,
+    "baseline_m": [
+      22.394404101019617,
+      6442.311351809765
+    ],
+    "height_m": [
+      356.56301158452584,
+      373.3056360120873
+    ],
+    "layout_sha256": "efbc6eaa0f63511d1aace74e4aa42ae41ca53776027fa927836ba61880afcfae"
+  },
+  "gmrt": {
+    "source": "https://www.ncra.tifr.res.in/storage/files/gtac_49_status_doc.pdf",
+    "source_sha256": "5a85bd15856d27bd1a5e69cc1448af7fe7fec6eea5e5d3631c6dcf44de6f4c80",
+    "note": "Table3 bx/by equatorial, by east: rotated about Earth z axis by casacore GMRT longitude. C02 placed at casacore GMRT WGS84 reference (approximate absolute origin); published full 3D relative baseline geometry preserved.",
+    "reference_geodetic_deg_m": [
+      74.049742,
+      19.096517,
+      660.0
+    ],
+    "antennas": 30,
+    "baseline_m": [
+      103.0222053730568,
+      25975.547261056887
+    ],
+    "height_m": [
+      633.303959737723,
+      715.2345300490958
+    ],
+    "layout_sha256": "6d35b7e442da75d32f53e64a6eb3074c2f063a080a45d4ca67229d9bd1be4dac"
+  }
+}

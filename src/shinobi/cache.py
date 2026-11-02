@@ -601,6 +601,15 @@ class ExecutionIdentity:
     source_helpers: Any | None = None
 
 
+def recipe_output_keys(recipe, results):
+    """Preserve producing fields and coordinate selection at recipe exports."""
+    return {
+        field: selected_key(as_provenance_key(key, ref.field), ref.selection)
+        for field, ref in recipe.output_wiring.items()
+        if ref.step in results and (key := results[ref.step].provenance_key(ref.field)) is not None
+    }
+
+
 def resolve_input_keys(ref, inbound_keys: dict[str, Any], results: dict[str, StepResult]) -> dict[str, Any]:
     """Resolve the producing-state identity for each explicitly wired input.
 

@@ -5,6 +5,124 @@ A recipe that is *purely declarative* can be compiled to a cluster workflow and
 handed off, so the pipeline runs without a live ``ninja`` process babysitting
 it. This is what ``ninja compile`` does.
 
+Declared allocation boundaries
+------------------------------
+
+An ordinary Recipe can place a nested recipe on Slurm while keeping its inner
+DAG and scatters local to that allocation::
+
+    from shinobi import Recipe, SlurmPlacement
+
+    campaign.add_step(
+        "cases", branch, scatter=["ms", "layout"],
+        ms=case_ms_paths, layout=case_layout_paths,
+        placement=SlurmPlacement(
+            sbatch_opts={"partition": "dev", "cpus-per-task": "8", "mem": "32G"},
+            max_parallel=3,
+        ),
+    )
+
+The lists are zipped using ordinary scatter semantics. ``ninja run`` executes
+this same declaration locally, sharing a resource budget between branch roots.
+``ninja run --dryrun`` displays placement. ``ninja compile`` detects placement
+and freezes the recursively constructed graph; it does not need ``--worker``.
+Without ``--submit`` compilation only validates and prints the plan: it creates
+no submission directory, provisions no environment, resolves no image tags and
+submits no jobs. For example::
+
+    ninja compile workflow.py:campaign --workdir /data/project --code-root /data/source
+    ninja compile workflow.py:campaign --submit --workdir /data/project \
+        --code-root /data/source --worker-python /data/env/bin/python
+
+Submission writes an immutable version-4 RecipeBundle, captured Python source,
+worker identity and the execution plan. It submits arrays for outer slices,
+``afterok`` gather jobs and an ``afterany`` finalizer, then exits. The constructed
+subtree is restored from the bundle; workers never call its recipe builder to
+reconstruct the DAG. Inner scatters remain ordinary local dispatch. Array
+``max_parallel`` limits actual scheduler concurrency; it is not a resource
+reservation held by the composite recipe. Local admission is capped by both
+configured resources and the Slurm allocation. Both ``SLURM_MEM_PER_NODE`` and
+``SLURM_MEM_PER_CPU`` are honored; per-CPU memory multiplies the allocated CPU
+count before applying a tighter local/configured CPU budget. Slurm memory zero
+means unlimited and adds no cap. Multi-task and multi-node allocation shapes
+are refused. Declare costs on executable leaves as usual.
+
+This bounded route supports native and Apptainer tools on identically mounted
+shared storage. Submission requires existing absolute local container files;
+their digests and staged source are checked before execution and publication.
+Native module-level pysteps are trusted Python, just as in a local recipe.
+Arbitrary orchestration, nested allocation boundaries, dynamically sized
+scatters, unresolved writes and authoritative FITS lifecycle scopes are refused.
+The existing flat ``--worker`` protocol and argv compiler remain available.
+``--overwrite`` selections on placed roots are currently refused explicitly.
+
+The complete graph is checked before any work or submission. Independent write
+collisions (including canonical aliases and ancestors) are refused; shared
+reads and explicitly ordered consumers are permitted. Each allocation uses a
+normal local lease under its own invocation ID. Version-2 partitioned owner
+records permit disjoint allocations at the same ownership directory; ordinary,
+legacy and opaque claims keep their coarse exclusion. Recovery is restricted
+to exact owned write paths and exact earlier invocation records with matching
+bundle and liveness evidence. **Pending scheduler jobs reserve no scientific
+paths.** A later conflicting workflow may therefore cause an allocation to
+refuse its claim when it starts. No umbrella workflow lease is held.
+
+Explicit placement also supplies a bounded local lifecycle seam: a branch
+containing strict MS CREATE followed by atomic read-only imaging scatters is a
+true lifecycle root in both modes. Generic nested strict dataset recipes remain
+unsupported. Declared CREATE parents are created under ownership before the
+same path/snapshot proof is repeated. Authoritative FITS and dataset-mutating
+inner scatters retain their existing refusals.
+
+Version-6 attempt records preserve typed aggregate outputs, ordered child
+observations, lifecycle evidence and producer identities, including synthetic
+scatter keys whose ``producer_field`` is ``None``. A gather accepts only a
+successful matching current invocation; it also records predecessor invocation
+IDs, so requeues invalidate stale aggregates. Scheduler ``COMPLETED`` alone is
+never success. A failed or incomplete workflow produces a failed finalizer
+record and an honest partial run manifest. Manifests live under
+``results/<attempt-uuid>/manifest.json``. The
+``shinobi.offload.mixed.current_manifest(submission_dir)`` accessor selects only
+the latest terminal finalizer's matching manifest; an incomplete newer attempt
+makes older success unavailable. Requeueing creates a new immutable pair, so a
+crash between manifest and result publication cannot block recovery. Invalid Slurm dependencies are
+configured to terminate rather than remain pending forever.
+
+The discoverable ``.shinobi/<submission-uuid>/handle.json`` points to the
+immutable submission. It exists before the first scheduler request; accepted
+job records and uncertain submission intents survive interruption. A submission
+claim prevents accidental resubmission. ``ninja status`` and ``ninja runs`` use
+the finalizer records together with scheduler state as the success oracle.
+A pending or running requeued array task takes precedence over an older successful
+finalizer, even before the replacement worker publishes its invocation. Unknown
+scheduler state cannot certify success. Once a new invocation starts, old gathers
+and finalizers are stale; requeueing a producer does not automatically rerun
+already completed downstream jobs. ``ninja logs`` follows shared
+scheduler logs and separate invocation logs. Cache and provenance switches
+retain their configured policy; canonical leaf names and scientific relative
+paths agree between local and compiled runs. The example in
+`examples/noise_comparison
+<https://github.com/shinobi-dosho/stimela-ninja/tree/main/examples/noise_comparison>`_
+supplies the complete telescope/declination graph, reviewed layouts, deployment
+configuration and commands for dry-run inspection, local execution and detached
+submission.
+
+.. warning::
+
+   Composite version-6 records currently embed descendant records, repeated
+   schemas and captured logs. The completed 30-branch noise snapshot campaign
+   produced a 598 MB final record, and a subsequent ``ninja status`` process
+   was killed with exit 137 while reading it. All branches, gather and
+   finalizer succeeded, and the independent audit verified all 1,260 image/PSF
+   pairs. Large completed campaigns can therefore exceed the practical memory
+   budget of monitoring and other full-record readers, including
+   ``current_manifest``. Bounded-memory records and status verification are
+   tracked in `issue #251
+   <https://github.com/shinobi-dosho/stimela-ninja/issues/251>`_. Do not treat a
+   failed status query as proof of workflow success or failure; retain the
+   immutable evidence and logs for inspection.
+
+
 Shared-storage worker bundles
 -----------------------------
 
@@ -60,7 +178,7 @@ node-local staging is separate work.
 The worker eligibility check explicitly recognizes the generated
 ``PystepCallable`` adapter, not arbitrary functions with a ``__wrapped__``
 attribute. Binary cabs and image-/venv-backed pysteps have distinct execution
-specifications. Arbitrary orchestration functions, nested recipes, scatter,
+specifications. In this flat compatibility route, arbitrary orchestration functions, nested recipes, scatter,
 local/nested callables and closures are refused. A pystep cannot silently
 fall back to native/in-process execution. Tool venvs must already exist at
 their resolved shared paths; submission preparation must additionally verify

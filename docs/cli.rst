@@ -328,7 +328,17 @@ Compiles a purely-declarative recipe into a cluster workflow and, with
 
 Options: ``--engine`` (workflow engine, ``slurm`` in v1), ``--workdir``
 (working directory for compiled jobs), ``--container-runtime`` (runtime to wrap
-imaged cabs in; ``none`` for bare argv), and ``--submit`` (submit and detach).
+imaged cabs in for the legacy argv route; ``none`` for bare argv), and
+``--submit`` (submit and detach).
+
+Recipes containing ``SlurmPlacement`` select the mixed local/Slurm route
+automatically, without ``--worker``. Use ``--code-root`` for local Python
+helpers and ``--worker-python`` for the shared worker environment. Inner
+scatters run locally in each allocation, and scheduler jobs handle gathers
+and finalization. Compilation without ``--submit`` only validates and prints
+the plan. Tool backends come from the frozen recipe and AppConfig; this route
+supports native and Apptainer execution. See :doc:`offloading` for the complete
+noise-comparison example and current monitoring limits.
 
 .. _ninja-clean:
 
