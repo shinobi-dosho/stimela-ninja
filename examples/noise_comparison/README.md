@@ -33,8 +33,8 @@ To execute locally instead, use a separate existing workspace:
 ```
 
 For the submitted run, the printed handle works with `ninja status HANDLE`,
-`ninja logs HANDLE`, and `ninja runs --workdir /data/noise-snapshot` (subject
-to the large-record monitoring limit below).
+`ninja logs HANDLE`, and `ninja runs --workdir /data/noise-snapshot`. For existing
+version-6 runs, see the conversion guidance below.
 
 Use an existing writable shared workspace and a preinstalled matching worker
 Python. Set `NOISE_SETTINGS=/absolute/path/settings.json` to select reviewed
@@ -78,9 +78,26 @@ failure propagation and local execution of the same placed graph.
 That campaign used `threads=4`, `max_workers=1` and `max_parallel=3`, with
 eight CPUs and 32 GiB reserved per branch allocation.
 
-**Known monitoring limit:** composite records currently repeat child records,
-schemas and captured logs. This campaign produced a 598 MB final record, and
-`ninja status` was killed with exit 137 when reading the completed run. The
-`current_manifest` accessor also loads full records. The successful scientific
-run does not establish bounded-memory monitoring at this scale; see
-[issue #251](https://github.com/shinobi-dosho/stimela-ninja/issues/251).
+**Monitoring:** new mixed runs use version-7 records with immutable child
+references and shared schema/log artifacts. `ninja status` and `current_manifest`
+verify the current invocation chain without reconstructing full result trees;
+logs and manifests are hashed in chunks. Memory still depends on the frozen
+bundle and individual node/schema sizes. See the
+[storage contract and measured bounds](../../docs/offloading.rst#mixed-result-storage-and-monitoring).
+
+**Existing version-6 runs:** the completed snapshot campaign used the older
+recursive format and produced a 598 MB final record. `ninja status` was killed
+with exit 137 while reading it; an out-of-memory cause was not independently
+confirmed. Monitoring now refuses unconverted legacy records larger than 8 MiB
+with a conversion diagnostic. On a host sized to load the largest legacy record,
+run:
+
+```sh
+python -m shinobi.offload.mixed convert-records --submission /shared/submission
+```
+
+Conversion preserves the original records and publishes bound version-7
+sidecars. Later monitoring hashes the original bytes without loading them all
+into memory. The original campaign has not been revalidated through this path;
+see the [migration limits](../../docs/offloading.rst#converting-existing-version-6-results)
+and [issue #251](https://github.com/shinobi-dosho/stimela-ninja/issues/251).

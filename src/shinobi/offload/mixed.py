@@ -21,10 +21,11 @@ from pydantic import Field, JsonValue, ValidationError
 from shinobi.config import AppConfig
 from shinobi.cache import recipe_output_keys
 from shinobi.graph import build_graph
-from shinobi.offload._codec import BundleError, WireModel, pack, unpack
+from shinobi.offload._codec import BundleError, WireModel, pack, pack_model, unpack
 from shinobi.offload.bundle import Binding, FrozenStep, RecipeBundle, ScopeSpec, Submission, walk_frozen, write_new
 from shinobi.offload.code import capture_code
 from shinobi.offload.records import AttemptRecord
+from shinobi.offload.record_store import Store, Record, Edge, LegacySource, LEGACY_LIMIT, check_file, digest_file
 from shinobi.steps.dispatch import _aggregate_scatter_results, _build_scatter_slices, _dispatch, _prepare_inputs
 from shinobi.steps.pyfunc import PystepCallable
 from shinobi.steps.schema import Cab, InputRef, OutputRef, Recipe, SlurmPlacement
@@ -312,12 +313,8 @@ def _load(directory):
     bundle = RecipeBundle.read(directory / "bundle.json")
     execution = MixedExecution.model_validate_json((directory / "mixed.json").read_text())
     submission = Submission.model_validate_json((directory / "submission.json").read_text())
-    if (
-        execution.bundle_digest != bundle.digest
-        or execution.plan.bundle_digest != bundle.digest
-        or submission.bundle_digest != bundle.digest
-        or submission.workflow_id != execution.workflow_id
-    ):
+    digest = bundle.digest
+    if execution.bundle_digest != digest or execution.plan.bundle_digest != digest or submission.bundle_digest != digest or submission.workflow_id != execution.workflow_id:
         raise BundleError("mixed execution and immutable bundle identities disagree")
     return bundle, execution
 
@@ -424,42 +421,101 @@ def _parents(execution, bundle, name):
 
 def _logical_name(bundle, execution, name):
     if name == "finalize":
-        return bundle.declaration().name
+        return unpack(bundle.recipe.settings["name"])
     if name.startswith("gather-"):
-        return bundle.declaration().name + "." + bundle.steps[int(name.split("-")[1])].name
+        return unpack(bundle.recipe.settings["name"]) + "." + bundle.steps[int(name.split("-")[1])].name
     _, step, task = name.split("-")
     return [unit for unit in execution.plan.units if unit.step_index == int(step)][int(task)].name
 
 
-def _read_committed(directory, bundle, execution, name, *, expected_attempt_id=None):
-    """Return the verified invocation together with exactly its result.
+class _CurrentEvidence:
+    """One operation's memoized dependency proof and complete selection fence."""
 
-    Recursive dependencies are pinned to the IDs in the record, never rebound
-    to whichever requeue happens to be current during another filesystem read.
-    """
-    invocation = _latest(directory, name)
-    if expected_attempt_id is not None and invocation.attempt_id != expected_attempt_id:
-        raise BundleError(f"{name}: committed result refers to a superseded predecessor")
-    record = AttemptRecord.read(
-        directory / "results" / str(invocation.attempt_id) / "final.json",
-        workflow_id=execution.workflow_id,
-        attempt_id=invocation.attempt_id,
-        step_path=_logical_name(bundle, execution, name),
-        bundle_digest=bundle.digest,
-    )
-    if not record.committed:
-        raise BundleError(f"{name}: no successful current result")
-    if set(record.source_attempts) != set(_parents(execution, bundle, name)):
-        raise BundleError("result predecessor identities disagree with the frozen dependency graph")
-    for parent, attempt_id in record.source_attempts.items():
-        _read_committed(directory, bundle, execution, parent, expected_attempt_id=attempt_id)
-    if _latest(directory, name) != invocation:
-        raise BundleError(f"{name}: invocation changed while reading its committed result")
-    return invocation, record.result(bundle.declaration())
+    def __init__(self, directory, bundle, execution, *, legacy_limit=LEGACY_LIMIT):
+        self.directory, self.bundle, self.execution = directory, bundle, execution
+        self.legacy_limit = legacy_limit
+        self.store = Store(directory)
+        self.bundle_digest = execution.bundle_digest
+        self.selections = {}
+        self.active = set()
+
+    def terminal(self, invocation):
+        return AttemptRecord.read(
+            self.directory / "results" / str(invocation.attempt_id) / "final.json",
+            workflow_id=self.execution.workflow_id,
+            attempt_id=invocation.attempt_id,
+            step_path=_logical_name(self.bundle, self.execution, invocation.name),
+            bundle_digest=self.bundle_digest,
+            legacy_limit=self.legacy_limit,
+        )
+
+    def read(self, name, expected_attempt_id=None, *, successful=True):
+        invocation = _latest(self.directory, name)
+        if expected_attempt_id is not None and invocation.attempt_id != expected_attempt_id:
+            raise BundleError(f"{name}: committed result refers to a superseded predecessor")
+        if name in self.active:
+            raise BundleError("cycle in current dependency evidence")
+        if name in self.selections:
+            if invocation != self.selections[name]:
+                raise BundleError(f"{name}: invocation changed while reading its committed result (superseded predecessor)")
+            return invocation, None
+        record = self.store.roots.get(invocation.attempt_id)
+        if record is None:
+            record = self.terminal(invocation)
+        elif (record.workflow_id, record.step_path, record.bundle_digest) != (self.execution.workflow_id, _logical_name(self.bundle, self.execution, name), self.bundle_digest):
+            raise BundleError("referenced root does not belong to requested logical invocation")
+        if successful and not record.committed:
+            raise BundleError(f"{name}: no successful current result")
+        if record.state not in ("succeeded", "cached", "skipped", "failed"):
+            raise BundleError("invocation has no terminal result")
+        if isinstance(record, Record):
+            if name == "finalize" and record.committed and record.manifest is None:
+                raise BundleError("successful finalizer has no bound manifest")
+            self.store.verify(record, reference=self.store.root_reference(invocation.attempt_id))
+        elif isinstance(record, AttemptRecord) and record.committed:
+            record.result(self.bundle.declaration())
+        if record.committed and set(record.source_attempts) != set(_parents(self.execution, self.bundle, name)):
+            raise BundleError("result predecessor identities disagree with the frozen dependency graph")
+        self.active.add(name)
+        try:
+            if record.committed:
+                for parent, attempt_id in record.source_attempts.items():
+                    self.read(parent, attempt_id)
+        finally:
+            self.active.remove(name)
+        self.selections[name] = invocation
+        return invocation, record
+
+    def fence(self):
+        for name, invocation in self.selections.items():
+            if _latest(self.directory, name) != invocation:
+                raise BundleError(f"{name}: invocation changed while reading its committed result (superseded predecessor)")
+
+
+def _read_committed(directory, bundle, execution, name, *, expected_attempt_id=None, evidence=None, full=False):
+    evidence = evidence or _CurrentEvidence(directory, bundle, execution, legacy_limit=None if full else LEGACY_LIMIT)
+    invocation, record = evidence.read(name, expected_attempt_id)
+    if not isinstance(record, AttemptRecord):
+        record = evidence.terminal(invocation)
+    result = evidence.store.result(record, bundle.recipe.restore(), full=full) if isinstance(record, Record) else record.result(bundle.declaration())
+    evidence.fence()
+    return invocation, result
 
 
 def _read_result(directory, bundle, execution, name):
-    return _read_committed(directory, bundle, execution, name)[1]
+    """Explicit eager reconstruction, including descendants and captured streams."""
+    return _read_committed(directory, bundle, execution, name, full=True)[1]
+
+
+def _declared_result(result, scope):
+    """Rebind transported nested values to the consumer's declared model classes."""
+    from dataclasses import replace
+
+    return replace(
+        result,
+        inputs=scope.inputs_model.model_validate({key: unpack(value) for key, value in pack_model(result.inputs).items()}),
+        outputs=scope.outputs_model.model_validate({key: unpack(value) for key, value in pack_model(result.outputs).items()}),
+    )
 
 
 def _inputs(bundle, index, verified):
@@ -478,7 +534,7 @@ def _inputs(bundle, index, verified):
         parent = next(i for i, step in enumerate(bundle.steps) if step.name == source.step)
         if source.step not in loaded:
             loaded[source.step] = verified[f"gather-{parent}"][1]
-        return resolve_reference(getattr(loaded[source.step].outputs, source.field), source.selection)
+        return unpack(pack(resolve_reference(getattr(loaded[source.step].outputs, source.field), source.selection)))
 
     for field, source in ref.wiring.items():
         values[field] = [one(item) for item in source] if isinstance(source, list) else one(source)
@@ -600,26 +656,20 @@ def current_manifest(directory):
     """
     directory = Path(directory)
     bundle, execution = _load(directory)
-    invocation = _latest(directory, "finalize")
-    record = AttemptRecord.read(
-        directory / "results" / str(invocation.attempt_id) / "final.json",
-        workflow_id=execution.workflow_id,
-        attempt_id=invocation.attempt_id,
-        step_path=bundle.declaration().name,
-        bundle_digest=bundle.digest,
-    )
-    if record.committed:
-        _read_result(directory, bundle, execution, "finalize")
-    elif record.state != "failed":
-        raise BundleError("finalizer has no terminal result")
-    from shinobi.provenance import load_manifest
-
+    evidence = _CurrentEvidence(directory, bundle, execution)
+    invocation, record = evidence.read("finalize", successful=False)
     path = directory / "results" / str(invocation.attempt_id) / "manifest.json"
-    manifest = load_manifest(path)
-    if (manifest.returncode == 0) != record.committed:
-        raise BundleError("finalizer manifest disagrees with its committed terminal record")
-    if _latest(directory, "finalize") != invocation:
-        raise BundleError("finalizer changed while selecting its manifest")
+    if isinstance(record, Record):
+        if record.manifest is None:
+            raise BundleError("finalizer has no bound manifest")
+        check_file(path, record.manifest)
+    else:
+        from shinobi.provenance import load_manifest
+
+        manifest = load_manifest(path)
+        if (manifest.returncode == 0) != record.committed:
+            raise BundleError("finalizer manifest disagrees with its committed terminal record")
+    evidence.fence()
     return path
 
 
@@ -643,12 +693,17 @@ def execute(directory, operation, *, step=None, task=None):
     with lockpath.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         source_attempts = {}
+        store = Store(directory)
+        edges = None
+        transparent = False
 
         def fence():
             if _latest(directory, name) != invocation:
                 raise BundleError("allocation invocation has been superseded")
+            evidence = _CurrentEvidence(directory, bundle, execution)
             for parent, attempt_id in source_attempts.items():
-                _read_committed(directory, bundle, execution, parent, expected_attempt_id=attempt_id)
+                evidence.read(parent, attempt_id)
+            evidence.fence()
             _verify(execution, directory, bundle)
 
         try:
@@ -658,7 +713,9 @@ def execute(directory, operation, *, step=None, task=None):
             if operation == "run":
                 _recover(directory, bundle, execution, name, invocation)
             parents = _parents(execution, bundle, name)
-            verified = {parent: _read_committed(directory, bundle, execution, parent) for parent in parents}
+            evidence = _CurrentEvidence(directory, bundle, execution)
+            verified = {parent: _read_committed(directory, bundle, execution, parent, evidence=evidence) for parent in parents}
+            evidence.fence()
             source_attempts = {parent: item[0].attempt_id for parent, item in verified.items()}
             fence()
             config = AppConfig.model_validate({k: unpack(v) for k, v in bundle.config.items()})
@@ -700,7 +757,7 @@ def execute(directory, operation, *, step=None, task=None):
             elif operation == "gather":
                 ref = bundle.steps[step].declaration()
                 units = [unit for unit in execution.plan.units if unit.step_index == step]
-                children = [verified[f"unit-{step}-{i}"][1] for i in range(len(units))]
+                children = [_declared_result(verified[f"unit-{step}-{i}"][1], ref.step) for i in range(len(units))]
                 if ref.scatter:
                     if children:
                         values = {
@@ -712,6 +769,9 @@ def execute(directory, operation, *, step=None, task=None):
                     result = _aggregate_scatter_results(ref.step, ref.scatter.fields, values, children)
                 else:
                     result = children[0]
+                    transparent = True
+                edge_names = list((result.sub_results or {}).keys()) if ref.scatter else [units[0].name]
+                edges = tuple(Edge(name=key, reference=store.root_reference(verified[f"unit-{step}-{i}"][0].attempt_id)) for i, key in enumerate(edge_names))
             else:
                 from shinobi.results import StepResult
                 from shinobi.products import resolve_reference
@@ -724,14 +784,15 @@ def execute(directory, operation, *, step=None, task=None):
                     kind="recipe",
                     inputs=root.inputs_model(**unpack(bundle.inputs)),
                     outputs=root.outputs_model(
-                        **{field: resolve_reference(getattr(results[source.step].outputs, source.field), source.selection) for field, source in root.output_wiring.items()}
+                        **{
+                            field: unpack(pack(resolve_reference(getattr(results[source.step].outputs, source.field), source.selection)))
+                            for field, source in root.output_wiring.items()
+                        }
                     ),
                     output_keys=recipe_output_keys(root, results),
                     sub_results=results,
                 )
-                from shinobi.provenance import build_manifest
-
-                write_new(directory / "results" / str(invocation.attempt_id) / "manifest.json", build_manifest(result, backend="slurm"))
+                edges = tuple(Edge(name=ref.name, reference=store.root_reference(verified[f"gather-{i}"][0].attempt_id)) for i, ref in enumerate(bundle.steps))
             fence()
             lifecycle_path = Path(bundle.workspace) / ".shinobi/dataset-attempts" / f"{invocation.attempt_id}.json"
             lifecycle = None
@@ -739,19 +800,21 @@ def execute(directory, operation, *, step=None, task=None):
                 from shinobi.dataset_lifecycle import DatasetLifecycleStore
 
                 lifecycle = DatasetLifecycleStore(lifecycle_path).attempt()
-            record = AttemptRecord.from_result(
+            record = store.capture(
                 result,
                 workflow_id=execution.workflow_id,
                 attempt_id=invocation.attempt_id,
                 step_path=_logical_name(bundle, execution, name),
                 bundle_digest=bundle.digest,
                 job_id=invocation.job_id,
-                composite=True,
+                edges=edges,
+                transparent=transparent,
                 dataset_lifecycle=lifecycle,
             )
-            (log_directory / "stdout.log").write_text(result.stdout)
-            (log_directory / "stderr.log").write_text(result.stderr)
             record = record.model_copy(update={"source_attempts": source_attempts})
+            if operation == "finalize":
+                artifact = store.manifest(directory / "results" / str(invocation.attempt_id) / "manifest.json", record)
+                record = record.model_copy(update={"manifest": artifact})
             for parent, attempt_id in source_attempts.items():
                 if _latest(directory, parent).attempt_id != attempt_id:
                     raise BundleError("predecessor requeued before result publication")
@@ -760,44 +823,132 @@ def execute(directory, operation, *, step=None, task=None):
                 raise BundleError(f"{name}: execution failed")
             return result
         except BaseException as exc:
-            if operation == "finalize" and not (directory / "results" / str(invocation.attempt_id) / "manifest.json").exists():
-                from shinobi.results import StepResult
-                from shinobi.provenance import build_manifest
-
-                root = bundle.declaration()
-                partial = {}
-                for index, ref in enumerate(bundle.steps):
-                    try:
-                        partial[ref.name] = _read_result(directory, bundle, execution, f"gather-{index}")
-                    except (OSError, ValueError):
-                        pass
-                failed = StepResult(
-                    name=root.name,
-                    kind="recipe",
-                    returncode=1,
-                    inputs=root.inputs_model(**unpack(bundle.inputs)),
-                    outputs=root.outputs_model.model_construct(),
-                    sub_results=partial,
-                    stderr=f"{type(exc).__name__}: {exc}",
-                )
-                write_new(directory / "results" / str(invocation.attempt_id) / "manifest.json", build_manifest(failed, backend="slurm"))
             path = directory / "results" / str(invocation.attempt_id) / "final.json"
             if not path.exists():
-                write_new(
-                    path,
-                    AttemptRecord(
-                        workflow_id=execution.workflow_id,
-                        attempt_id=invocation.attempt_id,
-                        step_path=_logical_name(bundle, execution, name),
-                        bundle_digest=bundle.digest,
-                        state="failed",
-                        error=f"{type(exc).__name__}: {exc}",
-                    ),
-                )
+                error = f"{type(exc).__name__}: {exc}"
+                identity = {
+                    "workflow_id": execution.workflow_id,
+                    "attempt_id": invocation.attempt_id,
+                    "step_path": _logical_name(bundle, execution, name),
+                    "bundle_digest": bundle.digest,
+                }
+                record = Record(**identity, state="failed", error=error)
+                if operation == "finalize":
+                    from shinobi.results import StepResult
+
+                    root = bundle.declaration()
+                    partial = {}
+                    partial_edges = []
+                    for index, ref in enumerate(bundle.steps):
+                        try:
+                            current, child = _read_committed(directory, bundle, execution, f"gather-{index}")
+                            partial[ref.name] = child
+                            partial_edges.append(Edge(name=ref.name, reference=store.root_reference(current.attempt_id)))
+                        except (OSError, ValueError):
+                            pass
+                    failed = StepResult(
+                        name=root.name,
+                        kind="recipe",
+                        returncode=1,
+                        inputs=root.inputs_model(**unpack(bundle.inputs)),
+                        outputs=root.outputs_model.model_construct(),
+                        sub_results=partial,
+                        stderr=error,
+                    )
+                    record = store.capture(failed, edges=partial_edges, **identity).model_copy(update={"error": error})
+                    manifest_path = path.with_name("manifest.json")
+                    if not manifest_path.exists():
+                        artifact = store.manifest(manifest_path, record)
+                    else:
+                        # An earlier successful manifest may have preceded a
+                        # failed publication fence. It cannot certify failure.
+                        artifact = None
+                    record = record.model_copy(update={"manifest": artifact})
+                write_new(path, record)
             raise
 
 
+def convert_records(directory):
+    """Offline, full-memory v6 conversion; originals and invocation IDs survive."""
+    import hashlib
+
+    directory = Path(directory)
+    bundle, execution = _load(directory)
+    store = Store(directory)
+    selections = {}
+    active = set()
+
+    def fence():
+        for name, invocation in selections.items():
+            if _latest(directory, name) != invocation:
+                raise BundleError("invocation changed during record conversion")
+
+    def convert(name, expected=None):
+        invocation = _latest(directory, name)
+        if expected is not None and invocation.attempt_id != expected:
+            raise BundleError("conversion refers to a superseded predecessor")
+        if name in active:
+            raise BundleError("cycle in legacy dependencies")
+        if name in selections:
+            if selections[name] != invocation:
+                raise BundleError("invocation changed during record conversion")
+            return
+        selections[name] = invocation
+        active.add(name)
+        path = directory / "results" / str(invocation.attempt_id) / "final.json"
+        data = path.read_bytes()
+        old = AttemptRecord.model_validate_json(data) if b'"schema_version":7' not in data[:100] and b'"schema_version": 7' not in data[:100] else Record.model_validate_json(data)
+        if (old.workflow_id, old.attempt_id, old.step_path, old.bundle_digest) != (
+            execution.workflow_id,
+            invocation.attempt_id,
+            _logical_name(bundle, execution, name),
+            bundle.digest,
+        ):
+            raise BundleError("legacy record identity mismatch")
+        if old.committed and set(old.source_attempts) != set(_parents(execution, bundle, name)):
+            raise BundleError("legacy predecessor identities disagree with graph")
+        if expected is not None and not old.committed:
+            raise BundleError("successful legacy consumer has unsuccessful predecessor")
+        if old.committed:
+            for parent, attempt in old.source_attempts.items():
+                convert(parent, attempt)
+        if isinstance(old, Record):
+            store.verify(old, reference=store.root_reference(invocation.attempt_id))
+        elif old.schema_version == 6:
+            source = LegacySource(sha256=hashlib.sha256(data).hexdigest(), size=len(data))
+            record = store.convert(old, source)
+            if name == "finalize":
+                from shinobi.provenance import load_manifest
+
+                manifest = path.with_name("manifest.json")
+                if (load_manifest(manifest).returncode == 0) != old.committed:
+                    raise BundleError("legacy manifest outcome mismatch")
+                record = record.model_copy(update={"manifest": digest_file(manifest)})
+            sidecar = path.with_name("final.v7.json")
+            check_file(path, source)
+            fence()
+            if sidecar.exists():
+                existing = Record.model_validate_json(sidecar.read_bytes())
+                if existing != record:
+                    raise BundleError("existing migration sidecar contradicts deterministic conversion")
+                check_file(path, existing.legacy_source)
+            else:
+                write_new(sidecar, record)
+            store.verify(record, reference=store.root_reference(invocation.attempt_id))
+        active.remove(name)
+        fence()
+
+    convert("finalize")
+    fence()
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "convert-records":
+        parser = argparse.ArgumentParser(description="Offline conversion of the current v6 dependency closure")
+        parser.add_argument("--submission", type=Path, required=True)
+        args = parser.parse_args(sys.argv[2:])
+        convert_records(args.submission)
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
     parser.add_argument("operation", choices=("run", "gather", "finalize"))
@@ -1079,21 +1230,14 @@ def mixed_status(handle):
         detail = ", ".join(f"{name}={state}" for name, state in states.items())
         if any(state.split()[0] in _SLURM_PENDING for state in states.values()):
             return RunState(RUNNING, detail=detail)
-        invocation = _latest(directory, "finalize")
-        record = AttemptRecord.read(
-            directory / "results" / str(invocation.attempt_id) / "final.json",
-            workflow_id=execution.workflow_id,
-            attempt_id=invocation.attempt_id,
-            step_path=bundle.declaration().name,
-            bundle_digest=bundle.digest,
-        )
-        if record.committed:
-            if any(state != "COMPLETED" for state in states.values()):
-                return RunState(UNKNOWN, detail=detail + "; scheduler does not confirm completed execution")
-            _read_result(directory, bundle, execution, "finalize")
+        evidence = _CurrentEvidence(directory, bundle, execution)
+        invocation, record = evidence.read("finalize", successful=False)
+        if record.committed and any(state != "COMPLETED" for state in states.values()):
+            return RunState(UNKNOWN, detail=detail + "; scheduler does not confirm completed execution")
+        evidence.fence()
         return RunState(FINISHED, exit_code=0 if record.committed else 1, detail=record.error or "immutable finalizer result")
-    except (OSError, ValueError):
-        pass
+    except (OSError, ValueError) as exc:
+        detail += f"; {exc}"
     return RunState(UNKNOWN, detail=detail + "; missing committed finalizer record")
 
 

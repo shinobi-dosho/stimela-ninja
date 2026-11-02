@@ -849,13 +849,15 @@ def test_detached_published_group_unreadable_oracle_preserves_exact_record_and_c
     monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "registry.json"))
     workflow, plan, lease = _prepared(tmp_path, _worker_recipe(tmp_path), paths)
     original_write = AttemptRecord.write
-    original_read = Path.read_text
+    original_open = Path.open
     blocked = set()
+    blocked_reads = []
 
-    def unavailable(path, *args, **kwargs):
-        if path in blocked:
+    def unavailable(path, mode="r", *args, **kwargs):
+        if path in blocked and ("r" in mode or "+" in mode):
+            blocked_reads.append(path)
             raise OSError("immutable oracle temporarily unreadable")
-        return original_read(path, *args, **kwargs)
+        return original_open(path, mode, *args, **kwargs)
 
     def publish_then_raise(record, directory):
         path = original_write(record, directory)
@@ -865,10 +867,11 @@ def test_detached_published_group_unreadable_oracle_preserves_exact_record_and_c
         return path
 
     monkeypatch.setattr(AttemptRecord, "write", publish_then_raise)
-    monkeypatch.setattr(Path, "read_text", unavailable)
+    monkeypatch.setattr(Path, "open", unavailable)
     try:
         attempt = plan.attempt("first")
         assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
+        assert blocked_reads, "the published immutable oracle must become unreadable"
         assert values(paths) == [4, 9]
         journal = get_journal(str(tmp_path / "cache"))
         assert all(journal.get(chain_id(path)).marker is not None for path in paths)

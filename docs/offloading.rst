@@ -76,8 +76,8 @@ unsupported. Declared CREATE parents are created under ownership before the
 same path/snapshot proof is repeated. Authoritative FITS and dataset-mutating
 inner scatters retain their existing refusals.
 
-Version-6 attempt records preserve typed aggregate outputs, ordered child
-observations, lifecycle evidence and producer identities, including synthetic
+Version-7 mixed attempt records preserve typed aggregate outputs, ordered child
+references, lifecycle evidence and producer identities, including synthetic
 scatter keys whose ``producer_field`` is ``None``. A gather accepts only a
 successful matching current invocation; it also records predecessor invocation
 IDs, so requeues invalidate stale aggregates. Scheduler ``COMPLETED`` alone is
@@ -109,20 +109,123 @@ supplies the complete telescope/declination graph, reviewed layouts, deployment
 configuration and commands for dry-run inspection, local execution and detached
 submission.
 
-.. warning::
+Mixed result storage and monitoring
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-   Composite version-6 records currently embed descendant records, repeated
-   schemas and captured logs. The completed 30-branch noise snapshot campaign
-   produced a 598 MB final record, and a subsequent ``ninja status`` process
-   was killed with exit 137 while reading it. All branches, gather and
-   finalizer succeeded, and the independent audit verified all 1,260 image/PSF
-   pairs. Large completed campaigns can therefore exceed the practical memory
-   budget of monitoring and other full-record readers, including
-   ``current_manifest``. Bounded-memory records and status verification are
-   tracked in `issue #251
-   <https://github.com/shinobi-dosho/stimela-ninja/issues/251>`_. Do not treat a
-   failed status query as proof of workflow success or failure; retain the
-   immutable evidence and logs for inspection.
+The terminal ``results/<invocation-uuid>/final.json`` is the authoritative
+summary. Local descendant nodes live under that invocation's ``nodes/`` directory
+as content-addressed JSON. Each reference binds the owning invocation, complete
+logical child address, SHA256 and byte length. Ordered edge labels retain
+scatter/declaration order even when the referenced observation has a different
+name. Local nodes are not scheduler invocations. Gathers reference their existing
+unit roots; a non-scatter gather's envelope preserves the original public result
+and provenance hierarchy. Finalizers reference gathers. ``source_attempts``
+continues to describe scheduler dependencies, separately from child references.
+
+Each node records its own shallow observation and typed I/O. Effective model
+schemas are stored once under ``schemas/<sha256>.json``; leaf and exceptional
+composite captured diagnostics are stored under ``artifacts/logs/<sha256>``.
+Independent live ``run.log`` and scheduler logs remain available to ``ninja logs``;
+workers no longer write redundant aggregate ``stdout.log``/``stderr.log`` snapshots. Ordinary
+composite streams are ordered concatenations of nonempty child streams, with a
+newline between children. They are not copied into every ancestor. Schemas and
+logs publish before nodes, and nodes before the terminal summary. Publication
+uses a fsynced temporary inode and atomic no-replace link; reusing an existing
+content-addressed artifact requires matching bytes and length. There is no
+implicit garbage collection.
+
+``mixed_status`` and ``current_manifest`` verify referenced evidence, closed
+models, typed I/O, outcomes and current pinned predecessor invocations without
+constructing ``StepResult`` trees or reading logs into memory. Every unique node
+is verified once per operation; all observed current selections are rechecked
+before return, including memoized predecessors. Logs and the bound manifest are
+hashed in chunks. Memory depends on the frozen bundle, largest individual node
+and schema, a bounded schema cache, traversal depth, and compact visited and
+scheduler-identity tables. Arbitrarily large individual outputs still require
+memory proportional to that node. It does not grow with aggregate log bytes or
+repeated descendant trees. Full result reconstruction remains explicitly eager:
+``mixed._read_result`` and ``record_store.Store.result(..., full=True)`` materialize
+the tree and concatenated logs. ``Store.manifest`` streams the ordinary manifest
+tree to a no-replace destination; callers supplying records directly must first
+verify their evidence with ``Store.verify``.
+
+The finalizer publishes ``manifest.json`` before its terminal record and binds
+its exact bytes and length in that record. Missing, truncated or changed evidence
+refuses success; a corrupt sidecar never causes fallback. A failure after a
+successful manifest was written cannot relabel that manifest as failed evidence.
+The failed terminal remains available for diagnostics, but that unmatched
+manifest cannot be selected by ``current_manifest``.
+
+The fresh-process regression fixture uses one outer scatter with 30 branches,
+each containing three 14-leaf groups and 16 other leaves (1,740 leaves), nested
+schemas and realistic typed output tables. On Python 3.14/Linux, with a 670 KB
+frozen bundle, it measured:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Per-leaf log
+     - Unique log bytes
+     - Node/schema JSON
+     - Final summary
+     - Monitoring peak RSS
+     - Status + manifest time
+   * - 64 KiB
+     - 114,032,640
+     - 5,439,352
+     - 5,548 bytes
+     - 63.9 MiB
+     - 1.57 s
+   * - 256 KiB
+     - 456,130,560
+     - 5,441,092
+     - 5,548 bytes
+     - 63.6 MiB
+     - 5.15 s
+
+Both runs wrote 1,740 unique log files and 1,868 node/schema/manifest JSON files;
+monitoring read 1,861 referenced nodes once each. The regression budgets are
+256 KiB for the final summary, 32 MiB for node/schema JSON and 256 MiB monitoring
+RSS, with less than 32 MiB RSS growth when logs grow fourfold. These are fixture
+budgets, not universal limits. A separate stress declaration duplicating the
+entire frozen subtree 30 times produced a 19 MiB version-4 bundle and approximately
+284 MiB monitoring RSS (266 MiB for loading the bundle alone). Version-4 bundle
+deduplication is outside this result-record change. No live cluster is needed
+for these measurements; only scheduler accounting is mocked.
+
+Converting existing version-6 results
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The original 30-branch noise campaign produced a 598 MB recursive version-6 final
+record. The status process was killed with exit 137 while loading it; an
+out-of-memory cause was not independently confirmed. Existing small legacy
+records remain readable. Mixed monitoring refuses an unconverted legacy record larger than
+8 MiB before parsing it, with a conversion diagnostic; it does not infer success
+from a failed status query. Explicit legacy result readers remain eager.
+
+On a host provisioned to load the largest legacy record, run::
+
+    python -m shinobi.offload.mixed convert-records --submission /shared/submission
+
+This offline conversion follows the current finalizer's pinned dependency
+closure, converts successful predecessors first, and writes no-replace
+``final.v7.json`` sidecars beside the untouched ``final.json`` files. It converts
+validated AttemptRecords directly, without reconstructing StepResults, inventing
+new invocations or changing timestamps. Each sidecar binds its original version-6
+file's SHA256 and byte length. Existing sidecars must match the deterministic
+conversion exactly; conflicting or corrupt evidence refuses. Interrupted
+conversion can be rerun. Requeues during conversion refuse publication/selection
+of stale success, just as they do for freshly produced records.
+
+Subsequent monitoring prefers the sidecar and verifies its original source
+binding by chunked hashing. Its memory is bounded, but it still reads the original
+legacy bytes to check that binding. Conversion retains historical embedded
+ownership: legacy gathers had already copied descendants into their own
+invocations. It deduplicates schemas and log bytes, but does not pretend those
+historical node copies came from different predecessor invocations. Conversion
+itself can require memory proportional to the largest legacy record; do not run
+it on a memory-constrained login node. Retain the original records and all
+referenced artifacts together.
 
 
 Shared-storage worker bundles
