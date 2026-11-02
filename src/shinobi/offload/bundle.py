@@ -33,7 +33,7 @@ from shinobi.offload.code import CodeBundle, capture_code
 from shinobi.storage import sync_directory_chain as _sync_directory_chain
 from shinobi.steps.dispatch import _prepare_inputs
 from shinobi.steps.pyfunc import PystepCallable
-from shinobi.steps.schema import Cab, InputRef, LoopIteration, OutputRef, Recipe, Scope, StepRef
+from shinobi.steps.schema import Cab, InputRef, LoopIteration, OutputRef, Recipe, ScatterSpec, SlurmPlacement, Scope, StepRef
 
 
 def fingerprint(model: WireModel) -> str:
@@ -151,20 +151,33 @@ class FrozenStep(WireModel):
     pystep_is_empty: bool | None = None
     pystep_wants_ctx: bool | None = None
 
+    children: tuple[FrozenStep, ...] | None = Field(default=None, exclude_if=lambda value: value is None)
+    output_wiring: dict[str, Binding] | None = Field(default=None, exclude_if=lambda value: value is None)
+    max_workers: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    scatter: ScatterSpec | None = Field(default=None, exclude_if=lambda value: value is None)
+    placement: SlurmPlacement | None = Field(default=None, exclude_if=lambda value: value is None)
+
     def declaration(self) -> StepRef:
         """Reconstruct graph data only. A pystep here is NOT executable."""
+        scope = self.scope.restore()
+        if isinstance(scope, Recipe):
+            scope.steps = [child.declaration() for child in self.children or ()]
+            scope.output_wiring = {k: v.restore() for k, v in (self.output_wiring or {}).items()}
+            scope.max_workers = self.max_workers
         return StepRef(
             name=self.name,
-            step=self.scope.restore(),
+            step=scope,
             params=unpack(self.params),
             wiring={k: [b.restore() for b in v] if isinstance(v, tuple) else v.restore() for k, v in self.wiring.items()},
             after=list(self.after),
             loop=self.loop,
+            scatter=self.scatter,
+            placement=self.placement,
         )
 
 
 class RecipeBundle(WireModel):
-    schema_version: Literal[1, 2, 3] = 1
+    schema_version: Literal[1, 2, 3, 4] = 1
     worker_protocol: Literal[1] = 1
     shinobi_version: str = __version__
     workspace: str
@@ -185,7 +198,9 @@ class RecipeBundle(WireModel):
         recipe = self.declaration()
         family_features = uses_products(recipe)
         cab_scopes = [step.scope for step in self.steps if step.scope.kind == "cab"]
-        if self.schema_version == 3:
+        if self.schema_version == 4:
+            pass  # recursive declarations are validated below
+        elif self.schema_version == 3:
             if not cab_scopes or any(scope.cab_semantics is None for scope in cab_scopes):
                 raise BundleError("bundle schema version 3 requires frozen semantics for every cab")
         elif any(scope.cab_semantics is not None for scope in cab_scopes):
@@ -203,13 +218,22 @@ class RecipeBundle(WireModel):
 
         build_graph(recipe)
         _prepare_inputs(recipe, unpack(self.inputs))
-        for step in self.steps:
+        for step in walk_frozen(self.steps):
+            if self.schema_version != 4 and (
+                step.children is not None or step.scatter is not None or step.placement is not None or step.output_wiring is not None or step.max_workers is not None
+            ):
+                raise BundleError("recursive declarations require bundle schema version 4")
             if (step.scope.kind == "pyfunc") != (step.code is not None):
                 raise BundleError(f"step {step.name!r}: pystep code and scope kind disagree")
             if (step.code is not None) != (step.pystep_is_empty is not None and step.pystep_wants_ctx is not None):
                 raise BundleError(f"step {step.name!r}: pystep adapter metadata and code disagree")
             if step.scope.kind == "recipe":
-                raise BundleError("nested recipes are not supported by the worker bundle")
+                if self.schema_version != 4 or step.children is None or step.output_wiring is None:
+                    raise BundleError("nested recipes require recursive bundle schema version 4")
+            elif step.children is not None or step.output_wiring is not None:
+                raise BundleError("only recipe nodes can contain children")
+            if self.schema_version == 4 and step.scope.kind == "cab" and step.scope.cab_semantics is None:
+                raise BundleError("recursive cabs require frozen semantics")
             if step.backend == "venv" and (not step.tool_venv or not Path(step.tool_venv).is_absolute()):
                 raise BundleError(f"step {step.name!r}: venv execution needs a resolved shared tool environment")
             if step.tool_venv_digest is not None and step.backend != "venv":
@@ -217,7 +241,7 @@ class RecipeBundle(WireModel):
             image = unpack(step.scope.settings["image"]) if "image" in step.scope.settings else None
             if step.image_digest is not None and (not image or step.backend not in ("docker", "podman", "apptainer") or not step.image_digest.startswith("sha256:")):
                 raise BundleError(f"step {step.name!r}: image digest does not describe its container execution")
-            if step.code is not None and step.backend != "venv" and (step.backend == "native" or not image):
+            if self.schema_version != 4 and step.code is not None and step.backend != "venv" and (step.backend == "native" or not image):
                 raise BundleError(f"step {step.name!r}: a pystep must execute in an image or venv, never in-process")
         return self
 
@@ -254,7 +278,7 @@ class RecipeBundle(WireModel):
         directory = root / str(workflow_id)
         directory.mkdir()
         try:
-            for index, step in enumerate(snapshot.steps):
+            for index, step in enumerate(walk_frozen(snapshot.steps)):
                 if step.code is not None:
                     step.code.write(directory / "code" / str(index))
             write_new(directory / "bundle.json", snapshot)
@@ -375,3 +399,10 @@ def uses_products(recipe):
             for source in (sources if isinstance(sources, list) else [sources])
         )
     )
+
+
+def walk_frozen(steps):
+    """Stable preorder addresses for frozen source trees."""
+    for step in steps:
+        yield step
+        yield from walk_frozen(step.children or ())

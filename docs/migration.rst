@@ -309,4 +309,7 @@ What has no equivalent yet
 * **No aggregated run report artifact** beyond the run manifest.
 * **Offload assumes a shared filesystem.** There is no data-staging story
   for clusters without one (:doc:`offloading`).
-* **Scatter is not offloadable** -- scattered recipes run locally.
+* **No automatic allocation placement for arbitrary scatters.** Explicit
+  ``SlurmPlacement`` boundaries support bounded outer scatters with local
+  branch DAGs; the legacy flat compiler still refuses scatter. See
+  :doc:`offloading` for the supported declaration and execution limits.

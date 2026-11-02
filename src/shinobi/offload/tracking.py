@@ -279,6 +279,10 @@ def probe_slurm(handle: dict[str, Any]) -> RunState:
     """
     from shinobi.offload.slurm import status_slurm
 
+    if handle.get("mixed"):
+        from shinobi.offload.mixed import mixed_status
+
+        return mixed_status(handle)
     jobs = handle.get("jobs") or {}
     if not jobs:
         return RunState(UNKNOWN, detail="handle lists no jobs")
@@ -311,6 +315,11 @@ def follow(launch: Launch, *, lines: int = 40, wait: bool = True, stop: threadin
     ends the read with EOF and the iteration with it. Nothing short of
     that interrupts a blocking read on a pipe nobody is writing to.
     """
+    if launch.handle.get("mixed"):
+        from shinobi.offload.mixed import follow_mixed
+
+        yield from follow_mixed(launch.handle, lines=lines, wait=wait, stop=stop)
+        return
     log_path = launch.log_path
     if log_path is None:
         raise BackendError(f"{launch.name}: this launch has no single log file to follow (engine {launch.engine!r})")

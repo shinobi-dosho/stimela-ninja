@@ -18,7 +18,7 @@ from pydantic import model_serializer, ConfigDict, Field, JsonValue, model_valid
 from shinobi.cache import ProvenanceKey
 from shinobi.dataset_lifecycle import DatasetLifecycleAttempt
 from shinobi.fits_lifecycle import FITSLifecycleAttempt
-from shinobi.offload._codec import BundleError, WireModel, pack_model, unpack
+from shinobi.offload._codec import BundleError, ModelSpec, WireModel, pack_model, unpack
 from shinobi.offload.bundle import write_new
 from shinobi.provenance import StepRecord, _record
 from shinobi.results import StepResult
@@ -27,7 +27,7 @@ from shinobi.steps.schema import Scope
 
 class ProducedState(WireModel):
     cache_key: str
-    producer_field: str
+    producer_field: str | None
 
 
 class CoordinateProducedState(ProducedState):
@@ -68,7 +68,7 @@ class Observation(StepRecord):
 
 
 class AttemptRecord(WireModel):
-    schema_version: Literal[1, 2, 3, 4, 5] = 1
+    schema_version: Literal[1, 2, 3, 4, 5, 6] = 1
     workflow_id: UUID
     attempt_id: UUID
     step_path: str
@@ -91,6 +91,10 @@ class AttemptRecord(WireModel):
     fits_lifecycle: FITSLifecycleAttempt | None = None
     bundle_inventories: list[dict[str, JsonValue]] | None = None
 
+    source_attempts: dict[str, UUID] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    children: dict[str, AttemptRecord] | None = Field(default=None, exclude_if=lambda value: value is None)
+    result_models: tuple[ModelSpec, ModelSpec] | None = Field(default=None, exclude_if=lambda value: value is None)
+
     @model_serializer(mode="wrap")
     def _old_shape(self, handler):
         values = handler(self)
@@ -107,15 +111,15 @@ class AttemptRecord(WireModel):
             raise BundleError("MS and FITS authoritative evidence are mutually exclusive")
         if (self.fits_lifecycle is not None) != (self.schema_version == 5):
             raise BundleError("FITS evidence requires attempt-record schema version 5")
-        if self.bundle_inventories is not None and self.schema_version not in (4, 5):
+        if self.bundle_inventories is not None and self.schema_version not in (4, 5, 6):
             raise BundleError("bundle inventories require attempt-record schema version 4")
         required_version = attempt_record_version(lifecycle, self.output_keys.values())
-        if required_version == 4 and self.schema_version not in (4, 5):
+        if required_version == 4 and self.schema_version not in (4, 5, 6):
             raise BundleError("coordinate producer identities require attempt-record schema version 4")
         indexed = required_version == 3
-        if indexed and self.schema_version not in (3, 4, 5):
+        if indexed and self.schema_version not in (3, 4, 5, 6):
             raise BundleError("indexed producer identities require attempt-record schema version 3")
-        if self.schema_version not in (3, 4, 5) and (self.schema_version == 1) != (lifecycle is None):
+        if self.schema_version not in (3, 4, 5, 6) and (self.schema_version == 1) != (lifecycle is None):
             raise BundleError("dataset lifecycle evidence requires attempt-record schema version 2")
         if lifecycle is not None:
             if lifecycle.attempt_id != str(self.attempt_id):
@@ -124,6 +128,24 @@ class AttemptRecord(WireModel):
                 raise BundleError("a committed worker result requires committed dataset lifecycle evidence")
             if self.state == "failed" and lifecycle.outcome not in ("failed", "refused"):
                 raise BundleError("a failed worker result requires terminal dataset lifecycle evidence")
+        if self.schema_version == 6:
+            if self.result_models is None or self.children is None:
+                raise BundleError("composite records require typed result models and children")
+            if self.observation is not None and [child.name for child in self.observation.steps] != list(self.children):
+                raise BundleError("composite observations and child result order disagree")
+            for name, child in self.children.items():
+                if child.step_path != name:
+                    raise BundleError("composite child path does not match its declared name")
+                if (child.workflow_id, child.attempt_id, child.bundle_digest) != (self.workflow_id, self.attempt_id, self.bundle_digest):
+                    raise BundleError("composite child belongs to a different attempt")
+                if self.committed and not child.committed:
+                    raise BundleError("successful composite contains an unsuccessful child")
+        elif self.children is not None or self.result_models is not None or self.source_attempts:
+            raise BundleError("composite records require schema version 6")
+        for value in self.output_keys.values():
+            for key in value if isinstance(value, list) else [value]:
+                if key is not None and key.producer_field is None and self.schema_version != 6:
+                    raise BundleError("synthetic producer identities require schema version 6")
         result = self.observation
         if self.state in ("running", "unknown"):
             if result is not None or self.cache_key is not None or self.output_keys:
@@ -133,7 +155,7 @@ class AttemptRecord(WireModel):
                 if self.state != "failed" or not self.error:
                     raise BundleError("only a failed attempt with diagnostics may omit its leaf observation")
             else:
-                if result.steps:
+                if result.steps and self.schema_version != 6:
                     raise BundleError("a final worker record needs one leaf observation")
                 if result.name != self.step_path:
                     raise BundleError("observation name does not match the logical step_path")
@@ -166,7 +188,9 @@ class AttemptRecord(WireModel):
         worker_digest: str | None = None,
         sandbox: str | None = None,
         dataset_lifecycle: DatasetLifecycleAttempt | None = None,
+        composite: bool = False,
     ) -> AttemptRecord:
+        composite = composite or result.sub_results is not None
         inputs, outputs = pack_model(result.inputs), pack_model(result.outputs)
         # Reuse provenance's metadata mapping, but not its lossy I/O payload.
         metadata = _record(result, name=step_path).model_dump(exclude={"inputs", "outputs"})
@@ -180,7 +204,7 @@ class AttemptRecord(WireModel):
                         if one is None:
                             return None
                         index = getattr(one, "element_index", None)
-                        values = {"cache_key": str(one), "producer_field": getattr(one, "producer_field", None) or field}
+                        values = {"cache_key": str(one), "producer_field": getattr(one, "producer_field", None) if composite else getattr(one, "producer_field", None) or field}
                         coordinates = getattr(one, "coordinates", None)
                         if coordinates is not None:
                             return CoordinateProducedState(**values, coordinates=coordinates)
@@ -189,7 +213,14 @@ class AttemptRecord(WireModel):
                     keys[field] = [produced(one) for one in key] if isinstance(key, list) else produced(key)
         state = "failed" if not result.success else "skipped" if result.skipped else "cached" if result.cached else "succeeded"
         return cls(
-            schema_version=max(4 if result.bundle_inventories else 1, attempt_record_version(dataset_lifecycle, keys.values())),
+            schema_version=6 if composite else max(4 if result.bundle_inventories else 1, attempt_record_version(dataset_lifecycle, keys.values())),
+            result_models=(ModelSpec.capture(type(result.inputs)), ModelSpec.capture(type(result.outputs))) if composite else None,
+            children={
+                name: cls.from_result(child, workflow_id=workflow_id, attempt_id=attempt_id, step_path=name, bundle_digest=bundle_digest, composite=True)
+                for name, child in (result.sub_results or {}).items()
+            }
+            if composite
+            else None,
             bundle_inventories=result.bundle_inventories or None,
             workflow_id=workflow_id,
             attempt_id=attempt_id,
@@ -213,9 +244,12 @@ class AttemptRecord(WireModel):
         if self.observation is None:
             raise BundleError("attempt has no final worker result")
         record = self.observation
+        if self.result_models is not None:
+            scope = scope.model_copy(update={"name": self.step_path, "inputs_model": self.result_models[0].restore(), "outputs_model": self.result_models[1].restore()})
         metadata = {name: getattr(record, name) for name in Observation.model_fields if name not in {"steps", "inputs", "outputs", "name", "returncode"}}
         return StepResult(
             name=record.name,
+            sub_results={name: child.result(scope) for name, child in self.children.items()} if self.children else None,
             returncode=record.returncode,
             inputs=scope.inputs_model.model_validate({k: unpack(v) for k, v in record.inputs.items()}),
             outputs=scope.outputs_model.model_validate({k: unpack(v) for k, v in record.outputs.items()}),

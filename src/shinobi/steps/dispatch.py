@@ -32,7 +32,6 @@ from shinobi.backends._stream import display_label, terminate_all
 from shinobi.cache import (
     ExecutionIdentity,
     ProvenanceKey,
-    as_provenance_key,
     combine_keys,
     compute_cache_key,
     product_contract,
@@ -80,6 +79,16 @@ _STEP_BACKENDS: dict[str, Any] = {}
 # Shared "this step declares nothing" footprint. Reserving it is a no-op, so
 # an undeclared step never touches the budget's lock.
 _NO_RESOURCES = Resources()
+
+
+def _admission_demand(scope: Scope) -> Resources:
+    """Reserve atomic work only; composite leaves share the same budget.
+
+    Reserving for a Recipe as well would double-count its leaves and could
+    deadlock while they wait for resources held by their parent.
+    """
+    return _NO_RESOURCES if isinstance(scope, Recipe) or scope.resources is None else scope.resources
+
 
 # Slice index standing for "this unit is a whole step, not a scatter slice",
 # used only inside the scheduler's `pending` heap. Heap entries must be
@@ -320,7 +329,9 @@ def _local_execution_identity(scope: Scope, ctx: "ExecContext", *, pinned: bool,
     environment into a hit.
     """
     backend = ctx.resolve_backend_name()
-    image_digest = None
+    from shinobi.backends.container import CONTAINER_RUNTIMES
+
+    image_digest = scope._mixed_image_digest if backend in CONTAINER_RUNTIMES else None
     if pinned and scope.image:
         from shinobi.backends.container import CONTAINER_RUNTIMES, _pin_image
 
@@ -354,6 +365,7 @@ def _local_execution_identity(scope: Scope, ctx: "ExecContext", *, pinned: bool,
         ctx._source_helpers = helper_source
         ctx._source_helpers_resolved = True
     return ExecutionIdentity(
+        code_digest=getattr(func, "mixed_code_digest", None),
         isolated_container_pystep=isolated_pystep,
         source_helpers=helper_source,
         image_digest=image_digest,
@@ -1126,6 +1138,26 @@ def _dispatch(
             raise DatasetLifecycleUnavailableError("FITS family inputs require selecting members into declared scalar or list accesses")
     config = _config or AppConfig.load()
     run_id = _run_id or new_run_id()
+    if isinstance(scope, Recipe) and _cache_path is None:
+        from shinobi.offload.mixed import has_placement, run_local_mixed
+
+        if has_placement(scope):
+            if overwrite_steps:
+                raise StepError("overwrite selections on placed recipes are not yet supported")
+            return run_local_mixed(
+                scope,
+                kwargs,
+                config=config,
+                budget=_budget,
+                cache=cache,
+                cache_dir=cache_dir,
+                backend=backend,
+                stream=stream,
+                provenance=provenance,
+                sandbox=sandbox,
+                input_keys=_input_keys,
+                target=_provenance_target,
+            )
     dataset_declarations = _scope_dataset_declarations(scope)
     required_authority = None
     if _cache_path is None and _dataset_lifecycle is None and (config.cache.required or dataset_declarations):
@@ -1370,6 +1402,14 @@ def _dispatch(
                 "acquired ownership covering every closure resource at its declared strength" if mutation else "acquired ownership covering every read-only closure resource",
                 claim=lease.owner,
             )
+            # CREATE destinations may have no host parent yet. Materialize
+            # only those declared parents after acquiring their authority,
+            # then repeat the same snapshot/path proof before tool dispatch.
+            from shinobi.dataset_access import DatasetMode
+
+            for access in planned.accesses:
+                if access.mode is DatasetMode.CREATE and access.root is not None:
+                    access.root.parent.mkdir(parents=True, exist_ok=True)
             revalidated = resolve_snapshot()
             covered = not claim_covers_accesses(lease.owner, revalidated.accesses) if mutation else claim_covers_snapshot(lease.owner, revalidated)
             if not dataset_snapshot_matches(planned, revalidated) or not covered:
@@ -1776,7 +1816,9 @@ def _dispatch(
         # establish we are alone we skip, which is safe: the marker stays
         # set, so the next restore still forces a rollback (branch 1), and
         # only the tidying waits.
-        reconcile_paths = None
+        from shinobi.ownership import partitioned_write_paths
+
+        reconcile_paths = partitioned_write_paths()
         if _dataset_lifecycle is not None:
             claim = _dataset_lifecycle.record.claim
             reconcile_paths = {Path(access.path) for access in claim.accesses if access.writes} if claim is not None else set()
@@ -1787,7 +1829,7 @@ def _dispatch(
                 cache_dir_value,
                 get_cache_manifest(cache_dir_value),
                 paths=reconcile_paths,
-                exact=_dataset_lifecycle is not None,
+                exact=_dataset_lifecycle is not None or partitioned_write_paths() is not None,
             ):
                 logger.warning("cache: %s", note)
         elif not alone:
@@ -2604,6 +2646,7 @@ def _aggregate_scatter_results(
         # -- `provenance_key` stops consulting `cache_key` the moment
         # `output_keys` is set, empty or not.
         output_keys=output_keys or None,
+        sub_results={f"[{index}]": result for index, result in enumerate(slices)},
     )
 
 
@@ -2871,20 +2914,7 @@ def _run_recipe(
                 stop = True
 
         def _demand_of(i: int) -> Resources:
-            """What step `i` reserves while it runs.
-
-            A nested `Recipe` reserves nothing: it is not a unit of
-            execution, its leaves are, and they schedule against this same
-            shared budget. Reserving for both would double-count -- and
-            deadlock, since the parent would hold that reservation while the
-            nested scheduler waited for budget only the parent could release.
-            (`build_graph` rejects the declaration outright; this is the
-            invariant the scheduler itself relies on.)
-            """
-            scope = recipe.steps[i].step
-            if scope.resources is None or isinstance(scope, Recipe):
-                return _NO_RESOURCES
-            return scope.resources
+            return _admission_demand(recipe.steps[i].step)
 
         def _submit_unit(i: int, slice_idx: int | None, demand: Resources, backfilled: bool = False) -> None:
             """Submit one admission unit that has already been granted."""
@@ -3128,13 +3158,9 @@ def _run_recipe(
     # `ProvenanceKey` field here; a sub-step that is itself a recipe already
     # carries one naming its leaf, and `as_provenance_key` leaves that alone
     # rather than renaming the state to this recipe's export name.
-    from shinobi.cache import selected_key
+    from shinobi.cache import recipe_output_keys
 
-    output_keys = {
-        field: selected_key(as_provenance_key(key, out_ref.field), out_ref.selection)
-        for field, out_ref in recipe.output_wiring.items()
-        if out_ref.step in results and (key := results[out_ref.step].provenance_key(out_ref.field)) is not None
-    }
+    output_keys = recipe_output_keys(recipe, results)
     return StepResult(
         name=recipe.name,
         returncode=0,

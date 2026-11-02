@@ -70,6 +70,7 @@ class TraceStep:
     access_reasons: tuple[str, ...] = ()
     recipe: bool = False
     group: int | None = None
+    placement: str = ""
     scatter_label: str = ""
     scatter_details: tuple[str, ...] = ()
 
@@ -87,7 +88,13 @@ def graph_nodes(recipe: "Recipe", inputs: dict[str, Any] | None = None, *, works
     from shinobi.dataset_access import plan_recipe_accesses
     from shinobi.graph import build_graph
 
-    plan = plan_recipe_accesses(recipe, inputs, workspace=workspace) if inputs is not None else None
+    from shinobi.offload.mixed import has_placement, plan_declared
+
+    if inputs is not None and has_placement(recipe):
+        plan_declared(recipe, inputs, workspace or Path.cwd())
+        plan = None
+    else:
+        plan = plan_recipe_accesses(recipe, inputs, workspace=workspace) if inputs is not None else None
     graph = plan.graph if plan is not None else build_graph(recipe)
     nodes: list[TraceStep] = []
     _place(recipe, graph, None, nodes, plan, inputs=inputs)
@@ -123,6 +130,7 @@ def _place(recipe: "Recipe", graph, group: int | None, nodes: list[TraceStep], p
             access_reasons=access_reasons,
             recipe=isinstance(scope, Recipe),
             group=group,
+            placement=f"Slurm allocation; max_parallel={ref.placement.max_parallel}" if ref.placement else "",
             scatter_label=scatter_label,
             scatter_details=scatter_details,
         )
@@ -170,6 +178,7 @@ def _label(step: TraceStep, by_id: dict[int, TraceStep], parent: int | None) -> 
     details = [
         *(["recipe"] if step.recipe else []),
         *([step.resources] if step.resources else []),
+        *([step.placement] if step.placement else []),
         *step.access_reasons,
         *([f"also waits on: {', '.join(by_id[dep].name for dep in others)}"] if others else []),
     ]

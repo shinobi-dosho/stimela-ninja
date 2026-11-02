@@ -22,7 +22,7 @@ from pathlib import Path
 from string import Formatter
 from typing import Any, Callable, Iterator, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_serializer, field_validator, model_validator
 from pydantic_core import PydanticUndefined
 from dosho.validation.schema import ParamMeta as CabParamMeta, Policies, ParamPattern as CabParamPattern, ParamSegment as CabParamSegment
 
@@ -345,6 +345,28 @@ def planned_output_values(scope: Scope, prepared: dict[str, Any], *, workspace: 
     A plan is not a ProductFamily and carries no observed membership. Python
     steps and gathered scatter families retain runtime-only output values.
     """
+    if isinstance(scope, Recipe):
+        from shinobi.graph import build_graph
+        from shinobi.steps.dispatch import _build_scatter_slices
+
+        outputs = {}
+        for index in build_graph(scope).topological_indices():
+            ref = scope.steps[index]
+            known, deferred = static_wiring_values(ref, prepared, outputs, unresolved_inputs=unresolved_inputs)
+            if ref.scatter:
+                if any(field not in known for field in ref.scatter.fields):
+                    continue
+                outputs[ref.name] = gathered_output_values(ref.step, _build_scatter_slices(ref, known), unresolved_inputs=deferred, workspace=workspace)
+            else:
+                outputs[ref.name] = planned_output_values(ref.step, known, workspace=workspace, unresolved_inputs=deferred)
+        # Only direct, statically declared values cross this boundary. Family
+        # membership/coordinate selections retain their existing proof path;
+        # this helper must not fabricate observed ProductFamily instances.
+        return {
+            field: outputs[source.step][source.field]
+            for field, source in scope.output_wiring.items()
+            if source.selection is None and source.field in outputs.get(source.step, {}) and not family_annotation(scope.outputs_model.model_fields[field].annotation)
+        }
     values = static_output_values(scope, prepared, unresolved_inputs=unresolved_inputs)
     if isinstance(scope, Cab):
         known = {name: value for name, value in prepared.items() if name not in unresolved_inputs}
@@ -352,15 +374,20 @@ def planned_output_values(scope: Scope, prepared: dict[str, Any], *, workspace: 
     return values
 
 
-def gathered_output_values(scope: Scope, slices: list[dict[str, Any]], *, unresolved_inputs=frozenset()) -> dict[str, Any]:
+def gathered_output_values(scope: Scope, slices: list[dict[str, Any]], *, unresolved_inputs=frozenset(), workspace: Path | None = None) -> dict[str, Any]:
     """Gather only outputs declared statically for every concrete scatter slice.
 
     Runtime-derived values and observed product-family membership stay unknown.
     Actual returned paths still have to match the workflow ownership claim.
     """
-    if isinstance(scope, Recipe) or not slices:
+    if not slices:
         return {}
-    outputs = [static_output_values(scope, inputs, unresolved_inputs=unresolved_inputs) for inputs in slices]
+    outputs = [
+        planned_output_values(scope, inputs, workspace=workspace or Path.cwd(), unresolved_inputs=unresolved_inputs)
+        if isinstance(scope, Recipe)
+        else static_output_values(scope, inputs, unresolved_inputs=unresolved_inputs)
+        for inputs in slices
+    ]
     common = set.intersection(*(set(values) for values in outputs))
     return {field: [values[field] for values in outputs] for field in common}
 
@@ -765,6 +792,8 @@ class Scope(BaseModel):
     argv in a runtime invocation).
     """
 
+    _mixed_image_digest: str | None = PrivateAttr(default=None)
+
     name: str
     info: str | None = None
     inputs_model: type[BaseModel]
@@ -1121,6 +1150,18 @@ class OutputRef(BaseModel):
         return type(self)(step=self.step, field=self.field, selection=coordinates)
 
 
+class SlurmPlacement(BaseModel):
+    """Run this declared node (each outer scatter slice) in a Slurm allocation.
+
+    Local dispatch ignores placement. Resources remain leaf admission costs;
+    sbatch options describe the allocation, not a second resource reservation.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    sbatch_opts: dict[str, str] = Field(default_factory=dict)
+    max_parallel: int = Field(default=1, ge=1)
+
+
 class ScatterSpec(BaseModel):
     """Declaration that a step should fan out over one or more list-typed
     input fields. Each listed field must be a list at runtime and all
@@ -1195,6 +1236,7 @@ class StepRef(BaseModel):
     wiring: dict[str, "InputRef | OutputRef | list[InputRef | OutputRef]"] = Field(default_factory=dict)
     params: dict[str, Any] = Field(default_factory=dict)
     scatter: ScatterSpec | None = None
+    placement: SlurmPlacement | None = None
     # Ordering-only dependency edges: step names this one must run after,
     # with no data flowing. `build_graph` folds these into `deps` exactly
     # like a wiring edge, so the scheduler and the offload compiler both
@@ -1510,6 +1552,7 @@ class Recipe(Scope):
         *,
         scatter: list[str] | ScatterSpec | None = None,
         resources: Resources | None = None,
+        placement: SlurmPlacement | None = None,
         **kwargs: Any,
     ) -> "Recipe":
         """Add a step. `scope` is usually a bare `Scope`/`Cab`/`Recipe`, but
@@ -1539,6 +1582,7 @@ class Recipe(Scope):
                     "wiring": {**scope.wiring, **wiring},
                     "params": {**scope.params, **params},
                     "scatter": scatter_spec if scatter_spec is not None else scope.scatter,
+                    "placement": placement if placement is not None else scope.placement,
                     # The footprint lives on the Scope, not the StepRef, so
                     # binding it here has to reach through to `scope.step` --
                     # copying only the StepRef would silently drop it.
@@ -1546,7 +1590,7 @@ class Recipe(Scope):
                 }
             )
         else:
-            ref = StepRef(name=name, step=scope.with_resources(resources), wiring=wiring, params=params, scatter=scatter_spec)
+            ref = StepRef(name=name, step=scope.with_resources(resources), wiring=wiring, params=params, scatter=scatter_spec, placement=placement)
         self.steps.append(ref)
         return self
 

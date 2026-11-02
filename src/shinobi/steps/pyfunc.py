@@ -808,6 +808,7 @@ class PystepCallable:
     _run: Callable[[ExecContext], StepResult]
     is_empty: bool
     wants_ctx: bool
+    mixed_code_digest: str | None = None
 
     @property
     def __name__(self) -> str:
@@ -866,6 +867,14 @@ def _make_adapter(func: Callable, outputs_model: type[BaseModel], is_empty: bool
                 raise TypeError(f"pystep {func.__name__!r} has no declared outputs (no return annotation, or -> None) but returned {type(ret).__name__!r} instead of None")
             outputs: BaseModel = outputs_model()
         else:
+            if not isinstance(ret, outputs_model) and isinstance(ret, BaseModel) and getattr(func, "__shinobi_staged_code_root__", None):
+                # A frozen worker reconstructs data-only models instead of
+                # importing their classes. Require identical schema semantics
+                # before transporting the trusted function's return value.
+                from shinobi.offload._codec import ModelSpec
+
+                if ModelSpec.capture(type(ret)) == ModelSpec.capture(outputs_model):
+                    ret = outputs_model.model_validate({name: getattr(ret, name) for name in type(ret).model_fields})
             if not isinstance(ret, outputs_model):
                 raise TypeError(f"pystep {func.__name__!r} must return {outputs_model.__name__!r}, got {type(ret).__name__!r}")
             outputs = ret
