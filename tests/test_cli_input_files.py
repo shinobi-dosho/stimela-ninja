@@ -238,3 +238,96 @@ recipe.add_step("echo", cab, label=InputRef(field="label"), loud=InputRef(field=
     result = CliRunner().invoke(main, ["compile", f"{target}:recipe"])
     assert result.exit_code == 2
     assert "missing required inputs: --label" in result.output
+
+
+_DUMPING_BUILDER = """
+class Empty(BaseModel):
+    pass
+@recipe_builder(inputs_model=Inputs)
+def recipe(inputs):
+    Path("built.json").write_text(inputs.model_dump_json())
+    return Recipe(name="built", inputs_model=Empty, outputs_model=Empty)
+"""
+
+
+def _dumping_builder(tmp_path, models):
+    source = "from pathlib import Path\nfrom typing import Literal\nfrom pydantic import BaseModel, ConfigDict, Field\nfrom shinobi import Recipe, recipe_builder\n"
+    return f"{_write(tmp_path / 'dumping.py', source + models + _DUMPING_BUILDER)}:recipe"
+
+
+def test_union_groups_check_and_complete_under_the_selected_arm(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    target = _dumping_builder(
+        tmp_path,
+        """class First(BaseModel):
+    kind: Literal["first"]
+    width: int
+class Second(BaseModel):
+    kind: Literal["second"]
+    depth: int
+    label: str = "x"
+class Inputs(BaseModel):
+    choice: First | Second = Field(discriminator="kind")
+    jobs: list[First | Second] = []
+""",
+    )
+    (tmp_path / "second.yaml").write_text("choice: {kind: second, depth: 3}\njobs: [{kind: first, width: 1}, {kind: second, depth: 2}]\n")
+    result = _run(target, "second.yaml", "--dryrun")
+    assert result.exit_code == 0, result.output
+    built = json.loads((tmp_path / "built.json").read_text())
+    assert built["choice"] == {"kind": "second", "depth": 3, "label": "x"}
+    (tmp_path / "typo.yaml").write_text("choice: {kind: second, detph: 3}\n")
+    result = _run(target, "typo.yaml", "--dryrun")
+    assert result.exit_code == 2
+    assert "sets unknown inputs: choice.detph" in result.output
+
+
+def test_aliased_fields_are_set_by_the_key_the_model_validates(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    target = _dumping_builder(
+        tmp_path,
+        """class Group(BaseModel):
+    count: int = Field(alias="n")
+class Inputs(BaseModel):
+    group: Group
+    level: int = Field(alias="lvl")
+""",
+    )
+    (tmp_path / "alias.yaml").write_text("group: {n: 2}\nlvl: 1\n")
+    result = _run(target, "alias.yaml", "--dryrun")
+    assert result.exit_code == 0, result.output
+    assert json.loads((tmp_path / "built.json").read_text()) == {"group": {"count": 2}, "level": 1}
+    # The field name is not a key this model validates by.
+    (tmp_path / "name.yaml").write_text("group: {count: 2}\nlvl: 1\n")
+    result = _run(target, "name.yaml", "--dryrun")
+    assert result.exit_code == 2
+    assert "sets unknown inputs: group.count" in result.output
+    # A flag sets the same input as its alias, and overrides the file.
+    result = _run(target, "alias.yaml", "--group-count", "5", "--dryrun")
+    assert result.exit_code == 0, result.output
+    assert json.loads((tmp_path / "built.json").read_text())["group"] == {"count": 5}
+    (tmp_path / "partial.yaml").write_text("lvl: 1\ngroup: {}\n")
+    result = _run(target, "partial.yaml", "--dryrun")
+    assert result.exit_code == 2
+    assert "missing required inputs: --group-count" in result.output
+
+
+def test_extra_allow_admits_extra_keys_but_checks_declared_groups(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    target = _dumping_builder(
+        tmp_path,
+        """class Group(BaseModel):
+    count: int = 1
+class Inputs(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    group: Group = Group()
+""",
+    )
+    (tmp_path / "extra.yaml").write_text("anything: 1\ngroup: {count: 2}\n")
+    result = _run(target, "extra.yaml", "--dryrun")
+    assert result.exit_code == 0, result.output
+    assert json.loads((tmp_path / "built.json").read_text()) == {"group": {"count": 2}, "anything": 1}
+    (tmp_path / "typo.yaml").write_text("group: {cuont: 2}\n")
+    result = _run(target, "typo.yaml", "--dryrun")
+    assert result.exit_code == 2
+    assert "sets unknown inputs: group.cuont" in result.output

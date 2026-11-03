@@ -406,7 +406,7 @@ def resolve_inputs(model: type[BaseModel], files: Sequence[str], flags: dict[str
 
     from shinobi.loaders._modelgen import deep_merge
 
-    values = dict(base or {})
+    values = _rekey(model, dict(base or {}))
     for path in files:
         try:
             with open(path, encoding="utf-8") as stream:
@@ -415,7 +415,9 @@ def resolve_inputs(model: type[BaseModel], files: Sequence[str], flags: dict[str
             raise click.UsageError(f"cannot read inputs file {path}: {exc}") from None
         if not isinstance(data, dict):
             raise click.UsageError(f"inputs file {path} must map input names to values")
-        if unknown := _unknown_inputs(model, data):
+        unknown: list[str] = []
+        data = _rekey(model, data, unknown=unknown)
+        if unknown:
             raise click.UsageError(f"inputs file {path} sets unknown inputs: {', '.join(unknown)}")
         values = deep_merge(values, data)
     ctx = click.get_current_context()
@@ -424,69 +426,166 @@ def resolve_inputs(model: type[BaseModel], files: Sequence[str], flags: dict[str
     values = copy.deepcopy(deep_merge(values, unflatten_kwargs(model, given)))
     if missing := _complete_inputs(model, values):
         flagged = {path: option_flag(flat_name) for flat_name, path, _field in iter_leaf_fields(model)}
-        names = [flagged.get(tuple(name.split(".")), f"{name} (inputs file only)") for name in missing]
+        names = [flagged.get(path, f"{label} (inputs file only)") for path, label in missing]
         raise click.UsageError(f"missing required inputs: {', '.join(names)}")
-    return values
+    return _rekey(model, values, outward=True)
 
 
-def _unknown_inputs(model: type[BaseModel], values: dict[str, Any], prefix: str = "") -> list[str]:
-    """Dotted keys of `values` that name no field of `model`, its groups,
-    or the models inside its mappings and lists."""
-    if model.model_config.get("extra") == "allow":
-        return []
-    unknown = []
+# Inputs are merged and completed keyed by field name, whichever key a file
+# used, so an alias and its field name are one input. `_rekey` translates in
+# (accepted key -> field name, recording unknown keys) and back out (field
+# name -> the key the model validates by).
+
+
+def _validates_by_name(model: type[BaseModel]) -> bool:
+    config = model.model_config
+    return bool(config.get("validate_by_name") or config.get("populate_by_name"))
+
+
+def _field_aliases(model: type[BaseModel], field: FieldInfo) -> tuple[list[str], bool]:
+    """The flat keys an alias lets a file use for `field`, and whether the
+    field declares any alias at all (a nested `AliasPath` has no flat key)."""
+    from pydantic import AliasChoices, AliasPath
+
+    alias = field.validation_alias if field.validation_alias is not None else field.alias
+    if alias is None:
+        return [], False
+    if model.model_config.get("validate_by_alias") is False:
+        return [], True
+    choices = alias.choices if isinstance(alias, AliasChoices) else [alias]
+    keys = []
+    for choice in choices:
+        if isinstance(choice, AliasPath):
+            choice = choice.path[0] if len(choice.path) == 1 else None
+        if isinstance(choice, str):
+            keys.append(choice)
+    return keys, True
+
+
+def _input_keys(model: type[BaseModel]) -> dict[str, str]:
+    """Each key `model` validates by, mapped to its field name."""
+    keys: dict[str, str] = {}
+    by_name = _validates_by_name(model)
+    for name, field in model.model_fields.items():
+        aliases, aliased = _field_aliases(model, field)
+        for alias in aliases:
+            keys.setdefault(alias, name)
+        if by_name or not aliased:
+            keys.setdefault(name, name)
+    return keys
+
+
+def _input_key(model: type[BaseModel], name: str) -> str:
+    """The key `model` validates field `name` by: the name, unless only an
+    alias is accepted."""
+    aliases, aliased = _field_aliases(model, model.model_fields[name])
+    if aliased and aliases and not _validates_by_name(model):
+        return aliases[0]
+    return name
+
+
+def _rekey(model: type[BaseModel], values: dict[str, Any], prefix: str = "", unknown: list[str] | None = None, *, outward: bool = False) -> dict[str, Any]:
+    """`values` with its keys, and those of every model nested in it,
+    translated to field names (or back out, with `outward`).
+
+    A key that names no field is kept as given and, unless the model allows
+    extra fields, recorded in `unknown`. Declared fields are translated and
+    checked either way, so `extra="allow"` admits extra keys at its own level
+    without hiding a typo inside one of its groups.
+    """
+    lookup = {name: name for name in model.model_fields} if outward else _input_keys(model)
+    allow_extra = model.model_config.get("extra") == "allow"
+    result: dict[str, Any] = {}
     for key, value in values.items():
-        field = model.model_fields.get(key)
-        if field is None:
-            unknown.append(f"{prefix}{key}")
+        name = lookup.get(key)
+        if name is None:
+            if not allow_extra and unknown is not None:
+                unknown.append(f"{prefix}{key}")
+            result[key] = value
             continue
-        for sub, item, label in _nested_models(field.annotation, value, f"{prefix}{key}"):
-            unknown.extend(_unknown_inputs(sub, item, f"{label}."))
-    return unknown
+        new_key = _input_key(model, name) if outward else name
+        result[new_key] = _rekey_value(model.model_fields[name].annotation, value, f"{prefix}{key}", unknown, outward=outward)
+    return result
 
 
-def _nested_models(annotation, value: Any, label: str) -> list[tuple[type[BaseModel], dict[str, Any], str]]:
-    """`(model, mapping, label)` for each part of `value` the annotation
-    types as a model: the value itself, a mapping's values, or list items."""
-    if not isinstance(value, (dict, list)):
-        return []
-    for arg in _unwrap_annotation(annotation):
-        if isinstance(arg, type) and issubclass(arg, BaseModel):
-            if isinstance(value, dict):
-                return [(arg, value, label)]
-            return [(arg, item, f"{label}[{index}]") for index, item in enumerate(value) if isinstance(item, dict)]
-        if get_origin(arg) in (dict, collections.abc.Mapping) and isinstance(value, dict):
-            sub = _submodel(get_args(arg)[-1]) if get_args(arg) else None
-            if sub is not None:
-                return [(sub, item, f"{label}.{key}") for key, item in value.items() if isinstance(item, dict)]
-    return []
+def _rekey_value(annotation, value: Any, label: str, unknown: list[str] | None, *, outward: bool) -> Any:
+    """`_rekey` for one field value: a model, a mapping to models, or a
+    list of either, as the annotation types it."""
+    if isinstance(value, list):
+        return [_rekey_value(annotation, item, f"{label}[{index}]", unknown, outward=outward) for index, item in enumerate(value)]
+    if not isinstance(value, dict):
+        return value
+    arms = _arms(annotation)
+    if sub := _choose_model(arms, value, outward=outward):
+        return _rekey(sub, value, f"{label}.", unknown, outward=outward)
+    for arm in arms:
+        if get_origin(arm) in (dict, collections.abc.Mapping) and get_args(arm):
+            item_annotation = get_args(arm)[-1]
+            return {key: _rekey_value(item_annotation, item, f"{label}.{key}", unknown, outward=outward) for key, item in value.items()}
+    return value
 
 
-def _complete_inputs(model: type[BaseModel], values: dict[str, Any], prefix: str = "") -> list[str]:
+def _arms(annotation) -> list[Any]:
+    """An annotation's value leaves, with `Annotated` stripped throughout."""
+    arms, pending = [], _unwrap_annotation(annotation)
+    while pending:
+        arm = pending.pop(0)
+        if get_origin(arm) is Annotated:
+            pending.extend(_unwrap_annotation(get_args(arm)[0]))
+        else:
+            arms.append(arm)
+    return arms
+
+
+def _choose_model(arms: list[Any], value: dict[str, Any], *, outward: bool = True) -> type[BaseModel] | None:
+    """The model arm a mapping value belongs to.
+
+    In a union of models, that is the arm under which the fewest keys are
+    unknown (the first on a tie): a discriminated `First | Second` value
+    selecting `Second` names fields that `First` lacks. Pydantic still
+    validates the choice itself.
+    """
+    models = [arm for arm in arms if isinstance(arm, type) and issubclass(arm, BaseModel)]
+    if len(models) <= 1:
+        return models[0] if models else None
+
+    def misses(sub: type[BaseModel]) -> int:
+        found: list[str] = []
+        _rekey(sub, value, unknown=found, outward=outward)
+        return len(found)
+
+    return min(models, key=misses)
+
+
+def _complete_inputs(model: type[BaseModel], values: dict[str, Any], prefix: str = "", path: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], str]]:
     """Fill what click's defaults used to supply, and name what is missing.
 
     An absent required plain boolean becomes False, as its unset flag did;
-    an absent required group whose fields all default becomes `{}`. Returns
-    the dotted names of required fields still absent.
+    an absent required group whose fields all default becomes `{}`. A
+    group typed as a union of models is completed under the arm its value
+    selects; an absent one is not guessed. Returns the field-name path and
+    input-key label of each required field still absent.
     """
     missing = []
     for name, field in model.model_fields.items():
-        sub = _submodel(field.annotation)
+        key = _input_key(model, name)
+        arms = _arms(field.annotation)
+        models = [arm for arm in arms if isinstance(arm, type) and issubclass(arm, BaseModel)]
         if name in values:
-            if sub is not None and isinstance(values[name], dict):
-                missing.extend(_complete_inputs(sub, values[name], f"{prefix}{name}."))
+            if models and isinstance(values[name], dict) and (sub := _choose_model(arms, values[name])):
+                missing.extend(_complete_inputs(sub, values[name], f"{prefix}{key}.", (*path, name)))
         elif not field.is_required():
             continue
-        elif sub is not None:
+        elif len(models) == 1:
             group: dict[str, Any] = {}
-            if inner := _complete_inputs(sub, group, f"{prefix}{name}."):
+            if inner := _complete_inputs(models[0], group, f"{prefix}{key}.", (*path, name)):
                 missing.extend(inner)
             else:
                 values[name] = group
-        elif _unwrap_annotation(field.annotation) == [bool] and not is_list(field.annotation):
+        elif not models and _unwrap_annotation(field.annotation) == [bool] and not is_list(field.annotation):
             values[name] = False
         else:
-            missing.append(f"{prefix}{name}")
+            missing.append(((*path, name), f"{prefix}{key}"))
     return missing
 
 
