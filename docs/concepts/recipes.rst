@@ -448,31 +448,33 @@ execution planner; dotted selection does not remove that restriction.
 Recipe builders
 ---------------
 
-Use ``@shinobi.recipe_builder(inputs_model=BuilderInputs)`` when validated
+Use ``@shinobi.recipe_builder(inputs_model=Settings)`` when validated
 construction settings decide which nodes to declare. The decorated function
 receives one Pydantic model instance and returns a complete ``Recipe``:
 
 .. code-block:: python
 
-    from pathlib import Path
-    import yaml
     from pydantic import BaseModel
     from shinobi import Recipe, recipe_builder
 
-    class BuilderInputs(BaseModel):
-        settings: Path
+    class Settings(BaseModel):
+        nchan: int = 4
+        robust: list[float]
 
-    @recipe_builder(inputs_model=BuilderInputs)
-    def recipe(inputs: BuilderInputs) -> Recipe:
-        settings = Settings.model_validate(yaml.safe_load(inputs.settings.read_text()))
+    @recipe_builder(inputs_model=Settings)
+    def recipe(settings: Settings) -> Recipe:
         return declare_graph(settings)  # ordinary trusted Python
 
-``Settings`` and ``declare_graph`` are application code. Shinobi does not load,
-merge, interpolate or interpret settings YAML. A builder is an explicit trusted
+``Settings`` and ``declare_graph`` are application code. Each ``Settings``
+field with a flag form is a ``ninja run`` option, and YAML input files given
+after the target supply any field, including dict-valued ones (see
+:doc:`/cli`). The CLI merges those files under the
+typed options and the model validates the result; nothing in them is
+interpolated or evaluated. A builder is an explicit trusted
 Python boundary, not a cab or a runtime orchestration node. Only decorated
 builders are accepted; ordinary callables are not invoked as CLI targets.
 ``RecipeBuilder`` and ``recipe_builder`` are public Python APIs; Python callers
-can use ``recipe(settings=Path("settings.yaml"))`` to construct the graph.
+can use ``recipe(nchan=8, robust=[0.0])`` to construct the graph.
 
 The builder's single input model is the complete construction interface. Its
 schema uses the same ImportString guard as runtime inputs, including Python
@@ -482,6 +484,6 @@ additional runtime root inputs; defaulted root fields are allowed. Bind settings
 into constants and wiring while declaring the graph. Builder arguments and
 runtime ``recipe.inputs`` remain distinct.
 
-Relative paths, including paths read from YAML, are relative to the invocation
-working directory. Nothing is rebased to the settings file's directory. Builders
-must preserve that convention when interpreting their own settings.
+Relative paths, including paths read from input files, are relative to the
+invocation working directory. Nothing is rebased to an input file's directory.
+Builders must preserve that convention for any files they read themselves.

@@ -383,8 +383,10 @@ Builder-origin runs
 -------------------
 
 Run manifests may include optional ``builder_origin`` metadata containing the
-CLI target and validated construction arguments. Older manifests omit it. These
-arguments are diagnostic: a settings path does not snapshot that file's contents.
+CLI target and validated construction arguments: the merged values from input
+files and options, not the files' paths. Older manifests omit it. These
+arguments are diagnostic: the builder body is trusted Python that may read
+other files, such as a layout a setting names, and nothing snapshots those.
 Runtime root inputs remain in ``root.inputs`` and are separate from construction
 arguments. Both ordinary and placed local runs preserve this distinction.
 Compilation freezes the graph itself; this diagnostic local-run metadata is

@@ -26,6 +26,8 @@ recipe and why.
 
 from __future__ import annotations
 
+import collections.abc
+import copy
 import importlib
 import types
 from collections.abc import Callable
@@ -91,6 +93,18 @@ def _is_model_mapping(annotation) -> bool:
         elif get_origin(arg) is dict and any(isinstance(a, type) and issubclass(a, BaseModel) for a in get_args(arg)):
             return True
     return False
+
+
+def _is_mapping(annotation) -> bool:
+    """Whether every non-`None` value leaf of an annotation is a dict.
+
+    Like a mapping to sub-models, a `dict[str, Any]` (or a list of them) has
+    no flag form: a `--<name> TEXT` option would hand the model a string it
+    must reject. A union that also admits a scalar keeps its flag, as
+    `is_list` does.
+    """
+    arms = [arg for arg in _unwrap_annotation(annotation) if arg is not type(None)]
+    return bool(arms) and all(arg is dict or get_origin(arg) in (dict, collections.abc.Mapping) for arg in arms)
 
 
 def _submodel(annotation) -> type[BaseModel] | None:
@@ -227,13 +241,14 @@ def iter_leaf_fields(model: type[BaseModel], *, _prefix: str = "", _path: tuple[
     A model with no nested `BaseModel` fields (every cult-cargo cab's
     `inputs_model`) yields exactly what a flat single-level walk would.
 
-    Mapping-to-sub-model fields (`worker_schema`'s `_each` groups) are
-    skipped -- see `_is_model_mapping`. They are configurable from the
-    config file only, never from a flag.
+    Mapping fields -- `worker_schema`'s `_each` groups (see
+    `_is_model_mapping`) and plain dicts (see `_is_mapping`) -- are
+    skipped. They are configurable from a config or inputs file only,
+    never from a flag.
     """
     result: list[tuple[str, tuple[str, ...], FieldInfo]] = []
     for name, field in model.model_fields.items():
-        if _is_model_mapping(field.annotation):
+        if _is_model_mapping(field.annotation) or _is_mapping(field.annotation):
             continue
         sub = _submodel(field.annotation)
         if sub is not None:
@@ -243,12 +258,16 @@ def iter_leaf_fields(model: type[BaseModel], *, _prefix: str = "", _path: tuple[
     return result
 
 
-def build_options(model: type[BaseModel]) -> list[click.Option]:
+def build_options(model: type[BaseModel], *, enforce_required: bool = True) -> list[click.Option]:
     """Turn a pydantic model's (possibly nested) fields into click options.
 
     Args:
         model: A pydantic `BaseModel` subclass; nested `BaseModel` fields are
             flattened via `iter_leaf_fields`.
+        enforce_required: Whether click itself demands required fields.
+            False when another source, such as an inputs file, may supply
+            them; `--help` still marks them and `resolve_inputs` checks the
+            merged values.
 
     Returns:
         A list of `click.Option` instances, one per leaf field. Boolean
@@ -266,7 +285,10 @@ def build_options(model: type[BaseModel]) -> list[click.Option]:
     for flat_name, _path, field in iter_leaf_fields(model):
         required = field.is_required()
         default = None if field.default is PydanticUndefined else field.default
-        kwargs: dict = {"required": required, "help": field.description}
+        help_text = field.description
+        if required and not enforce_required:
+            help_text = f"{help_text}  [required]" if help_text else "[required]"
+        kwargs: dict = {"required": required and enforce_required, "help": help_text}
         leaves = _unwrap_annotation(field.annotation)
         field_is_list = is_list(field.annotation)
         if bool in leaves and not field_is_list:
@@ -354,6 +376,118 @@ def unflatten_kwargs(model: type[BaseModel], flat_kwargs: dict[str, Any]) -> dic
             node = node.setdefault(part, {})
         node[path[-1]] = flat_kwargs[flat_name]
     return nested
+
+
+def input_files_argument() -> click.Argument:
+    """Positional YAML files that supply a target's inputs.
+
+    A positional argument reserves no option spelling, so no target loses a
+    parameter name to it. Its own name cannot collide with a target field
+    either: Pydantic field names never start with an underscore.
+    """
+    return click.Argument(["_input_files"], nargs=-1, type=click.Path(exists=True, dir_okay=False), metavar="[INPUTS.yaml]...")
+
+
+def resolve_inputs(model: type[BaseModel], files: Sequence[str], flags: dict[str, Any], *, base: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A target's nested inputs: `base`, then each file in order, then flags.
+
+    Dicts merge key by key and anything else is replaced, so a later file
+    or a flag overrides one value without restating its group. Only flags
+    given on the command line count: click's defaults are the model's own,
+    and a defaulted boolean flag would otherwise override every file.
+    Unknown file keys and missing required inputs are usage errors, since
+    a misspelt key would otherwise be dropped by the model silently.
+
+    As before files existed, an absent required boolean flag means False,
+    and a required group whose fields all have defaults takes them.
+    """
+    import yaml
+    from click.core import ParameterSource
+
+    from shinobi.loaders._modelgen import deep_merge
+
+    values = dict(base or {})
+    for path in files:
+        try:
+            with open(path, encoding="utf-8") as stream:
+                data = yaml.safe_load(stream) or {}
+        except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+            raise click.UsageError(f"cannot read inputs file {path}: {exc}") from None
+        if not isinstance(data, dict):
+            raise click.UsageError(f"inputs file {path} must map input names to values")
+        if unknown := _unknown_inputs(model, data):
+            raise click.UsageError(f"inputs file {path} sets unknown inputs: {', '.join(unknown)}")
+        values = deep_merge(values, data)
+    ctx = click.get_current_context()
+    given = {name: value for name, value in flags.items() if ctx.get_parameter_source(name) in (ParameterSource.COMMANDLINE, ParameterSource.ENVIRONMENT)}
+    # Completion fills in place; never touch a StepRef's own params.
+    values = copy.deepcopy(deep_merge(values, unflatten_kwargs(model, given)))
+    if missing := _complete_inputs(model, values):
+        flagged = {path: option_flag(flat_name) for flat_name, path, _field in iter_leaf_fields(model)}
+        names = [flagged.get(tuple(name.split(".")), f"{name} (inputs file only)") for name in missing]
+        raise click.UsageError(f"missing required inputs: {', '.join(names)}")
+    return values
+
+
+def _unknown_inputs(model: type[BaseModel], values: dict[str, Any], prefix: str = "") -> list[str]:
+    """Dotted keys of `values` that name no field of `model`, its groups,
+    or the models inside its mappings and lists."""
+    if model.model_config.get("extra") == "allow":
+        return []
+    unknown = []
+    for key, value in values.items():
+        field = model.model_fields.get(key)
+        if field is None:
+            unknown.append(f"{prefix}{key}")
+            continue
+        for sub, item, label in _nested_models(field.annotation, value, f"{prefix}{key}"):
+            unknown.extend(_unknown_inputs(sub, item, f"{label}."))
+    return unknown
+
+
+def _nested_models(annotation, value: Any, label: str) -> list[tuple[type[BaseModel], dict[str, Any], str]]:
+    """`(model, mapping, label)` for each part of `value` the annotation
+    types as a model: the value itself, a mapping's values, or list items."""
+    if not isinstance(value, (dict, list)):
+        return []
+    for arg in _unwrap_annotation(annotation):
+        if isinstance(arg, type) and issubclass(arg, BaseModel):
+            if isinstance(value, dict):
+                return [(arg, value, label)]
+            return [(arg, item, f"{label}[{index}]") for index, item in enumerate(value) if isinstance(item, dict)]
+        if get_origin(arg) in (dict, collections.abc.Mapping) and isinstance(value, dict):
+            sub = _submodel(get_args(arg)[-1]) if get_args(arg) else None
+            if sub is not None:
+                return [(sub, item, f"{label}.{key}") for key, item in value.items() if isinstance(item, dict)]
+    return []
+
+
+def _complete_inputs(model: type[BaseModel], values: dict[str, Any], prefix: str = "") -> list[str]:
+    """Fill what click's defaults used to supply, and name what is missing.
+
+    An absent required plain boolean becomes False, as its unset flag did;
+    an absent required group whose fields all default becomes `{}`. Returns
+    the dotted names of required fields still absent.
+    """
+    missing = []
+    for name, field in model.model_fields.items():
+        sub = _submodel(field.annotation)
+        if name in values:
+            if sub is not None and isinstance(values[name], dict):
+                missing.extend(_complete_inputs(sub, values[name], f"{prefix}{name}."))
+        elif not field.is_required():
+            continue
+        elif sub is not None:
+            group: dict[str, Any] = {}
+            if inner := _complete_inputs(sub, group, f"{prefix}{name}."):
+                missing.extend(inner)
+            else:
+                values[name] = group
+        elif _unwrap_annotation(field.annotation) == [bool] and not is_list(field.annotation):
+            values[name] = False
+        else:
+            missing.append(f"{prefix}{name}")
+    return missing
 
 
 # ---------------------------------------------------------------------------

@@ -73,7 +73,7 @@ def target(tmp_path):
 from pydantic import BaseModel
 from shinobi import Cab, Recipe, recipe_builder
 class Inputs(BaseModel):
-    settings: Path
+    value: str
 class ToolInputs(BaseModel):
     value: str
 class Empty(BaseModel):
@@ -82,9 +82,8 @@ class Empty(BaseModel):
 def recipe(inputs):
     with Path("calls").open("a") as stream:
         stream.write("called\\n")
-    value = inputs.settings.read_text()
     graph = Recipe(name="built", inputs_model=Empty, outputs_model=Empty)
-    graph.add_step("echo", Cab(name="echo", command="echo", inputs_model=ToolInputs, outputs_model=Empty), value=value.strip())
+    graph.add_step("echo", Cab(name="echo", command="echo", inputs_model=ToolInputs, outputs_model=Empty), value=inputs.value)
     return graph
 """)
     return f"{path}:recipe"
@@ -94,7 +93,7 @@ def test_help_no_body_or_settings(target, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(main, ["run", target, "--help"])
     assert result.exit_code == 0, result.output
-    assert "--settings" in result.output
+    assert "--value" in result.output
     result = CliRunner().invoke(main, ["compile", target, "--help"])
     assert result.exit_code == 0, result.output
     assert not (tmp_path / "calls").exists()
@@ -106,15 +105,15 @@ def test_help_no_body_or_settings(target, tmp_path, monkeypatch):
 @pytest.mark.parametrize("command,flags", [("run", []), ("run", ["--dryrun"]), ("compile", [])])
 def test_cli_constructs_once(command, flags, target, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "settings").write_text("built")
-    result = CliRunner().invoke(main, [command, target, "--settings", "settings", *flags])
+    (tmp_path / "settings.yaml").write_text("value: built\n")
+    result = CliRunner().invoke(main, [command, target, "settings.yaml", *flags])
     assert result.exit_code == 0, result.output
     assert (tmp_path / "calls").read_text() == "called\n"
 
 
 def test_compile_workdir_refuses_before_body(target, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    result = CliRunner().invoke(main, ["compile", target, "--workdir", str(tmp_path / "elsewhere"), "--settings", "absent"])
+    result = CliRunner().invoke(main, ["compile", target, "--workdir", str(tmp_path / "elsewhere"), "--value", "absent"])
     assert result.exit_code != 0
     assert "invocation working directory" in result.output
     assert not (tmp_path / "calls").exists()
@@ -122,7 +121,7 @@ def test_compile_workdir_refuses_before_body(target, tmp_path, monkeypatch):
 
 def test_remote_marker_refuses_before_body(target, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    result = CliRunner().invoke(main, ["run", target, "--static-target-only", "--settings", "absent"])
+    result = CliRunner().invoke(main, ["run", target, "--static-target-only", "--value", "absent"])
     assert result.exit_code != 0
     assert "static targets only" in result.output
     assert not (tmp_path / "calls").exists()
@@ -191,18 +190,19 @@ def test_provenance_origin_and_replay_override_guard(target, tmp_path, monkeypat
         source.write_text(
             source.read_text()
             .replace("from shinobi import Cab, Recipe, recipe_builder", "from shinobi import Cab, Recipe, recipe_builder, SlurmPlacement")
-            .replace("value=value.strip()", "placement=SlurmPlacement(), value=value.strip()")
+            .replace("value=inputs.value", "placement=SlurmPlacement(), value=inputs.value")
         )
-    (tmp_path / "settings").write_text("built")
-    result = CliRunner().invoke(main, ["run", target, "--settings", "settings", "--provenance"])
+    (tmp_path / "settings.yaml").write_text("value: built\n")
+    result = CliRunner().invoke(main, ["run", target, "settings.yaml", "--provenance"])
     assert result.exit_code == 0, result.output
     from shinobi.config import AppConfig
 
     manifest = next(path for path in Path(AppConfig.load().provenance.dir).glob("built.*.run.json") if json.loads(path.read_text())["root"]["name"] == "built")
     data = json.loads(manifest.read_text())
-    assert data["builder_origin"] == {"target": target, "arguments": {"settings": "settings"}}
+    # The manifest records the validated values, not the file they came from.
+    assert data["builder_origin"] == {"target": target, "arguments": {"value": "built"}}
     assert data["root"]["inputs"] == {}
-    (tmp_path / "settings").unlink()
+    (tmp_path / "settings.yaml").unlink()
     result = CliRunner().invoke(main, ["replay", str(manifest), "--target", "does.not.exist:recipe"])
     assert result.exit_code != 0
     assert "replay of recipe-builder runs is unsupported" in result.output
@@ -214,17 +214,15 @@ def test_provenance_origin_and_replay_override_guard(target, tmp_path, monkeypat
     assert (tmp_path / "calls").read_text() == "called\n"
 
 
-def test_frozen_recipe_needs_no_settings(target, tmp_path, monkeypatch):
+def test_frozen_recipe_needs_no_builder(target, tmp_path, monkeypatch):
     from shinobi.cli import _resolve_target
     from shinobi.config import AppConfig
     from shinobi.offload.bundle import RecipeBundle, freeze_recipe
     from shinobi.graph import build_graph
 
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "settings").write_text("built")
-    recipe = _resolve_target(target)(settings=Path("settings"))
+    recipe = _resolve_target(target)(value="built")
     bundle = freeze_recipe(recipe, {}, config=AppConfig(), workspace=tmp_path)
-    (tmp_path / "settings").unlink()
     restored = RecipeBundle.model_validate_json(bundle.model_dump_json()).declaration()
     assert restored.name == "built"
     build_graph(restored)

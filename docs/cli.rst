@@ -58,6 +58,24 @@ command's options -- run ``ninja run TARGET --help`` to see them.
     $ ninja run myrecipe.py:image --ms data.ms --prefix out
     $ ninja run myrecipe.py:selfcal --ms data.ms
 
+YAML files given after the target supply the same inputs. They apply in order,
+then options typed on the command line override them; dicts merge key by key
+and any other value is replaced:
+
+.. code-block:: console
+
+    $ ninja run myrecipe.py:selfcal base.yaml deep.yaml --niter 2000
+
+A file maps input names to plain values; nested groups use nested mappings,
+not their flattened option names. Unknown names and missing required inputs
+are usage errors. Dict-valued inputs have no option and come only from a file.
+Files are data: nothing in them is expanded, evaluated or resolved against
+other inputs. Positional files reserve no option name, so every target keeps
+its full parameter namespace. With ``--remote``, input files are forwarded as
+typed and not synced on their own: ``--include`` them, and give their paths
+relative to the synced root (the common directory of the target, its cab
+dependencies and the included paths), as for any path option.
+
 Add ``--dryrun`` to render the execution graph without running anything:
 
 .. code-block:: console
@@ -473,19 +491,20 @@ Recipe construction targets
 
 .. code-block:: console
 
-    $ ninja --config execution.yaml run pipeline.py:recipe --settings settings.yaml
+    $ ninja --config execution.yaml run pipeline.py:recipe settings.yaml
     $ ninja run pipeline.py:recipe --help
-    $ ninja run pipeline.py:recipe --settings settings.yaml --dryrun
-    $ ninja compile pipeline.py:recipe --settings settings.yaml
+    $ ninja run pipeline.py:recipe settings.yaml --nchan 8 --dryrun
+    $ ninja compile pipeline.py:recipe settings.yaml
 
+Builder inputs come from input files and options exactly as for any target.
 Target help inspects the builder input schema without invoking the body or
-reading settings. Python module import remains ordinary trusted Python. Actual
+reading input files. Python module import remains ordinary trusted Python. Actual
 run, dry-run and compile each construct once after argument validation. Builder
 option spellings must be unique, including flattened nested fields, short
 aliases and boolean negative flags, and must not collide with command controls.
 Static Cab, Recipe and step targets retain their existing interface.
 
-Paths use the invocation working directory, including settings contents. A
+Paths use the invocation working directory, including input file contents. A
 builder compile refuses a different ``--workdir`` before calling its body;
 static recipes retain their existing ``--workdir`` behavior. File-target imports
 do not add the target's directory to Python's import path: expose helper modules
@@ -494,4 +513,4 @@ through an installed package or an explicit ``PYTHONPATH``.
 ``--remote`` supports static targets only. The local launcher still does not
 import the target. The remote command refuses a builder before invoking its
 body; because SSH launches detached, that refusal can appear in the remote log.
-There is no automatic settings-file synchronization.
+There is no automatic input-file synchronization.
