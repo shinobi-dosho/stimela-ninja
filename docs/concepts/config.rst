@@ -244,11 +244,8 @@ on that exact mount before treating it as supported. Every participant must use
 the same distributed locking mode: NFSv3 without working lock services, or NFS
 mounted with local-only locking, is unsupported.
 
-The reference Kudu/Nyala topology passed this probe across its mixed local-ext4
-server and NFSv4.2 clients on 2026-09-13, and the hardened implementation
-passed twice on the hardened tree on 2026-09-14 as jobs 116--118 and 119--121.
-Those results establish this one mount, not a blanket guarantee for other NFS
-or parallel-filesystem configurations.
+A successful probe qualifies only the tested mount, not other NFS or
+parallel-filesystem configurations.
 
 Mixing a server-local participant with NFS clients also has one inherent reboot
 window: after the server restarts, clients reclaim locks during the NFS grace

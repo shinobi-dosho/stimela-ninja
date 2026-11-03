@@ -158,48 +158,17 @@ manifest cannot be selected by ``current_manifest``.
 
 The fresh-process regression fixture uses one outer scatter with 30 branches,
 each containing three 14-leaf groups and 16 other leaves (1,740 leaves), nested
-schemas and realistic typed output tables. On Python 3.14/Linux, with a 670 KB
-frozen bundle, it measured:
-
-.. list-table::
-   :header-rows: 1
-
-   * - Per-leaf log
-     - Unique log bytes
-     - Node/schema JSON
-     - Final summary
-     - Monitoring peak RSS
-     - Status + manifest time
-   * - 64 KiB
-     - 114,032,640
-     - 5,439,352
-     - 5,548 bytes
-     - 63.9 MiB
-     - 1.57 s
-   * - 256 KiB
-     - 456,130,560
-     - 5,441,092
-     - 5,548 bytes
-     - 63.6 MiB
-     - 5.15 s
-
-Both runs wrote 1,740 unique log files and 1,868 node/schema/manifest JSON files;
-monitoring read 1,861 referenced nodes once each. The regression budgets are
-256 KiB for the final summary, 32 MiB for node/schema JSON and 256 MiB monitoring
-RSS, with less than 32 MiB RSS growth when logs grow fourfold. These are fixture
-budgets, not universal limits. A separate stress declaration duplicating the
-entire frozen subtree 30 times produced a 19 MiB version-4 bundle and approximately
-284 MiB monitoring RSS (266 MiB for loading the bundle alone). Version-4 bundle
-deduplication is outside this result-record change. No live cluster is needed
-for these measurements; only scheduler accounting is mocked.
+schemas and realistic typed output tables. The regression budgets are 256 KiB
+for the final summary, 32 MiB for node/schema JSON and 256 MiB monitoring RSS,
+with less than 32 MiB RSS growth when logs grow fourfold. These are fixture
+budgets, not universal limits. The fixture runs without a live cluster; only
+scheduler accounting is mocked.
 
 Converting existing version-6 results
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The original 30-branch noise campaign produced a 598 MB recursive version-6 final
-record. The status process was killed with exit 137 while loading it; an
-out-of-memory cause was not independently confirmed. Existing small legacy
-records remain readable. Mixed monitoring refuses an unconverted legacy record larger than
+Existing small legacy records remain readable. Mixed monitoring refuses an
+unconverted legacy record larger than
 8 MiB before parsing it, with a conversion diagnostic; it does not infer success
 from a failed status query. Explicit legacy result readers remain eager.
 

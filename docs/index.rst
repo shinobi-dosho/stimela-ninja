@@ -84,6 +84,7 @@ or CARACal, start with :doc:`migration`.
 
    security
    contributing
+   evaluation
    design_cab_boundary
 
 
