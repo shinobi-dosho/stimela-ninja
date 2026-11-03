@@ -107,6 +107,14 @@ Issues = "https://github.com/shinobi-dosho/stimela-ninja/issues"
 [project.scripts]
 ninja = "shinobi.cli:main"
 
+# Development tracks dosho's main branch: shinobi and dosho change together,
+# and catalogue fixes land there before a release. uv.lock pins the commit,
+# so `uv sync --locked` stays reproducible; `uv lock --upgrade-package dosho`
+# moves it. Sources never reach the published metadata, so a PyPI install
+# still resolves the released dosho range in `dependencies`.
+[tool.uv.sources]
+dosho = { git = "https://github.com/shinobi-dosho/dosho", branch = "main" }
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/shinobi"]
 

@@ -338,14 +338,10 @@ wheels = [
 [[package]]
 name = "dosho"
 version = "0.2.0b2"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/shinobi-dosho/dosho?branch=main#1248ec88f10afa2d01d1fc1f4eb7ab167cee00c1" }
 dependencies = [
     { name = "click" },
     { name = "pyyaml" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a9/53/daaa32cb1268d6bb889f0f5d02550a43f311999ba54fded29e887f63193e/dosho-0.2.0b2.tar.gz", hash = "sha256:3b1b7c8cddc1279b6d8dfdf67d915103b216b93f20d305dd661fc173ab44c2a2", size = 229529, upload-time = "2026-10-27T18:44:11.871Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/87/92/be20f95151c8c1c91d8ec5e406acd05c9c588f9286b7fe1dad57e73ebc12/dosho-0.2.0b2-py3-none-any.whl", hash = "sha256:338c235f1ac271e2a495a7d6fd251bfccd69c289d528d4860c1cc24a8d603515", size = 269836, upload-time = "2026-10-27T18:44:10.308Z" },
 ]
 
 [package.optional-dependencies]
@@ -1790,7 +1786,7 @@ measurement-set = [
 requires-dist = [
     { name = "astropy", marker = "extra == 'fits'", specifier = ">=7.2,<9" },
     { name = "click", specifier = ">=8.1" },
-    { name = "dosho", extras = ["validation"], specifier = ">=0.2.0b2,<0.3" },
+    { name = "dosho", extras = ["validation"], git = "https://github.com/shinobi-dosho/dosho?branch=main" },
     { name = "packaging", specifier = ">=23" },
     { name = "pydantic", specifier = ">=2.14" },
     { name = "pydantic-settings", specifier = ">=2.2" },
@@ -1814,7 +1810,7 @@ docs = [
     { name = "sphinx", specifier = ">=7.2" },
     { name = "sphinx-copybutton", specifier = ">=0.5" },
 ]
-examples = [{ name = "dosho" }]
+examples = [{ name = "dosho", git = "https://github.com/shinobi-dosho/dosho?branch=main" }]
 measurement-set = [
     { name = "arcae", specifier = "==0.5.4" },
     { name = "dask", extras = ["array"], specifier = "==2026.8.0" },
