@@ -14,12 +14,15 @@ types, checks runtime contracts and wraps only explicitly marked functions.
 from __future__ import annotations
 
 from importlib.metadata import EntryPoint, entry_points
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
 from shinobi.exceptions import CabLoadError
 
 if TYPE_CHECKING:
-    from shinobi.steps.schema import Cab, StepRef
+    from dosho.validation import CabSpec
+    from shinobi.steps.schema import Cab, Scope, StepRef
+
+    _Bound = TypeVar("_Bound", bound="Scope | StepRef")
 
 _GROUP = "shinobi.cabs"
 
@@ -54,7 +57,13 @@ def build_document(dialect: str, text: str, name: str | None = None, **options: 
         raise CabLoadError(str(exc)) from exc
 
 
-def adapt_definition(definition):
+@overload
+def adapt_definition(definition: CabSpec) -> Cab: ...
+@overload
+def adapt_definition(definition: _Bound) -> _Bound: ...
+@overload
+def adapt_definition(definition: Callable[..., Any]) -> StepRef: ...
+def adapt_definition(definition: Any) -> Any:
     """Bind a neutral definition, or preserve an existing executable scope.
 
     Only functions explicitly marked by Dosho are accepted. Plain callables
