@@ -12,7 +12,7 @@ parallel execution, caching and output checks.
 
 | File | What to change |
 | --- | --- |
-| `settings.yaml` | Arrays, declinations, robustness values, observing duration, integration time and concurrency. |
+| `settings.yaml` | Arrays, declinations, robustness values, observing duration, integration time and concurrency; fixed arguments for each tool under `simms`, `wsclean`, `ddfacet` and `casa`. |
 | `config.yaml` | Execution backend, caching, sandboxing and provenance. |
 | `layouts/*.yaml` | Antenna positions; paths in `settings.yaml` are relative to the invocation working directory. |
 
@@ -39,15 +39,19 @@ with absolute SIF paths under `simms`, `wsclean`, `ddfacet` and `casa-tasks`.
 From the repository root:
 
 ```sh
-export PYTHONPATH="$PWD/examples/noise_comparison${PYTHONPATH:+:$PYTHONPATH}"
-ninja --config examples/noise_comparison/config.yaml run examples/noise_comparison/noise_pipeline.py:recipe --settings examples/noise_comparison/settings.yaml --dryrun
-ninja --config examples/noise_comparison/config.yaml run examples/noise_comparison/noise_pipeline.py:recipe --settings examples/noise_comparison/settings.yaml
+ninja --config examples/noise_comparison/config.yaml run examples/noise_comparison/noise_pipeline.py:recipe examples/noise_comparison/settings.yaml --dryrun
+ninja --config examples/noise_comparison/config.yaml run examples/noise_comparison/noise_pipeline.py:recipe examples/noise_comparison/settings.yaml
 ```
 
-The explicit `PYTHONPATH` exposes the example's helper modules. For a run from another
-directory, use absolute paths for the target, execution config, settings and
-helper `PYTHONPATH`, and update layout paths in the settings for that invocation
-directory. Paths inside YAML are cwd-relative too.
+Every scalar setting is also an option, and options override the file:
+adding `--declinations -25 --robust 0` keeps every array but only one
+declination and one weighting. `--help` lists them all. Arrays and tool
+arguments are mappings, so they come only from a settings file; a second file
+after the first overrides just the keys it sets.
+
+For a run from another directory, use absolute paths for the target,
+execution config and settings, and update layout paths in the settings for
+that invocation directory. Paths inside YAML are cwd-relative too.
 
 `max_workers` limits concurrent recipe tasks; `threads` controls tool
 parallelism. Outputs go under
@@ -62,6 +66,7 @@ and declares the simulation and imaging steps. Zipped scatters pair each
 robustness value with its channel selection and output directory. Explicit
 output references connect the imagers to the simulation.
 
-Two helpers contain tool details: `noise_casa.py` runs CASA and exports its
-actual dirty image and PSF; `noise_inventory.py` checks the expected files and
-writes the inventory. Layout sources are recorded in `layouts/provenance.json`.
+The same file holds the two Python steps: CASA dirty imaging with its FITS
+export, and an inventory that checks the expected files. The CASA steps run
+this file inside the CASA image, so imports needed only to build the recipe
+stay inside `recipe`. Layout sources are recorded in `layouts/provenance.json`.

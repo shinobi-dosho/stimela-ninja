@@ -13,7 +13,7 @@ from shinobi.ownership import contained_access_issues, scope_path_accesses
 def example(monkeypatch):
     root = Path(__file__).resolve().parents[1] / "examples" / "noise_comparison"
     monkeypatch.syspath_prepend(str(root))
-    return importlib.import_module("noise_inventory")
+    return importlib.import_module("noise_pipeline")
 
 
 def test_inventory_declares_fixed_product_without_generic_mutation(example, tmp_path):
