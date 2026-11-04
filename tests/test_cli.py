@@ -188,21 +188,18 @@ def test_run_cab_target_dryrun_shows_argv_and_does_not_execute():
 def test_run_recipe_target_dryrun_shows_declared_graph():
     result = CliRunner().invoke(main, ["run", f"{FIXTURES}:chained", "--dryrun"])
     assert result.exit_code == 0, result.output
-    # use_file hangs under make_file: the dependency edge was drawn
-    assert result.output.splitlines() == ["make_file", "└── use_file"]
+    assert result.output.index("make_file") < result.output.index("▼") < result.output.index("use_file")
+    assert "use_file: path <- make_file.path" in result.output
 
 
 def test_run_nested_recipe_dryrun_draws_the_sub_recipe_as_a_branch():
     result = CliRunner().invoke(main, ["run", f"{FIXTURES}:nested", "--dryrun"])
     assert result.exit_code == 0, result.output
-    assert result.output.splitlines() == [
-        "make",
-        "├── sub  (recipe)",
-        "│   ├╌╌ a",
-        "│   └╌╌ b",
-        "└── after",
-        "    └── merge  (also waits on: sub)",
-    ]
+    outer, inner = result.output.split("Contents of recipe 'sub':")
+    assert "make" in outer and "merge" in outer
+    assert "merge: left <- sub.path" in outer
+    assert "merge: right <- after.path" in outer
+    assert inner.split() == ["a", "b"]
 
 
 def test_run_flattened_group_option_reaches_the_nested_model():
@@ -663,7 +660,7 @@ def test_run_without_log_file_writes_nothing(tmp_path, _detach_file_logging):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_dryrun_shows_scatter_values_and_count_without_running_tool(tmp_path):
+def test_dryrun_details_show_scatter_values_without_running_tool(tmp_path):
     target = tmp_path / "scatter_target.py"
     target.write_text(
         "from pydantic import BaseModel\n"
@@ -676,4 +673,41 @@ def test_dryrun_shows_scatter_values_and_count_without_running_tool(tmp_path):
     )
     result = CliRunner().invoke(main, ["run", f"{target}:recipe", "--dryrun"])
     assert result.exit_code == 0, result.output
-    assert result.output.splitlines() == ["image: weight = ['natural', 'uniform'] [scatter; 2 slices]"]
+    assert "[scatter; 2 slices]" in result.output
+    assert "natural" not in result.output
+    result = CliRunner().invoke(main, ["run", f"{target}:recipe", "--dryrun", "--dryrun-details"])
+    assert result.exit_code == 0, result.output
+    assert "image: weight = ['natural', 'uniform'] [scatter; 2 slices]" in result.output
+
+
+def test_dryrun_details_require_dryrun_before_loading_the_target():
+    result = CliRunner().invoke(main, ["run", "absent_target:recipe", "--dryrun-details"])
+    assert result.exit_code == 2
+    assert "--dryrun-details requires --dryrun" in result.output
+
+
+def test_dryrun_shows_wired_product_names_without_paths_or_unused_products(tmp_path):
+    target = tmp_path / "products_target.py"
+    target.write_text(
+        "from pathlib import Path\n"
+        "from pydantic import BaseModel\n"
+        "from shinobi import Cab, Recipe\n"
+        "class Empty(BaseModel): pass\n"
+        "class Products(BaseModel):\n"
+        "    used: Path\n"
+        "    unused: Path\n"
+        "class Consume(BaseModel): image: Path\n"
+        "produce = Cab(name='produce', command='/bin/false', inputs_model=Products, outputs_model=Products)\n"
+        "consume = Cab(name='consume', command='/bin/false', inputs_model=Consume, outputs_model=Empty)\n"
+        "recipe = Recipe(name='products', inputs_model=Empty, outputs_model=Empty)\n"
+        f"recipe.add_step('produce', produce, used=Path({str(tmp_path / 'wired.fits')!r}), unused=Path({str(tmp_path / 'private.fits')!r}))\n"
+        "recipe.add_step('consume', consume, image=recipe.outputs.produce.used)\n"
+    )
+    args = ["run", f"{target}:recipe", "--dryrun"]
+    compact = CliRunner().invoke(main, args)
+    assert compact.exit_code == 0, compact.output
+    assert "▼" in compact.output and "consume: image <- produce.used" in compact.output
+    assert "wired.fits" not in compact.output and "unused" not in compact.output
+    detailed = CliRunner().invoke(main, [*args, "--dryrun-details"])
+    assert detailed.exit_code == 0, detailed.output
+    assert f"read-after-write: {tmp_path / 'wired.fits'}" in detailed.output

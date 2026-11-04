@@ -17,7 +17,7 @@ from typing import Annotated, Any
 import dosho
 from dosho import images
 from pydantic import BaseModel, Field, field_validator, model_validator
-from shinobi import DatasetAccess, MSv2, Recipe, pystep, recipe_builder
+from shinobi import DatasetAccess, DatasetMode, MSv2, Recipe, pystep, recipe_builder
 from shinobi.steps.schema import OutputRef
 
 
@@ -108,6 +108,8 @@ def recipe(settings: Settings) -> Recipe:
     telsim = adapt_definition(dosho.get("simms-telsim"))
     layout_inputs = create_model("LayoutTelsimInputs", __base__=telsim.inputs_model, telescope=(Path, ...))
     telsim = telsim.model_copy(update={"inputs_model": layout_inputs})
+    wsclean = adapt_definition(dosho.get("wsclean-readonly"))
+    ddfacet = adapt_definition(dosho.get("ddfacet-readonly"))
 
     for dec in settings.declinations:
         for instrument, array in settings.arrays.items():
@@ -144,7 +146,7 @@ def recipe(settings: Settings) -> Recipe:
 
             pipeline.add_step(
                 f"{case}_wsclean",
-                dosho.get("wsclean-readonly"),
+                wsclean,
                 scatter=["weight", "channel_range", "prefix", "temp_dir"],
                 ms=[shared_ms],
                 column=settings.column,
@@ -159,7 +161,7 @@ def recipe(settings: Settings) -> Recipe:
             )
             pipeline.add_step(
                 f"{case}_ddfacet",
-                dosho.get("ddfacet-readonly"),
+                ddfacet,
                 scatter=["weight_robust", "selection_chan_start", "selection_chan_end", "output_name", "data_cache_dir", "cache_dir_wisdom_fftw", "montblanc_log_file"],
                 data_ms=[shared_ms],
                 data_col_name=settings.column,
@@ -224,7 +226,7 @@ class FitsOutputs(BaseModel):
     metadata: Path
 
 
-@pystep(image=images.CASA_TASKS, write_paths=["products"], dataset_accesses=[DatasetAccess(field="ms", mode="read")])
+@pystep(image=getattr(images, "CASA_TASKS"), write_paths=["products"], dataset_accesses=[DatasetAccess(field="ms", mode=DatasetMode.READ)])
 def casa_dirty(ctx, ms: MSv2, products: str, robust: float, spw: str, image_size: int, cell_arcsec: float, column: str, tclean: dict[str, Any]) -> NativeOutputs:
     """Run tclean with the fixed `tclean` keywords plus this job's values."""
     root = Path(products)
@@ -246,7 +248,7 @@ def casa_dirty(ctx, ms: MSv2, products: str, robust: float, spw: str, image_size
     return NativeOutputs(products=root)
 
 
-@pystep(image=images.CASA_TASKS, write_paths=["dirty", "psf", "metadata"])
+@pystep(image=getattr(images, "CASA_TASKS"), write_paths=["dirty", "psf", "metadata"])
 def export_dirty(ctx, products: Path, dirty: str, psf: str, metadata: str) -> FitsOutputs:
     """At zero CLEAN iterations CASA's residual is the dirty noise image.
 
@@ -278,11 +280,11 @@ def export_dirty(ctx, products: Path, dirty: str, psf: str, metadata: str) -> Fi
                 image = ctx.import_func("image", "casatools")()
                 image.open(str(copy))
                 try:
-                    info = image.miscinfo()
-                    native_miscinfo[kind] = dict(info)
-                    if info.get("INSTRUME") == telescope:
-                        info["INSTRUME"] = label
-                        image.setmiscinfo(info)
+                    miscinfo = image.miscinfo()
+                    native_miscinfo[kind] = dict(miscinfo)
+                    if miscinfo.get("INSTRUME") == telescope:
+                        miscinfo["INSTRUME"] = label
+                        image.setmiscinfo(miscinfo)
                 finally:
                     image.close()
                 export(imagename=str(copy), fitsimage=str(path), overwrite=True, dropdeg=False)
@@ -321,7 +323,7 @@ def inventory(manifest: str, directories: list[Path]) -> Inventory:
                 raise ValueError(f"missing or empty required product: {path}")
         fits = sorted(directory.rglob("*.fits"))
         products.extend({"path": str(path), "bytes": path.stat().st_size} for path in fits)
-    manifest = Path(manifest)
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(json.dumps({"products": products}, indent=2) + "\n")
-    return Inventory(manifest=manifest)
+    manifest_path = Path(manifest)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps({"products": products}, indent=2) + "\n")
+    return Inventory(manifest=manifest_path)

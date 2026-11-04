@@ -138,9 +138,10 @@ is simply one node in the parent's graph; its own internal graph runs when that
 node is scheduled. ``build_graph`` validates that internal graph together with
 the parent's, at every level of nesting, so a mis-wired sub-recipe fails the
 parent's ``--dryrun`` rather than surfacing only when the executor reaches it.
-A recipe nested inside itself is refused. ``--dryrun`` draws a nested recipe
-as a branch of its own: its steps hang beneath it on a dashed connector, and
-anything that waits on the whole recipe hangs beneath it on the ordinary one.
+A recipe nested inside itself is refused. ``--dryrun`` shows the nested recipe
+as one atomic node in its parent's diagram, then draws its internal DAG under
+an explicit ``Contents of recipe`` heading. Dependency arrows on the parent
+refer to the whole recipe, not to an individual child.
 
 Execution and concurrency
 -------------------------
@@ -214,7 +215,7 @@ The rules are deliberately few:
   reading as free. Backends do not turn it into a limit flag: capping a process
   at "the whole machine" is not a cap.
 
-``ninja run --dryrun`` shows declared footprints in each step's box, so you can
+``ninja run --dryrun`` shows declared footprints below each step's name, so you can
 see before running which branches will actually overlap.
 
 Declaration is not enforcement -- locally
@@ -262,10 +263,12 @@ receives the element at the same index from every scattered field. The step's
 own ``inputs_model``/``outputs_model`` describe a single slice; downstream
 steps see the scattered step's outputs gathered into lists.
 
-``--dryrun`` labels scatter nodes with their declared fields and up to five
-static values per field. It shows a slice count only when all zip lists are
-known and equally sized; unresolved wiring stays an explicit reference.
-Scatter previews preserve the declared nodes and dependency edges.
+``--dryrun`` labels scatter nodes with their slice count when all zip lists are
+known and equally sized. Wired products appear by producer and field name;
+literal paths and parameter values are omitted. Add ``--dryrun-details`` to
+include the scattered field names, up to five static values per field and
+filesystem access reasons. Unresolved wiring stays symbolic. Both views
+preserve the declared nodes, dependency edges and access validation.
 
 Strict MSv2 readers may scatter atomic steps in a flat recipe when every slice
 input resolves before dispatch. Dataset WRITE/CREATE, authoritative FITS and
@@ -401,11 +404,12 @@ graph, which is fixed by the ``InputRef``/``OutputRef`` wiring passed to
    compiled to a cluster workflow). Use :ref:`add_loop <declared-loops>`
    instead -- it expresses the same thing as declared steps.
 
-The rendered graph is an indented tree: each step sits under the step it waits
-on, so siblings are a **fan-out** the executor may run concurrently, and steps
-with no dependency at all start their own tree. A step that several others feed
-into (a **fan-in**) is drawn once, under the last of them, with an ``also waits
-on`` note naming the rest. See :doc:`../cli` for the ``--dryrun`` output.
+The rendered graph centers dependency layers and places parallel branches side
+by side. Every dependency has a downward arrow, so both **fan-out** and
+**fan-in** are visible directly. Independent components wrap as whole blocks
+when they cannot fit side by side. Wired producer fields appear beneath their
+component; literal paths remain in the detailed view. See :doc:`../cli` for
+the ``--dryrun`` output.
 
 Offloading
 ----------

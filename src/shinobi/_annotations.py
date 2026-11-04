@@ -9,9 +9,12 @@ discovery.
 from __future__ import annotations
 
 import types
-from collections.abc import Mapping, Sequence, Set
+from collections.abc import Callable, Mapping, Sequence, Set
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Annotated, Any, Union, get_args, get_origin
+from functools import wraps
+from typing import Annotated, Any, ParamSpec, TypeVar, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -24,6 +27,40 @@ class AnnotationNode:
     annotation: Any
     metadata: tuple[Any, ...]
     leaf: bool
+
+
+_discovery_cache: ContextVar[dict | None] = ContextVar("shinobi_annotation_discovery", default=None)
+_Params = ParamSpec("_Params")
+_Discovery = TypeVar("_Discovery", bound=dict | set)
+
+
+@contextmanager
+def annotation_cache():
+    """Reuse schema discovery within one pass, never across revalidation."""
+    if _discovery_cache.get() is not None:
+        yield
+        return
+    token = _discovery_cache.set({})
+    try:
+        yield
+    finally:
+        _discovery_cache.reset(token)
+
+
+def cached_model_discovery(function: Callable[_Params, _Discovery]) -> Callable[_Params, _Discovery]:
+    """Cache a model's declaration mapping/set; give each caller its own copy."""
+
+    @wraps(function)
+    def cached(*args: _Params.args, **kwargs: _Params.kwargs) -> _Discovery:
+        cache = _discovery_cache.get()
+        if cache is None:
+            return function(*args, **kwargs)
+        key = (function, args, tuple(sorted(kwargs.items())))
+        if key not in cache:
+            cache[key] = function(*args, **kwargs)
+        return cache[key].copy()
+
+    return cached
 
 
 def _origin_is(origin: Any, abstract: type) -> bool:
@@ -103,4 +140,4 @@ def walk_model_annotations(model: type[BaseModel]):
         yield from walk_annotation(field.annotation, path=name, metadata=tuple(field.metadata), _ancestors=ancestors)
 
 
-__all__ = ["AnnotationNode", "walk_annotation", "walk_model_annotations"]
+__all__ = ["AnnotationNode", "annotation_cache", "cached_model_discovery", "walk_annotation", "walk_model_annotations"]

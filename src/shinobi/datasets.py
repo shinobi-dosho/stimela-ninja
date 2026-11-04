@@ -23,7 +23,7 @@ from typing import Annotated, Any, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema
 
-from shinobi._annotations import walk_annotation, walk_model_annotations
+from shinobi._annotations import cached_model_discovery, walk_annotation, walk_model_annotations
 
 CASA_TABLE_PROFILE = "casa-table/v1"
 MSV2_STRUCTURAL_PROFILE = "msv2-structural/v1"
@@ -264,6 +264,7 @@ _MSV2_REQUIRED_SUBTABLE_COLUMNS = {
 }
 
 
+@cached_model_discovery
 def dataset_declarations(model: type[BaseModel], *, error: type[Exception] = TypeError) -> dict[str, DatasetType]:
     """Find every dataset declaration reachable from a Pydantic model.
 
@@ -321,6 +322,7 @@ def _executable_dataset_shape(field: Any, qualified: str, name: str, declaration
     return ExecutableDatasetField(declaration, is_list)
 
 
+@cached_model_discovery
 def executable_dataset_fields(model: type[BaseModel], *, error: type[Exception] = DatasetDeclarationError, reject_unsupported: bool = True) -> dict[str, ExecutableDatasetField]:
     """Discover strict scalars and direct MSv2 lists; refuse other shapes.
 

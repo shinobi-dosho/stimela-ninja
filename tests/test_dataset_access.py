@@ -147,6 +147,53 @@ def test_hazards_and_read_read_are_deterministic(monkeypatch, tmp_path):
     assert second.reasons["write-1"] == ("write-after-write: observation.ms, MAIN.FLAG",)
 
 
+def test_path_hazards_preserve_ancestors_descendants_and_component_boundaries(tmp_path):
+    scope = Scope(name="paths", inputs_model=Empty, outputs_model=Empty)
+    planner = ResolvedAccessPlanner(tmp_path)
+    cases = [
+        ("parent", "a", True, set()),
+        ("first", "a/one", False, {"parent"}),
+        ("second", "a/two", False, {"parent"}),
+        ("other", "ab", False, set()),
+        ("rewrite", "a", True, {"parent", "first", "second"}),
+        ("third", "a/three", False, {"rewrite"}),
+        ("root-read", ".", False, {"rewrite"}),
+        ("root-write", ".", True, {"rewrite", "third", "other", "root-read"}),
+        ("after", "ab/child", False, {"root-write"}),
+    ]
+    for name, relative, writes, expected in cases:
+        decision = planner.order_after(name, scope, {}, resolved_path_accesses=[((tmp_path / relative).resolve(), writes)])
+        assert decision.dependencies == expected, name
+        assert set(decision.reasons) == expected, name
+
+
+@pytest.mark.parametrize("count", [64, 128, 256])
+def test_disjoint_path_planning_avoids_scanning_unrelated_subtrees(monkeypatch, tmp_path, count):
+    node_reads = 0
+
+    class CountedTree(access_module._AccessTree):
+        def __getattribute__(self, name):
+            nonlocal node_reads
+            if name in ("state", "children"):
+                node_reads += 1
+            return super().__getattribute__(name)
+
+    monkeypatch.setattr(access_module, "_AccessTree", CountedTree)
+    scope = Scope(name="paths", inputs_model=Empty, outputs_model=Empty)
+    planner = ResolvedAccessPlanner(tmp_path)
+    paths = [tmp_path / str(index) / "image.fits" for index in range(count)]
+    readers = {f"read-{index}" for index in range(count)}
+    for index, path in enumerate(paths):
+        decision = planner.order_after(f"read-{index}", scope, {}, resolved_path_accesses=[(path, False)])
+        assert not decision.dependencies
+    # Count actual node inspection, including descendant scans. Disjoint
+    # lookups may visit their ancestors, but must not scan earlier siblings.
+    # The lower bound also proves that the instrumentation was exercised.
+    assert count <= node_reads <= 8 * count * max(len(path.parts) for path in paths)
+    assert planner.order_after("write-parent", scope, {}, resolved_path_accesses=[(tmp_path, True)]).dependencies == readers
+    assert planner.order_after("read-again", scope, {}, resolved_path_accesses=[(tmp_path / "0" / "image.fits", False)]).dependencies == {"write-parent"}
+
+
 @pytest.mark.parametrize("kind", ["same-output", "write-path"])
 def test_read_contract_cannot_hide_schema_declared_writes(kind, monkeypatch, tmp_path):
     ms = tmp_path / "observation.ms"
@@ -469,7 +516,11 @@ def test_recipe_plan_adds_no_lineage_and_renders_reason(monkeypatch, tmp_path):
     assert plan.graph.deps == [set(), {0}]
     assert plan.reasons[("write", "read")] == ("write-after-read: observation.ms, MAIN.FLAG",)
     assert recipe.steps[1].wiring["ms"] == InputRef(field="ms")
-    rendered = render_dag(graph_nodes(recipe, {"ms": ms}, workspace=tmp_path))
+    nodes = graph_nodes(recipe, {"ms": ms}, workspace=tmp_path)
+    compact = render_dag(nodes)
+    assert compact.index("read") < compact.index("▼") < compact.index("write")
+    assert "write-after-read" not in compact
+    rendered = render_dag(nodes, details=True)
     assert "write-after-read: observation.ms, MAIN.FLAG" in rendered
 
     offload = MutationOrder(tmp_path)
@@ -632,7 +683,7 @@ def test_planned_create_identity_flows_to_reader_and_all_planners(monkeypatch, t
     assert snapshots[id(recipe.steps[1])][0].ms == target
     assert not snapshots[id(recipe.steps[1])][1]  # execution validates the actual producer output
     assert contained_access_issues(recipe, {"target": target}, workspace=tmp_path, dataset_resources={target}, validated_steps=snapshots) == ()
-    assert "read-after-write: future.ms, MAIN.DATA" in render_dag(graph_nodes(recipe, {"target": target}, workspace=tmp_path))
+    assert "read-after-write: future.ms, MAIN.DATA" in render_dag(graph_nodes(recipe, {"target": target}, workspace=tmp_path), details=True)
 
     legacy = compile_slurm(recipe, {"target": target}, workdir=str(tmp_path), container_runtime=None)
     assert legacy.jobs[1].depends_on == ["create"]

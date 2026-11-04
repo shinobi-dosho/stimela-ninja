@@ -17,7 +17,7 @@ from typing import Any, Iterable, Literal, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from shinobi._annotations import walk_annotation
+from shinobi._annotations import annotation_cache, walk_annotation
 from shinobi.dataset_closure import DatasetClosure, ClosureStatus, resolve_dataset_closure
 from shinobi.datasets import DatasetDeclarationError, DatasetKind, dataset_declarations, executable_dataset_fields, executable_dataset_list_fields
 from shinobi.exceptions import ShinobiError
@@ -745,13 +745,43 @@ class _AccessState:
     readers_since_write: dict[str, str] = dc_field(default_factory=dict)
 
 
+@dataclass
+class _AccessTree:
+    """Index canonical paths without comparing unrelated sibling trees."""
+
+    state: _AccessState | None = None
+    children: dict[str, _AccessTree] = dc_field(default_factory=dict)
+
+    def resolve(self, path: Path) -> tuple[_AccessState, list[_AccessState]]:
+        """Return this path's state and every existing overlapping state."""
+        node = self
+        overlapping = []
+        for part in path.parts:
+            if node.state is not None:
+                overlapping.append(node.state)
+            key = os.path.normcase(part)
+            if key not in node.children:
+                node.children[key] = _AccessTree()
+            node = node.children[key]
+
+        pending = [node]
+        while pending:
+            descendant = pending.pop()
+            if descendant.state is not None:
+                overlapping.append(descendant.state)
+            pending.extend(descendant.children.values())
+        if node.state is None:
+            node.state = _AccessState()
+        return node.state, overlapping
+
+
 class ResolvedAccessPlanner:
     """Incremental path+dataset hazard planner in an existing stable order."""
 
     def __init__(self, workspace: Path | None = None, *, track_order: bool = True) -> None:
         self._track_order = track_order
         self._workspace = (workspace or Path.cwd()).resolve()
-        self._accesses: dict[Path, _AccessState] = {}
+        self._accesses = _AccessTree()
         self._planned_roots: dict[Path, tuple[Path, ...]] = {}
         # One planning pass only: execution/revalidation owns fresh planners.
         self._closure_cache: dict[tuple[Path, Path], DatasetClosure] = {}
@@ -767,7 +797,7 @@ class ResolvedAccessPlanner:
         allow_existing_create: bool = False,
         resolve_fits_contract: bool = True,
     ) -> AccessDecision:
-        from shinobi.steps.schema import path_accesses, paths_overlap
+        from shinobi.steps.schema import path_accesses
 
         datasets = resolve_scope_dataset_accesses(
             scope,
@@ -823,21 +853,20 @@ class ResolvedAccessPlanner:
         required: set[str] = set()
         reasons: dict[str, set[str]] = {}
         for path, writes, label in accesses:
-            overlapping = [state for known, state in self._accesses.items() if paths_overlap(path, known)]
-            for state in overlapping:
-                if writes and state.readers_since_write:
-                    for reader, previous_label in state.readers_since_write.items():
+            state, overlapping = self._accesses.resolve(path)
+            for previous in overlapping:
+                if writes and previous.readers_since_write:
+                    for reader, previous_label in previous.readers_since_write.items():
                         if reader != name:
                             required.add(reader)
                             reasons.setdefault(reader, set()).add(f"write-after-read: {label or previous_label}")
-                elif state.last_writer is not None:
-                    writer, previous_label = state.last_writer
+                elif previous.last_writer is not None:
+                    writer, previous_label = previous.last_writer
                     if writer != name:
                         required.add(writer)
                         hazard = "write-after-write" if writes else "read-after-write"
                         reasons.setdefault(writer, set()).add(f"{hazard}: {label or previous_label}")
 
-            state = self._accesses.setdefault(path, _AccessState())
             if writes:
                 for item in [*overlapping, state]:
                     item.last_writer = (name, label)
@@ -897,6 +926,7 @@ def _validate_scatter_collisions(name: str, slices: list[list[tuple[Path, bool]]
         ancestors.append((path, owners, writers))
 
 
+@annotation_cache()
 def plan_recipe_accesses(
     recipe: Any,
     inputs: dict[str, Any] | BaseModel,

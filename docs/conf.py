@@ -108,6 +108,11 @@ nitpick_ignore = [
     ("py:class", "Coordinate"),
     # The generic type parameter is a data declaration, not a Python class.
     ("py:class", "shinobi.products.T"),
+    # RecipeBuilder's private type parameter preserves the caller's concrete
+    # Pydantic model; it is not a separately documented public type.
+    ("py:class", "_Inputs"),
+    ("py:class", "shinobi.builders._Inputs"),
+    ("py:obj", "shinobi.builders._Inputs"),
     # Private contained-execution reservation record, not a public API.
     ("py:class", "_ProductReservations"),
 ]
