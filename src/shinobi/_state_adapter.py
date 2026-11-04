@@ -100,8 +100,8 @@ def runtime() -> dict[str, str]:
         raise ImportError("state operations require the pinned measurement-set development group") from exc
     required = {
         "xarray-ms": "0.5.8",
-        "xarray": "2026.7.0",
-        "numcodecs": "0.16.5",
+        "xarray": "2026.9.0",
+        "numcodecs": "0.16.6",
         "arcae": "0.5.4",
         "zarr": "3.1.6" if sys.version_info < (3, 12) else "3.3.0",
     }
