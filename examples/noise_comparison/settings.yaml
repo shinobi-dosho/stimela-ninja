@@ -6,11 +6,11 @@ declinations:
 - 30
 robust:
 - -2
-- -1.3333333333333333
-- -0.6666666666666666
+- -1.33
+- -0.67
 - 0
-- 0.6666666666666666
-- 1.3333333333333333
+- 0.67
+- 1.33
 - 2
 duration_seconds: 14400
 integration_seconds: 32
@@ -21,37 +21,74 @@ max_workers: 2
 arrays:
   meerkat:
     layout: examples/noise_comparison/layouts/meerkat.yaml
-    sefd_jy: 450
-    cell_arcsec: 1.0
-    first_channel_hz: 1376000000.0
-    image_size: 512
+    sefd: 450
+    first_channel: 1376MHz
+    dpix: 1.0
+    npix: 512
   vla-b:
     layout: examples/noise_comparison/layouts/vla-b.yaml
-    sefd_jy: 420
-    cell_arcsec: 0.7
-    first_channel_hz: 1376000000.0
-    image_size: 512
+    sefd: 420
+    first_channel: 1376MHz
+    dpix: 0.7
+    npix: 512
   vla-c:
     layout: examples/noise_comparison/layouts/vla-c.yaml
-    sefd_jy: 420
-    cell_arcsec: 2.0
-    first_channel_hz: 1376000000.0
-    image_size: 512
+    sefd: 420
+    first_channel: 1376MHz
+    dpix: 2.0
+    npix: 512
   gmrt:
     layout: examples/noise_comparison/layouts/gmrt.yaml
-    sefd_jy: 300
-    cell_arcsec: 0.3
-    first_channel_hz: 1376000000.0
-    image_size: 512
+    sefd: 300
+    first_channel: 1376MHz
+    dpix: 0.3
+    npix: 512
   askap:
     layout: examples/noise_comparison/layouts/askap.yaml
-    sefd_jy: 1800
-    cell_arcsec: 1.2
-    first_channel_hz: 1376000000.0
-    image_size: 512
+    sefd: 1800
+    first_channel: 1376MHz
+    npix: 512
+    dpix: 1.2
   skamid-aastar:
     layout: examples/noise_comparison/layouts/skamid-aastar.yaml
-    sefd_jy: 400
-    cell_arcsec: 0.2
-    first_channel_hz: 1376000000.0
-    image_size: 512
+    sefd: 400
+    first_channel: 1376MHz
+    dpix: 0.2
+    npix: 512
+# Fixed tool arguments. The recipe sets the MS, column, weighting, channel
+# selection, image size, threads and output paths for each job.
+simms:
+  dfreq: 16MHz
+  correlations: XX,YY
+wsclean:
+  niter: 0
+  make_psf: true
+  nchan: 1
+ddfacet:
+  output_mode: DirtyPSF
+  output_images: dP
+  data_chunk_hours: 0.08333333333333333  # five minutes
+  weight_mode: Briggs
+  freq_n_band: 1
+  facets_n_facets: 1
+  cache_psf: "off"
+  cache_vis_data: "off"
+  cache_dirty: "off"
+  cache_last_residual: false
+  cache_cf: false
+  cache_hmp: false
+casa:  # tclean keywords
+  stokes: I
+  specmode: mfs
+  gridder: standard
+  npixels: 0
+  uvtaper: []
+  niter: 0
+  interactive: false
+  savemodel: none
+  restart: false
+  calcpsf: true
+  calcres: true
+  restoration: false
+  pbcor: false
+  parallel: false

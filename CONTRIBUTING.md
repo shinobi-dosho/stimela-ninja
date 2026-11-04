@@ -99,6 +99,17 @@ require the original exact runtime even if a newer release exists.
 The floors in `pyproject.toml` still define what a downstream `pip install`
 resolves. The lock binds only this repo's checkouts and CI.
 
+Development tracks Dosho's `main` branch, so catalogue fixes reach Shinobi
+before Dosho releases them. `[tool.uv.sources]` points `dosho` at its git
+repository, and the lock pins one commit. To move to the current `main`:
+
+```bash
+uv lock --upgrade-package dosho
+```
+
+A `pip install` from PyPI ignores uv sources and resolves the released Dosho
+range in `dependencies`.
+
 Two consequences worth knowing:
 
 - **Change `pyproject.toml`, re-run `uv lock`, commit both.** CI's `--locked`

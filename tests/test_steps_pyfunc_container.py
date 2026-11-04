@@ -798,6 +798,68 @@ def test_pystep_decorator_form_runner_executes_end_to_end():
     assert result.outputs.result == "dec.ms:5"
 
 
+_SINGLE_FILE_PIPELINE = """\
+from __future__ import annotations
+
+from pydantic import BaseModel, field_validator, model_validator
+from shinobi import Recipe, pystep, recipe_builder
+
+
+class Settings(BaseModel):
+    n: int
+
+    @field_validator("n")
+    @classmethod
+    def _positive(cls, n: int) -> int:
+        if n <= 0:
+            raise ValueError("n must be positive")
+        return n
+
+    @model_validator(mode="after")
+    def _checked(self) -> Settings:
+        return self
+
+
+class Empty(BaseModel):
+    pass
+
+
+class Out(BaseModel):
+    value: int
+
+
+@recipe_builder(inputs_model=Settings)
+def recipe(inputs: Settings) -> Recipe:
+    pipeline = Recipe(name="single", inputs_model=Empty, outputs_model=Empty)
+    pipeline.add_step("bump", bump, n=inputs.n)
+    return pipeline
+
+
+@pystep(image="casa:latest", backend="docker")
+def bump(n: int) -> Out:
+    return Out(value=n + 1)
+"""
+
+
+def test_single_file_builder_pystep_runs_in_container(tmp_path, monkeypatch):
+    # A builder and its container pystep share one file. The runner execs
+    # that whole file in the image, so the builder decorator and the settings
+    # validators must be as inert there as @pystep is.
+    path = tmp_path / "single_file_pipeline.py"
+    path.write_text(_SINGLE_FILE_PIPELINE)
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, path.stem, module)
+    spec.loader.exec_module(module)
+    assert [ref.name for ref in module.recipe(n=41).steps] == ["bump"]
+
+    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host):
+        result = module.bump(n=41)
+
+    assert result.success, result.stderr
+    assert result.outputs.value == 42
+
+
 # -- sandbox path normalization (issue #28: containerized pysteps with
 # sandboxing must normalize output paths to workspace-relative, so cache
 # entries are portable across sandbox states) --

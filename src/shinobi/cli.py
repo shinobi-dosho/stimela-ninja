@@ -16,7 +16,7 @@ import shinobi
 from shinobi._state_cli import state
 from shinobi.backends import registered_backend_names
 from shinobi.backends._stream import TeardownIncomplete, install_signal_handlers, terminate_all
-from shinobi.clickutil import build_options, unflatten_kwargs
+from shinobi.clickutil import build_options, input_files_argument, resolve_inputs
 from shinobi.config import AppConfig
 from shinobi.dag import graph_nodes, render_dag
 from shinobi.backends._stream import set_capture_limits
@@ -266,7 +266,7 @@ def _resolve_target(target: str):
 
 def _builder_options(builder, ctx):
     """Check generated spellings against each other and actual outer controls."""
-    options = build_options(builder.inputs_model)
+    options = build_options(builder.inputs_model, enforce_required=False)
     seen = {"--help", "-h"}
     for param in ctx.command.params:
         if isinstance(param, click.Option):
@@ -279,9 +279,9 @@ def _builder_options(builder, ctx):
     return options
 
 
-def _construct_builder(builder, kwargs):
+def _construct_builder(builder, values):
     try:
-        inputs = builder.validate_inputs(unflatten_kwargs(builder.inputs_model, kwargs))
+        inputs = builder.validate_inputs(values)
         arguments = inputs.model_dump(mode="json")
         return builder.build(inputs), arguments
     except (ValueError, TypeError, OSError) as exc:
@@ -644,7 +644,8 @@ def run(
     or 'pkg.mod:name').
 
     [OPTIONS] are derived from the target's own parameters -- run
-    `ninja run TARGET --help` to see them.
+    `ninja run TARGET --help` to see them. YAML files after TARGET supply
+    the same inputs, in order, under any options typed.
     """
     if target in ("-h", "--help"):
         click.echo(ctx.get_help())
@@ -689,7 +690,7 @@ def run(
     else:
         raise click.ClickException(f"{target!r} is neither a Cab, Recipe, nor a @shinobi.step function")
 
-    target_options = _builder_options(builder, ctx) if builder else build_options(scope.inputs_model)
+    target_options = _builder_options(builder, ctx) if builder else build_options(scope.inputs_model, enforce_required=False)
     # `--overwrite STEP` is taken from the target's arguments only when the
     # target has no `overwrite` parameter of its own (many tools do); the
     # parameter wins, and `--overwrite-step` is the unambiguous spelling.
@@ -715,19 +716,17 @@ def run(
     if overwrite_steps and dryrun:
         raise click.ClickException("--overwrite deletes data before running and cannot be combined with --dryrun")
 
-    def _callback(**kwargs):
+    def _callback(_input_files=(), **kwargs):
         nonlocal scope
         builder_origin = None
         if builder is not None:
-            scope, arguments = _construct_builder(builder, kwargs)
+            scope, arguments = _construct_builder(builder, resolve_inputs(builder.inputs_model, _input_files, kwargs))
             builder_origin = {"target": target, "arguments": arguments}
-            kwargs = {}
-        # Drop options the user didn't provide (None) so the inputs_model's
-        # own defaults apply; per-step constants from a StepRef go under
-        # them. `unflatten_kwargs` also re-nests any `--parent-child`
-        # flattened group option (build_options' counterpart for a nested
-        # BaseModel field) back into the nested dict its model expects.
-        call_kwargs = {**params, **unflatten_kwargs(scope.inputs_model, kwargs)}
+            call_kwargs = {}
+        else:
+            # Per-step constants from a StepRef go under the files and flags;
+            # inputs nobody supplied keep the inputs_model's own defaults.
+            call_kwargs = resolve_inputs(scope.inputs_model, _input_files, kwargs, base=params)
 
         if dryrun:
             if isinstance(scope, Recipe):
@@ -795,7 +794,7 @@ def run(
 
     inner = click.Command(
         name=target,
-        params=target_options,
+        params=[input_files_argument(), *target_options],
         callback=_callback,
         help=scope.info,
     )
@@ -839,7 +838,7 @@ def replay(ctx: click.Context, run_manifest: str, target_override: str | None, a
         raise click.ClickException(f"cannot read run manifest {run_manifest!r}: {exc}") from None
 
     if manifest.builder_origin is not None:
-        raise click.ClickException("replay of recipe-builder runs is unsupported: builder arguments do not snapshot settings files; compile a frozen bundle for durable execution")
+        raise click.ClickException("replay of recipe-builder runs is unsupported: the builder may read files no manifest snapshots; compile a frozen bundle for durable execution")
 
     target = target_override or manifest.target
     if target is None:
@@ -1238,7 +1237,8 @@ def compile_recipe(
     The legacy flat argv compiler rejects non-path data flow and MUTABLE
     non-path inputs. It derives ordering for steps that rewrite shared paths.
     [OPTIONS] carry the recipe's own inputs; run `ninja compile TARGET --help`
-    to see them.
+    to see them. YAML files after TARGET supply the same inputs, in order,
+    under any options typed.
     """
     if target in ("-h", "--help"):
         click.echo(ctx.get_help())
@@ -1257,7 +1257,7 @@ def compile_recipe(
     runtime = None if container_runtime.lower() == "none" else container_runtime
     from shinobi.offload.mixed import has_placement
 
-    options = _builder_options(builder, ctx) if builder else build_options(recipe.inputs_model)
+    options = _builder_options(builder, ctx) if builder else build_options(recipe.inputs_model, enforce_required=False)
 
     def _validate_compile_options(recipe):
         mixed = has_placement(recipe)
@@ -1274,15 +1274,15 @@ def compile_recipe(
     if builder is None:
         _validate_compile_options(recipe)
 
-    def _callback(**kwargs):
+    def _callback(_input_files=(), **kwargs):
         nonlocal recipe
         if builder is not None:
             if Path(workdir or os.getcwd()).resolve() != Path.cwd().resolve():
                 raise click.ClickException("recipe builders require --workdir to be the invocation working directory")
-            recipe, _ = _construct_builder(builder, kwargs)
+            recipe, _ = _construct_builder(builder, resolve_inputs(builder.inputs_model, _input_files, kwargs))
             inputs = {}
         else:
-            inputs = unflatten_kwargs(recipe.inputs_model, kwargs)
+            inputs = resolve_inputs(recipe.inputs_model, _input_files, kwargs)
         mixed = _validate_compile_options(recipe)
         if mixed:
             from shinobi.offload._codec import BundleError
@@ -1368,7 +1368,7 @@ def compile_recipe(
 
     inner = click.Command(
         name=target,
-        params=options,
+        params=[input_files_argument(), *options],
         callback=_callback,
         help=recipe.info,
     )

@@ -271,7 +271,7 @@ def _stub_attr(name):
         return _StubModel
     if name in ("Field", "ParamMeta", "ConfigDict", "DatasetAccess", "DatasetColumns"):
         return _Metadata
-    if name in ("pystep", "step", "field_validator", "model_validator", "field_serializer", "model_serializer", "computed_field"):
+    if name in ("pystep", "step", "recipe_builder", "field_validator", "model_validator", "field_serializer", "model_serializer", "computed_field"):
         # `@shinobi.pystep(...)` used as a decorator: return a factory whose
         # decorator leaves the function unchanged, so the module-level name
         # stays the plain function rather than a StepRef.

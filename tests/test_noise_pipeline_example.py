@@ -19,7 +19,7 @@ def example(monkeypatch):
 
 def test_default_experiment_keeps_full_grid(example, monkeypatch):
     monkeypatch.chdir(Path(__file__).resolve().parents[1])
-    recipe = example.recipe(settings=Path(example.__file__).with_name("settings.yaml"))
+    recipe = example.recipe(**yaml.safe_load(Path(example.__file__).with_name("settings.yaml").read_text()))
     build_graph(recipe)
     simulations = [ref for ref in recipe.steps if ref.name.endswith("_simulate")]
     imagers = [ref for ref in recipe.steps if ref.name.endswith(("_wsclean", "_ddfacet", "_casa"))]
@@ -35,9 +35,7 @@ def test_settings_select_grid_without_rewriting_recipe(example, tmp_path):
     data["arrays"] = {"meerkat": data["arrays"]["meerkat"]}
     data["arrays"]["meerkat"]["layout"] = str(Path(data["arrays"]["meerkat"]["layout"]).resolve())
     data.update(declinations=[-25, 10], robust=[-1, 0.5], nchan=8, single_channel=3, duration_seconds=480, integration_seconds=8)
-    config = tmp_path / "small.yaml"
-    config.write_text(yaml.safe_dump(data))
-    recipe = example.recipe(settings=config)
+    recipe = example.recipe(**data)
     graph = build_graph(recipe)
     assert len(recipe.steps) == 12
     for dec in data["declinations"]:
@@ -73,7 +71,25 @@ def test_external_settings_layout_is_relative_to_invocation(example, tmp_path, m
     settings = settings_dir / "settings.yaml"
     settings.write_text(yaml.safe_dump(data))
     monkeypatch.chdir(workspace)
-    recipe = example.recipe(settings=settings)
+    recipe = example.recipe(**yaml.safe_load(settings.read_text()))
     simulation = next(ref for ref in recipe.steps if ref.name.endswith("_simulate"))
     assert simulation.params["telescope"] == workspace / "layout.yaml"
     assert not (settings_dir / "layout.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"declinations": [5, 5]}, "declinations must be unique"),
+        ({"declinations": [95]}, "less than or equal to 90"),
+        ({"robust": [3]}, "less than or equal to 2"),
+        ({"integration_seconds": 7}, "exact number of integrations"),
+        ({"single_channel": 4}, "single_channel must be smaller than nchan"),
+        ({"casa": {"robust": 0}}, "casa: robust are set per job"),
+    ],
+)
+def test_settings_reject_inconsistent_experiments(example, change, message):
+    source = Path(example.__file__).with_name("settings.yaml")
+    data = {**yaml.safe_load(source.read_text()), **change}
+    with pytest.raises(ValueError, match=message):
+        example.Settings.model_validate(data)
