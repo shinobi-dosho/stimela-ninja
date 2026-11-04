@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_serializer
 from pydantic_core import PydanticUndefined
 from dosho.validation.schema import ParamMeta as CabParamMeta, Policies, ParamPattern as CabParamPattern, ParamSegment as CabParamSegment
 
-from shinobi._annotations import walk_annotation
+from shinobi._annotations import cached_model_discovery, walk_annotation
 from shinobi._input_schema import validate_input_model
 from shinobi.dataset_access import DatasetAccess, validate_scope_dataset_accesses
 from shinobi.fits_access import FITSAccess, validate_scope_fits_accesses
@@ -75,6 +75,7 @@ def _unwrap_annotation(annotation: Any) -> list[Any]:
     return [node.annotation for node in walk_annotation(annotation, descend_mappings=False, descend_models=False) if node.leaf]
 
 
+@cached_model_discovery
 def path_fields(model: type[BaseModel]) -> set[str]:
     """Names of every field of `model` whose direct-value leaf type is a
     filesystem path (``pathlib.Path``). File-like cab dtypes

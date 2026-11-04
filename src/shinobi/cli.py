@@ -525,6 +525,7 @@ def _run_remote(
     is_flag=True,
     help="Show what would run as a graph, without actually running it.",
 )
+@click.option("--dryrun-details", is_flag=True, help="Include parameter previews and filesystem access reasons; requires --dryrun.")
 @click.option(
     "--cache-dir",
     "cache_dir",
@@ -626,6 +627,7 @@ def run(
     ctx: click.Context,
     target: str,
     dryrun: bool,
+    dryrun_details: bool,
     cache_dir: str | None,
     no_cache: bool,
     quiet: bool,
@@ -650,6 +652,9 @@ def run(
     if target in ("-h", "--help"):
         click.echo(ctx.get_help())
         ctx.exit()
+
+    if dryrun_details and not dryrun:
+        raise click.UsageError("--dryrun-details requires --dryrun")
 
     if remote and overwrite_step:
         raise click.ClickException("--overwrite-step is not forwarded by --remote; use --overwrite STEP instead, which is forwarded")
@@ -731,7 +736,7 @@ def run(
         if dryrun:
             if isinstance(scope, Recipe):
                 try:
-                    click.echo(render_dag(graph_nodes(scope, call_kwargs, workspace=Path.cwd())))
+                    click.echo(render_dag(graph_nodes(scope, call_kwargs, workspace=Path.cwd()), details=dryrun_details, width=shutil.get_terminal_size((120, 24)).columns))
                 except (RecipeGraphError, ValueError) as exc:
                     raise click.ClickException(str(exc)) from None
             else:

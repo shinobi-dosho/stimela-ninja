@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from shinobi.graph import build_graph
+from shinobi.dag import graph_nodes, render_dag
 from shinobi.steps.schema import OutputRef
 
 
@@ -54,6 +55,26 @@ def test_settings_select_grid_without_rewriting_recipe(example, tmp_path):
         inventory_index = graph.names.index(name + "_inventory")
         assert {graph.names[i] for i in graph.deps[inventory_index]} == {name + suffix for suffix in ("_wsclean", "_ddfacet", "_casa_fits")}
         assert len(refs["inventory"].params["directories"]) == 12
+
+
+def test_dryrun_keeps_product_wiring_without_expanding_paths(example):
+    source = Path(example.__file__).with_name("settings.yaml")
+    data = yaml.safe_load(source.read_text())
+    data.update(arrays={"meerkat": data["arrays"]["meerkat"]}, declinations=[-25], robust=[-1, 0.5])
+    nodes = graph_nodes(example.recipe(**data), {})
+    compact = render_dag(nodes)
+    assert "ms <- [meerkat_dec-25_simulate.ms]" in compact
+    assert "products <- meerkat_dec-25_casa.products" in compact
+    assert "[scatter; 4 slices]" in compact
+    parallel = next(line for line in compact.splitlines() if "meerkat_dec-25_wsclean" in line)
+    assert "meerkat_dec-25_ddfacet" in parallel and "meerkat_dec-25_casa" in parallel
+    assert compact.count("▼") == 5
+    assert "noise-products" not in compact
+    assert "robust" not in compact
+    assert "read-after-write" not in compact
+    detailed = render_dag(nodes, details=True)
+    assert "noise-products" in detailed
+    assert "read-after-write" in detailed
 
 
 def test_external_settings_layout_is_relative_to_invocation(example, tmp_path, monkeypatch):

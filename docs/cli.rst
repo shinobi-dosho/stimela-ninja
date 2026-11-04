@@ -81,8 +81,14 @@ Add ``--dryrun`` to render the execution graph without running anything:
 .. code-block:: console
 
     $ ninja run myrecipe.py:selfcal --ms data.ms --dryrun
-    image
-    └── mask  (read-after-write: /work/img-MFS-image.fits)
+          image
+            │
+            │
+            ▼
+          mask
+
+    Wiring:
+      mask: restored_image <- image.restored
 
 A recipe builder executes its trusted construction body first; no workflow
 steps execute during rendering. A ``Recipe`` is a declared graph (its
@@ -92,31 +98,65 @@ executor uses -- so a cyclic or mis-wired recipe is rejected identically
 either way, and the diagram can never disagree with what a real run would
 do.
 
-The graph is drawn as a tree. Each step sits under the step it waits on
-(``──``); siblings may run concurrently; a step that waits on several is drawn
-under the last of them with an ``also waits on`` note. A nested recipe is a
-branch of its own: its first steps hang beneath it on a dashed connector
-(``╌╌``, "is a step of"), and anything waiting on the whole recipe hangs
-beneath it on the solid one. Names are shown unqualified -- each is unique
-among its siblings -- so a step named ``sub.a`` can never be mistaken for
-``sub``'s own ``a``. ``tests/fixtures/sample_targets.py`` has one:
+The graph uses centered topological layers. Parallel branches appear side by
+side, and every dependency is drawn with a downward arrow, including every
+parent of a fan-in. Independent components stay together as complete blocks;
+blocks appear side by side when the terminal is wide enough and wrap below
+one another otherwise. Labels wrap to fit their columns. Very wide or dense
+layers retain a minimum readable label width and may need a wider terminal.
+A ``╳`` marks crossing lines without a connection; junctions use box-drawing
+characters.
+
+A nested recipe is one atomic node in its parent's diagram. Its internal DAG
+appears separately under ``Contents of recipe 'name':``. These headings
+preserve nesting without inventing a dependency on the containing recipe.
+Names are shown unqualified within each scope, so a sibling named ``sub.a``
+cannot be mistaken for ``sub``'s own ``a``.
+``tests/fixtures/sample_targets.py`` has an example:
 
 .. code-block:: console
 
     $ ninja run tests/fixtures/sample_targets.py:nested --dryrun
-    make
-    ├── sub  (recipe)
-    │   ├╌╌ a
-    │   └╌╌ b
-    └── after
-        └── merge  (also waits on: sub)
+                      make
+                        │
+            ┌───────────┴─────────┐
+            ▼                     ▼
+           sub                  after
+        (recipe)                  │
+            │                     │
+            └───────────┬─────────┘
+                        ▼
+                      merge
 
-Scatter stays one declared graph node. Its label shows up to five static
-values per scattered field and the full slice count when every zip list is
-known and has equal length. Supplied recipe inputs resolve ``InputRef`` values;
-upstream ``OutputRef`` values remain symbolic, including coordinate selections.
-Multiple fields appear as indented details beneath a ``scatter zip(...)``
-label. These previews do not execute steps or evaluate default factories.
+    Wiring:
+      sub: path <- make.path
+      merge: left <- sub.path
+      merge: right <- after.path
+
+    Contents of recipe 'sub':
+            a              b
+
+The default graph shows wired producer fields by name, such as
+``restored_image <- image.restored``. Literal paths, parameter values, unwired
+products and filesystem access diagnostics are omitted. Filesystem hazards
+still contribute dependency edges and are validated before rendering.
+
+Scatter stays one declared graph node. Its label shows the full slice count
+when every zip list is known and has equal length; otherwise it shows
+``[scatter]``. Upstream products stay symbolic. Coordinate selections show only
+axis names, such as ``image.files select(partition)``; their values appear only
+with ``--dryrun-details``.
+
+Add ``--dryrun-details`` alongside ``--dryrun`` for parameter previews and
+filesystem access reasons. This detailed view shows up to five static values
+per scattered field; multiple fields appear below a ``scatter zip(...)`` label.
+Supplied recipe inputs resolve ``InputRef`` previews, while upstream
+``OutputRef`` values remain symbolic. Previews do not execute steps or evaluate
+default factories:
+
+.. code-block:: console
+
+    $ ninja run myrecipe.py:selfcal --ms data.ms --dryrun --dryrun-details
 
 A nested recipe is validated together with its parent, so a mis-wired
 sub-recipe fails the dry run rather than the real one.

@@ -53,6 +53,12 @@ For a run from another directory, use absolute paths for the target,
 execution config and settings, and update layout paths in the settings for
 that invocation directory. Paths inside YAML are cwd-relative too.
 
+The default dry-run DAG centers each simulation above its three imagers,
+places the imagers side by side, and draws dependency arrows into the inventory.
+Each simulation case stays together as one block. Scatter counts appear below
+step names, and wired product names appear below each block. Add `--dryrun-details` alongside `--dryrun` to inspect parameter
+previews and filesystem access reasons, including paths.
+
 `max_workers` limits concurrent recipe tasks; `threads` controls tool
 parallelism. Outputs go under
 `noise-products/<array>/dec<declination>/<single|continuum>/robust-<index>/`,

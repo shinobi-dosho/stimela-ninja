@@ -128,11 +128,18 @@ produces for a given set of inputs:
 .. code-block:: console
 
     $ ninja run myrecipe.py:selfcal --ms data.ms --dryrun
-    image
-    └── mask  (read-after-write: /work/img-MFS-image.fits)
+          image
+            │
+            │
+            ▼
+          mask
+
+    Wiring:
+      mask: restored_image <- image.restored
 
 ``mask`` sits under ``image`` because it reads the image ``image`` writes; the
-note says which path makes that an ordering constraint.
+wiring line names the consumer input and the producer output. Literal paths
+and filesystem access reasons are available with ``--dryrun --dryrun-details``.
 
 Run the recipe
 --------------
