@@ -380,14 +380,14 @@ def test_unknown_profile_is_reported_without_touching_the_path(monkeypatch):
     assert descriptor.status is DatasetStatus.UNSUPPORTED
 
 
-def test_strict_annotation_refuses_local_execution_before_backend_runs():
+def test_strict_annotation_without_access_declarations_refuses_local_execution():
     cab = Cab(name="strict", command="true", inputs_model=DatasetInputs, outputs_model=DatasetOutputs)
 
     with pytest.raises(DatasetLifecycleUnavailableError, match="cannot execute until validation, staging and recovery"):
         cab(ms="future.ms")
 
 
-def test_nested_strict_annotation_refuses_local_execution():
+def test_nested_strict_annotation_without_access_declarations_refuses_local_execution():
     class Inputs(BaseModel):
         payload: dict[str, list[NestedDataset]]
 
@@ -397,14 +397,14 @@ def test_nested_strict_annotation_refuses_local_execution():
         cab(payload={"target": [{"ms": "future.ms"}]})
 
 
-def test_abstract_sequence_strict_annotation_refuses_local_execution():
+def test_abstract_sequence_without_access_declarations_refuses_local_execution():
     cab = Cab(name="strict-sequence", command="true", inputs_model=SequenceDatasetInputs, outputs_model=EmptyOutputs)
 
     with pytest.raises(DatasetLifecycleUnavailableError, match=r"datasets\[\]"):
         cab(datasets=["future.ms"])
 
 
-def test_strict_annotation_is_not_offloadable():
+def test_strict_annotation_is_not_argv_offloadable():
     cab = Cab(name="strict", command="true", inputs_model=DatasetInputs, outputs_model=DatasetOutputs)
     recipe = Recipe(name="r", inputs_model=DatasetInputs, outputs_model=DatasetOutputs)
     recipe.add_step("strict", cab, ms=InputRef(field="ms"))
@@ -414,7 +414,7 @@ def test_strict_annotation_is_not_offloadable():
         check_offloadable(recipe)
 
 
-def test_nested_strict_annotation_is_not_offloadable():
+def test_nested_strict_annotation_is_not_argv_offloadable():
     class Inputs(BaseModel):
         payload: dict[str, NestedDataset]
 
@@ -426,7 +426,7 @@ def test_nested_strict_annotation_is_not_offloadable():
         check_offloadable(recipe)
 
 
-def test_abstract_sequence_strict_annotation_is_not_offloadable():
+def test_abstract_sequence_strict_annotation_is_not_argv_offloadable():
     cab = Cab(name="strict-sequence", command="true", inputs_model=SequenceDatasetInputs, outputs_model=EmptyOutputs)
     recipe = Recipe(name="r", inputs_model=SequenceDatasetInputs, outputs_model=EmptyOutputs)
     recipe.add_step("strict", cab, datasets=InputRef(field="datasets"))

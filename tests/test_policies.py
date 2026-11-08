@@ -15,12 +15,6 @@ def test_scalar_value_becomes_flag_and_value():
     assert build_argv(cab, {"size": 1024}) == ["tool", "--size", "1024"]
 
 
-def test_default_is_used_when_supplied_by_prepared_dict():
-    cab = make_cab(build_model("In", {"size": ("int", False, 1024)}))
-    # dispatch prepares defaults into the dict; build_argv just formats them
-    assert build_argv(cab, {"size": 1024}) == ["tool", "--size", "1024"]
-
-
 def test_none_value_is_skipped():
     cab = make_cab(build_model("In", {"size": ("int", False, None)}))
     assert build_argv(cab, {"size": None}) == ["tool"]

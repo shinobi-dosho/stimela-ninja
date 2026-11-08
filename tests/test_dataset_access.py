@@ -100,7 +100,7 @@ def test_definition_is_json_serializable_without_resolving(monkeypatch):
     assert python_reader.step.dataset_accesses == [DatasetAccess(field="ms", mode="read")]
 
 
-def test_offload_execution_eligibility_stays_refused():
+def test_argv_offload_execution_eligibility_stays_refused():
     recipe = Recipe(
         name="strict",
         inputs_model=MSIn,
@@ -805,7 +805,7 @@ def test_read_only_dataset_plan_registers_claim_that_excludes_writer(monkeypatch
         lease.release()
 
 
-def test_slurm_compilation_uses_same_plan_but_submission_stays_refused(monkeypatch, tmp_path):
+def test_argv_slurm_compilation_uses_same_plan_but_submission_stays_refused(monkeypatch, tmp_path):
     ms = tmp_path / "observation.ms"
     ms.mkdir()
     monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda root, **kwargs: _closure(Path(root), tmp_path))

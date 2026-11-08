@@ -32,8 +32,9 @@ Available backends
     selected but no venv is declared anywhere, the step runs natively (with a
     warning). ``@pystep`` functions run under the venv's own interpreter and
     import its real packages. See :doc:`provenance` for why a venv run is always
-    reported *unpinned*. Not supported by :doc:`../offloading` (an offloaded
-    venv step is refused, not silently run without its venv). A ``--dryrun`` of
+    reported *unpinned*. Flat-worker :doc:`../offloading` supports existing
+    tool venvs at identical shared paths after compute-node compatibility
+    checks; the argv compiler does not support venv steps. A ``--dryrun`` of
     a venv cab prints the plain (un-rewritten) argv; the venv resolution happens
     only at run time.
 

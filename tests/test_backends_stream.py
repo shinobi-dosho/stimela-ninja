@@ -25,11 +25,8 @@ def test_stream_false_matches_subprocess_run_capture_output():
     assert result.stderr == "err-line\n"
 
 
-def test_stream_true_still_returns_full_captured_output():
-    """The BackendRun contract (full text, same as non-streaming) must be
-    unchanged -- _run_cab/wranglers/_fill_outputs/_run_recipe all depend
-    on getting the complete text back, not just partial echoed lines.
-    """
+def test_stream_true_preserves_short_captured_output():
+    """Streaming preserves output that fits within the capture limits."""
     result = run_streaming(_ARGV, label="t", stream=True)
     assert result.returncode == 0
     assert result.stdout == "out-line\n"
@@ -92,26 +89,17 @@ def test_uncapped_output_is_returned_byte_for_byte():
     assert buf.total == 3
 
 
-def test_middle_is_elided_and_the_marker_counts_what_went():
-    buf = LineBuffer(head_max=2, tail_max=2)
-    for i in range(10):
+@pytest.mark.parametrize(
+    "head,tail,count,expected",
+    [(1, 1, 5, "line0\n" + elision_marker(3) + "\nline4\n"), (2, 2, 10, "line0\nline1\n" + elision_marker(6) + "\nline8\nline9\n")],
+)
+def test_middle_is_elided_and_the_marker_counts_what_went(head, tail, count, expected):
+    buf = LineBuffer(head_max=head, tail_max=tail)
+    for i in range(count):
         buf.append(f"line{i}\n")
-    assert buf.text() == "line0\nline1\n" + elision_marker(6) + "\nline8\nline9\n"
-    assert buf.dropped == 6
-    assert buf.total == 10
-
-
-def test_head_and_tail_are_the_ends_not_a_window():
-    """Guards against the obvious wrong implementation -- a single deque,
-    which keeps the tail and silently loses the banner and the resolved
-    parameters at the top, the part most worth having.
-    """
-    buf = LineBuffer(head_max=1, tail_max=1)
-    for i in range(5):
-        buf.append(f"line{i}\n")
-    text = buf.text()
-    assert text.startswith("line0\n")
-    assert text.endswith("line4\n")
+    assert buf.text() == expected
+    assert buf.dropped == count - head - tail
+    assert buf.total == count
 
 
 def test_wrangler_matching_lines_survive_the_middle():
@@ -195,9 +183,10 @@ def test_empty_stream_is_empty_not_a_marker():
     assert LineBuffer(head_max=0, tail_max=0).text() == ""
 
 
-def test_run_streaming_caps_a_chatty_process_and_reports_the_drop():
+@pytest.mark.parametrize("stream", [False, True])
+def test_run_streaming_caps_a_chatty_process_and_reports_the_drop(stream):
     argv = [sys.executable, "-c", "import sys\nfor i in range(5000): print(f'line{i}')"]
-    result = run_streaming(argv, label="t", stream=False, head_lines=5, tail_lines=5)
+    result = run_streaming(argv, label="t", stream=stream, head_lines=5, tail_lines=5)
     assert result.returncode == 0
     assert result.stdout.startswith("line0\n")
     assert result.stdout.endswith("line4999\n")

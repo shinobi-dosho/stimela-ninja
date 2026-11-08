@@ -16,6 +16,14 @@ def test_bounded_tiles_cover_large_trailing_axes():
     chunks = bounded_chunks((2, 2048, 2048), (2, 2048, 2048), 8)
     assert np.prod(chunks) * 8 <= 16 * 1024 * 1024
     assert sum(np.prod([axis.stop - axis.start for axis in region]) for region in tile_slices((2, 2048, 2048), chunks)) == 2 * 2048 * 2048
+    # Uneven trailing tiles must neither overlap nor leave holes.
+    shape = (3, 5, 7)
+    coverage = np.zeros(shape, dtype=np.int64)
+    for region in tile_slices(shape, (2, 3, 4)):
+        assert len(region) == len(shape)
+        assert all(0 <= axis.start < axis.stop <= size for axis, size in zip(region, shape))
+        coverage[region] += 1
+    assert np.all(coverage == 1)
 
 
 def test_rounding_ties_nonfinite_payload_signed_zero_and_complex_bound():
@@ -33,7 +41,7 @@ def test_rounding_ties_nonfinite_payload_signed_zero_and_complex_bound():
         _compare(complex_source, complex_result, PrecisionPolicy(arrays=("VISIBILITY",), keep_bits=10, atol=0, rtol=0))
 
 
-def test_derived_identity_ignores_physical_source_representation():
+def test_derived_identity_tracks_precision_policy_without_a_physical_source_field():
     state = "msutils-logical-hash/v1:" + "1" * 64
     msv4 = "msutils-logical-hash/v1:" + "2" * 64
     policy = PrecisionPolicy(arrays=("partition/VISIBILITY",), keep_bits=10, atol=1, rtol=0)

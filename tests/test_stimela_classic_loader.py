@@ -161,7 +161,10 @@ def test_non_list_choices_raise():
 def test_dtype_list_uses_first_alternative():
     cab = loads(MSTRANSFORM_JSON)
     # ["str", "int"] narrows to str -> not a path, scalar string field
-    assert cab.inputs_model.model_fields["numsubms"].annotation is not None
+    assert cab.inputs_model(msname="input.ms", numsubms="auto").numsubms == "auto"
+    assert cab.inputs_model(msname="input.ms", numsubms="4").numsubms == "4"
+    with pytest.raises(pydantic.ValidationError, match="numsubms"):
+        cab.inputs_model(msname="input.ms", numsubms=4)
     assert "numsubms" not in path_fields(cab.inputs_model)
 
 
