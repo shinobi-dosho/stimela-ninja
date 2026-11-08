@@ -225,7 +225,7 @@ def test_worker_freezes_indexed_list_and_checks_second_root(tmp_path, monkeypatc
     from shinobi.offload.bundle import RecipeBundle, freeze_recipe
     from shinobi.offload.worker import execute_step
     from shinobi.steps.schema import InputRef
-    from tests.test_offload_dataset_lifecycle import _prepared, _record
+    from tests._dataset_worker import _prepared, _record
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "registry.json"))

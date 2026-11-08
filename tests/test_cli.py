@@ -114,12 +114,6 @@ def test_compile_reports_dataset_access_refusal_without_a_traceback(monkeypatch,
     assert "Traceback" not in result.output
 
 
-def test_run_cab_target():
-    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet", "--text", "hello there"])
-    assert result.exit_code == 0, result.output
-    assert "hello there" in result.output
-
-
 def test_run_stepref_target():
     result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet_step", "--text", "via step"])
     assert result.exit_code == 0, result.output
@@ -177,7 +171,11 @@ def test_run_failing_recipe_reports_nonzero_exit():
     assert result.exit_code != 0
 
 
-def test_run_cab_target_dryrun_shows_argv_and_does_not_execute():
+def test_run_cab_target_dryrun_shows_argv_and_does_not_execute(monkeypatch):
+    def unexpected_dispatch(*args, **kwargs):
+        pytest.fail("dry-run dispatched the cab")
+
+    monkeypatch.setattr("shinobi.cli._dispatch", unexpected_dispatch)
     result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet", "--dryrun", "--text", "echo-me"])
     assert result.exit_code == 0, result.output
     # a bare Cab dryrun echoes its build_argv (see AGENTS.md), not a box graph
@@ -227,9 +225,23 @@ def test_run_help_shows_cache_options():
     assert "--no-cache" in result.output
 
 
-def test_run_with_no_cache_flag_still_executes():
-    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet", "--text", "hi", "--no-cache"])
+@pytest.mark.parametrize("no_cache,custom_dir", [(False, False), (True, False), (False, True), (True, True)])
+def test_run_passes_cache_controls_to_dispatch(tmp_path, no_cache, custom_dir):
+    from unittest.mock import patch
+    from shinobi.cli import _dispatch
+
+    cache_dir = str(tmp_path / "cache") if custom_dir else None
+    args = ["run", f"{FIXTURES}:greet", "--text", "hi"]
+    if no_cache:
+        args.append("--no-cache")
+    if custom_dir:
+        args.extend(["--cache-dir", cache_dir])
+    with patch("shinobi.cli._dispatch", wraps=_dispatch) as dispatch:
+        result = CliRunner().invoke(main, args)
     assert result.exit_code == 0, result.output
+    dispatch.assert_called_once()
+    assert dispatch.call_args.kwargs["cache"] is (False if no_cache else None)
+    assert dispatch.call_args.kwargs["cache_dir"] == cache_dir
 
 
 # -- live stdout/stderr streaming (default on) / --quiet --
@@ -254,11 +266,6 @@ def test_run_help_shows_quiet_option():
     result = CliRunner().invoke(main, ["run", "--help"])
     assert result.exit_code == 0
     assert "--quiet" in result.output
-
-
-def test_run_with_cache_dir_option_still_executes(tmp_path):
-    result = CliRunner().invoke(main, ["run", f"{FIXTURES}:greet", "--text", "hi", "--cache-dir", str(tmp_path)])
-    assert result.exit_code == 0, result.output
 
 
 # -- ninja run --remote --

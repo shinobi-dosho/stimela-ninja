@@ -339,7 +339,7 @@ def _worker_recipe(tmp_path, fail=False):
 
 
 def test_qualified_detached_group_and_array_wire_roundtrip(tmp_path, monkeypatch):
-    from tests.test_offload_dataset_lifecycle import _prepared
+    from tests._dataset_worker import _prepared
     from shinobi.offload.records import AttemptRecord, IndexedProducedState
     from shinobi.offload.worker import execute_step
 
@@ -369,7 +369,7 @@ def test_qualified_detached_group_and_array_wire_roundtrip(tmp_path, monkeypatch
 
 @pytest.mark.parametrize("tool_failure", [False, True])
 def test_detached_group_failed_tool_and_failed_immutable_publication(tmp_path, monkeypatch, tool_failure):
-    from tests.test_offload_dataset_lifecycle import _prepared
+    from tests._dataset_worker import _prepared
     from shinobi.offload.records import AttemptRecord
     from shinobi.offload.worker import execute_step
 
@@ -521,7 +521,7 @@ def test_detached_dead_group_finalizer_retains_claim_until_all_recover(tmp_path,
     import sys
     from pathlib import Path
     import shinobi.snapshots as snapshots
-    from tests.test_offload_dataset_lifecycle import _prepared, _register_jobs
+    from tests._dataset_worker import _prepared, _register_jobs
     from shinobi.offload.worker import finalize_submission
     from shinobi.ownership import inspect_workspace
 
@@ -840,7 +840,7 @@ def test_local_published_group_unreadable_oracle_retains_all_fences_and_backups(
 
 def test_detached_published_group_unreadable_oracle_preserves_exact_record_and_claim(tmp_path, monkeypatch):
     from pathlib import Path
-    from tests.test_offload_dataset_lifecycle import _prepared
+    from tests._dataset_worker import _prepared
     from shinobi.offload.records import AttemptRecord
     from shinobi.offload.worker import execute_step
     from shinobi.ownership import inspect_workspace

@@ -43,19 +43,19 @@ PY
 fi
 
 if [[ "$lane" == main ]]; then
-    uv run --no-sync pytest -q -o pythonpath= tests/test_dosho_compat.py tests/test_neutral_adaptation.py
+    uv run --no-sync pytest -q --durations=25 -o pythonpath= tests/test_dosho_compat.py tests/test_neutral_adaptation.py
 
     # Focused catalogue contracts run against the installed candidate wheels.
     # Dosho's full suite has additional runtime dependencies and is owned there.
-    uv run --no-sync pytest -q -o pythonpath= \
+    uv run --no-sync pytest -q --durations=25 -o pythonpath= \
         "$checkout/tests/test_registry.py" \
         "$checkout/tests/test_builder.py" \
         "$checkout/tests/test_strict_ms_example.py"
 else
     # The simulation dispatch test requires simms and real MS I/O. These
     # cover recipe construction, graph rendering, and CubiCal/WSClean argv.
-    uv run --no-sync pytest -q \
+    uv run --no-sync pytest -q --durations=25 \
         tests/test_dosho_compat.py \
         tests/test_example_simulation.py \
-        -k 'not test_recipe_dispatches_with_correct_argv_shape'
+        -k 'not test_native_recipe_dispatches_with_wired_ms_and_image_output'
 fi

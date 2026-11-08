@@ -211,7 +211,7 @@ def test_runtime_dependency_redirect_refuses_before_backend(tmp_path, monkeypatc
 
 def test_readonly_worker_executes_and_cache_rechecks_derived_input(tmp_path, monkeypatch):
     from shinobi.steps.schema import Recipe, StepRef
-    from tests.test_offload_worker import _prepared_cached, execute_step
+    from tests._worker import prepare_cached, execute_step
     from shinobi.offload.records import AttemptRecord
 
     monkeypatch.chdir(tmp_path)
@@ -223,7 +223,7 @@ def test_readonly_worker_executes_and_cache_rechecks_derived_input(tmp_path, mon
     for text in [None, None, "edited model"]:
         if text is not None:
             model.write_text(text)
-        workflow, bundle, plan = _prepared_cached(tmp_path, recipe)
+        workflow, bundle, plan = prepare_cached(tmp_path, recipe)
         assert any(access.path == str(model) and not access.writes for access in plan.accesses)
         attempt = plan.attempts[0]
         assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 0

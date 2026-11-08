@@ -1,6 +1,46 @@
+import importlib
+import sys
+from pathlib import Path
+
 import pytest
 
 from shinobi.backends.native import NativeBackend
+
+
+@pytest.fixture(autouse=True)
+def _isolate_worker_imports():
+    # Direct worker calls emulate a separate process but add staged code roots
+    # to this interpreter. Restore those imports without unloading unrelated
+    # third-party modules (notably extension modules with process-wide state).
+    original_path = sys.path[:]
+    original_modules = sys.modules.copy()
+    test_package = sys.modules.get("tests")
+    test_paths = list(test_package.__path__) if test_package is not None else None
+    yield
+    if sys.path == original_path:
+        return
+    added_roots = [Path(path).resolve() for path in sys.path if path not in original_path]
+    sys.path[:] = original_path
+    for name, module in list(sys.modules.items()):
+        source = getattr(module, "__file__", None)
+        if isinstance(source, str) and any(Path(source).resolve().is_relative_to(root) for root in added_roots):
+            if name in original_modules:
+                sys.modules[name] = original_modules[name]
+            else:
+                del sys.modules[name]
+            parent_name, _, child = name.rpartition(".")
+            parent = sys.modules.get(parent_name)
+            if parent is not None and getattr(parent, child, None) is module:
+                if name in original_modules:
+                    setattr(parent, child, original_modules[name])
+                else:
+                    delattr(parent, child)
+    if test_package is not None:
+        sys.modules["tests"] = test_package
+        # Namespace paths can recalculate against staged roots while the
+        # worker runs; restoring sys.path alone does not restore that cache.
+        test_package.__path__ = test_paths
+    importlib.invalidate_caches()
 
 
 @pytest.fixture(autouse=True)
@@ -11,27 +51,18 @@ def _native_test_backend(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_run_manifests(tmp_path_factory, monkeypatch):
-    # Run-manifest emission is on by default; point it at a throwaway dir so
-    # the suite still exercises the path without writing into the repo.
-    monkeypatch.setenv("SHINOBI_PROVENANCE__DIR", str(tmp_path_factory.mktemp("runs")))
-
-
-@pytest.fixture(autouse=True)
-def _isolate_sandboxes(tmp_path_factory, monkeypatch):
-    # Step sandboxes (and `ninja clean`'s default --sandboxes target) resolve
-    # AppConfig.sandbox.dir, which is cwd-relative by default; point it at a
-    # throwaway dir so no test can ever create or delete .shinobi/work in the
-    # repo. Tests that care about the location override this env var.
-    monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(tmp_path_factory.mktemp("work")))
-
-
-@pytest.fixture(autouse=True)
-def _isolate_ownership_registry(tmp_path_factory, monkeypatch):
-    # The production default is the user's shared ~/.shinobi registry. Keep
-    # cross-workflow admission real within each test without leaking claims
-    # between tests or writing outside pytest's temporary tree.
-    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path_factory.mktemp("ownership") / "owners.json"))
+def _isolate_runtime_paths(tmp_path_factory, monkeypatch):
+    # Keep manifests, sandboxes and ownership outside the test's workspace:
+    # cleanup/harvest tests may remove or inspect everything under tmp_path.
+    # One numbered root avoids three scans of the growing pytest temp tree.
+    root = tmp_path_factory.mktemp("runtime")
+    for name in ("runs", "work", "ownership"):
+        (root / name).mkdir()
+    monkeypatch.setenv("SHINOBI_PROVENANCE__DIR", str(root / "runs"))
+    monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(root / "work"))
+    # Retain real cross-workflow admission within each test, without claims
+    # leaking to another test or the production ~/.shinobi registry.
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(root / "ownership" / "owners.json"))
 
 
 @pytest.fixture(autouse=True)

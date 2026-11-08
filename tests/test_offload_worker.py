@@ -31,10 +31,11 @@ from shinobi.offload.worker import (
     execute_step as _execute_step_impl,
     finalize_submission,
 )
-from shinobi.ownership import WorkspaceOwnershipError, acquire_workspace, inspect_workspace, release_workspace
+from shinobi.ownership import WorkspaceOwnershipError, acquire_workspace, inspect_workspace
 from shinobi.provenance import RunManifest
 from shinobi.snapshots import Chain, HeadStatus, Marker, chain_id, faults, get_journal, reconcile
 from shinobi.steps.schema import Cab, InputRef, Mutability, OutputRef, ParamMeta, Recipe, StepRef
+from tests._worker import _activate_worker, execute_step, prepare_cached
 
 
 class RootIn(BaseModel):
@@ -191,42 +192,7 @@ def _prepared(tmp_path: Path):
 
 
 def _prepared_cached(tmp_path: Path, recipe: Recipe | None = None, config: AppConfig | None = None):
-    config = config or AppConfig.model_validate({"cache": {"enabled": True, "dir": str(tmp_path / "cache")}})
-    bundle = freeze_recipe(recipe or _recipe(), {}, config=config, workspace=tmp_path)
-    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable))
-    staged = RecipeBundle.read(workflow.submission_dir / "bundle.json")
-    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
-    return workflow, staged, plan
-
-
-def _activate_worker(submission_dir: Path) -> None:
-    """Give direct worker-unit invocations the ownership submit_slurm creates."""
-    plan = ExecutionPlan.model_validate_json((submission_dir / "execution.json").read_text())
-    marker = submission_dir / "ownership.json"
-    if not plan.ownership_required or marker.exists():
-        return
-    bundle = RecipeBundle.read(submission_dir / "bundle.json")
-    lease = acquire_workspace(
-        Path(plan.ownership_workspace or bundle.workspace),
-        str(plan.workflow_id),
-        kind="slurm",
-        submission=submission_dir,
-        accesses=((Path(access.path), access.writes) for access in plan.accesses),
-    )
-    write_new(marker, lease.owner)
-
-
-def execute_step(submission_dir: Path, step_path, attempt_id):
-    _activate_worker(submission_dir)
-    result = _execute_step_impl(submission_dir, step_path, attempt_id)
-    plan = ExecutionPlan.model_validate_json((submission_dir / "execution.json").read_text())
-    settled = all((submission_dir / "attempts" / str(attempt.attempt_id) / "final.json").exists() for attempt in plan.attempts)
-    workspace = Path(plan.ownership_workspace or RecipeBundle.read(submission_dir / "bundle.json").workspace)
-    if plan.ownership_required and settled:
-        owner = inspect_workspace(workspace)
-        if owner is not None and owner.workflow_id == str(plan.workflow_id):
-            release_workspace(workspace, owner.workflow_id)
-    return result
+    return prepare_cached(tmp_path, recipe or _recipe(), config)
 
 
 def _execute_all(workflow, plan):
@@ -278,6 +244,22 @@ def test_worker_executes_wiring_in_shared_sandboxes_and_finalizes(tmp_path, monk
     assert (workflow.submission_dir / "manifest.json").is_file()
     assert inspect_workspace(tmp_path) is None
     assert finalize_submission(workflow.submission_dir) == finalized
+
+
+def test_worker_ownership_uses_frozen_registry_after_environment_changes(tmp_path, monkeypatch):
+    workflow, _, plan = _prepared(tmp_path)
+    redirected = tmp_path / "redirected-registry.json"
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(redirected))
+    assert plan.ownership_required
+    for attempt in plan.attempts:
+        assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 0
+    import json
+
+    marker = json.loads((workflow.submission_dir / "ownership.json").read_text())
+    assert marker["registry"] == plan.ownership_registry
+    assert not redirected.exists()
+    assert (tmp_path / "second.txt").read_text() == "frozen worker"
+    assert inspect_workspace(tmp_path) is None
 
 
 def test_worker_preparation_topologically_orders_forward_references(tmp_path):

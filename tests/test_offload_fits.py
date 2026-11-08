@@ -11,15 +11,15 @@ from shinobi.steps.schema import ParamMeta
 from shinobi.config import AppConfig
 from shinobi.fits_access import resolve_scope_fits_accesses
 from shinobi.fits_lifecycle import plan_fits_backend, committed_generation
-from shinobi.offload.bundle import freeze_recipe, write_new
+from shinobi.offload.bundle import freeze_recipe
 from shinobi.offload.slurm import prepare_worker_slurm
 from shinobi.offload.worker import ExecutionPlan, execute_step
-from shinobi.ownership import acquire_workspace
 from shinobi.snapshots import chain_id, get_journal, faults, reconcile
 from shinobi.cache import get_cache_manifest
 from shinobi.exceptions import DatasetLifecycleUnavailableError
 from tests._shared_storage import qualified_storage
-from tests.test_offload_dataset_lifecycle import _record
+from tests._dataset_worker import _record
+from tests._worker import prepare_qualified
 
 fits = pytest.importorskip("astropy.io.fits")
 from tests.test_fits import image  # noqa: E402
@@ -61,21 +61,8 @@ def recipe(workspace, *, read=False):
 
 
 def prepare(tmp_path, monkeypatch, *, read=False):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "registry.json"))
     path = image(tmp_path / "image.fits")
-    bundle = freeze_recipe(recipe(tmp_path, read=read), {"file": path}, config=AppConfig(), workspace=tmp_path)
-    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable), dataset_storage_qualification=qualified_storage(tmp_path))
-    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
-    lease = acquire_workspace(
-        Path(plan.ownership_workspace),
-        str(plan.workflow_id),
-        kind="slurm",
-        submission=workflow.submission_dir,
-        accesses=((Path(a.path), a.writes) for a in plan.accesses),
-        registry=Path(plan.ownership_registry),
-    )
-    write_new(workflow.submission_dir / "ownership.json", lease.owner)
+    workflow, plan, lease = prepared_recipe(tmp_path, monkeypatch, recipe(tmp_path, read=read), {"file": path})
     return path, workflow, plan, lease
 
 
@@ -141,19 +128,7 @@ def test_worker_fits_oracle_recovery(tmp_path, monkeypatch, stage):
 def prepared_recipe(tmp_path, monkeypatch, scope, inputs):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "registry.json"))
-    bundle = freeze_recipe(scope, inputs, config=AppConfig(), workspace=tmp_path)
-    workflow = prepare_worker_slurm(bundle, submission_root=tmp_path / "runs", worker_python=Path(sys.executable), dataset_storage_qualification=qualified_storage(tmp_path))
-    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
-    lease = acquire_workspace(
-        Path(plan.ownership_workspace),
-        str(plan.workflow_id),
-        kind="slurm",
-        submission=workflow.submission_dir,
-        accesses=((Path(a.path), a.writes) for a in plan.accesses),
-        registry=Path(plan.ownership_registry),
-    )
-    write_new(workflow.submission_dir / "ownership.json", lease.owner)
-    return workflow, plan, lease
+    return prepare_qualified(tmp_path, scope, inputs, config=AppConfig())
 
 
 def invoke(workflow, plan):
@@ -302,7 +277,7 @@ def test_joint_list_worker_exact_participant_recovery(tmp_path, monkeypatch):
 def test_worker_typed_fits_products_fresh_and_cached(tmp_path, monkeypatch, ms_authority):
     from shinobi import FamilySpec, MemberRule, MeasurementSetV2, DatasetAccess
     from shinobi.products import ProductFamily
-    from tests.test_offload_dataset_lifecycle import _install_dataset
+    from tests._dataset_worker import _install_dataset
 
     class ProductInputs(BaseModel):
         script: str

@@ -128,3 +128,6 @@ def test_same_named_functions_in_two_recipes_do_not_collide():
     assert r1.steps[0].func is not r2.steps[0].func
     assert r1.steps[0].step is cab_a
     assert r2.steps[0].step is cab_b
+    assert r1(cache=False).success
+    assert r2(cache=False).success
+    assert [(cab.name, inputs["x"]) for cab, _, inputs in rec_a.calls] == [("tool", 1), ("tool_b", 2)]

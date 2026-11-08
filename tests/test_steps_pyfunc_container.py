@@ -53,9 +53,12 @@ class CtxOutputs(BaseModel):
     joined: str
 
 
-def ctx_func(ctx, a: str, b: str) -> CtxOutputs:
-    """A pystep whose body uses the injected ctx (the documented pattern)."""
-    join = ctx.import_func("join", "os.path")
+def ctx_func(ctx, a: str, b: str, method: str = "import_func") -> CtxOutputs:
+    """Exercise each supported import helper in the generated runner."""
+    if method == "import_module":
+        join = ctx.import_module("os.path").join
+    else:
+        join = getattr(ctx, method)("join", "os.path")
     return CtxOutputs(joined=join(a, b))
 
 
@@ -472,7 +475,7 @@ def test_pystep_container_path_inputs_stay_paths():
     assert isinstance(captured_inputs["vis"], Path)
 
 
-def test_pystep_container_runner_script_content():
+def test_pystep_container_runner_uses_isolated_file_loading():
     ref = pystep(image="casa:latest", backend="docker")(container_func)
 
     captured_runner = {}
@@ -490,16 +493,11 @@ def test_pystep_container_runner_script_content():
             ref(ms="test.ms")
 
     runner = captured_runner["content"]
-    assert "import json" in runner
     # The target is loaded from its file as an isolated module, with the
     # framework/target packages stubbed via a front-of-meta_path finder --
     # never imported by dotted path onto the host site-packages sys.path.
     assert "sys.meta_path.insert(0, _StubFinder())" in runner
     assert "spec_from_file_location" in runner
-    assert "container_func" in runner
-    assert "inputs.pkl" in runner
-    assert "outputs.json" in runner
-    assert "model_dump" in runner
 
 
 def test_pystep_container_backend_override_at_call_time():
@@ -620,7 +618,7 @@ def test_exec_context_import_module():
 def test_pystep_ctx_param_is_not_an_input_field():
     ref = pystep()(ctx_func)
     fields = set(ref.step.inputs_model.model_fields)
-    assert fields == {"a", "b"}
+    assert fields == {"a", "b", "method"}
     assert "ctx" not in fields
 
 
@@ -629,75 +627,6 @@ def test_pystep_ctx_injected_in_process():
     result = ref(a="/x", b="y", backend="native")
     assert result.success
     assert result.outputs.joined == "/x/y"
-
-
-def test_pystep_ctx_shim_in_container_runner():
-    ref = pystep(image="casa:latest", backend="docker")(ctx_func)
-
-    captured_runner = {}
-    original_write_text = Path.write_text
-
-    def capture_write_text(self, content, *args, **kwargs):
-        if self.name == "runner.py":
-            captured_runner["content"] = content
-        return original_write_text(self, content, *args, **kwargs)
-
-    fake = _fake_container_run({"joined": "/x/y"})
-    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
-        with patch.object(Path, "write_text", capture_write_text):
-            ref(a="/x", b="y")
-
-    runner = captured_runner["content"]
-    assert "class _Ctx" in runner
-    # The shim bodies are lifted from the real ExecContext methods, so the
-    # two cannot drift.
-    assert "def import_func" in runner
-    assert "def import_module" in runner
-    assert "ctx_func(ctx, **inputs)" in runner
-
-
-def test_pystep_no_ctx_runner_has_no_shim():
-    ref = pystep(image="casa:latest", backend="docker")(container_func)
-
-    captured_runner = {}
-    original_write_text = Path.write_text
-
-    def capture_write_text(self, content, *args, **kwargs):
-        if self.name == "runner.py":
-            captured_runner["content"] = content
-        return original_write_text(self, content, *args, **kwargs)
-
-    fake = _fake_container_run({"result": "ok"})
-    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
-        with patch.object(Path, "write_text", capture_write_text):
-            ref(ms="test.ms")
-
-    runner = captured_runner["content"]
-    assert "class _Ctx" not in runner
-    assert "container_func(**inputs)" in runner
-
-
-def test_pystep_runner_references_real_io_paths_not_shinobi_io():
-    ref = pystep(image="casa:latest", backend="docker")(container_func)
-
-    captured_runner = {}
-    original_write_text = Path.write_text
-
-    def capture_write_text(self, content, *args, **kwargs):
-        if self.name == "runner.py":
-            captured_runner["content"] = content
-        return original_write_text(self, content, *args, **kwargs)
-
-    fake = _fake_container_run({"result": "ok"})
-    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
-        with patch.object(Path, "write_text", capture_write_text):
-            ref(ms="test.ms")
-
-    runner = captured_runner["content"]
-    assert "/shinobi_io" not in runner
-    assert "shinobi_pystep_" in runner  # the real temp io dir path
-    assert "inputs.pkl" in runner
-    assert "outputs.json" in runner
 
 
 # --- end-to-end: actually execute the generated runner ---------------------
@@ -757,11 +686,12 @@ def test_pystep_container_runs_without_framework_in_container():
     assert result.outputs.result == "hardened.ms:3"
 
 
-def test_pystep_container_runner_executes_ctx_end_to_end():
+@pytest.mark.parametrize("method", ["import_func", "import_callable", "import_module"])
+def test_pystep_container_runner_executes_ctx_end_to_end(method):
     ref = pystep(image="casa:latest", backend="docker")(ctx_func)
 
     with patch("shinobi.steps.pyfunc.run_streaming", side_effect=_run_runner_on_host):
-        result = ref(a="/x", b="y")
+        result = ref(a="/x", b="y", method=method)
 
     assert result.success, result.stderr
     assert result.outputs.joined == "/x/y"
@@ -1037,33 +967,6 @@ def test_import_func_is_an_alias_with_the_same_check():
     assert ctx.import_func("join", "os.path")("/a", "b") == "/a/b"
     with pytest.raises(TypeError, match="not callable"):
         ctx.import_func("path", "os")
-
-
-def test_pystep_ctx_shim_carries_all_three_import_methods():
-    """`import_func` delegates to `import_callable`, so a shim missing the
-    target raises `AttributeError` inside the image -- the one place it
-    cannot be debugged. `ModuleType` is in the preamble for the same reason:
-    the rejection path names it."""
-    ref = pystep(image="casa:latest", backend="docker")(ctx_func)
-
-    captured_runner = {}
-    original_write_text = Path.write_text
-
-    def capture_write_text(self, content, *args, **kwargs):
-        if self.name == "runner.py":
-            captured_runner["content"] = content
-        return original_write_text(self, content, *args, **kwargs)
-
-    fake = _fake_container_run({"joined": "/x/y"})
-    with patch("shinobi.steps.pyfunc.run_streaming", side_effect=fake):
-        with patch.object(Path, "write_text", capture_write_text):
-            ref(a="/x", b="y")
-
-    runner = captured_runner["content"]
-    assert "def import_callable" in runner
-    assert "def import_func" in runner
-    assert "def import_module" in runner
-    assert "from types import ModuleType" in runner
 
 
 def test_the_shim_itself_rejects_a_module():

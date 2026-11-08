@@ -1,4 +1,4 @@
-"""Independent-review reproductions for the experimental M1 protocol."""
+"""Regression coverage for the flat-worker offload protocol."""
 
 from __future__ import annotations
 

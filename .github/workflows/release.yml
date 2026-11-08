@@ -57,7 +57,7 @@ jobs:
         run: uv run --python ${{ matrix.python-version }} --locked --group dev ruff format --check .
 
       - name: Run tests
-        run: uv run --python ${{ matrix.python-version }} --locked --group dev pytest -q
+        run: uv run --python ${{ matrix.python-version }} --locked --group dev pytest -q --durations=25
 
   docs:
     name: Strict documentation build

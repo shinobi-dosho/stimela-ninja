@@ -349,7 +349,7 @@ def test_detached_native_worker_family_result(tmp_path, monkeypatch):
     from shinobi.config import AppConfig
     from shinobi.offload.slurm import prepare_worker_slurm
     from shinobi.offload.worker import ExecutionPlan
-    from tests.test_offload_worker import execute_step
+    from tests._worker import execute_step
 
     monkeypatch.chdir(tmp_path)
     cab = make_cab(tmp_path, cache=True)
@@ -1059,7 +1059,7 @@ def test_generic_runtime_family_growth_refuses_before_launch(tmp_path, monkeypat
     from shinobi.exceptions import DatasetLifecycleUnavailableError
     from shinobi.offload.slurm import prepare_worker_slurm
     from shinobi.offload.worker import ExecutionPlan
-    from tests.test_offload_worker import execute_step
+    from tests._worker import execute_step
 
     monkeypatch.chdir(tmp_path)
     selector = Cab(
@@ -1130,7 +1130,7 @@ def test_frozen_finite_candidate_cannot_follow_retargeted_parent(tmp_path, monke
     from shinobi.exceptions import DatasetLifecycleUnavailableError
     from shinobi.offload.slurm import prepare_worker_slurm
     from shinobi.offload.worker import ExecutionPlan
-    from tests.test_offload_worker import execute_step
+    from tests._worker import execute_step
 
     monkeypatch.chdir(tmp_path)
     for name in ("a", "b"):

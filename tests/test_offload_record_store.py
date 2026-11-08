@@ -256,7 +256,14 @@ def test_large_campaign_monitoring_is_bounded(tmp_path):
         built = subprocess.run([sys.executable, str(script), "build", str(tmp_path / f"scale-{factor}"), str(factor * 65536)], capture_output=True, text=True)
         assert built.returncode == 0, built.stderr
         storage = json.loads(built.stdout)
-        checked = subprocess.run([sys.executable, str(script), "monitor", storage["submission"]], capture_output=True, text=True)
+        # A direct child's ru_maxrss can inherit pytest's resident size across
+        # fork/exec. Spawn the monitor from a small fresh interpreter so optional
+        # imports and earlier tests cannot masquerade as monitoring memory use.
+        checked = subprocess.run(
+            [sys.executable, "-c", "import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:]))", sys.executable, str(script), "monitor", storage["submission"]],
+            capture_output=True,
+            text=True,
+        )
         assert checked.returncode == 0, checked.stderr
         monitoring = json.loads(checked.stdout)
         assert storage["terminal_bytes"] < 256 * 1024

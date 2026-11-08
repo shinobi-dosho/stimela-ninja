@@ -34,11 +34,6 @@ def make_bare_scope() -> Scope:
     return Scope(name="manual", inputs_model=Inputs, outputs_model=Outputs)
 
 
-def test_stepref_accepts_a_bare_scope_after_the_widening():
-    ref = StepRef(name="manual", step=make_bare_scope(), func=_manual_func)
-    assert isinstance(ref.step, Scope)
-
-
 def test_manual_function_runs_and_never_calls_ctx_run():
     ref = StepRef(name="manual", step=make_bare_scope(), func=_manual_func)
     result = ref(x=21)

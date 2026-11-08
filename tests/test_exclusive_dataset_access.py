@@ -110,7 +110,7 @@ def test_native_flaghistory_repeated_dispatch_and_worker_preparation(tmp_path, m
     import numpy as np
     from shinobi.cabs import get
     from tests._dataset_fixtures import make_ms
-    from tests.test_offload_dataset_lifecycle import _prepared
+    from tests._dataset_worker import _prepared
     from shinobi.steps.dispatch import _dispatch
 
     monkeypatch.chdir(tmp_path)

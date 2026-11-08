@@ -52,7 +52,9 @@ def test_fixed_report_echo_is_claimed_without_snapshot_taint(work, cache):
     for _ in range(2):
         assert read(ms=ms, report=report, cache=cache).success
     assert len(called) == (1 if cache else 2)
-    for attempt in attempts(work):
+    records = attempts(work)
+    assert records
+    for attempt in records:
         assert attempt.phase is DatasetLifecyclePhase.COMMITTED
         assert any(Path(access.path) == ms and not access.writes for access in attempt.claim.accesses)
         assert any(Path(access.path) == report and access.writes for access in attempt.claim.accesses)
@@ -330,7 +332,7 @@ def test_qualified_worker_external_source_and_nullable_report(work, redirect):
     from shinobi import Cab, Recipe
     from shinobi.steps.schema import InputRef, ParamMeta, StepRef
     from shinobi.offload.worker import execute_step
-    from tests.test_offload_dataset_lifecycle import _prepared, _record
+    from tests._dataset_worker import _prepared, _record
 
     launch = work / "launch"
     launch.mkdir()
@@ -371,6 +373,11 @@ def test_qualified_worker_external_source_and_nullable_report(work, redirect):
         assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == (1 if redirect else 0)
         record = _record(workflow, plan)
         assert record.committed is not redirect
+        if redirect:
+            assert "frozen destination" in (record.error or "")
+        else:
+            assert report.read_text() == "report"
+            assert (launch / record.result(cab).outputs.report).resolve() == report
     finally:
         lease.release()
     with pytest.raises(ValidationError, match="outside qualified shared storage"):

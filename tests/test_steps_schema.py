@@ -60,12 +60,12 @@ def test_paramsegment_requires_exactly_one_of_regex_or_attrs():
         ParamSegment(regex=".+", attrs={"a": ParamMeta()})
 
 
-def test_parampattern_requires_last_segment_to_have_attrs():
+def test_parampattern_requires_an_attrs_segment():
     with pytest.raises(ValueError):
         ParamPattern(segments=[ParamSegment(regex=".+")])
 
 
-def test_parampattern_rejects_attrs_on_a_non_terminal_segment():
+def test_parampattern_rejects_multiple_attrs_segments():
     with pytest.raises(ValueError):
         ParamPattern(segments=[ParamSegment(attrs={"a": ParamMeta()}), ParamSegment(attrs={"b": ParamMeta()})])
 

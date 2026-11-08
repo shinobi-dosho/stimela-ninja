@@ -1,22 +1,8 @@
-"""Smoke tests for examples/example-simulation.py.
+"""Declaration, argv and optional native-dispatch checks for the simulation example.
 
-The example imports `dosho` (the native shinobi cab repository) for its real
-wsclean/quartical/simms cabs. dosho is now a plain dependency group --
-`uv sync --group examples` -- since it dropped the [tool.uv.sources] redirect
-that used to make it unresolvable alongside this project (dosho #42). It is
-still not in CI's default `--group dev`, so skip cleanly rather than erroring
-out collection when it is absent.
-
-`RecordingBackend` intercepts every *Cab* step, including the ones carrying
-`backend="native"`, so wsclean and quartical need nothing installed. It cannot
-intercept a **pystep**: as of simms 3.0, dosho's `skysim`/`telsim` are
-`@shinobi.pystep` `StepRef`s rather than binary Cabs, and a pystep runs its
-own Python body (`ctx.import_callable("runit", "simms.apps.telsim")`) instead of
-dispatching through a backend. A backend override cannot reach it, so the one
-test that dispatches those steps needs the real `simms` module -- which has no
-docker image and is not on PyPI, hence still a manual install:
-
-    uv pip install --no-deps simms @ git+https://github.com/wits-cfa/simms.git
+Dosho is a runtime dependency. The example explicitly selects native execution
+for its adapted simms functions, so the dispatch check needs simms installed.
+Argv checks run independently of simms and dataset-lifecycle eligibility.
 """
 
 import importlib.util
@@ -25,14 +11,12 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("dosho")
-
-from shinobi.backends.recording import RecordingBackend  # noqa: E402
-from shinobi.dataset_access import scope_tree_has_dataset_contract  # noqa: E402
-from shinobi.dag import graph_nodes, render_dag  # noqa: E402
-from shinobi.policies import build_argv  # noqa: E402
-from shinobi.steps import Recipe  # noqa: E402
-from shinobi.steps.dispatch import _dispatch  # noqa: E402
+from shinobi.backends.recording import RecordingBackend
+from shinobi.dataset_access import scope_tree_has_dataset_contract
+from shinobi.dag import graph_nodes, render_dag
+from shinobi.policies import build_argv
+from shinobi.steps import Recipe
+from shinobi.steps.dispatch import _dispatch
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "example-simulation.py"
 
@@ -91,11 +75,44 @@ def test_quartical_command_requests_corrected_data():
         assert option in argv
 
 
+IMAGING_CASES = [
+    ("image_sim", "DATA", 1024, 1.5, "example-simdata", "simulate", "ms"),
+    ("image_robust_2", "CORRECTED_DATA", 2048, 2.0, "example-sim-robust2", "calibrate", "ms"),
+    ("image_robust_0", "CORRECTED_DATA", 2048, 0.0, "example-sim-robust0", "calibrate", "ms"),
+    ("image_robust_m2", "CORRECTED_DATA", 2048, -2.0, "example-sim-robust-2", "calibrate", "ms"),
+]
+
+
+def assert_imaging_argv(argv, column, size, weight, prefix, ms):
+    assert argv[0] == "wsclean"
+    assert "-input-ms" not in argv
+    assert argv[argv.index("-size") + 1 : argv.index("-size") + 3] == [str(size), str(size)]
+    assert argv[argv.index("-weight") + 1 : argv.index("-weight") + 3] == ["briggs", str(weight)]
+    assert argv[argv.index("-data-column") + 1] == column
+    assert argv[argv.index("-name") + 1] == prefix
+    assert argv[-1] == ms
+
+
+@pytest.mark.parametrize(
+    "name,column,size,weight,prefix,producer,field",
+    IMAGING_CASES,
+)
+def test_imaging_argv_and_declared_ms_wiring(name, column, size, weight, prefix, producer, field):
+    from shinobi import OutputRef
+
+    mod = load_example()
+    ref = next(ref for ref in mod.recipe.steps if ref.name == name)
+    assert ref.wiring["ms"] == [OutputRef(step=producer, field=field)]
+    argv = build_argv(ref.step, {**ref.params, "ms": ["example-simulation.ms"]})
+    assert "input_ms" not in ref.step.inputs_model.model_fields
+    assert_imaging_argv(argv, column, size, weight, prefix, "example-simulation.ms")
+
+
 @pytest.mark.skipif(
     importlib.util.find_spec("simms") is None,
-    reason="dosho's skysim/telsim are pysteps, not Cabs -- a backend override cannot intercept them, so dispatching this recipe imports simms for real",
+    reason="this example selects native simms functions, so dispatch requires simms installed",
 )
-def test_recipe_dispatches_with_correct_argv_shape(monkeypatch, tmp_path):
+def test_native_recipe_dispatches_with_wired_ms_and_image_output(monkeypatch, tmp_path):
     # Run somewhere disposable. When simms *is* installed the pysteps below
     # are not intercepted by anything -- telsim writes a real MeasurementSet
     # (~6 MB) and skysim computes real visibilities into it. Without this the
@@ -129,7 +146,7 @@ def test_recipe_dispatches_with_correct_argv_shape(monkeypatch, tmp_path):
     # Only the Cab steps reach a backend. simms-telsim/simms-skysim are
     # pysteps, which run their own body instead of dispatching through one,
     # so the recorder never sees them -- asserting otherwise was asserting
-    # that dosho had not yet moved simms to @shinobi.pystep, which it has.
+    # that dosho had not yet moved simms to Python functions, which it has.
     assert set(calls_by_name) == {"quartical", "wsclean"}
     # image_sim (pre-calibration, populates MODEL_DATA) + one per Briggs
     # robust value.
@@ -142,43 +159,5 @@ def test_recipe_dispatches_with_correct_argv_shape(monkeypatch, tmp_path):
     quartical_argv = calls_by_name["quartical"][0]
     assert "input_ms.path=example-simulation.ms" in quartical_argv
 
-    # wsclean's own real outputs are FITS image products (image/image_mfs/
-    # ...), not the MS -- image_sim's `input_ms` is an *outputs_model-only*
-    # field (see wsclean_with_model in the example itself), resolved via
-    # an implicit "{ms[0]}" template indexing into wsclean's own real
-    # (list) `ms` input, never added to inputs_model. This is a
-    # regression guard for a real bug: adding it to inputs_model too (the
-    # shape caracal2's own line/selfcal workers use) makes build_argv
-    # emit it as a bogus `-input-ms <path>` flag real wsclean doesn't
-    # recognise.
-    image_sim_argv = calls_by_name["wsclean"][0]
-    assert "-input-ms" not in image_sim_argv
-    assert "-data-column" in image_sim_argv
-    assert image_sim_argv[image_sim_argv.index("-data-column") + 1] == "DATA"
-    assert image_sim_argv[-1] == "example-simulation.ms"
-
-    # QuartiCal uses dotted key=value options and writes corrected visibilities
-    # only when the product and its MS column are requested explicitly.
-    assert quartical_argv[0] == "goquartical"
-    assert "input_model.recipe=MODEL_DATA" in quartical_argv
-    assert "output.products=[corrected_data]" in quartical_argv
-    assert "output.columns=[CORRECTED_DATA]" in quartical_argv
-    assert "solver.terms=[G]" in quartical_argv
-    assert "G.type=diag_complex" in quartical_argv
-
-    # wsclean (robust=2, the first *post-calibration* image step, i.e.
-    # index 1 -- index 0 is image_sim, checked above): repeat_as_tokens
-    # for -size (bare tokens, not comma-joined), a real Union[str,
-    # Tuple[str, float]] `weight` value, real nom_de_guerre flags
-    # (-data-column/-name), ms wired all the way from QuartiCal's real `ms`
-    # output.
-    wsclean_argv = calls_by_name["wsclean"][1]
-    assert "-size" in wsclean_argv
-    size_i = wsclean_argv.index("-size")
-    assert wsclean_argv[size_i + 1 : size_i + 3] == ["2048", "2048"]
-    assert "-weight" in wsclean_argv
-    weight_i = wsclean_argv.index("-weight")
-    assert wsclean_argv[weight_i + 1 : weight_i + 3] == ["briggs", "2.0"]
-    assert "-data-column" in wsclean_argv
-    assert "-name" in wsclean_argv
-    assert wsclean_argv[-1] == "example-simulation.ms"
+    for argv, (_, column, size, weight, prefix, _, _) in zip(calls_by_name["wsclean"], IMAGING_CASES, strict=True):
+        assert_imaging_argv(argv, column, size, weight, prefix, "example-simulation.ms")
