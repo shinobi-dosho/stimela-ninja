@@ -73,7 +73,7 @@ jobs:
         run: uv run --no-sync ruff format --check .
 
       - name: Run tests
-        run: uv run --no-sync pytest -q -o pythonpath=
+        run: uv run --no-sync pytest -q --durations=25 -o pythonpath=
 
   docs:
     if: github.event_name != 'schedule'
@@ -162,12 +162,12 @@ jobs:
       # one fixture test and leaving the closure/access cases silently skipped
       # in the ordinary matrix.
       - name: Run real CASA-table model, closure, and access tests
-        run: uv run --no-sync pytest -q -o pythonpath= tests/test_datasets.py tests/test_dataset_closure.py tests/test_dataset_access.py
+        run: uv run --no-sync pytest -q --durations=25 -o pythonpath= tests/test_datasets.py tests/test_dataset_closure.py tests/test_dataset_access.py
 
       # The mutation lifecycle's observations, signatures and rollbacks are
       # only meaningful against real tables; the main job skips this file.
       - name: Run strict MSv2 lifecycle tests against real tables
-        run: uv run --no-sync pytest -q -o pythonpath= tests/test_dataset_mutation.py tests/test_create_cache_resume.py tests/test_required_cache.py tests/test_neutral_dataset_admission.py tests/test_dataset_lifecycle.py::test_real_casacore_contained_read_when_available tests/test_strict_read_products.py tests/test_dataset_lists.py tests/test_dataset_list_writes.py tests/test_offload_dataset_lifecycle.py tests/test_contained_products.py tests/test_yaml_datasets.py tests/test_derived_mutations_live.py tests/test_derived_restart_live.py tests/test_dataset_scatter.py tests/test_exclusive_dataset_access.py tests/test_derived_reads.py tests/test_offload_mixed.py
+        run: uv run --no-sync pytest -q --durations=25 -o pythonpath= tests/test_dataset_mutation.py tests/test_create_cache_resume.py tests/test_required_cache.py tests/test_neutral_dataset_admission.py tests/test_dataset_lifecycle.py::test_real_casacore_contained_read_when_available tests/test_strict_read_products.py tests/test_dataset_lists.py tests/test_dataset_list_writes.py tests/test_offload_dataset_lifecycle.py tests/test_contained_products.py tests/test_yaml_datasets.py tests/test_derived_mutations_live.py tests/test_derived_restart_live.py tests/test_dataset_scatter.py tests/test_exclusive_dataset_access.py tests/test_derived_reads.py tests/test_offload_mixed.py
 
       # FITS is optional in the ordinary matrix. Qualify its real scanner,
       # lifecycle and MS product gates here with both optional stacks present.
@@ -175,10 +175,10 @@ jobs:
         run: uv run --no-sync python -c "import astropy.io.fits, astropy.wcs, numpy; print(astropy.__version__)"
 
       - name: Run FITS structure, lifecycle, and product tests
-        run: uv run --no-sync pytest -q -o pythonpath= tests/test_fits.py tests/test_fits_lifecycle.py tests/test_fits_products.py tests/test_offload_fits.py tests/test_selected_family_handoffs.py
+        run: uv run --no-sync pytest -q --durations=25 -o pythonpath= tests/test_fits.py tests/test_fits_lifecycle.py tests/test_fits_products.py tests/test_offload_fits.py tests/test_selected_family_handoffs.py
 
       - name: Run real state export, materialization and process-death recovery
-        run: uv run --no-sync pytest -q -o pythonpath= tests/test_dataset_state.py tests/test_dataset_state_live.py tests/test_state_precision.py tests/test_state_metadata.py tests/test_state_qualification.py tests/test_state_replay_structure.py
+        run: uv run --no-sync pytest -q --durations=25 -o pythonpath= tests/test_dataset_state.py tests/test_dataset_state_live.py tests/test_state_precision.py tests/test_state_metadata.py tests/test_state_qualification.py tests/test_state_replay_structure.py
 
   audit:
     if: github.event_name != 'schedule'

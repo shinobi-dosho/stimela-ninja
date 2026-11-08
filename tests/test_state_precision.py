@@ -8,6 +8,7 @@ import pytest
 from shinobi.dataset_state import DatasetStateStore, StateError, StateRepresentationV2
 from shinobi.state_codecs import LosslessProfile, bounded_chunks, tile_slices, rewrite_lossless
 from shinobi.state_precision import DerivedLogical, PrecisionPolicy, _compare, _round
+from tests._state_ms import make_state_ms
 
 np = pytest.importorskip("numpy", reason="precision operations need the measurement-set group")
 
@@ -82,20 +83,39 @@ def test_semantic_rewrite_filters_are_dtype_specific(tmp_path, codec):
         assert names[-1] == "zstd"
 
 
+def _precision_source(path):
+    from casacore.tables import table
+
+    source = make_state_ms(path)
+    with table(str(source), readonly=False, ack=False) as main:
+        main.putcol("DATA", main.getcol("DATA") + np.complex64(0.1234 + 0.4567j))
+    return source
+
+
+@pytest.fixture(scope="module")
+def lossless_baseline(tmp_path_factory):
+    """Share only immutable reference identities; codec exports stay fresh."""
+    pytest.importorskip("msutils")
+    pytest.importorskip("xarray_ms")
+    root = tmp_path_factory.mktemp("lossless-baseline")
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(root / "owners.json"))
+        source = _precision_source(root / "source.ms")
+        store = DatasetStateStore(root / "store", cache_dir=root / "cache")
+        exact = store.export(source, block_rows=2, lossless_profile=LosslessProfile(codec="zstd", chunk_rows=2))
+        _, _, representation = store._load(exact.state_id, exact.representation_id)
+    return exact.state_id, representation.payload_id
+
+
 @pytest.mark.parametrize(
     "codec,shuffle", [("gzip", "none"), ("zstd", "none"), ("blosc-zstd", "bit"), ("packbits-zstd", "none"), ("delta-zstd", "none"), ("packbits-delta-zstd", "none")]
 )
-def test_live_lossless_export_and_derived(tmp_path, monkeypatch, codec, shuffle):
+def test_live_lossless_export_and_derived(tmp_path, monkeypatch, request, codec, shuffle):
     pytest.importorskip("msutils")
     pytest.importorskip("xarray_ms")
-    from casacore.tables import table
-    from tests._state_ms import make_state_ms
 
     monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "owners.json"))
-    source = make_state_ms(tmp_path / "source.ms")
-    with table(str(source), readonly=False, ack=False) as main:
-        values = main.getcol("DATA")
-        main.putcol("DATA", values + np.complex64(0.1234 + 0.4567j))
+    source = _precision_source(tmp_path / "source.ms")
     store = DatasetStateStore(tmp_path / "store", cache_dir=tmp_path / "cache")
     exact = store.export(source, block_rows=2, lossless_profile=LosslessProfile(codec=codec, shuffle=shuffle, chunk_rows=2))
     rep_path, _, representation = store._load(exact.state_id, exact.representation_id)
@@ -129,11 +149,11 @@ def test_live_lossless_export_and_derived(tmp_path, monkeypatch, codec, shuffle)
         assert ("numcodecs.packbits" in [entry["name"] for entry in native_metadata["codecs"]]) == ("packbits" in codec)
         companion_flags = next(array for name, array in arrays if name.endswith("/FLAG"))
         assert companion_flags.dtype == np.dtype("uint8")
-        baseline = store.export(source, block_rows=2, lossless_profile=LosslessProfile(codec="zstd", chunk_rows=2))
-        _, _, baseline_rep = store._load(baseline.state_id, baseline.representation_id)
+        # Request lazily so non-semantic codec selections need no reference export.
+        baseline_ids = request.getfixturevalue("lossless_baseline")
         # Independent exports carry different xarray-ms creation timestamps.
         # rewrite_lossless checks MSv4 identity against its own source tree.
-        assert (exact.state_id, representation.payload_id) == (baseline.state_id, baseline_rep.payload_id)
+        assert (exact.state_id, representation.payload_id) == baseline_ids
         source.rename(tmp_path / "hidden-source.ms")
         destination = tmp_path / "fresh.ms"
         restored = store.materialize(exact.state_id, destination, representation_id=exact.representation_id)
@@ -155,14 +175,10 @@ def test_live_derived_identity_independent_of_lossless_representation(tmp_path, 
     pytest.importorskip("xarray_ms")
     import shutil
     import zarr
-    from casacore.tables import table
-    from tests._state_ms import make_state_ms
     from shinobi import _state_adapter as adapter
 
     monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "owners.json"))
-    source = make_state_ms(tmp_path / "source.ms")
-    with table(str(source), readonly=False, ack=False) as main:
-        main.putcol("DATA", main.getcol("DATA") + np.complex64(0.1234 + 0.4567j))
+    source = _precision_source(tmp_path / "source.ms")
     store = DatasetStateStore(tmp_path / "store", cache_dir=tmp_path / "cache")
     first = store.export(source, lossless_profile=LosslessProfile(codec="gzip", chunk_rows=2))
     first_rep, _, first_physical = store._load(first.state_id, first.representation_id)
@@ -290,15 +306,11 @@ def precision_seed(tmp_path_factory):
     pytest.importorskip("msutils")
     pytest.importorskip("xarray_ms")
     import zarr
-    from casacore.tables import table
-    from tests._state_ms import make_state_ms
 
     root = tmp_path_factory.mktemp("precision-seed")
     with pytest.MonkeyPatch.context() as patcher:
         patcher.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(root / "owners.json"))
-        source = make_state_ms(root / "source.ms")
-        with table(str(source), readonly=False, ack=False) as main:
-            main.putcol("DATA", main.getcol("DATA") + np.complex64(0.1234 + 0.4567j))
+        source = _precision_source(root / "source.ms")
         store = DatasetStateStore(root / "store", cache_dir=root / "cache")
         exact = store.export(source)
     rep, _, _ = store._load(exact.state_id, exact.representation_id)

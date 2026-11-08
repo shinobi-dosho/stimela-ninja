@@ -18,7 +18,7 @@ from shinobi.ownership import WorkspaceOwnershipError, acquire_workspace, contai
 from shinobi.sandbox import create_sandbox
 from shinobi.steps.schema import ParamMeta
 from tests._dataset_fixtures import ROWS, attempts, make_ms, scans
-from tests.test_offload_dataset_lifecycle import _install_dataset, _prepared, _recipe, _record
+from tests._dataset_worker import _install_dataset, _prepared, _recipe, _record
 
 
 class Empty(BaseModel):

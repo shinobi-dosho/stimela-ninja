@@ -332,7 +332,7 @@ def test_qualified_worker_external_source_and_nullable_report(work, redirect):
     from shinobi import Cab, Recipe
     from shinobi.steps.schema import InputRef, ParamMeta, StepRef
     from shinobi.offload.worker import execute_step
-    from tests.test_offload_dataset_lifecycle import _prepared, _record
+    from tests._dataset_worker import _prepared, _record
 
     launch = work / "launch"
     launch.mkdir()

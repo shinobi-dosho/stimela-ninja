@@ -15,7 +15,7 @@ from shinobi.offload.worker import execute_step
 from shinobi.ownership import contained_access_issues, scope_path_accesses
 from shinobi.products import FamilyPlan, UnresolvedProductReference, resolve_planned_reference
 from shinobi.steps.schema import OutputRef, ParamMeta, planned_output_values, static_output_values, static_wiring_values, StepRef
-from tests.test_offload_dataset_lifecycle import _install_dataset, _prepared, _recipe
+from tests._dataset_worker import _install_dataset, _prepared, _recipe
 
 
 class Empty(BaseModel):

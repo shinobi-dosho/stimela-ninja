@@ -27,5 +27,5 @@ jobs:
           bash .github/scripts/install-candidate-pair.sh .work-cache/dosho-candidate
       - name: Verify candidate contracts
         run: |
-          uv run --no-sync pytest -q -o pythonpath= tests/test_dosho_boundary.py tests/test_dosho_compat.py tests/test_neutral_adaptation.py tests/test_yaml_cab_loader.py tests/test_policies.py tests/test_offload_bundle.py tests/test_offload_worker.py
-          uv run --no-sync pytest -q -o pythonpath= .work-cache/dosho-candidate/tests
+          uv run --no-sync pytest -q --durations=25 -o pythonpath= tests/test_dosho_boundary.py tests/test_dosho_compat.py tests/test_neutral_adaptation.py tests/test_yaml_cab_loader.py tests/test_policies.py tests/test_offload_bundle.py tests/test_offload_worker.py
+          uv run --no-sync pytest -q --durations=25 -o pythonpath= .work-cache/dosho-candidate/tests

@@ -16,7 +16,7 @@ from shinobi.offload._codec import BundleError, pack
 from shinobi.offload.bundle import ScopeSpec
 from shinobi.policies import build_argv
 from shinobi.steps.schema import Recipe, validate_declared_writes
-from tests.test_offload_dataset_lifecycle import _install_dataset
+from tests._dataset_worker import _install_dataset
 
 
 def arguments(name, root):

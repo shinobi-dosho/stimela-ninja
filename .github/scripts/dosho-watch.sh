@@ -88,7 +88,7 @@ $(cat "$watch_cache/setup.err")"
 $(cat "$watch_cache/pair.log")"
         else
             ci_status=pass
-            ci_detail=$(uv run --no-sync pytest -q -o pythonpath= 2>&1) || ci_status=fail
+            ci_detail=$(uv run --no-sync pytest -q --durations=25 -o pythonpath= 2>&1) || ci_status=fail
         fi
     fi
     cd "$ROOT/dosho"
