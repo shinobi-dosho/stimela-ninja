@@ -189,25 +189,11 @@ def test_live_derived_identity_independent_of_lossless_representation(tmp_path, 
     assert store.verify_derived(two.derived_id, two.representation_id).verified
 
 
-def test_derived_publication_recovery_and_unrelated_race(tmp_path, monkeypatch):
-    pytest.importorskip("msutils")
-    pytest.importorskip("xarray_ms")
-    import zarr
-    from casacore.tables import table
-    from tests._state_ms import make_state_ms
+def test_derived_publication_recovery_and_unrelated_race(precision_store, monkeypatch):
     from shinobi import state_precision
     from shinobi.storage import publish_directory as real_publish
 
-    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "owners.json"))
-    source = make_state_ms(tmp_path / "source.ms")
-    with table(str(source), readonly=False, ack=False) as main:
-        main.putcol("DATA", main.getcol("DATA") + np.complex64(0.1234 + 0.4567j))
-    store = DatasetStateStore(tmp_path / "store", cache_dir=tmp_path / "cache")
-    exact = store.export(source)
-    rep, _, _ = store._load(exact.state_id, exact.representation_id)
-    group = zarr.open_group(rep / "msv4.zarr", mode="r")
-    selected = next(name for name, _ in group.members(max_depth=None) if name.endswith("/VISIBILITY"))
-    policy = PrecisionPolicy(arrays=(selected,), keep_bits=10, atol=0.1, rtol=0.1)
+    store, exact, policy = precision_store
 
     def interrupt_after_publish(stage, target):
         real_publish(stage, target)
@@ -278,24 +264,11 @@ def test_independent_wrong_policy_and_untouched_array_detection(tmp_path):
         _verify_whole_tree(source, target, policy.arrays)
 
 
-def test_derived_claim_refusal_before_stage_is_recorded(tmp_path, monkeypatch):
-    pytest.importorskip("msutils")
-    pytest.importorskip("xarray_ms")
-    import zarr
-    from casacore.tables import table
-    from tests._state_ms import make_state_ms
+def test_derived_claim_refusal_before_stage_is_recorded(precision_store, monkeypatch):
     from shinobi import state_precision
     from shinobi.storage import JsonFileStore
 
-    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "owners.json"))
-    source = make_state_ms(tmp_path / "source.ms")
-    with table(str(source), readonly=False, ack=False) as main:
-        main.putcol("DATA", main.getcol("DATA") + np.complex64(0.1234 + 0.4567j))
-    store = DatasetStateStore(tmp_path / "store", cache_dir=tmp_path / "cache")
-    exact = store.export(source)
-    rep, _, _ = store._load(exact.state_id, exact.representation_id)
-    selected = next(name for name, _ in zarr.open_group(rep / "msv4.zarr", mode="r").members(max_depth=None) if name.endswith("/VISIBILITY"))
-    policy = PrecisionPolicy(arrays=(selected,), keep_bits=10, atol=0.1, rtol=0.1)
+    store, exact, policy = precision_store
 
     def refuse(*args, **kwargs):
         raise StateError("claim-denied", "simulated conflict")
@@ -311,31 +284,48 @@ def test_derived_claim_refusal_before_stage_is_recorded(tmp_path, monkeypatch):
     assert store.recover_derived() == []
 
 
-def _precision_store(tmp_path, monkeypatch):
+@pytest.fixture(scope="module")
+def precision_seed(tmp_path_factory):
+    """Export once for tests of derived-state recovery, not export behavior."""
     pytest.importorskip("msutils")
     pytest.importorskip("xarray_ms")
     import zarr
     from casacore.tables import table
     from tests._state_ms import make_state_ms
 
-    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "owners.json"))
-    source = make_state_ms(tmp_path / "source.ms")
-    with table(str(source), readonly=False, ack=False) as main:
-        main.putcol("DATA", main.getcol("DATA") + np.complex64(0.1234 + 0.4567j))
-    store = DatasetStateStore(tmp_path / "store", cache_dir=tmp_path / "cache")
-    exact = store.export(source)
+    root = tmp_path_factory.mktemp("precision-seed")
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(root / "owners.json"))
+        source = make_state_ms(root / "source.ms")
+        with table(str(source), readonly=False, ack=False) as main:
+            main.putcol("DATA", main.getcol("DATA") + np.complex64(0.1234 + 0.4567j))
+        store = DatasetStateStore(root / "store", cache_dir=root / "cache")
+        exact = store.export(source)
     rep, _, _ = store._load(exact.state_id, exact.representation_id)
     selected = next(name for name, _ in zarr.open_group(rep / "msv4.zarr", mode="r").members(max_depth=None) if name.endswith("/VISIBILITY"))
     policy = PrecisionPolicy(arrays=(selected,), keep_bits=10, atol=0.1, rtol=0.1)
+    return store.root / "states", exact, policy
+
+
+@pytest.fixture
+def precision_store(precision_seed, tmp_path, monkeypatch):
+    import shutil
+
+    states, exact, policy = precision_seed
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "owners.json"))
+    store = DatasetStateStore(tmp_path / "store", cache_dir=tmp_path / "cache")
+    # Copy only immutable representations. Attempts, derived publications,
+    # locks and ownership stay private to this test; never hardlink the seed.
+    shutil.copytree(states, store.root / "states")
     return store, exact, policy
 
 
-def test_derived_error_keeps_attempt_unfinished_until_owner_released(tmp_path, monkeypatch):
+def test_derived_error_keeps_attempt_unfinished_until_owner_released(precision_store, monkeypatch):
     from shinobi import state_precision
     from shinobi.ownership import WorkspaceLease, inspect_ownership, release_workspace
     from shinobi.storage import JsonFileStore
 
-    store, exact, policy = _precision_store(tmp_path, monkeypatch)
+    store, exact, policy = precision_store
     bad_policy = policy.model_copy(update={"arrays": ("missing/VISIBILITY",)})
     original_release = WorkspaceLease.release
 
@@ -355,12 +345,12 @@ def test_derived_error_keeps_attempt_unfinished_until_owner_released(tmp_path, m
     assert len(settled) == 1 and settled[0].phase == "interrupted" and settled[0].finished
 
 
-def test_derived_recovery_keeps_attempt_unfinished_when_owner_release_fails(tmp_path, monkeypatch):
+def test_derived_recovery_keeps_attempt_unfinished_when_owner_release_fails(precision_store, monkeypatch):
     from types import SimpleNamespace
     from shinobi import state_precision
     from shinobi.storage import JsonFileStore, publish_directory as real_publish
 
-    store, exact, policy = _precision_store(tmp_path, monkeypatch)
+    store, exact, policy = precision_store
 
     def interrupt(stage, target):
         real_publish(stage, target)
@@ -390,11 +380,11 @@ def test_derived_recovery_keeps_attempt_unfinished_when_owner_release_fails(tmp_
 
 
 @pytest.mark.parametrize("part", ["root", "base", "representations", "representation"])
-def test_derived_symlink_parents_refuse_reads_publish_and_recovery(tmp_path, monkeypatch, part):
+def test_derived_symlink_parents_refuse_reads_publish_and_recovery(precision_store, tmp_path, monkeypatch, part):
     from shinobi import state_precision
     from shinobi.storage import JsonFileStore, publish_directory as real_publish
 
-    store, exact, policy = _precision_store(tmp_path, monkeypatch)
+    store, exact, policy = precision_store
 
     def interrupt(stage, target):
         real_publish(stage, target)

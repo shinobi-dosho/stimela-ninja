@@ -11,27 +11,18 @@ def _native_test_backend(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_run_manifests(tmp_path_factory, monkeypatch):
-    # Run-manifest emission is on by default; point it at a throwaway dir so
-    # the suite still exercises the path without writing into the repo.
-    monkeypatch.setenv("SHINOBI_PROVENANCE__DIR", str(tmp_path_factory.mktemp("runs")))
-
-
-@pytest.fixture(autouse=True)
-def _isolate_sandboxes(tmp_path_factory, monkeypatch):
-    # Step sandboxes (and `ninja clean`'s default --sandboxes target) resolve
-    # AppConfig.sandbox.dir, which is cwd-relative by default; point it at a
-    # throwaway dir so no test can ever create or delete .shinobi/work in the
-    # repo. Tests that care about the location override this env var.
-    monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(tmp_path_factory.mktemp("work")))
-
-
-@pytest.fixture(autouse=True)
-def _isolate_ownership_registry(tmp_path_factory, monkeypatch):
-    # The production default is the user's shared ~/.shinobi registry. Keep
-    # cross-workflow admission real within each test without leaking claims
-    # between tests or writing outside pytest's temporary tree.
-    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path_factory.mktemp("ownership") / "owners.json"))
+def _isolate_runtime_paths(tmp_path_factory, monkeypatch):
+    # Keep manifests, sandboxes and ownership outside the test's workspace:
+    # cleanup/harvest tests may remove or inspect everything under tmp_path.
+    # One numbered root avoids three scans of the growing pytest temp tree.
+    root = tmp_path_factory.mktemp("runtime")
+    for name in ("runs", "work", "ownership"):
+        (root / name).mkdir()
+    monkeypatch.setenv("SHINOBI_PROVENANCE__DIR", str(root / "runs"))
+    monkeypatch.setenv("SHINOBI_SANDBOX__DIR", str(root / "work"))
+    # Retain real cross-workflow admission within each test, without claims
+    # leaking to another test or the production ~/.shinobi registry.
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(root / "ownership" / "owners.json"))
 
 
 @pytest.fixture(autouse=True)
