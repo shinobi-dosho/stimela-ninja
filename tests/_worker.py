@@ -20,15 +20,40 @@ def _activate_worker(submission_dir: Path) -> None:
     marker = submission_dir / "ownership.json"
     if not plan.ownership_required or marker.exists():
         return
-    bundle = RecipeBundle.read(submission_dir / "bundle.json")
+    acquire_worker_ownership(submission_dir, plan)
+
+
+def acquire_worker_ownership(submission_dir: Path, plan: ExecutionPlan):
+    """Publish the ownership claim in the frozen plan's registry."""
+    assert plan.ownership_workspace is not None
+    assert plan.ownership_registry is not None
     lease = acquire_workspace(
-        Path(plan.ownership_workspace or bundle.workspace),
+        Path(plan.ownership_workspace),
         str(plan.workflow_id),
         kind="slurm",
         submission=submission_dir,
         accesses=((Path(access.path), access.writes) for access in plan.accesses),
+        registry=Path(plan.ownership_registry),
     )
-    write_new(marker, lease.owner)
+    write_new(submission_dir / "ownership.json", lease.owner)
+    return lease
+
+
+def prepare_qualified(workspace: Path, recipe: Recipe, inputs, *, config: AppConfig, qualification_root: Path | None = None):
+    """Prepare a storage-qualified worker with explicit ownership."""
+    from tests._shared_storage import qualified_storage
+
+    bundle = freeze_recipe(recipe, inputs, config=config, workspace=workspace)
+    workflow = prepare_worker_slurm(
+        bundle,
+        submission_root=workspace / "runs",
+        worker_python=Path(sys.executable),
+        dataset_storage_qualification=qualified_storage(workspace, storage_root=qualification_root),
+    )
+    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    assert workflow.execution_blocked_reason is None
+    lease = acquire_worker_ownership(workflow.submission_dir, plan)
+    return workflow, plan, lease
 
 
 def execute_step(submission_dir: Path, step_path, attempt_id):

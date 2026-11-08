@@ -13,13 +13,11 @@ from shinobi import Cab, DatasetAccess, DatasetColumns, DatasetMode, Measurement
 from shinobi.config import AppConfig
 from shinobi.dataset_closure import ClosureCapabilities, ClosureRequirement, ClosureResource, ClosureStatus, DatasetClosure
 from shinobi.datasets import MSV2_STRUCTURAL_V1, DatasetDescriptor, DatasetStatus
-from shinobi.offload.bundle import RecipeBundle, freeze_recipe, write_new
+from shinobi.offload.bundle import RecipeBundle, write_new
 from shinobi.offload.records import AttemptRecord
-from shinobi.offload.slurm import prepare_worker_slurm
-from shinobi.offload.worker import ExecutionPlan, SubmittedJob
-from shinobi.ownership import acquire_workspace
+from shinobi.offload.worker import SubmittedJob
 from shinobi.steps.schema import InputRef, Mutability, ParamMeta, Recipe, StepRef
-from tests._shared_storage import qualified_storage
+from tests._worker import prepare_qualified
 
 
 class Empty(BaseModel):
@@ -109,25 +107,8 @@ def _recipe(workspace: Path, *, fail: bool = False, read: bool = False) -> Recip
 
 def _prepared(workspace: Path, recipe: Recipe, root: Path, *, qualification_root: Path | None = None):
     config = AppConfig.load(config_file=workspace / "missing-config.yml")
-    bundle = freeze_recipe(recipe, {"ms": root}, config=config, workspace=workspace)
-    workflow = prepare_worker_slurm(
-        bundle,
-        submission_root=workspace / "runs",
-        worker_python=Path(sys.executable),
-        dataset_storage_qualification=qualified_storage(workspace, storage_root=qualification_root),
-    )
-    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
-    assert workflow.execution_blocked_reason is None
+    workflow, plan, lease = prepare_qualified(workspace, recipe, {"ms": root}, config=config, qualification_root=qualification_root)
     assert plan.dataset_lifecycle is not None
-    lease = acquire_workspace(
-        Path(plan.ownership_workspace),
-        str(plan.workflow_id),
-        kind="slurm",
-        submission=workflow.submission_dir,
-        accesses=((Path(access.path), access.writes) for access in plan.accesses),
-        registry=Path(plan.ownership_registry),
-    )
-    write_new(workflow.submission_dir / "ownership.json", lease.owner)
     return workflow, plan, lease
 
 

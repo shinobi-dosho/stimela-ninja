@@ -246,6 +246,22 @@ def test_worker_executes_wiring_in_shared_sandboxes_and_finalizes(tmp_path, monk
     assert finalize_submission(workflow.submission_dir) == finalized
 
 
+def test_worker_ownership_uses_frozen_registry_after_environment_changes(tmp_path, monkeypatch):
+    workflow, _, plan = _prepared(tmp_path)
+    redirected = tmp_path / "redirected-registry.json"
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(redirected))
+    assert plan.ownership_required
+    for attempt in plan.attempts:
+        assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 0
+    import json
+
+    marker = json.loads((workflow.submission_dir / "ownership.json").read_text())
+    assert marker["registry"] == plan.ownership_registry
+    assert not redirected.exists()
+    assert (tmp_path / "second.txt").read_text() == "frozen worker"
+    assert inspect_workspace(tmp_path) is None
+
+
 def test_worker_preparation_topologically_orders_forward_references(tmp_path):
     recipe = _recipe()
     recipe.steps.reverse()

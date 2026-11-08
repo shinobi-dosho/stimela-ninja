@@ -1,6 +1,46 @@
+import importlib
+import sys
+from pathlib import Path
+
 import pytest
 
 from shinobi.backends.native import NativeBackend
+
+
+@pytest.fixture(autouse=True)
+def _isolate_worker_imports():
+    # Direct worker calls emulate a separate process but add staged code roots
+    # to this interpreter. Restore those imports without unloading unrelated
+    # third-party modules (notably extension modules with process-wide state).
+    original_path = sys.path[:]
+    original_modules = sys.modules.copy()
+    test_package = sys.modules.get("tests")
+    test_paths = list(test_package.__path__) if test_package is not None else None
+    yield
+    if sys.path == original_path:
+        return
+    added_roots = [Path(path).resolve() for path in sys.path if path not in original_path]
+    sys.path[:] = original_path
+    for name, module in list(sys.modules.items()):
+        source = getattr(module, "__file__", None)
+        if isinstance(source, str) and any(Path(source).resolve().is_relative_to(root) for root in added_roots):
+            if name in original_modules:
+                sys.modules[name] = original_modules[name]
+            else:
+                del sys.modules[name]
+            parent_name, _, child = name.rpartition(".")
+            parent = sys.modules.get(parent_name)
+            if parent is not None and getattr(parent, child, None) is module:
+                if name in original_modules:
+                    setattr(parent, child, original_modules[name])
+                else:
+                    delattr(parent, child)
+    if test_package is not None:
+        sys.modules["tests"] = test_package
+        # Namespace paths can recalculate against staged roots while the
+        # worker runs; restoring sys.path alone does not restore that cache.
+        test_package.__path__ = test_paths
+    importlib.invalidate_caches()
 
 
 @pytest.fixture(autouse=True)

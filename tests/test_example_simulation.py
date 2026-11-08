@@ -75,14 +75,27 @@ def test_quartical_command_requests_corrected_data():
         assert option in argv
 
 
+IMAGING_CASES = [
+    ("image_sim", "DATA", 1024, 1.5, "example-simdata", "simulate", "ms"),
+    ("image_robust_2", "CORRECTED_DATA", 2048, 2.0, "example-sim-robust2", "calibrate", "ms"),
+    ("image_robust_0", "CORRECTED_DATA", 2048, 0.0, "example-sim-robust0", "calibrate", "ms"),
+    ("image_robust_m2", "CORRECTED_DATA", 2048, -2.0, "example-sim-robust-2", "calibrate", "ms"),
+]
+
+
+def assert_imaging_argv(argv, column, size, weight, prefix, ms):
+    assert argv[0] == "wsclean"
+    assert "-input-ms" not in argv
+    assert argv[argv.index("-size") + 1 : argv.index("-size") + 3] == [str(size), str(size)]
+    assert argv[argv.index("-weight") + 1 : argv.index("-weight") + 3] == ["briggs", str(weight)]
+    assert argv[argv.index("-data-column") + 1] == column
+    assert argv[argv.index("-name") + 1] == prefix
+    assert argv[-1] == ms
+
+
 @pytest.mark.parametrize(
     "name,column,size,weight,prefix,producer,field",
-    [
-        ("image_sim", "DATA", 1024, 1.5, "example-simdata", "simulate", "ms"),
-        ("image_robust_2", "CORRECTED_DATA", 2048, 2.0, "example-sim-robust2", "calibrate", "ms"),
-        ("image_robust_0", "CORRECTED_DATA", 2048, 0.0, "example-sim-robust0", "calibrate", "ms"),
-        ("image_robust_m2", "CORRECTED_DATA", 2048, -2.0, "example-sim-robust-2", "calibrate", "ms"),
-    ],
+    IMAGING_CASES,
 )
 def test_imaging_argv_and_declared_ms_wiring(name, column, size, weight, prefix, producer, field):
     from shinobi import OutputRef
@@ -91,15 +104,8 @@ def test_imaging_argv_and_declared_ms_wiring(name, column, size, weight, prefix,
     ref = next(ref for ref in mod.recipe.steps if ref.name == name)
     assert ref.wiring["ms"] == [OutputRef(step=producer, field=field)]
     argv = build_argv(ref.step, {**ref.params, "ms": ["example-simulation.ms"]})
-    assert argv[0] == "wsclean"
-    # The output-only MS alias must never become a command-line argument.
     assert "input_ms" not in ref.step.inputs_model.model_fields
-    assert "-input-ms" not in argv
-    assert argv[argv.index("-size") + 1 : argv.index("-size") + 3] == [str(size), str(size)]
-    assert argv[argv.index("-weight") + 1 : argv.index("-weight") + 3] == ["briggs", str(weight)]
-    assert argv[argv.index("-data-column") + 1] == column
-    assert argv[argv.index("-name") + 1] == prefix
-    assert argv[-1] == "example-simulation.ms"
+    assert_imaging_argv(argv, column, size, weight, prefix, "example-simulation.ms")
 
 
 @pytest.mark.skipif(
@@ -153,4 +159,5 @@ def test_native_recipe_dispatches_with_wired_ms_and_image_output(monkeypatch, tm
     quartical_argv = calls_by_name["quartical"][0]
     assert "input_ms.path=example-simulation.ms" in quartical_argv
 
-    assert all(argv[-1] == "example-simulation.ms" for argv in calls_by_name["wsclean"])
+    for argv, (_, column, size, weight, prefix, _, _) in zip(calls_by_name["wsclean"], IMAGING_CASES, strict=True):
+        assert_imaging_argv(argv, column, size, weight, prefix, "example-simulation.ms")
