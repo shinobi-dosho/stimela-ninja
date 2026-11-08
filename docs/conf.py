@@ -71,6 +71,10 @@ nitpick_ignore = [
     ("py:class", "dosho.validation.schema.ParamMeta"),
     ("py:class", "dosho.validation.schema.ParamPattern[ParamMeta]"),
     ("py:class", "dosho.validation.schema.ParamSegment[ParamMeta]"),
+    # Generic specializations in inherited annotations are not separate
+    # documented classes; the concrete Shinobi classes are documented below.
+    ("py:class", "shinobi.steps.schema.ParamPattern[ParamMeta]"),
+    ("py:class", "shinobi.steps.schema.ParamSegment[ParamMeta]"),
     ("py:class", "dosho.validation.compiled.CompiledCab"),
     # pydantic-settings' internal type aliases. They appear in the settings
     # source signatures shinobi.config overrides, but are absent from every
