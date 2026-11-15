@@ -15,10 +15,10 @@ authors = [
 ]
 dependencies = [
     "dosho[validation]>=0.2.0b2,<0.3",
-    "pydantic>=2.14.2",
+    "pydantic>=2.14.3",
     "pydantic-settings>=2.16.2",
     "pyyaml>=6.0",
-    "click>=8.1",
+    "click>=8.5.1",
     "rich>=13.7",
     "packaging>=23",
 ]
@@ -85,7 +85,7 @@ docs = [
     "sphinx>=7.2",
     "furo>=2024.1",
     "sphinx-copybutton>=0.5",
-    "myst-parser>=2.0",
+    "myst-parser>=5.2.0",
 ]
 
 # Dependency vulnerability scanning. `.githooks/pre-commit` and the `audit` CI
