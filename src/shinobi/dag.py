@@ -105,13 +105,15 @@ def _place(recipe: "Recipe", graph, group: int | None, nodes: list[TraceStep], p
     `contexts` holds the static input mapping of each invocation of `recipe`:
     one at the top level, one per outer slice under a scattered parent, and
     their product for deeper nesting. Scatter counts and previews are derived
-    per context, so they are per invocation of `recipe`. An empty or unknown
-    context list falls back to constants only. Producer outputs stay symbolic.
+    per context, so they are per invocation of `recipe`. Unknown contexts
+    (None) fall back to constants only. An empty list means `recipe` is never
+    invoked, because its parent scatters over zero slices, so no counts or
+    value previews are shown. Producer outputs stay symbolic.
     """
     from shinobi.graph import build_graph
     from shinobi.steps.schema import Recipe, static_wiring_values
 
-    contexts = contexts or [{}]
+    contexts = [{}] if contexts is None else contexts
     ids: list[int] = []
     for i, name in enumerate(graph.names):
         ref = recipe.steps[i]
@@ -219,7 +221,9 @@ def _count_text(slices: tuple[int, int] | None) -> str:
     if slices is None:
         return ""
     fewest, most = slices
-    return f"; {fewest} slices" if fewest == most else f"; {fewest}-{most} slices"
+    if fewest != most:
+        return f"; {fewest}-{most} slices"
+    return f"; {fewest} slice" if fewest == 1 else f"; {fewest} slices"
 
 
 def _scatter_display(ref, known: list[dict[str, Any]], slices: list[list[dict[str, Any]] | None] | None) -> tuple[str, tuple[str, ...], tuple[int, int] | None]:

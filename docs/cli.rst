@@ -155,8 +155,9 @@ Add ``--dryrun-details`` alongside ``--dryrun`` for parameter previews and
 filesystem access reasons. This detailed view shows up to five static values
 per scattered field; multiple fields appear below a ``scatter zip(...)`` label.
 Supplied recipe inputs resolve ``InputRef`` previews, while upstream
-``OutputRef`` values remain symbolic. Previews do not execute steps or evaluate
-default factories:
+``OutputRef`` values remain symbolic. Inside a scattered nested recipe a preview
+shows a value only when every outer slice supplies the same one; otherwise it
+stays symbolic. Previews do not execute steps or evaluate default factories:
 
 .. code-block:: console
 

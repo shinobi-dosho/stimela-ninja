@@ -444,7 +444,7 @@ def test_nested_recipe_scatter_does_not_treat_whole_lists_as_slice_inputs():
     nodes = graph_nodes(outer)
     compact = render_dag(nodes)
     assert compact.count("[scatter; 2 slices]") == 1
-    assert "[scatter; 1 slices]" in compact
+    assert "[scatter; 1 slice]" in compact
     assert "weight = InputRef(field='weights')" in render_dag(nodes, details=True)
 
 
@@ -528,6 +528,33 @@ def test_nested_scatter_deferred_or_empty_outer_stays_unknown(build):
     inner = _inner_block(render_dag(nodes))
     assert "[scatter]" in inner and "slices" not in inner
     assert nodes[-1].scatter_slices is None
+
+
+def test_nested_scatter_under_empty_outer_shows_no_count():
+    # An empty outer scatter never invokes the nested recipe, so even a
+    # constant inner list has no per-invocation count.
+    inner = Recipe(name="inner", inputs_model=NestedInputs, outputs_model=OkOut)
+    inner.add_step("image", _cab("image", ScatterInputs, OkOut), scatter=["weight"], weight=["natural", "uniform"])
+    outer = Recipe(name="outer", inputs_model=In, outputs_model=OkOut)
+    outer.add_step("sub", inner, scatter=["label"], label=[])
+    nodes = graph_nodes(outer)
+    assert "[scatter; 0 slices]" in render_dag(nodes).split("Contents of recipe", 1)[0]
+    inner_block = _inner_block(render_dag(nodes))
+    assert "[scatter]" in inner_block and "slice" not in inner_block
+    assert "weight = ['natural', 'uniform']" not in _inner_block(render_dag(nodes, details=True))
+    assert nodes[-1].scatter_slices is None
+
+
+def test_partly_unknown_outer_slices_fall_back_to_constants():
+    # One outer slice cannot be sliced, so inner counts use constants only.
+    inner = _nested_prefix_recipe()
+    inner.add_step("other", _cab("other", ScatterInputs, OkOut), scatter=["weight"], weight=["natural", "uniform"])
+    outer = Recipe(name="outer", inputs_model=In, outputs_model=OkOut)
+    outer.add_step("sub", inner, scatter=["label", "prefixes"], label=["a", "b"], prefixes=[["a0", "a1"], "b0"])
+    nodes = graph_nodes(outer)
+    image, other = nodes[-2], nodes[-1]
+    assert image.scatter_slices is None
+    assert other.scatter_slices == (2, 2)
 
 
 def test_doubly_nested_scatter_counts_multiply_contexts():
