@@ -21,8 +21,9 @@ from shinobi import DatasetAccess, DatasetMode, MSv2, Recipe, pystep, recipe_bui
 from shinobi.steps.schema import OutputRef
 
 
-# tclean keywords that casa_dirty sets for each job.
-CASA_JOB_KEYWORDS = ("vis", "imagename", "datacolumn", "spw", "imsize", "cell", "weighting", "robust")
+# tclean keywords that casa_dirty sets for each job. A string, because a
+# compiled (Slurm) pystep can capture only scalar literal globals.
+CASA_JOB_KEYWORDS = "vis imagename datacolumn spw imsize cell weighting robust"
 
 
 class ArraySettings(BaseModel):
@@ -51,6 +52,10 @@ class Settings(BaseModel):
     single_channel: int = Field(default=0, ge=0)
     threads: int = Field(default=2, ge=1)
     max_workers: int = Field(default=2, ge=1)
+    # Used only by noise_slurm.py: site routing and resources for each case's
+    # allocation, and the number of cases running at once.
+    sbatch_opts: dict[str, str] = Field(default_factory=dict)
+    max_parallel: int = Field(default=3, ge=1)
     ra: str = "0h24m20s"
     # Simms finds the requested local hour angle near this reference epoch.
     reference_utc: str = "2024-03-14T12:00:00"
@@ -84,7 +89,7 @@ class Settings(BaseModel):
             raise ValueError("duration_seconds must be an exact number of integrations")
         if self.single_channel >= self.nchan:
             raise ValueError("single_channel must be smaller than nchan")
-        if clash := sorted(self.casa.keys() & set(CASA_JOB_KEYWORDS)):
+        if clash := sorted(self.casa.keys() & set(CASA_JOB_KEYWORDS.split())):
             raise ValueError(f"casa: {', '.join(clash)} are set per job")
         return self
 
@@ -93,15 +98,72 @@ class NoInputs(BaseModel):
     pass
 
 
-@recipe_builder(inputs_model=Settings)
-def recipe(settings: Settings) -> Recipe:
-    """Declare all simulations and imaging jobs for the experiment."""
+class CaseInputs(BaseModel):
+    """Values that differ between array/declination cases."""
+
+    ms: Path
+    layout: Path
+    direction: str
+    first_channel: str
+    sefd: float
+    npix: int
+    dpix: float
+    size: tuple[int, int]
+    scale: str
+    # One entry per imaging job.
+    wsclean_prefix: list[str]
+    wsclean_temp: list[str]
+    ddfacet_output: list[str]
+    ddfacet_cache: list[str]
+    ddfacet_wisdom: list[str]
+    ddfacet_montblanc: list[str]
+    casa_products: list[str]
+    casa_dirty: list[str]
+    casa_psf: list[str]
+    casa_metadata: list[str]
+    manifest: str
+    directories: list[Path]
+
+
+def case_inputs(settings: Settings, instrument: str, dec: int) -> CaseInputs:
+    """Output locations and array values for one array/declination case."""
+    array = settings.arrays[instrument]
+    directory = settings.output_dir / instrument / f"dec{dec:+d}"
+    jobs = [directory / mode / f"robust-{index}" for mode in ("single", "continuum") for index in range(len(settings.robust))]
+    return CaseInputs(
+        ms=directory / "noise.ms",
+        layout=array.layout.resolve(),
+        direction=f"J2000,{settings.ra},{dec:+d}d0m0s",
+        first_channel=array.first_channel,
+        sefd=array.sefd,
+        npix=array.npix,
+        dpix=array.dpix,
+        size=(array.npix, array.npix),
+        scale=f"{array.dpix:g}asec",
+        wsclean_prefix=[str(job / "wsclean/image") for job in jobs],
+        wsclean_temp=[str(job / "wsclean-scratch") for job in jobs],
+        ddfacet_output=[str(job / "ddfacet/image") for job in jobs],
+        ddfacet_cache=[str(job / "ddfacet-scratch/cache") for job in jobs],
+        ddfacet_wisdom=[str(job / "ddfacet-scratch/wisdom") for job in jobs],
+        ddfacet_montblanc=[str(job / "ddfacet-scratch/montblanc.log") for job in jobs],
+        casa_products=[str(job / "casa-native") for job in jobs],
+        casa_dirty=[str(job / "casa/dirty.fits") for job in jobs],
+        casa_psf=[str(job / "casa/psf.fits") for job in jobs],
+        casa_metadata=[str(job / "casa/metadata.json") for job in jobs],
+        manifest=str(directory / "products.json"),
+        directories=[job / imager for job in jobs for imager in ("wsclean", "ddfacet", "casa")],
+    )
+
+
+def add_case(pipeline: Recipe, settings: Settings, case: dict[str, Any], prefix: str = "") -> None:
+    """Declare one case: the simulation, three imagers, FITS export and inventory.
+
+    `case` maps each CaseInputs field to its value, or to an InputRef when the
+    case is a branch recipe whose inputs supply those values (noise_slurm.py).
+    `prefix` keeps step names unique when one recipe holds every case.
+    """
     from pydantic import create_model
     from shinobi.cabs import adapt_definition
-
-    root = settings.output_dir
-
-    pipeline = Recipe(name="array-noise", inputs_model=NoInputs, outputs_model=NoInputs, max_workers=settings.max_workers)
 
     # The catalogue calls --telescope a string. A Path annotation makes our
     # supplied layout an explicit, staged read input; the CLI is unchanged.
@@ -110,106 +172,109 @@ def recipe(settings: Settings) -> Recipe:
     telsim = telsim.model_copy(update={"inputs_model": layout_inputs})
     wsclean = adapt_definition(dosho.get("wsclean-readonly"))
     ddfacet = adapt_definition(dosho.get("ddfacet-readonly"))
+    first = len(pipeline.steps)
 
-    for dec in settings.declinations:
-        for instrument, array in settings.arrays.items():
-            case = f"{instrument}_dec{dec:+d}"
-            directory = root / instrument / f"dec{dec:+d}"
+    # Centre the observation on local transit unless an HA is supplied.
+    simulate = f"{prefix}simulate"
+    pipeline.add_step(
+        simulate,
+        telsim,
+        ms=case["ms"],
+        telescope=case["layout"],
+        direction=case["direction"],
+        starttime=settings.reference_utc,
+        startha=settings.start_hour_angle if settings.start_hour_angle is not None else -settings.duration_seconds / 7200.0,
+        ntime=round(settings.duration_seconds / settings.integration_seconds),
+        dtime=settings.integration_seconds,
+        startfreq=case["first_channel"],
+        nchan=settings.nchan,
+        column=settings.column,
+        sefd=case["sefd"],
+        nworkers=settings.threads,
+        **settings.simms,
+    )
+    shared_ms = OutputRef(step=simulate, field="ms")
 
-            # Centre the observation on local transit unless an HA is supplied.
-            simulate = f"{case}_simulate"
-            pipeline.add_step(
-                simulate,
-                telsim,
-                ms=directory / "noise.ms",
-                telescope=array.layout.resolve(),
-                direction=f"J2000,{settings.ra},{dec:+d}d0m0s",
-                starttime=settings.reference_utc,
-                startha=settings.start_hour_angle if settings.start_hour_angle is not None else -settings.duration_seconds / 7200.0,
-                ntime=round(settings.duration_seconds / settings.integration_seconds),
-                dtime=settings.integration_seconds,
-                startfreq=array.first_channel,
-                nchan=settings.nchan,
-                column=settings.column,
-                sefd=array.sefd,
-                nworkers=settings.threads,
-                **settings.simms,
-            )
-            shared_ms = OutputRef(step=simulate, field="ms")
+    # Scatter uses zipped lists: each position is one imaging job.
+    # Both modes read this SAME MS, with a different channel selection.
+    modes = [mode for mode in ("single", "continuum") for _ in settings.robust]
+    starts = [settings.single_channel if mode == "single" else 0 for mode in modes]
+    ends = [settings.single_channel + 1 if mode == "single" else settings.nchan for mode in modes]
 
-            # Scatter uses zipped lists: each position is one imaging job.
-            # Both modes read this SAME MS, with a different channel selection.
-            modes = [mode for mode in ("single", "continuum") for _ in settings.robust]
-            starts = [settings.single_channel if mode == "single" else 0 for mode in modes]
-            ends = [settings.single_channel + 1 if mode == "single" else settings.nchan for mode in modes]
-            jobs = [directory / mode / f"robust-{index}" for mode in ("single", "continuum") for index in range(len(settings.robust))]
+    pipeline.add_step(
+        f"{prefix}wsclean",
+        wsclean,
+        scatter=["weight", "channel_range", "prefix", "temp_dir"],
+        ms=[shared_ms],
+        column=settings.column,
+        weight=[("briggs", value) for value in settings.robust] * 2,
+        channel_range=list(zip(starts, ends)),
+        prefix=case["wsclean_prefix"],
+        temp_dir=case["wsclean_temp"],
+        size=case["size"],
+        scale=case["scale"],
+        threads=settings.threads,
+        **settings.wsclean,
+    )
+    pipeline.add_step(
+        f"{prefix}ddfacet",
+        ddfacet,
+        scatter=["weight_robust", "selection_chan_start", "selection_chan_end", "output_name", "data_cache_dir", "cache_dir_wisdom_fftw", "montblanc_log_file"],
+        data_ms=[shared_ms],
+        data_col_name=settings.column,
+        weight_robust=settings.robust * 2,
+        selection_chan_start=starts,
+        selection_chan_end=ends,
+        output_name=case["ddfacet_output"],
+        data_cache_dir=case["ddfacet_cache"],
+        cache_dir_wisdom_fftw=case["ddfacet_wisdom"],
+        montblanc_log_file=case["ddfacet_montblanc"],
+        image_n_pix=case["npix"],
+        image_cell=case["dpix"],
+        parallel_ncpu=settings.threads,
+        **settings.ddfacet,
+    )
+    casa = f"{prefix}casa"
+    pipeline.add_step(
+        casa,
+        casa_dirty,
+        scatter=["robust", "spw", "products"],
+        ms=shared_ms,
+        robust=settings.robust * 2,
+        spw=[f"0:{start}~{end - 1}" for start, end in zip(starts, ends)],
+        products=case["casa_products"],
+        image_size=case["npix"],
+        cell_arcsec=case["dpix"],
+        column=settings.column,
+        tclean=settings.casa,
+    )
+    # Fixed path outputs in a separate step preserve strict MS access.
+    pipeline.add_step(
+        f"{prefix}casa_fits",
+        export_dirty,
+        scatter=["products", "dirty", "psf", "metadata"],
+        products=OutputRef(step=casa, field="products"),
+        dirty=case["casa_dirty"],
+        psf=case["casa_psf"],
+        metadata=case["casa_metadata"],
+    )
+    pipeline.add_step(f"{prefix}inventory", inventory, manifest=case["manifest"], directories=case["directories"])
+    pipeline.steps[-1].after = [f"{prefix}wsclean", f"{prefix}ddfacet", f"{prefix}casa_fits"]
 
-            pipeline.add_step(
-                f"{case}_wsclean",
-                wsclean,
-                scatter=["weight", "channel_range", "prefix", "temp_dir"],
-                ms=[shared_ms],
-                column=settings.column,
-                weight=[("briggs", value) for value in settings.robust] * 2,
-                channel_range=list(zip(starts, ends)),
-                prefix=[str(job / "wsclean/image") for job in jobs],
-                temp_dir=[str(job / "wsclean-scratch") for job in jobs],
-                size=(array.npix, array.npix),
-                scale=f"{array.dpix:g}asec",
-                threads=settings.threads,
-                **settings.wsclean,
-            )
-            pipeline.add_step(
-                f"{case}_ddfacet",
-                ddfacet,
-                scatter=["weight_robust", "selection_chan_start", "selection_chan_end", "output_name", "data_cache_dir", "cache_dir_wisdom_fftw", "montblanc_log_file"],
-                data_ms=[shared_ms],
-                data_col_name=settings.column,
-                weight_robust=settings.robust * 2,
-                selection_chan_start=starts,
-                selection_chan_end=ends,
-                output_name=[str(job / "ddfacet/image") for job in jobs],
-                data_cache_dir=[str(job / "ddfacet-scratch/cache") for job in jobs],
-                cache_dir_wisdom_fftw=[str(job / "ddfacet-scratch/wisdom") for job in jobs],
-                montblanc_log_file=[str(job / "ddfacet-scratch/montblanc.log") for job in jobs],
-                image_n_pix=array.npix,
-                image_cell=array.dpix,
-                parallel_ncpu=settings.threads,
-                **settings.ddfacet,
-            )
-            casa = f"{case}_casa"
-            pipeline.add_step(
-                casa,
-                casa_dirty,
-                scatter=["robust", "spw", "products"],
-                ms=shared_ms,
-                robust=settings.robust * 2,
-                spw=[f"0:{start}~{end - 1}" for start, end in zip(starts, ends)],
-                products=[str(job / "casa-native") for job in jobs],
-                image_size=array.npix,
-                cell_arcsec=array.dpix,
-                column=settings.column,
-                tclean=settings.casa,
-            )
-            # Fixed path outputs in a separate step preserve strict MS access.
-            pipeline.add_step(
-                f"{case}_casa_fits",
-                export_dirty,
-                scatter=["products", "dirty", "psf", "metadata"],
-                products=OutputRef(step=casa, field="products"),
-                dirty=[str(job / "casa/dirty.fits") for job in jobs],
-                psf=[str(job / "casa/psf.fits") for job in jobs],
-                metadata=[str(job / "casa/metadata.json") for job in jobs],
-            )
-            pipeline.add_step(
-                f"{case}_inventory", inventory, manifest=str(directory / "products.json"), directories=[job / imager for job in jobs for imager in ("wsclean", "ddfacet", "casa")]
-            )
-            pipeline.steps[-1].after = [f"{case}_wsclean", f"{case}_ddfacet", f"{case}_casa_fits"]
-    for ref in pipeline.steps:
-        tool = ref.name.rsplit("_", 1)[-1]
-        image_key = {"simulate": "simms", "casa": "casa-tasks", "fits": "casa-tasks"}.get(tool, tool)
+    for ref in pipeline.steps[first:]:
+        tool = ref.name.removeprefix(prefix)
+        image_key = {"simulate": "simms", "casa": "casa-tasks", "casa_fits": "casa-tasks"}.get(tool, tool)
         if image_key in settings.images:
             ref.step = ref.step.model_copy(update={"image": settings.images[image_key]})
+
+
+@recipe_builder(inputs_model=Settings)
+def recipe(settings: Settings) -> Recipe:
+    """Declare all simulations and imaging jobs for the experiment."""
+    pipeline = Recipe(name="array-noise", inputs_model=NoInputs, outputs_model=NoInputs, max_workers=settings.max_workers)
+    for dec in settings.declinations:
+        for instrument in settings.arrays:
+            add_case(pipeline, settings, dict(case_inputs(settings, instrument, dec)), prefix=f"{instrument}_dec{dec:+d}_")
     return pipeline
 
 
@@ -241,7 +306,7 @@ def casa_dirty(ctx, ms: MSv2, products: str, robust: float, spw: str, image_size
         "weighting": "briggs",
         "robust": robust,
     }
-    assert job.keys() == set(CASA_JOB_KEYWORDS)
+    assert job.keys() == set(CASA_JOB_KEYWORDS.split())
     options = {**tclean, **job}
     ctx.import_func("tclean", "casatasks")(**options)
     (root / "settings.json").write_text(json.dumps(options, indent=2) + "\n")

@@ -102,10 +102,11 @@ and finalizers are stale; requeueing a producer does not automatically rerun
 already completed downstream jobs. ``ninja logs`` follows shared
 scheduler logs and separate invocation logs. Cache and provenance switches
 retain their configured policy; canonical leaf names and scientific relative
-paths agree between local and compiled runs. The example in
+paths agree between local and compiled runs. In
 `examples/noise_comparison
-<https://github.com/shinobi-dosho/stimela-ninja/tree/main/examples/noise_comparison>`_
-supplies the complete telescope/declination graph, reviewed layouts, deployment
+<https://github.com/shinobi-dosho/stimela-ninja/tree/main/examples/noise_comparison>`_,
+``noise_slurm.py`` places each telescope/declination case of the complete graph
+in its own allocation. The example supplies reviewed layouts, deployment
 configuration and commands for dry-run inspection, local execution and detached
 submission.
 
