@@ -18,6 +18,14 @@ nchan: 4
 single_channel: 0
 threads: 2
 max_workers: 2
+# Used only by noise_slurm.py. sbatch_opts names site routing and resources
+# for each case's allocation; max_parallel limits cases running at once.
+sbatch_opts:
+  partition: dev
+  cpus-per-task: "8"
+  mem: 32G
+  time: "04:00:00"
+max_parallel: 3
 arrays:
   meerkat:
     layout: examples/noise_comparison/layouts/meerkat.yaml
