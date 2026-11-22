@@ -266,8 +266,9 @@ steps see the scattered step's outputs gathered into lists.
 ``--dryrun`` labels scatter nodes with their slice count when all zip lists are
 known and equally sized. Inside a nested recipe the count is per invocation,
 resolved from the parent's static values and each outer scatter slice; counts
-that vary across outer slices show as ``N-M``. Wired products appear by producer and field name;
-literal paths and parameter values are omitted. Add ``--dryrun-details`` to
+that vary across outer slices show as ``N-M``, and a recipe under an empty outer
+scatter shows none. Wired products appear by producer and field name; literal
+paths and parameter values are omitted. Add ``--dryrun-details`` to
 include the scattered field names, up to five static values per field and
 filesystem access reasons. Unresolved wiring stays symbolic. Both views
 preserve the declared nodes, dependency edges and access validation.
