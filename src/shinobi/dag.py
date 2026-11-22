@@ -43,6 +43,9 @@ class TraceStep:
         recipe: Whether the step is a nested `Recipe`.
         group: ID of the nested-recipe node this step belongs to, or None at
             the top level.
+        scatter_slices: Fewest and most scatter slices per invocation of
+            the enclosing recipe, equal when uniform; None when any count is
+            not statically known.
     """
 
     id: int
@@ -61,7 +64,7 @@ class TraceStep:
     placement: str = ""
     scatter_label: str = ""
     scatter_details: tuple[str, ...] = ()
-    scatter_count: int | None = None
+    scatter_slices: tuple[int, int] | None = None
     wiring_details: tuple[str, ...] = ()
     wiring_previews: tuple[str, ...] = ()
 
@@ -88,26 +91,34 @@ def graph_nodes(recipe: "Recipe", inputs: dict[str, Any] | None = None, *, works
         plan = plan_recipe_accesses(recipe, inputs, workspace=workspace) if inputs is not None else None
     graph = plan.graph if plan is not None else build_graph(recipe)
     nodes: list[TraceStep] = []
-    _place(recipe, graph, None, nodes, plan, inputs=inputs)
+    _place(recipe, graph, None, nodes, plan, contexts=[inputs or {}])
     return nodes
 
 
-def _place(recipe: "Recipe", graph, group: int | None, nodes: list[TraceStep], plan=None, *, inputs: dict[str, Any] | None = None) -> None:
+def _place(recipe: "Recipe", graph, group: int | None, nodes: list[TraceStep], plan=None, *, contexts: list[dict[str, Any]] | None = None) -> None:
     """Append `recipe`'s steps to `nodes` in declaration order, each nested
     recipe followed by its own steps, then add the edges between them.
 
     `plan` applies to the top level only, which is all `plan_recipe_accesses`
     resolves.
+
+    `contexts` holds the static input mapping of each invocation of `recipe`:
+    one at the top level, one per outer slice under a scattered parent, and
+    their product for deeper nesting. Scatter counts and previews are derived
+    per context, so they are per invocation of `recipe`. An empty or unknown
+    context list falls back to constants only. Producer outputs stay symbolic.
     """
     from shinobi.graph import build_graph
     from shinobi.steps.schema import Recipe, static_wiring_values
 
+    contexts = contexts or [{}]
     ids: list[int] = []
     for i, name in enumerate(graph.names):
         ref = recipe.steps[i]
         scope = ref.step
-        known, _unresolved = static_wiring_values(ref, inputs or {}, {})
-        scatter_label, scatter_details, scatter_count = _scatter_display(ref, known)
+        known = [static_wiring_values(ref, context, {})[0] for context in contexts]
+        slices = [_static_slices(ref, values) for values in known] if ref.scatter is not None else None
+        scatter_label, scatter_details, scatter_slices = _scatter_display(ref, known, slices)
         access_reasons: tuple[str, ...] = ()
         if plan is not None:
             access_reasons = tuple(
@@ -124,14 +135,20 @@ def _place(recipe: "Recipe", graph, group: int | None, nodes: list[TraceStep], p
             placement=f"Slurm allocation; max_parallel={ref.placement.max_parallel}" if ref.placement else "",
             scatter_label=scatter_label,
             scatter_details=scatter_details,
-            scatter_count=scatter_count,
+            scatter_slices=scatter_slices,
             wiring_details=_wired_products(ref),
             wiring_previews=_wired_products(ref, details=True),
         )
         nodes.append(node)
         ids.append(node.id)
         if isinstance(scope, Recipe) and scope.steps:
-            _place(scope, build_graph(scope), node.id, nodes, inputs=known if ref.scatter is None else None)
+            if slices is None:
+                child_contexts = known
+            elif all(per is not None for per in slices):
+                child_contexts = [values for per in slices for values in per]
+            else:
+                child_contexts = None
+            _place(scope, build_graph(scope), node.id, nodes, contexts=child_contexts)
     for i, deps in enumerate(graph.deps):
         nodes[ids[i]].depends_on = {ids[dep] for dep in deps}
 
@@ -175,18 +192,58 @@ def _wired_products(ref, *, details: bool = False) -> tuple[str, ...]:
     return tuple(products)
 
 
-def _scatter_display(ref, known: dict[str, Any]) -> tuple[str, tuple[str, ...], int | None]:
-    """Display declarations only; outputs stay symbolic and nodes stay atomic."""
+def _static_slices(ref, known: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Per-slice inputs by the dispatcher's own rule, or None when not static."""
+    from shinobi.steps.dispatch import ScatterError, _build_scatter_slices
+
+    try:
+        return _build_scatter_slices(ref, known)
+    except ScatterError:
+        return None
+
+
+def _shared_value(name: str, known: list[dict[str, Any]]) -> tuple[bool, Any]:
+    """Return `(True, value)` only when every context holds an equal `name`."""
+    if not known or any(name not in values for values in known):
+        return False, None
+    first = known[0][name]
+    try:
+        same = all(values[name] is first or bool(values[name] == first) for values in known[1:])
+    except Exception:
+        same = False
+    return same, first
+
+
+def _count_text(slices: tuple[int, int] | None) -> str:
+    """Format a per-invocation slice count range for scatter labels."""
+    if slices is None:
+        return ""
+    fewest, most = slices
+    return f"; {fewest} slices" if fewest == most else f"; {fewest}-{most} slices"
+
+
+def _scatter_display(ref, known: list[dict[str, Any]], slices: list[list[dict[str, Any]] | None] | None) -> tuple[str, tuple[str, ...], tuple[int, int] | None]:
+    """Display declarations only; outputs stay symbolic and nodes stay atomic.
+
+    `known` and `slices` hold one entry per invocation context. A count is
+    shown only when every context's slices are known; a value preview only
+    when every context agrees on it.
+    """
     if ref.scatter is None:
         return "", (), None
     fields = ref.scatter.fields
-    lengths = [len(known[name]) for name in fields if isinstance(known.get(name), list)]
-    slice_count = lengths[0] if len(lengths) == len(fields) and len(set(lengths)) == 1 else None
-    count = f"; {slice_count} slices" if slice_count is not None else ""
-    values = tuple(f"{name} = {_display_value(known[name] if name in known else ref.wiring.get(name, '<unresolved>'))}" for name in fields)
+    counts = [len(per) for per in slices] if slices and all(per is not None for per in slices) else None
+    scatter_slices = (min(counts), max(counts)) if counts else None
+    count = _count_text(scatter_slices)
+
+    def preview(name: str) -> str:
+        shared, value = _shared_value(name, known)
+        return _display_value(value if shared else ref.wiring.get(name, "<unresolved>"))
+
+    values = tuple(f"{name} = {preview(name)}" for name in fields)
     if len(fields) == 1:
-        return f": {values[0]} [scatter{count}]", (), slice_count
-    return f" [scatter zip({', '.join(fields)}){count}]", values, slice_count
+        return f": {values[0]} [scatter{count}]", (), scatter_slices
+    return f" [scatter zip({', '.join(fields)}){count}]", values, scatter_slices
 
 
 def render_dag(steps: list[TraceStep], *, details: bool = False, width: int = 120) -> str:
@@ -218,8 +275,7 @@ def render_dag(steps: list[TraceStep], *, details: bool = False, width: int = 12
             if step.recipe:
                 label.append("(recipe)")
             if step.scatter_label:
-                count = f"; {step.scatter_count} slices" if step.scatter_count is not None else ""
-                label.append(f"[scatter{count}]")
+                label.append(f"[scatter{_count_text(step.scatter_slices)}]")
             label.extend(value for value in (step.resources, step.placement) if value)
             labels[step.id] = label
         wiring = {step.id: [f"  {step.name}: {value}" for value in (step.wiring_previews if details and step.wiring_previews else step.wiring_details)] for step in members}

@@ -143,7 +143,11 @@ still contribute dependency edges and are validated before rendering.
 
 Scatter stays one declared graph node. Its label shows the full slice count
 when every zip list is known and has equal length; otherwise it shows
-``[scatter]``. Upstream products stay symbolic. Coordinate selections show only
+``[scatter]``. Inside a nested recipe, counts are per invocation of the
+enclosing recipe and resolve from the parent's static values, including each
+slice of an outer scatter. Counts that differ across outer slices show as
+``[scatter; N-M slices]``; unknown or deferred values show ``[scatter]``.
+Upstream products stay symbolic. Coordinate selections show only
 axis names, such as ``image.files select(partition)``; their values appear only
 with ``--dryrun-details``.
 
