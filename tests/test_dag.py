@@ -444,8 +444,110 @@ def test_nested_recipe_scatter_does_not_treat_whole_lists_as_slice_inputs():
     nodes = graph_nodes(outer)
     compact = render_dag(nodes)
     assert compact.count("[scatter; 2 slices]") == 1
-    assert "[scatter]" in compact
+    assert "[scatter; 1 slices]" in compact
     assert "weight = InputRef(field='weights')" in render_dag(nodes, details=True)
+
+
+class NestedInputs(BaseModel):
+    label: str = "x"
+    prefixes: list[str] = []
+    weights: list[str] = []
+
+
+def _nested_prefix_recipe():
+    inner = Recipe(name="inner", inputs_model=NestedInputs, outputs_model=OkOut)
+    inner.add_step("image", _cab("image", ScatterInputs, OkOut), scatter=["weight", "prefix"], weight=["natural", "uniform"], prefix=InputRef(field="prefixes"))
+    return inner
+
+
+def _inner_block(rendered):
+    return rendered.split("Contents of recipe 'sub':", 1)[1]
+
+
+def test_nested_scatter_counts_resolve_per_outer_slice():
+    outer = Recipe(name="outer", inputs_model=In, outputs_model=OkOut)
+    outer.add_step(
+        "sub",
+        _nested_prefix_recipe(),
+        scatter=["label", "prefixes"],
+        label=["a", "b", "c"],
+        prefixes=[["a0", "a1"], ["b0", "b1"], ["c0", "c1"]],
+    )
+    nodes = graph_nodes(outer)
+    compact = render_dag(nodes)
+    assert "[scatter; 3 slices]" in compact.split("Contents of recipe", 1)[0]
+    assert "[scatter; 2 slices]" in _inner_block(compact)
+    assert nodes[1].scatter_slices == (2, 2)
+    inner = _inner_block(render_dag(nodes, details=True))
+    assert "image [scatter zip(weight, prefix); 2 slices]" in inner
+    assert "prefix = InputRef(field='prefixes')" in inner
+    assert "weight = ['natural', 'uniform']" in inner
+
+
+def test_nested_scatter_nonuniform_counts_show_range():
+    inner = Recipe(name="inner", inputs_model=NestedInputs, outputs_model=OkOut)
+    inner.add_step("image", _cab("image", ScatterInputs, OkOut), scatter=["prefix"], prefix=InputRef(field="prefixes"))
+    outer = Recipe(name="outer", inputs_model=In, outputs_model=OkOut)
+    outer.add_step("sub", inner, scatter=["prefixes"], prefixes=[["a0"], ["b0", "b1"], ["c0", "c1", "c2"]])
+    nodes = graph_nodes(outer)
+    assert "[scatter; 1-3 slices]" in _inner_block(render_dag(nodes))
+    assert nodes[1].scatter_slices == (1, 3)
+    assert "image: prefix = InputRef(field='prefixes') [scatter; 1-3 slices]" in _inner_block(render_dag(nodes, details=True))
+
+
+def test_nested_scatter_uniform_values_preview():
+    inner = Recipe(name="inner", inputs_model=NestedInputs, outputs_model=OkOut)
+    inner.add_step("image", _cab("image", ScatterInputs, OkOut), scatter=["weight"], weight=InputRef(field="weights"))
+    outer = Recipe(name="outer", inputs_model=In, outputs_model=OkOut)
+    outer.add_step("sub", inner, scatter=["label"], label=["a", "b"], weights=["natural", "uniform", "briggs"])
+    nodes = graph_nodes(outer)
+    assert "[scatter; 3 slices]" in _inner_block(render_dag(nodes))
+    assert "image: weight = ['natural', 'uniform', 'briggs'] [scatter; 3 slices]" in _inner_block(render_dag(nodes, details=True))
+
+
+class PrefixesOut(BaseModel):
+    prefixes: list[str] = ["p0", "p1"]
+
+
+def _deferred_outer():
+    outer = Recipe(name="outer", inputs_model=In, outputs_model=OkOut)
+    outer.add_step("make", _cab("make", In, PrefixesOut))
+    outer.add_step("sub", _nested_prefix_recipe(), scatter=["label"], label=["a", "b"], prefixes=OutputRef(step="make", field="prefixes"))
+    return outer
+
+
+def _empty_outer():
+    outer = Recipe(name="outer", inputs_model=In, outputs_model=OkOut)
+    outer.add_step("sub", _nested_prefix_recipe(), scatter=["prefixes"], prefixes=[])
+    return outer
+
+
+@pytest.mark.parametrize("build", [_deferred_outer, _empty_outer], ids=["deferred-output", "empty-outer"])
+def test_nested_scatter_deferred_or_empty_outer_stays_unknown(build):
+    nodes = graph_nodes(build())
+    inner = _inner_block(render_dag(nodes))
+    assert "[scatter]" in inner and "slices" not in inner
+    assert nodes[-1].scatter_slices is None
+
+
+def test_doubly_nested_scatter_counts_multiply_contexts():
+    class Level(BaseModel):
+        outer_lists: list[list[str]] = []
+        prefixes: list[str] = []
+        weights: list[str] = []
+
+    leaf = Recipe(name="leaf", inputs_model=Level, outputs_model=OkOut)
+    leaf.add_step("image", _cab("image", ScatterInputs, OkOut), scatter=["weight"], weight=InputRef(field="weights"))
+    middle = Recipe(name="middle", inputs_model=Level, outputs_model=OkOut)
+    middle.add_step("deep", leaf, scatter=["prefixes"], prefixes=InputRef(field="outer_lists"), weights=["natural", "uniform"])
+    top = Recipe(name="top", inputs_model=In, outputs_model=OkOut)
+    top.add_step("sub", middle, scatter=["outer_lists"], outer_lists=[[["a"]], [["b"], ["c"]]])
+    nodes = graph_nodes(top)
+    assert [(node.name, node.scatter_slices) for node in nodes] == [("sub", (2, 2)), ("deep", (1, 2)), ("image", (2, 2))]
+    top_block, middle_block, leaf_block = render_dag(nodes).split("Contents of recipe ")
+    assert "[scatter; 2 slices]" in top_block
+    assert middle_block.startswith("'sub':") and "[scatter; 1-2 slices]" in middle_block
+    assert leaf_block.startswith("'sub' > 'deep':") and "[scatter; 2 slices]" in leaf_block
 
 
 def test_scatter_preview_bounds_long_values_and_escapes_newlines():
