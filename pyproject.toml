@@ -15,10 +15,10 @@ authors = [
 ]
 dependencies = [
     "dosho[validation]>=0.2.0b2,<0.3",
-    "pydantic>=2.14.2",
-    "pydantic-settings>=2.16.2",
+    "pydantic>=2.14.3",
+    "pydantic-settings>=2.16.3",
     "pyyaml>=6.0",
-    "click>=8.1",
+    "click>=8.5.1",
     "rich>=13.7",
     "packaging>=23",
 ]
@@ -27,7 +27,7 @@ dependencies = [
 # Format contracts are opt-in. These packages provide the current inspectors;
 # the annotations and versioned profiles describe formats independently of them.
 ms = ["python-casacore>=3.7,<4"]
-fits = ["astropy>=7.2,<9"]
+fits = ["astropy>=8.0.3,<9"]
 # Compatibility aliases; keep inspector dependencies in the short extras above.
 ms-contract = ["stimela-ninja[ms]"]
 fits-contract = ["stimela-ninja[fits]"]
@@ -85,7 +85,7 @@ docs = [
     "sphinx>=7.2",
     "furo>=2024.1",
     "sphinx-copybutton>=0.5",
-    "myst-parser>=2.0",
+    "myst-parser>=5.2.0",
 ]
 
 # Dependency vulnerability scanning. `.githooks/pre-commit` and the `audit` CI
