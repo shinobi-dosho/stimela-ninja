@@ -1313,13 +1313,14 @@ def _dispatch(
                     f"contained {format_name} {noun} refused by backend capability {unavailable[0].profile}: "
                     + "; ".join(f"{capability.backend} is {capability.status.value}: {capability.reason}" for capability in unavailable)
                 )
+            validated_inputs = _validated_inputs if _validated_inputs is not None else _validate_inputs(scope, kwargs)
             if not fits_route:
                 from shinobi import datasets
 
-                # Before any planning or --overwrite deletion, so the refusal
-                # names the missing extra instead of an unreadable closure.
+                # After input validation, before any planning or --overwrite
+                # deletion, so the refusal names the missing extra instead
+                # of an unreadable closure.
                 datasets.require_msv2_inspector(f"contained {format_name} {noun} refused on the driver")
-            validated_inputs = _validated_inputs if _validated_inputs is not None else _validate_inputs(scope, kwargs)
             effective_cache_dir = cache_dir or scope.cache_dir or _recipe_cache_dir or config.cache.dir
             if mutation:
                 cache_issues = _strict_mutation_cache_issues(scope, cache, _recipe_cache, cache_dir, _recipe_cache_dir, config)

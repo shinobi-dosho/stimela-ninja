@@ -228,8 +228,9 @@ def _classify_table_files(
 def escapes_namespace(path: Path, namespace: Path) -> bool:
     """Whether canonical ``path`` lies outside canonical ``namespace``.
 
-    The single containment rule for closure resolution and for planning a
-    CREATE target, which must agree with post-step revalidation.
+    The dataset storage-namespace rule shared by MSv2 closure resolution,
+    MSv2 CREATE planning and FITS root planning, so planning agrees with
+    post-step revalidation.
     """
 
     return not path.is_relative_to(namespace)

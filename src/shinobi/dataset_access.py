@@ -507,6 +507,13 @@ def _resolve_known_access(
     if declaration.mode is DatasetMode.CREATE:
         spelled = Path(os.fspath(value))
         spelled = spelled if spelled.is_absolute() else workspace / spelled
+        if allow_existing_create and spelled.is_symlink():
+            # The canonical path is the link's *target*: deleting it to
+            # "overwrite" the link would remove data the caller never
+            # named. Refused here, where the spelling is still visible.
+            raise DatasetAccessError(
+                f"scope {scope.name!r} CREATE dataset field {resolved_field!r} is a symlink ({spelled} -> {requested}); overwrite refuses it, remove or replace the link yourself"
+            )
         namespace = access_storage_namespace(declaration, requested, workspace)
         if escapes_namespace(requested, namespace):
             # Post-step closure revalidation (same namespace) would refuse
@@ -515,13 +522,6 @@ def _resolve_known_access(
             raise DatasetAccessError(
                 f"scope {scope.name!r} CREATE dataset field {resolved_field!r} target {requested} is outside the workspace {namespace}; "
                 "a created dataset must lie inside the workspace, so use a workspace that contains the output (for `ninja run`, the directory it runs from)"
-            )
-        if allow_existing_create and spelled.is_symlink():
-            # The canonical path is the link's *target*: deleting it to
-            # "overwrite" the link would remove data the caller never
-            # named. Refused here, where the spelling is still visible.
-            raise DatasetAccessError(
-                f"scope {scope.name!r} CREATE dataset field {resolved_field!r} is a symlink ({spelled} -> {requested}); overwrite refuses it, remove or replace the link yourself"
             )
         from shinobi._required_cache import existing_create_replay
 

@@ -1381,6 +1381,9 @@ def test_strict_create_without_casacore_is_refused_before_the_tool_runs(tmp_path
         create(ms=tmp_path / "new.ms")
     assert calls == []
     assert not (tmp_path / "new.ms").exists()
+    with pytest.raises(Exception, match="parameter validation failed") as invalid:
+        create(ms=7)
+    assert not isinstance(invalid.value, DatasetLifecycleUnavailableError)
 
 
 def test_overwrite_without_casacore_is_refused_before_deleting(tmp_path, monkeypatch):

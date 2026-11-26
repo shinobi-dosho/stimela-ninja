@@ -481,6 +481,55 @@ def test_create_outside_the_workspace_is_refused_while_planning(tmp_path):
         graph_nodes(_create_then_read_recipe(), {"target": data / "new.ms"}, workspace=workspace)  # --dryrun
     (created,) = resolve_scope_dataset_accesses(scope, {"ms": Path("new.ms")}, workspace=workspace)
     assert created.root == workspace / "new.ms"
+    (workspace / "link.ms").symlink_to(existing)
+    with pytest.raises(DatasetAccessError, match="is a symlink.*overwrite refuses it"):
+        resolve_scope_dataset_accesses(scope, {"ms": workspace / "link.ms"}, workspace=workspace, allow_existing_create=True)
+    assert existing.is_dir()
+
+
+SINGLE_CREATE_MODULE = """
+from pathlib import Path
+
+from pydantic import BaseModel
+
+from shinobi import Cab, DatasetAccess, MeasurementSetV2
+from shinobi.steps.schema import ParamMeta
+
+
+class Target(BaseModel):
+    target: Path
+
+
+class Created(BaseModel):
+    ms: MeasurementSetV2
+
+
+simulate = Cab(
+    name="simulate",
+    command="create-ms",
+    inputs_model=Target,
+    outputs_model=Created,
+    field_meta={"ms": ParamMeta(implicit="{target}")},
+    dataset_accesses=[DatasetAccess(field="ms", mode="create")],
+)
+"""
+
+
+def test_single_step_dryrun_refuses_a_create_outside_the_workspace(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from shinobi.cli import main
+
+    module = tmp_path / "pipeline.py"
+    module.write_text(SINGLE_CREATE_MODULE)
+    workspace = tmp_path / "runs"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    runner = CliRunner()
+    outside = runner.invoke(main, ["run", f"{module}:simulate", "--target", str(tmp_path / "new.ms"), "--dryrun"])
+    assert outside.exit_code != 0
+    assert "outside the workspace" in outside.output
+    assert runner.invoke(main, ["run", f"{module}:simulate", "--target", "new.ms", "--dryrun"]).exit_code == 0
 
 
 def test_mutating_dataset_scatter_and_nested_recipe_are_bounded_refusals(tmp_path):
