@@ -34,6 +34,7 @@ def access(mode, **kwargs):
 
 @pytest.mark.parametrize("mode", ["write", "create"])
 def test_neutral_path_contract_executes_and_reuses_claim(work, mode):
+    pytest.importorskip("casacore.tables", reason="requires measurement-set group")
     calls = []
 
     @dosho.pystep(dataset_accesses=[access(mode, columns=None if mode != "write" else {"write": ["SCAN_NUMBER"]})])
@@ -73,6 +74,8 @@ def test_neutral_reader_fixed_report_and_absent_optional_output(work, optional):
 
 @pytest.mark.parametrize("mode", ["write", "create"])
 def test_neutral_returned_dataset_redirect_is_refused(work, mode):
+    pytest.importorskip("casacore.tables", reason="requires measurement-set group")
+
     @dosho.pystep(dataset_accesses=[access(mode)])
     def operation(ms: Path) -> Output:
         if mode == "create":

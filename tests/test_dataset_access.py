@@ -1,3 +1,4 @@
+import re
 import sys
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -457,6 +458,29 @@ def test_create_refuses_an_existing_target(tmp_path):
     existing.mkdir()
     with pytest.raises(DatasetAccessError, match="already exists.*--overwrite"):
         resolve_scope_dataset_accesses(_scope("create", DatasetMode.CREATE), {"ms": existing}, workspace=tmp_path)
+
+
+def test_create_outside_the_workspace_is_refused_while_planning(tmp_path):
+    """Post-step revalidation would refuse it only after the tool ran (#268)."""
+    workspace = tmp_path / "runs" / "convert"
+    workspace.mkdir(parents=True)
+    data = tmp_path / "data"
+    data.mkdir()
+    (workspace / "data").symlink_to(data)
+    scope = _scope("create", DatasetMode.CREATE)
+    refused = rf"outside the workspace {re.escape(str(workspace))}; .*use a workspace that contains the output"
+    for value in (data / "new.ms", Path("../../data/new.ms"), workspace / "data" / "new.ms"):
+        with pytest.raises(DatasetAccessError, match=refused):
+            resolve_scope_dataset_accesses(scope, {"ms": value}, workspace=workspace)
+    existing = data / "old.ms"
+    existing.mkdir()
+    with pytest.raises(DatasetAccessError, match=refused):
+        resolve_scope_dataset_accesses(scope, {"ms": existing}, workspace=workspace, allow_existing_create=True)
+    assert existing.is_dir()
+    with pytest.raises(DatasetAccessError, match=refused):
+        graph_nodes(_create_then_read_recipe(), {"target": data / "new.ms"}, workspace=workspace)  # --dryrun
+    (created,) = resolve_scope_dataset_accesses(scope, {"ms": Path("new.ms")}, workspace=workspace)
+    assert created.root == workspace / "new.ms"
 
 
 def test_mutating_dataset_scatter_and_nested_recipe_are_bounded_refusals(tmp_path):
