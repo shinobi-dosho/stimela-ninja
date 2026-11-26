@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 import shinobi.dataset_access as access_module
 import shinobi.dataset_lifecycle as lifecycle_module
+import shinobi.datasets
 from shinobi import Cab, DatasetAccess, DatasetColumns, DatasetMode, MeasurementSetV2
 from shinobi.config import AppConfig
 from shinobi.dataset_closure import ClosureCapabilities, ClosureRequirement, ClosureResource, ClosureStatus, DatasetClosure
@@ -74,6 +75,7 @@ def _install_dataset(monkeypatch, workspace: Path, root: Path) -> None:
     monkeypatch.setattr(access_module, "resolve_dataset_closure", closure)
     monkeypatch.setattr(lifecycle_module, "resolve_dataset_closure", closure)
     monkeypatch.setattr(lifecycle_module, "inspect_measurement_set_v2", lambda *_args, **_kwargs: descriptor)
+    monkeypatch.setattr(shinobi.datasets, "require_msv2_inspector", lambda prefix: None)  # the fakes replace casacore
 
 
 def _recipe(workspace: Path, *, fail: bool = False, read: bool = False) -> Recipe:

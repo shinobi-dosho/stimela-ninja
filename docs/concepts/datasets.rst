@@ -57,6 +57,14 @@ The annotation describes the Measurement Set format and its versioned profile;
 
    pip install "stimela-ninja[ms]>=0.2.0b1"
 
+A run with a strict MSv2 contract needs the extra wherever datasets are
+observed, even when no step reads an existing dataset, because every dataset
+is revalidated after each step. A local run refuses a driver without it, and a
+detached worker refuses a compute node without it, before any tool is
+launched. A detached submitter that plans only new datasets is not checked,
+because its workers perform those observations; one that reads an existing MS
+inspects it during submission and needs the extra too.
+
 For a source checkout managed by uv, use
 ``uv sync --group dev --group measurement-set``.  The development group is
 also the environment used for real-table lifecycle and recovery acceptance
@@ -699,7 +707,13 @@ Each strict leaf then:
    ``DatasetAccess`` permits, may add or remove only its declared columns
    when its columns are known, and may touch only the tables it declares
    (checked against each table's own backing files).  A ``create`` must
-   produce a valid contained MSv2 carrying its declared columns.  A reader
+   produce a valid contained MSv2 carrying its declared columns.  Because a
+   failed ``create`` removes the tool's whole output, two failures that this
+   check would find are refused before launch instead. Planning, including
+   ``--dryrun``, refuses a ``create`` target whose canonical path is outside
+   the workspace. A driver or compute node without ``python-casacore``
+   refuses the step.
+   A reader
    must leave the dataset identical.  A writer that breaks its contract is
    rolled back and raises
    :class:`~shinobi.exceptions.DatasetLifecycleViolationError`;

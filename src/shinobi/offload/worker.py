@@ -639,6 +639,11 @@ class _WorkerDatasetLifecycle:
 
         contract = self.contract
         step_path = self.step_path
+        if not self.ops.fits and self.roots:
+            from shinobi import datasets
+
+            noun = "write" if any(access.writes for access in self.expected) else "read"
+            datasets.require_msv2_inspector(f"step {step_path!r}: detached MSv2 {noun} refused on the compute node")
         actual_tool = self.ops.capability(self.backend, mutation=contract.mutation)
         expected_tool = contract.tool_capabilities[next(i for i, item in enumerate(contract.steps) if item.step_path == step_path)]
         if actual_tool != expected_tool:

@@ -583,6 +583,7 @@ def test_manual_step_input_default_factory_runs_once_before_execution(tmp_path, 
 
 
 def test_derived_reads_refuse_strict_creator_factory_before_dataset_overwrite(tmp_path, monkeypatch):
+    monkeypatch.setattr("shinobi.datasets.require_msv2_inspector", lambda prefix: None)  # refused before observation
     from pydantic import Field
     from shinobi import MeasurementSetV2, pystep
     from shinobi.config import AppConfig

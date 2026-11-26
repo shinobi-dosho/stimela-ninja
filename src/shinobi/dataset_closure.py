@@ -149,7 +149,7 @@ def _direct_link_problem(path: Path, namespace: Path) -> tuple[ClosureStatus | N
         if error:
             return error, f"backing member {item}: {message}"
         assert resolved is not None
-        if not resolved.is_relative_to(namespace):
+        if escapes_namespace(resolved, namespace):
             return ClosureStatus.ESCAPED_NAMESPACE, f"backing member escapes storage namespace {namespace}: {item} -> {resolved}"
     return None, None
 
@@ -211,7 +211,7 @@ def _classify_table_files(
         if error:
             return None, error, f"backing member {item}: {message}"
         assert resolved is not None
-        if not resolved.is_relative_to(namespace):
+        if escapes_namespace(resolved, namespace):
             return None, ClosureStatus.ESCAPED_NAMESPACE, f"backing member escapes storage namespace {namespace}: {item} -> {resolved}"
         if resolved in table_paths and (item in member_paths or item.is_dir()):
             continue
@@ -223,6 +223,17 @@ def _classify_table_files(
             return None, ClosureStatus.UNSUPPORTED, f"unsupported non-file CASA table member: {item}"
         files.append(item.name)
     return tuple(files), None, None
+
+
+def escapes_namespace(path: Path, namespace: Path) -> bool:
+    """Whether canonical ``path`` lies outside canonical ``namespace``.
+
+    The dataset storage-namespace rule shared by MSv2 closure resolution,
+    MSv2 CREATE planning and FITS root planning, so planning agrees with
+    post-step revalidation.
+    """
+
+    return not path.is_relative_to(namespace)
 
 
 def resolve_dataset_closure(path: str | Path, *, storage_namespace: str | Path, max_resources: int = 32, max_entries_per_resource: int = 100_000) -> DatasetClosure:
@@ -248,7 +259,7 @@ def resolve_dataset_closure(path: str | Path, *, storage_namespace: str | Path, 
         status = ClosureStatus.MISSING_RESOURCE if error is ClosureStatus.DANGLING_REFERENCE else error
         return _result(requested, namespace, status, message or "invalid dataset root")
     assert root is not None
-    if not root.is_relative_to(namespace):
+    if escapes_namespace(root, namespace):
         return _result(requested, namespace, ClosureStatus.ESCAPED_NAMESPACE, f"dataset root escapes storage namespace {namespace}: {root}", root=root)
     if not root.is_dir():
         return _result(requested, namespace, ClosureStatus.INVALID_ROOT, f"MSv2 root is not a directory: {root}", root=root)
@@ -289,7 +300,7 @@ def resolve_dataset_closure(path: str | Path, *, storage_namespace: str | Path, 
         if error:
             return _result(requested, namespace, error, f"subtable {member}: {message}", root=root)
         assert physical is not None
-        if not physical.is_relative_to(namespace):
+        if escapes_namespace(physical, namespace):
             return _result(requested, namespace, ClosureStatus.ESCAPED_NAMESPACE, f"subtable {member} escapes storage namespace {namespace}: {physical}", root=root)
         if physical == root:
             return _result(requested, namespace, ClosureStatus.CYCLIC_REFERENCE, f"subtable {member} refers back to the MS root {root}", root=root)

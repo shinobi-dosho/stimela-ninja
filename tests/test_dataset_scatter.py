@@ -228,7 +228,9 @@ def test_frozen_default_factories_and_read_mutation_checks(tmp_path):
         bad(ms=ms)
 
 
-def test_empty_only_strict_scatter_refused(tmp_path):
+def test_empty_only_strict_scatter_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr("shinobi.datasets.require_msv2_inspector", lambda prefix: None)  # refused before observation
+
     @pystep()
     def read(ms: MeasurementSetV2, index: int) -> None:
         pytest.fail("empty scatter launched")

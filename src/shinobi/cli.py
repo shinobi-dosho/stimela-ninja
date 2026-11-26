@@ -19,6 +19,7 @@ from shinobi.backends._stream import TeardownIncomplete, install_signal_handlers
 from shinobi.clickutil import build_options, input_files_argument, resolve_inputs
 from shinobi.config import AppConfig
 from shinobi.dag import graph_nodes, render_dag
+from shinobi.dataset_access import DatasetAccessError, resolve_scope_dataset_accesses, scope_has_dataset_contract
 from shinobi.backends._stream import set_capture_limits
 from shinobi.logsetup import setup_file_logging
 from shinobi.exceptions import ShinobiError
@@ -741,6 +742,12 @@ def run(
                     raise click.ClickException(str(exc)) from None
             else:
                 prepared = _prepare_inputs(scope, {**call_kwargs})
+                if scope_has_dataset_contract(scope):
+                    # As a recipe dry run does: refuse what the run would.
+                    try:
+                        resolve_scope_dataset_accesses(scope, prepared, workspace=Path.cwd())
+                    except DatasetAccessError as exc:
+                        raise click.ClickException(str(exc)) from None
                 click.echo(" ".join(build_argv(scope, prepared)))
             return
 

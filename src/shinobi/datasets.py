@@ -375,6 +375,35 @@ def _load_table_factory() -> Any:
     return table
 
 
+_INSPECTOR_UNAVAILABLE = "python-casacore is unavailable; install stimela-ninja[ms]"
+
+
+def _table_factory_or_problem() -> tuple[Any, str | None]:
+    """casacore's table factory, or why it cannot be imported."""
+
+    try:
+        return _load_table_factory(), None
+    except (ImportError, OSError) as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+def require_msv2_inspector(prefix: str) -> None:
+    """Refuse a strict MSv2 lifecycle in an environment without casacore.
+
+    Post-step closure revalidation needs casacore even when planning did
+    not, as for a step that only creates a new MS. Without this check the
+    tool runs to completion and the failed ``create`` then removes its
+    output. Every environment that observes datasets calls it: the local
+    driver and each detached worker.
+    """
+
+    from shinobi.exceptions import DatasetLifecycleUnavailableError
+
+    _factory, problem = _table_factory_or_problem()
+    if problem is not None:
+        raise DatasetLifecycleUnavailableError(f"{prefix}: {_INSPECTOR_UNAVAILABLE} ({problem}); strict MSv2 contracts validate every dataset before and after each step")
+
+
 def _descriptor(path: Path, expected: DatasetType, status: DatasetStatus, message: str, **kwargs: Any) -> DatasetDescriptor:
     return DatasetDescriptor(path=path, expected=expected, status=status, message=message, **kwargs)
 
@@ -412,15 +441,14 @@ def inspect_dataset(
     if not candidate.is_dir():
         return _descriptor(candidate, expected, DatasetStatus.NOT_A_DIRECTORY, f"CASA tables must be directories: {candidate}")
 
-    try:
-        table_factory = _load_table_factory()
-    except (ImportError, OSError):
+    table_factory, problem = _table_factory_or_problem()
+    if problem is not None:
         feature = "python-casacore metadata inspection"
         return _descriptor(
             candidate,
             expected,
             DatasetStatus.INSPECTOR_UNAVAILABLE,
-            "python-casacore is unavailable; install stimela-ninja[ms] in the inspection environment",
+            f"{_INSPECTOR_UNAVAILABLE} in the inspection environment",
             unsupported_features=(feature,),
         )
 

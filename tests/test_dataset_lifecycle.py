@@ -8,6 +8,7 @@ import pytest
 from pydantic import BaseModel
 
 import shinobi.dataset_lifecycle as lifecycle_module
+import shinobi.datasets
 import shinobi.dataset_access as access_module
 import shinobi.ownership as ownership_module
 import shinobi.steps.dispatch as dispatch_module
@@ -175,6 +176,7 @@ def _install_real_resolution(monkeypatch, workspace: Path, root: Path) -> None:
     monkeypatch.setattr(access_module, "resolve_dataset_closure", lambda *args, **kwargs: closure)
     monkeypatch.setattr(lifecycle_module, "resolve_dataset_closure", lambda *args, **kwargs: closure)
     monkeypatch.setattr(lifecycle_module, "inspect_measurement_set_v2", lambda *args, **kwargs: descriptor)
+    monkeypatch.setattr(shinobi.datasets, "require_msv2_inspector", lambda prefix: None)  # the fakes replace casacore
 
 
 def test_direct_native_reader_commits_versioned_baseline_and_releases_lease(tmp_path, monkeypatch):
@@ -1351,3 +1353,55 @@ def test_present_rewrite_grant_requires_supplemental_column_evidence(tmp_path):
         issues = lifecycle_module.leaf_postcondition_issues((access,), {before.root: left}, {before.root: right})
         assert any("ANTENNA column metadata evidence is missing" in issue for issue in issues)
     assert not lifecycle_module.leaf_postcondition_issues((access,), {before.root: known}, {before.root: known})
+
+
+def _without_casacore(monkeypatch) -> None:
+    def missing():
+        raise ModuleNotFoundError("No module named 'casacore'")
+
+    monkeypatch.setattr(shinobi.datasets, "_load_table_factory", missing)
+
+
+_NO_CASACORE = r"contained MSv2 mutation refused on the driver: python-casacore is unavailable; install stimela-ninja\[ms\]"
+
+
+def test_strict_create_without_casacore_is_refused_before_the_tool_runs(tmp_path, monkeypatch):
+    """A CREATE needs casacore only for post-step revalidation (#268)."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "registry.json"))
+    _without_casacore(monkeypatch)
+    calls = []
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="create")])
+    def create(ms: MeasurementSetV2) -> MSInput:
+        calls.append(ms)
+        return MSInput(ms=ms)
+
+    with pytest.raises(DatasetLifecycleUnavailableError, match=_NO_CASACORE):
+        create(ms=tmp_path / "new.ms")
+    assert calls == []
+    assert not (tmp_path / "new.ms").exists()
+    with pytest.raises(Exception, match="parameter validation failed") as invalid:
+        create(ms=7)
+    assert not isinstance(invalid.value, DatasetLifecycleUnavailableError)
+
+
+def test_overwrite_without_casacore_is_refused_before_deleting(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SHINOBI_OWNERSHIP_REGISTRY", str(tmp_path / "registry.json"))
+    _without_casacore(monkeypatch)
+
+    @pystep(dataset_accesses=[DatasetAccess(field="ms", mode="create")])
+    def create(ms: MeasurementSetV2) -> MSInput:
+        raise AssertionError("the creator must not run")
+
+    recipe = Recipe(name="convert", inputs_model=MSInput, outputs_model=Empty)
+    recipe.add_step("create", create, ms=InputRef(field="ms"))
+    existing = tmp_path / "old.ms"
+    existing.mkdir()
+    (existing / "table.dat").write_text("data")
+    config = AppConfig()
+    config.cache.dir = str(tmp_path / "cache")
+    with pytest.raises(DatasetLifecycleUnavailableError, match=_NO_CASACORE):
+        recipe(ms=existing, _config=config, overwrite_steps=["create"])
+    assert (existing / "table.dat").read_text() == "data"

@@ -18,7 +18,7 @@ from typing import Any, Iterable, Literal, get_args, get_origin
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shinobi._annotations import annotation_cache, walk_annotation
-from shinobi.dataset_closure import DatasetClosure, ClosureStatus, resolve_dataset_closure
+from shinobi.dataset_closure import DatasetClosure, ClosureStatus, escapes_namespace, resolve_dataset_closure
 from shinobi.datasets import DatasetDeclarationError, DatasetKind, dataset_declarations, executable_dataset_fields, executable_dataset_list_fields
 from shinobi.exceptions import ShinobiError
 
@@ -513,6 +513,15 @@ def _resolve_known_access(
             # named. Refused here, where the spelling is still visible.
             raise DatasetAccessError(
                 f"scope {scope.name!r} CREATE dataset field {resolved_field!r} is a symlink ({spelled} -> {requested}); overwrite refuses it, remove or replace the link yourself"
+            )
+        namespace = access_storage_namespace(declaration, requested, workspace)
+        if escapes_namespace(requested, namespace):
+            # Post-step closure revalidation (same namespace) would refuse
+            # this root only after the tool has written it, and a failed
+            # CREATE then removes the output. Refuse it before dispatch.
+            raise DatasetAccessError(
+                f"scope {scope.name!r} CREATE dataset field {resolved_field!r} target {requested} is outside the workspace {namespace}; "
+                "a created dataset must lie inside the workspace, so use a workspace that contains the output (for `ninja run`, the directory it runs from)"
             )
         from shinobi._required_cache import existing_create_replay
 

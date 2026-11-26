@@ -33,6 +33,10 @@ class CreateRoot(BaseModel):
     target: Path
 
 
+class NoteIn(BaseModel):
+    script: str
+
+
 def _create_recipe(workspace: Path) -> Recipe:
     script = "from pathlib import Path;import sys;p=Path(sys.argv[1]);p.mkdir();(p/'table.dat').write_text('created')"
     cab = Cab(
@@ -992,5 +996,61 @@ def test_qualified_worker_retains_present_rewrite_grant_and_shared_postcondition
         assert (status == 0) == grant
         assert record.dataset_lifecycle.leaves[0].accesses[0].declaration.allow_present_subtable_rewrite == grant
         assert header.stat().st_mtime_ns == original + (10_000_000_000 if grant else 0)
+    finally:
+        lease.release()
+
+
+def test_create_worker_without_casacore_refuses_before_the_tool_runs(monkeypatch, tmp_path):
+    """The compute node observes the new MS after the tool, so it needs casacore (#268).
+
+    A sibling leaf that observes no dataset does not.
+    """
+    import shinobi.datasets as datasets_module
+
+    require = datasets_module.require_msv2_inspector
+    root = tmp_path / "created.ms"
+    _install_dataset(monkeypatch, tmp_path, root)
+    base = _create_recipe(tmp_path)
+    note = Cab(name="note", command=f"{sys.executable} -c", inputs_model=NoteIn, outputs_model=Empty, field_meta={"script": ParamMeta(positional_head=True)})
+    recipe = base.model_copy(update={"steps": [*base.steps, StepRef(name="note", step=note, params={"script": "pass"})]})
+    bundle = freeze_recipe(recipe, {"target": root}, config=AppConfig(), workspace=tmp_path)
+    workflow = prepare_worker_slurm(
+        bundle,
+        submission_root=tmp_path / "runs",
+        worker_python=Path(sys.executable),
+        dataset_storage_qualification=qualified_storage(tmp_path),
+    )
+    plan = ExecutionPlan.model_validate_json((workflow.submission_dir / "execution.json").read_text())
+    lease = acquire_workspace(
+        Path(plan.ownership_workspace),
+        str(plan.workflow_id),
+        kind="slurm",
+        submission=workflow.submission_dir,
+        accesses=((Path(access.path), access.writes) for access in plan.accesses),
+        registry=Path(plan.ownership_registry),
+    )
+    write_new(workflow.submission_dir / "ownership.json", lease.owner)
+
+    def missing():
+        raise ModuleNotFoundError("No module named 'casacore'")
+
+    monkeypatch.setattr(datasets_module, "require_msv2_inspector", require)
+    monkeypatch.setattr(datasets_module, "_load_table_factory", missing)
+    try:
+        attempts = {attempt.step_path: attempt for attempt in plan.attempts}
+        assert execute_step(workflow.submission_dir, "note", attempts["note"].attempt_id) == 0
+        attempt = attempts["create"]
+        assert execute_step(workflow.submission_dir, attempt.step_path, attempt.attempt_id) == 1
+        record = AttemptRecord.read(
+            workflow.submission_dir / "attempts" / str(attempt.attempt_id) / "final.json",
+            workflow_id=plan.workflow_id,
+            attempt_id=attempt.attempt_id,
+            step_path=attempt.step_path,
+            bundle_digest=RecipeBundle.read(workflow.submission_dir / "bundle.json").digest,
+        )
+        assert record.state == "failed" and record.dataset_lifecycle is not None
+        assert record.dataset_lifecycle.outcome == "refused"
+        assert "'create': detached MSv2 write refused on the compute node: python-casacore is unavailable; install stimela-ninja[ms]" in record.dataset_lifecycle.reason
+        assert not root.exists()
     finally:
         lease.release()

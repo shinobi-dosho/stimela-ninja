@@ -348,6 +348,7 @@ def test_supported_list_access_preserves_unrelated_composite_metadata(tmp_path, 
 def test_optional_list_none_execution_without_concrete_access_is_refused(tmp_path, monkeypatch):
     from shinobi.exceptions import DatasetLifecycleUnavailableError
 
+    monkeypatch.setattr("shinobi.datasets.require_msv2_inspector", lambda prefix: None)  # refused before observation
     monkeypatch.chdir(tmp_path)
     optional = Cab(name="optional-only", command="true", inputs_model=OptionalInputs, outputs_model=Empty)
     with pytest.raises(DatasetLifecycleUnavailableError, match="no concrete dataset access"):

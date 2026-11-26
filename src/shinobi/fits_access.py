@@ -175,6 +175,7 @@ def validate_scope_fits_accesses(scope):
 
 
 def resolve_scope_fits_accesses(scope, values: dict[str, Any], *, workspace: Path, planned_roots=(), **kwargs):
+    from shinobi.dataset_closure import escapes_namespace
     from shinobi.steps.schema import static_output_values, mutated_path_fields, write_path_fields
 
     inputs, outputs = fits_fields(scope.inputs_model), fits_fields(scope.outputs_model)
@@ -203,7 +204,7 @@ def resolve_scope_fits_accesses(scope, values: dict[str, Any], *, workspace: Pat
                 if ancestor.is_symlink():
                     raise DatasetLifecycleUnavailableError(f"FITS symlink paths are unsupported: {ancestor}")
             root = lexical.resolve()
-            if not root.is_relative_to(workspace.resolve()):
+            if escapes_namespace(root, workspace.resolve()):
                 raise DatasetLifecycleUnavailableError(f"FITS root must be contained in workspace: {root}")
             if root.exists() and (not root.is_file() or root.stat().st_nlink != 1):
                 raise DatasetLifecycleUnavailableError(f"FITS needs an ordinary unaliased file: {root}")
